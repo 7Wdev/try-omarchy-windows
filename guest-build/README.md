@@ -43,6 +43,12 @@ rule to existing persistent disks. No PAM rule is installed until the owner
 enables it after guest password authentication. It requires the matching host
 approval bridge; without that bridge, password authentication remains available.
 
+Patch 0099 adds an opt-in 1Password unlock that reuses the Windows Hello
+pairing: a root-only polkit agent for the installed 1Password app asks the
+broker for a signed `onepassword-unlock` approval, and every other request
+goes to the standard password dialog. Compatibility revision 37 delivers the
+agent, dialog and unit to existing guests without enabling anything.
+
 The second command needs Docker and currently takes about ten minutes. Release
 CI also boots the resulting factory image with `scripts/release/smoke-guest.py`
 before it uploads anything.

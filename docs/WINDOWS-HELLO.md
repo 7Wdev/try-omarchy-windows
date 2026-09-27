@@ -20,6 +20,37 @@ guest shows one Windows Hello prompt; cancel it to type the password instead.
 `sudo try-omarchy-windows-hello disable` removes the PAM rule, forgets the
 pairing and deletes the Windows passkey.
 
+## Unlocking 1Password
+
+If you install 1Password in Omarchy, it can use the same pairing:
+
+```bash
+sudo try-omarchy-windows-hello onepassword enable
+```
+
+Then in 1Password, turn on **Settings > Security > Unlock using system
+authentication**, and lock and unlock once with your account password.
+Afterwards the fingerprint button in 1Password shows one Windows Hello prompt.
+Canceling it opens a password dialog for your guest password instead.
+1Password still asks for its account password after it restarts and whenever
+its own password interval expires. `sudo try-omarchy-windows-hello onepassword
+disable` turns this off, and disabling Windows Hello also stops it.
+
+A root-only polkit agent (ported from Try Omarchy for macOS) registers only for
+the installed `/opt/1Password/1password` app of that user, and only while the
+user's local desktop session is active. Only the
+`com.1password.1Password.unlock` action asks Windows Hello; CLI and SSH agent
+requests, and any other process, use the normal password dialog. The agent
+answers polkit only after the broker verifies a signed `onepassword-unlock`
+approval, whose operation and `1password` service are part of the signed client
+data, so a sudo approval can never unlock 1Password. The password dialog runs as
+the user through the standard polkit PAM session, and its exit status alone
+never authorizes anything.
+
+The [laptop run](evidence/ONEPASSWORD-HELLO-LAPTOP-2026-09-26.md) covered the
+unlock with Windows Hello, the password fallback after a cancel, and a CLI
+request that never reached Windows Hello.
+
 ## How it works
 
 Windows Hello answers as a WebAuthn platform authenticator. The launcher calls

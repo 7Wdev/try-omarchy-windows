@@ -214,7 +214,7 @@ func approveHelloRequest(request helloRequest) helloResponse {
 		if err == nil {
 			response.Approved = true
 		}
-	case "enroll", "sudo":
+	case "enroll", "sudo", "onepassword-unlock":
 		pid := qemuPid.Load()
 		owner := qemuHwnd.Load()
 		switch {

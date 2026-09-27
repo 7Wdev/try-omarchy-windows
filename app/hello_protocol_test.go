@@ -109,3 +109,45 @@ func TestHelloDenialCarriesNoApprovalMaterial(t *testing.T) {
 		t.Fatalf("denial contained authorization material: %s", encoded)
 	}
 }
+
+func validOnePasswordRequest() helloRequest {
+	request := validHelloRequest()
+	request.Operation, request.Service = "onepassword-unlock", "1password"
+	request.User, request.RequestingUser, request.TTY = "omarchy", "omarchy", ""
+	return request
+}
+
+func TestHelloOnePasswordUnlockIsScopedToOneDesktopUser(t *testing.T) {
+	if _, err := parseHelloRequest(mustHelloRequestLine(validOnePasswordRequest())); err != nil {
+		t.Fatalf("valid 1Password unlock: %v", err)
+	}
+	for name, mutate := range map[string]func(*helloRequest){
+		"sudo service":        func(r *helloRequest) { r.Service = "sudo" },
+		"terminal":            func(r *helloRequest) { r.TTY = "/dev/pts/1" },
+		"root":                func(r *helloRequest) { r.User, r.RequestingUser = "root", "root" },
+		"another requester":   func(r *helloRequest) { r.RequestingUser = "guest" },
+		"no credential":       func(r *helloRequest) { r.CredentialID = "" },
+		"sudo with 1password": func(r *helloRequest) { r.Operation = "sudo"; r.TTY = "/dev/pts/1" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := validOnePasswordRequest()
+			mutate(&candidate)
+			if _, err := parseHelloRequest(mustHelloRequestLine(candidate)); err == nil {
+				t.Fatal("unsafe request accepted")
+			}
+		})
+	}
+}
+
+func TestHelloClientDataSeparatesSudoFromOnePasswordUnlock(t *testing.T) {
+	unlock := validOnePasswordRequest()
+	sudo := unlock
+	sudo.Operation, sudo.Service, sudo.TTY = "sudo", "sudo", "/dev/pts/1"
+	if bytes.Equal(helloClientData(unlock), helloClientData(sudo)) {
+		t.Fatal("a sudo approval would verify as a 1Password unlock")
+	}
+	if !bytes.Contains(helloClientData(unlock), []byte(`"operation":"onepassword-unlock"`)) ||
+		!bytes.Contains(helloClientData(unlock), []byte(`"service":"1password"`)) {
+		t.Fatalf("unlock client data does not name its operation and service: %s", helloClientData(unlock))
+	}
+}

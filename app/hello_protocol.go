@@ -111,7 +111,7 @@ func parseHelloRequest(line []byte) (helloRequest, error) {
 	if request.Type != "authorize" || request.Version != helloProtocolVersion ||
 		!helloHex32.MatchString(request.GuestID) ||
 		!helloUUID.MatchString(request.RequestID) ||
-		!helloHex32.MatchString(request.Challenge) || request.Service != "sudo" {
+		!helloHex32.MatchString(request.Challenge) || request.Service != helloService(request.Operation) {
 		return request, errors.New("invalid authentication identity or service")
 	}
 	switch request.Operation {
@@ -125,6 +125,13 @@ func parseHelloRequest(line []byte) (helloRequest, error) {
 			!helloTTY.MatchString(request.TTY) {
 			return request, errors.New("invalid sudo context")
 		}
+	case "onepassword-unlock":
+		// The guest's polkit agent asks on behalf of the installed 1Password
+		// app of one desktop user; there is no terminal involved.
+		if !helloAccount.MatchString(request.User) || request.RequestingUser != request.User ||
+			request.User == "root" || request.TTY != "" {
+			return request, errors.New("invalid 1Password unlock context")
+		}
 	default:
 		return request, errors.New("unknown authentication operation")
 	}
@@ -136,6 +143,16 @@ func parseHelloRequest(line []byte) (helloRequest, error) {
 		return request, err
 	}
 	return request, nil
+}
+
+// helloService names the service each operation approves. It is part of the
+// signed client data, like the operation, so a sudo approval can never stand
+// in for a 1Password unlock or the other way round.
+func helloService(operation string) string {
+	if operation == "onepassword-unlock" {
+		return "1password"
+	}
+	return "sudo"
 }
 
 // helloClientData is the exact byte string Windows signs. Every field has
