@@ -50,11 +50,13 @@ See the [user guide](docs/USER-GUIDE.md) for updates, shortcuts, storage, settin
 
 ## Guides
 
+- [Guide index](docs/README.md): find help for a specific task
 - [Using Try Omarchy](docs/USER-GUIDE.md): setup, keys, settings, storage, updates, SSH, and troubleshooting
 - [Compatibility](docs/COMPATIBILITY.md): supported hosts, graphics paths, and app limits
 - [Windows desktop controls](docs/DESKTOP-CONTROLS.md): display, input, and host integration
 - [Guest upgrades](docs/GUEST-UPGRADES.md), [backups](docs/BACKUP.md), and [moving your data](docs/MOVING.md)
 - [Changelog](CHANGELOG.md) and [releases](https://github.com/omacom/try-omarchy-windows/releases)
+- [Contributing](CONTRIBUTING.md): repository layout, build, and test instructions
 
 If something goes wrong, use **Create diagnostics...** in the tray and [open an issue](https://github.com/omacom/try-omarchy-windows/issues/new/choose). Review the diagnostics zip before sharing it. The [user guide](docs/USER-GUIDE.md#reporting-a-problem) explains what it contains.
 
