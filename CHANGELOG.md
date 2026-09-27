@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.5.0 - Unreleased
+## v0.5.0 - 2026-09-26
 
 - Approve guest `sudo` with Windows Hello. It is opt-in: run
   `sudo try-omarchy-windows-hello enable` in Omarchy, confirm with the guest
