@@ -67,7 +67,7 @@ func newGuestPowerState() *guestPowerState {
 		if !guestUp.Load() || qemuPid.Load() == 0 {
 			return nil, fmt.Errorf("guest controls are not ready")
 		}
-		return dialQMPControl(ctx, qmpToolsPort)
+		return dialQMPControl(ctx, qmpPowerRole)
 	}}
 }
 

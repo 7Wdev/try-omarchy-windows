@@ -11,6 +11,9 @@ import (
 
 // QEMU's user network lets a guest reach host loopback. Privileged QMP must
 // therefore use local filesystem sockets, never the guest-accessible TCP path.
+// A private role, not a TCP port reservation. Only Windows serves it.
+const qmpPowerRole = -1
+
 var qmpControlDirectory = platformQMPControlDirectory
 
 func qmpControlName(role int) string {
@@ -21,6 +24,8 @@ func qmpControlName(role int) string {
 		return "forward.sock"
 	case qmpSupPort:
 		return "supervisor.sock"
+	case qmpPowerRole:
+		return "power.sock"
 	default:
 		return ""
 	}
@@ -65,7 +70,7 @@ func prepareQMPControl() (string, error) {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return "", err
 	}
-	for _, role := range []int{qmpToolsPort, qmpFwdPort, qmpSupPort} {
+	for _, role := range platformQMPControlRoles() {
 		path, err := qmpControlPath(role)
 		if err != nil {
 			return "", err

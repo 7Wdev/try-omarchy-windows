@@ -271,8 +271,18 @@ func TestPowerWindowsQEMURuntime(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer os.RemoveAll(dir)
-	socket := filepath.Join(dir, "power.sock")
-	cmd := exec.Command(qemu, "-machine", "none", "-nodefaults", "-display", "none", "-S", "-qmp", "unix:"+qemuOptionValue(socket)+",server=on,wait=off")
+	socket := filepath.Join(dir, "tools.sock")
+	powerSocket := filepath.Join(dir, "power.sock")
+	previousDirectory := qmpControlDirectory
+	qmpControlDirectory = func() (string, error) { return dir, nil }
+	defer func() { qmpControlDirectory = previousDirectory }()
+	oldUp, oldPID := guestUp.Load(), qemuPid.Load()
+	defer func() { guestUp.Store(oldUp); qemuPid.Store(oldPID) }()
+	guestUp.Store(true)
+	qemuPid.Store(123)
+	cmd := exec.Command(qemu, "-machine", "none", "-nodefaults", "-display", "none", "-S",
+		"-qmp", "unix:"+qemuOptionValue(socket)+",server=on,wait=off",
+		"-qmp", "unix:"+qemuOptionValue(powerSocket)+",server=on,wait=off")
 	configureDiskTool(cmd)
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
@@ -312,7 +322,7 @@ func TestPowerWindowsQEMURuntime(t *testing.T) {
 			t.Fatalf("status=%+v error=%v want=%s", state, err, want)
 		}
 	}
-	p := &guestPowerState{dial: dial}
+	p := newGuestPowerState()
 	defer p.close()
 	status("", "prelaunch")
 	p.handle(pbtApmSuspend)
@@ -325,6 +335,8 @@ func TestPowerWindowsQEMURuntime(t *testing.T) {
 		if !p.owned {
 			t.Fatal("actual runtime pause not owned")
 		}
+		// Other controls must remain usable while the power monitor is held.
+		status("", "paused")
 		var state vmRuntimeStatus
 		if err := p.client.Call(context.Background(), "query-status", nil, &state); err != nil || state.Status != "paused" {
 			t.Fatalf("pause=%+v %v", state, err)
@@ -333,7 +345,12 @@ func TestPowerWindowsQEMURuntime(t *testing.T) {
 		p.handle(pbtApmResumeSuspend)
 		status("", "running")
 	}
+	// Actual manual changes on the tools monitor relinquish ownership.
+	p.handle(pbtApmSuspend)
+	status("cont", "running")
 	status("stop", "paused")
+	p.handle(pbtApmResumeAutomatic)
+	status("", "paused")
 	p.handle(pbtApmSuspend)
 	p.handle(pbtApmResumeAutomatic)
 	status("", "paused")

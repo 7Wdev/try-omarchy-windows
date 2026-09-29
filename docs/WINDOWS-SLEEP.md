@@ -8,7 +8,9 @@ uses the same `WM_POWERBROADCAST` suspend/resume handler. Registration failure
 is logged and ordinary sleep broadcasts remain available.
 
 On suspend, the launcher checks the runtime state and pauses only a running
-VM. It keeps that QMP connection until resume, then resumes only the paused VM
+VM. Power handling uses a dedicated private QMP monitor so shutdown, USB and
+forwarding controls remain available while it holds a connection. It keeps that
+connection until resume, then resumes only the paused VM
 it still owns. Duplicate notifications do not repeat successful operations.
 A pre-existing manual pause, shutdown, restore or guest suspend is preserved.
 Manual STOP/RESUME events during the interval relinquish automatic ownership.
@@ -28,7 +30,8 @@ The focused Windows tests cover duplicate and repeated transitions, manual
 pause, non-running states, manual changes during sleep, missing controls,
 startup/shutdown, replacement runtimes, rejected commands, lost replies and
 registration/cleanup failures. A diskless Windows QEMU fixture checks actual
-`prelaunch`, `running` and `paused` states. A hidden native receiver checks the
+`prelaunch`, `running` and `paused` states, independent tools access while
+paused, and intervening manual state changes. A hidden native receiver checks the
 Windows notification registration API. These checks do not suspend Windows.
 
 The [v0.6.1 record](evidence/V061-SIGNED-CANDIDATE-2026-09-29.md) proves the

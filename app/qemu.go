@@ -125,15 +125,17 @@ func buildQemuArgs(cfg *config, cmdline string) []string {
 		// the host cannot initialize audio.
 		"-audiodev", audioBackendOptions(cfg.audio, cfg.desktop.MicrophoneDisabled),
 		"-device", "virtio-sound-pci,audiodev=snd",
-		"-qmp", "unix:"+qemuOptionValue(filepath.Join(cfg.qmpDir, qmpControlName(qmpToolsPort)))+",server=on,wait=off",
-		"-qmp", "unix:"+qemuOptionValue(filepath.Join(cfg.qmpDir, qmpControlName(qmpFwdPort)))+",server=on,wait=off",
-		"-qmp", "unix:"+qemuOptionValue(filepath.Join(cfg.qmpDir, qmpControlName(qmpSupPort)))+",server=on,wait=off",
 		"-D", filepath.Join(vm, "qemu.log"),
 		// In-guest reboot/poweroff wedges upstream WHPX (vCPUs never return
 		// from system reset). Exit instead; the supervisor relaunches on reset.
 		"-no-reboot",
 		"-name", appTitle,
 	)
+	// Power holds its own Windows monitor across sleep. Tools, forwarding and
+	// supervisor controls stay available even when automatic resume fails.
+	for _, role := range platformQMPControlRoles() {
+		args = append(args, "-qmp", "unix:"+qemuOptionValue(filepath.Join(cfg.qmpDir, qmpControlName(role)))+",server=on,wait=off")
+	}
 	if cfg.followHostTimeZone {
 		args = append(args, "-chardev", fmt.Sprintf("socket,id=timezone0,host=127.0.0.1,port=%d,reconnect-ms=1000", timeZoneBridgePort), "-device", "virtserialport,chardev=timezone0,name=dev.tryomarchy.timezone")
 	}
