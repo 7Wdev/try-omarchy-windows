@@ -70,6 +70,7 @@ const (
 	settingsAppAddID             = 2123
 	settingsAppRemoveID          = 2124
 	settingsAppListID            = 2125
+	settingsAltTabID             = 2126
 	settingsSaveID               = 2001
 	settingsCancelID             = 2002
 	settingsBrowseID             = 2003
@@ -161,6 +162,11 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 		errorBox("Cannot read launch preferences:\n\n" + err.Error())
 		return false
 	}
+	keyboardPrefs, err := loadKeyboardPreferences(dataDir)
+	if err != nil {
+		errorBox("Cannot read keyboard preferences:\n\n" + err.Error())
+		return false
+	}
 	audioPrefs, err := loadAudioPreferences(dataDir)
 	if err != nil {
 		errorBox("Cannot read audio preferences:\n\n" + err.Error())
@@ -237,7 +243,7 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 	className, _ := syscall.UTF16PtrFromString("TryOmarchySettings")
 	var hwnd uintptr
 	var scroll settingsScroll
-	var hFull, hFullscreenDisplay, hStartAutomatically, hLaunchAtSignIn, hMem, hCPUs, hDisk, hShare, hShareOn, hFwd, hKey uintptr
+	var hFull, hFullscreenDisplay, hStartAutomatically, hLaunchAtSignIn, hAltTab, hMem, hCPUs, hDisk, hShare, hShareOn, hFwd, hKey uintptr
 	fullscreenMonitors := hostMonitors()
 	fullscreenChoices := []string{""}
 	var hRenderAuto, hRenderGPU, hRenderCPU, hDisplays, hLANPublic uintptr
@@ -539,6 +545,15 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 					errorBox("Other settings were saved, but approved Windows apps could not be saved:\n\n" + err.Error())
 					return 0
 				}
+				// Only write the file for a real change. Older launchers reject
+				// backups that contain files they do not know.
+				altTabCheck, _, _ := procSendMessageW.Call(hAltTab, bmGetcheck, 0, 0)
+				if toWindows := altTabCheck != bstChecked; toWindows != keyboardPrefs.AltTabToWindows {
+					if err := saveKeyboardPreferences(dataDir, keyboardPreferences{AltTabToWindows: toWindows}); err != nil {
+						errorBox("Other settings were saved, but the Alt+Tab choice could not be saved:\n\n" + err.Error())
+						return 0
+					}
+				}
 				saved = true
 				procDestroyWindow.Call(h)
 			case settingsCancelID, idCancel:
@@ -729,6 +744,11 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 	}
 	if portable {
 		procEnableWindow.Call(hLaunchAtSignIn, 0)
+	}
+	y += 30
+	hAltTab = mk("BUTTON", "Send Alt+Tab to Omarchy while its window is focused", left, y, 400, 22, bsAutocheckbox|wsTabstop, settingsAltTabID)
+	if !keyboardPrefs.AltTabToWindows {
+		procSendMessageW.Call(hAltTab, bmSetcheck, bstChecked, 0)
 	}
 	y += 30
 	mk("STATIC", "Resource profile", left, y+3, labelW, 20, ssNoprefix, 0)
