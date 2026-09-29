@@ -17,13 +17,13 @@ const maxSumsBytes = 1 << 20
 // Variables so the signed test-launcher workflow can pin an isolated release
 // with -ldflags -X. Normal builds retain these production defaults.
 var (
-	defaultReleaseURL        = "https://github.com/omacom/try-omarchy-windows/releases/download/v0.6.1"
-	defaultSumsSHA256        = "ce9c1748c801633e78b39b94489f419164c1189f49bc8727014aaf6fcd958d90"
+	defaultReleaseURL        = "https://github.com/omacom/try-omarchy-windows/releases/download/v0.6.2"
+	defaultSumsSHA256        = "0db6635e4df92e827890d5e45c4a8c170f90150ddb6a1634b46ae41c963c3fd6"
 	defaultRuntimeReleaseURL = ""
 	defaultRuntimeSumsSHA256 = ""
 )
 
-//go:embed testdata/SHA256SUMS.v0.6.1
+//go:embed testdata/SHA256SUMS.v0.6.2
 var defaultSums []byte
 
 // releaseSums returns the embedded, authenticated manifest for the default
