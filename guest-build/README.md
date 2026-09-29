@@ -63,6 +63,14 @@ Patch 0102 applies fixes from an independent review of the Windows Hello
 broker, the 1Password agent, drop delivery and display sync (compatibility
 revision 39).
 
+Patch 0103 keeps a monitor scale that the user set in `monitors.lua` across
+display sync and Hyprland config reloads. The script reads
+`omarchy_monitor_scale`; a number wins over the scale guessed from the EDID,
+and "auto" keeps the old behavior. The mode follows the window size, so the
+scale is rounded to the closest value Hyprland accepts for that mode.
+Compatibility revision 40 delivers the script and the fragment to existing
+guests.
+
 The second command needs Docker and currently takes about ten minutes. Release
 CI also boots the resulting factory image with `scripts/release/smoke-guest.py`
 before it uploads anything.
