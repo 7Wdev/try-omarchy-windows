@@ -182,12 +182,11 @@ reproducible issues as they arrive; broader hardware coverage is not a gate.
 Feature parity is tracked in [MAC-PARITY.md](MAC-PARITY.md). `v0.3.0` ships
 live audio switching with r20c. The previous `v0.2.0` release shipped in-guest
 host Settings, battery mirroring, measured live RAM reclamation, the approved-app
-launch bridge, and fullscreen monitor choice. Keep Windows Hello sudo and true
-bridged networking as active feature work rather than dropping them for lack of
-bug reports. Their existing password and NAT paths remain usable while
-[Hello #165](https://github.com/omacom/try-omarchy-windows/issues/165) and
-[LAN bridge #166](https://github.com/omacom/try-omarchy-windows/issues/166)
-proceed. The current user base of thousands with relatively few reports is
+launch bridge, and fullscreen monitor choice. Windows Hello sudo shipped as an
+opt-in feature in `v0.5.0`; password fallback remains available. True LAN bridging is still candidate work in
+[LAN bridge #166](https://github.com/omacom/try-omarchy-windows/issues/166).
+NAT and existing port forwarding remain the default. The current user base of
+thousands with relatively few reports is
 positive evidence about the everyday path; broad hardware and Windows 10
 acceptance are not 1.0 gates. Automatic pinch shipped in `v0.4.0`; its
 acceptance limits are in [PINCH-ZOOM.md](PINCH-ZOOM.md). ARM64 and interface translation are open requests

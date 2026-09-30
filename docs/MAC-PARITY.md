@@ -1,7 +1,7 @@
 # Windows and Mac feature review
 
 Reviewed September 21 and refreshed September 30, 2026 against Mac source commit
-[`b2a78a1a3391092cc6942411079fd5d3fccedbb5`](https://github.com/omacom/try-omarchy/tree/b2a78a1a3391092cc6942411079fd5d3fccedbb5).
+[`e1a0dbe9820a8f7554ac3b930c2f13e1f41b25a1`](https://github.com/omacom/try-omarchy/tree/e1a0dbe9820a8f7554ac3b930c2f13e1f41b25a1).
 This is an implementation and acceptance tracker, not a claim that every feature
 is shipped or hardware-tested. The release gates in
 [RELEASING.md](RELEASING.md) and [TESTING.md](TESTING.md) still apply.
@@ -11,7 +11,9 @@ It adds automatic startup with in-guest settings access, host battery mirroring,
 guest-memory reclamation, precise trackpad scrolling, stable bridged identities,
 keyboard-geometry and language work, update discovery, and runtime reliability
 fixes. September source also adds experimental host USB passthrough, graphics
-and audio continuity fixes, and safer management placement. Mac source features
+and audio continuity fixes, and safer management placement. The latest source
+also follows Mac time-zone changes while running and avoids 9p writeback caching
+for existing shared folders. Mac source features
 are separate from its published `v0.4.1` release. Equivalent behavior is tracked below only where it makes sense on Windows.
 
 ## Corrections to the previous handoff
@@ -26,13 +28,12 @@ are separate from its published `v0.4.1` release. Equivalent behavior is tracked
   and signed in. Cross-compilation alone does not validate native windows.
 - WHPX requesting nesting does not prove working guest KVM. Use the executable
   probe in [NESTED-VIRTUALIZATION.md](NESTED-VIRTUALIZATION.md).
-- The Mac pinch implementation is a dedicated virtual multitouch touchpad, not
-  a Hyprland zoom shortcut. Windows parity needs equivalent event delivery,
-  including cancellation on focus loss and VM state changes.
-- The pinned QEMU SDL and DirectSound options do not expose endpoint selection.
-  A hypothetical `-audiodev wasapi` switch is not an implemented backend in this
-  runtime. SDL itself uses Windows audio APIs; endpoint selection could extend
-  the existing SDL backend instead of requiring a wholesale backend replacement.
+- Mac and Windows pinch use a dedicated virtual multitouch touchpad. Windows
+  ships gesture cancellation on focus loss and VM state changes with r18;
+  broader application and hardware acceptance remains open.
+- Windows endpoint selection ships through the r20c SDL backend. A hypothetical
+  `-audiodev wasapi` switch is not an implemented backend in this runtime;
+  follow the shipped SDL route rather than assuming such a switch exists.
 
 ## Current coverage
 
@@ -55,7 +56,7 @@ are separate from its published `v0.4.1` release. Equivalent behavior is tracked
 | Bridged networking | NAT and explicit port forwarding exist | [True LAN bridge #166](https://github.com/omacom/try-omarchy-windows/issues/166), with supported adapter, privilege and firewall handling |
 | Host battery | Shipped in `v0.2.0`; the AMD laptop's 99% charging state appeared as BAT0/ADP0 and in UPower | Desktop/no-battery transition remains to be observed on a suitable host |
 | Guest RAM reclamation | Shipped with r19 in `v0.2.0`; three physical touch/free cycles returned about 797 MiB after the third 768 MiB allocation | Follow up on concrete memory reports |
-| Keyboard and language | Windows time zone, keyboard layout and display language follow the host | Physical ANSI/ISO/JIS geometry and broader input-method acceptance |
+| Keyboard and language | Windows time zone, keyboard layout and display language are read at launch | Mac main now follows time-zone changes while running and offers an explicit return to host following. Windows live time-zone following remains a gap; physical ANSI/ISO/JIS geometry and broader input-method acceptance remain open |
 
 Public `v0.6.2` is the current Windows release. Windows Hello sudo shipped in
 `v0.5.0`; process-scoped 1Password unlock and direct application drops shipped in
@@ -69,11 +70,17 @@ host suspension, but does not establish that #216's XWayland authorization
 failure is resolved. Reporter confirmation and a physical Modern Standby S0
 check remain outstanding.
 
-The current source shares Mac's Tokyo Night palette, Try Omarchy mark and type
-hierarchy across the Windows launcher, Settings, About, USB and setup windows.
+Merged PRs [#235](https://github.com/omacom/try-omarchy-windows/pull/235),
+[#236](https://github.com/omacom/try-omarchy-windows/pull/236) and
+[#237](https://github.com/omacom/try-omarchy-windows/pull/237) share Mac's Tokyo
+Night palette across the Windows launcher, Settings, About, USB and setup
+windows. The launcher, Settings and setup also share the Try Omarchy mark and
+monospaced heading. About and USB retain their native dialog structure.
 Settings retain visible actions while pages scroll, hide manual CPU/RAM fields
-for automatic profiles and explain when choices apply. This polish is source
-work until a new Windows release publishes it. Native VM checks do not establish
+for automatic profiles and explain when choices apply. This polish is merged,
+but the published `v0.6.2` launcher predates it.
+The visual comparison uses current Mac source and its public release capture;
+a current native Mac run has not been observed. Native VM checks do not establish
 mixed-monitor DPI, screen-reader user acceptance or broad physical coverage.
 
 ## Work sequence toward comparable everyday use
@@ -142,7 +149,7 @@ replace the accepted launcher or mutate a running guest disk.
 6. Run the KVM probe inside the guest as its ordinary user and retain the JSON
    alongside exact runtime and host facts.
 
-This engineering work is included in the public `v0.1.0` release; see its
+The original pre-boot launcher work is included in the public `v0.1.0` release; see its
 [signed acceptance and public update record](evidence/V0.1.0-SIGNED-CANDIDATE-2026-09-23.md).
 
 ## September 21 host capability checks
@@ -163,7 +170,9 @@ two-finger scrolling still worked. See
 `DeviceNotPresent`, both through OpenSSH and in an interactive scheduled task
 for the signed-in user. After Windows Hello PIN setup on September 23, the
 interactive task returned `Available`, and an initial approval prompt returned
-`Verified`. No guest PAM change has been made. The
+`Verified`. That was a pre-implementation probe. Windows Hello sudo subsequently
+shipped as an opt-in feature in `v0.5.0`. The
 [availability API](https://learn.microsoft.com/en-us/uwp/api/windows.security.credentials.ui.userconsentverifier.checkavailabilityasync)
 allows an implementation to retain password authentication on unsupported hosts;
-the laptop is now available for a key-backed guest approval and denial test.
+the later approval and denial checks are recorded in the
+[Hello laptop report](evidence/HELLO-SUDO-LAPTOP-2026-09-26.md).
