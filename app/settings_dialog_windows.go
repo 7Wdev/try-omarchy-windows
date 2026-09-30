@@ -852,7 +852,7 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 			if err != nil {
 				help = err.Error()
 			} else {
-				help = fmt.Sprintf("Estimated next boot: %d vCPUs, %s GiB RAM.", plan.CPUs, memoryGiBText(plan.MemoryMiB))
+				help = fmt.Sprintf("Estimated next boot: %d vCPUs, %.1f GiB RAM.", plan.CPUs, float64(plan.MemoryMiB)/1024)
 			}
 			if profile == resourceMaximum {
 				help += " Measures Windows usage again at launch and leaves extra headroom."
