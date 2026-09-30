@@ -1,4 +1,4 @@
-From 683ff9d2a4e922bbeb279e507a91460028339888 Mon Sep 17 00:00:00 2001
+From 7431e4b2c365b0b7d1ccd2f4062151f429abd800 Mon Sep 17 00:00:00 2001
 From: Tyler South <tsouth2@gmail.com>
 Date: Wed, 30 Sep 2026 09:46:39 -0400
 Subject: [PATCH] Move try-omarchy-export onto the Try Omarchy importer
@@ -235,10 +235,10 @@ index 0fed736..6bc5998 100755
 -echo "On a real Omarchy install: extract it and run $name/restore.sh"
 +exec python3 "$importer" export "$@"
 diff --git a/guest/scripts/finalize-rootfs.sh b/guest/scripts/finalize-rootfs.sh
-index cdbfe12..2d563f0 100755
+index 2c1c7f4..48da38d 100755
 --- a/guest/scripts/finalize-rootfs.sh
 +++ b/guest/scripts/finalize-rootfs.sh
-@@ -154,6 +154,7 @@ compat_paths=(
+@@ -159,6 +159,7 @@ compat_paths=(
    etc/systemd/user/try-omarchy-factory-update-notice.service
    etc/systemd/user/graphical-session.target.wants/try-omarchy-factory-update-notice.service
    usr/local/bin/try-omarchy-export
@@ -246,11 +246,11 @@ index cdbfe12..2d563f0 100755
    usr/local/lib/try-omarchy/agent
    usr/local/lib/try-omarchy/battery-apply
    usr/local/lib/try-omarchy/apply-host-locale
-@@ -204,7 +205,8 @@ tar -C / -cf /usr/share/try-omarchy/compat-overlay.tar "${compat_paths[@]}"
- # Revision 41 turns off system service watchdogs, which fire after Windows
+@@ -210,7 +211,8 @@ tar -C / -cf /usr/share/try-omarchy/compat-overlay.tar "${compat_paths[@]}"
  # sleeps and restart logind under the running desktop.
  # Revision 42 makes SSH accept only keys for the quick-start account.
--compat_revision=42
+ # Revision 43 follows Windows time-zone changes while preserving guest choices.
+-compat_revision=43
 +# Revision 44 moves try-omarchy-export onto the Try Omarchy importer.
 +compat_revision=44
  printf '%s:%s\n' "$compat_revision" "$kernel_release" >/usr/share/try-omarchy/compat-version
@@ -491,10 +491,10 @@ index 6c0e5f3..6cf9bdb 100644
  
  if __name__ == "__main__":
 diff --git a/guest/tests/verify.py b/guest/tests/verify.py
-index e72e55b..c31c6a7 100755
+index b21176f..3b16d5a 100755
 --- a/guest/tests/verify.py
 +++ b/guest/tests/verify.py
-@@ -258,12 +258,15 @@ def main() -> None:
+@@ -259,12 +259,15 @@ def main() -> None:
  
      exporter = GUEST / "factory-overlay/usr/local/bin/try-omarchy-export"
      export_text = read(exporter)
@@ -514,16 +514,16 @@ index e72e55b..c31c6a7 100755
      )
  
      share_link = read(GUEST / "factory-overlay/usr/local/lib/try-omarchy/share-link")
-@@ -293,7 +296,8 @@ def main() -> None:
+@@ -294,7 +297,8 @@ def main() -> None:
          "system services run without watchdogs, which fire after Windows sleeps",
      )
      check(
--        "compat_revision=42" in finalize_rootfs
+-        "compat_revision=43" in finalize_rootfs
 +        "compat_revision=44" in finalize_rootfs
 +        and "usr/local/lib/try-omarchy/try-omarchy-import.pyz" in compat_paths
-         and "usr/share/try-omarchy/quick-start-sshd.conf" in compat_paths
-         and "etc/systemd/system/service.d/10-try-omarchy-watchdog.conf" in compat_paths
-         and "usr/local/lib/try-omarchy/catch-up" in compat_paths
+         and "usr/local/bin/try-omarchy-timezone" in compat_paths
+         and "etc/systemd/system/multi-user.target.wants/try-omarchy-timezone.service" in compat_paths
+         and "etc/udev/rules.d/96-try-omarchy-timezone.rules" in compat_paths
 -- 
 2.55.0
 
