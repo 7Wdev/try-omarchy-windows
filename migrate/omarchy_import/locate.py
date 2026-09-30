@@ -216,7 +216,9 @@ def find_installs(volume_roots):
 
 
 def list_volumes(runner):
-    """Windows (NTFS) partitions on this computer, from lsblk."""
+    """Windows (NTFS) partitions on this computer, from lsblk. BitLocker
+    partitions are listed too, with fstype "bitlocker", so they can be
+    explained instead of silently skipped."""
     result = runner.run(["lsblk", "--json", "--bytes", "--paths", "--output",
                          "PATH,FSTYPE,LABEL,SIZE,MOUNTPOINTS,TYPE"])
     try:
@@ -227,7 +229,7 @@ def list_volumes(runner):
 
     def visit(node):
         fstype = (node.get("fstype") or "").lower()
-        if fstype in ("ntfs", "ntfs3") and node.get("path"):
+        if fstype in ("ntfs", "ntfs3", "bitlocker") and node.get("path"):
             mountpoints = [point for point in (node.get("mountpoints") or []) if point]
             volumes.append(Volume(node["path"], fstype, node.get("label") or "",
                                   int(node.get("size") or 0),

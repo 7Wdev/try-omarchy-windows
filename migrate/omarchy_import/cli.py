@@ -168,6 +168,11 @@ def find_trial(args, ui, runner, session):
     problems = []
     for volume in volumes:
         name = volume.label or volume.device
+        if volume.fstype == "bitlocker":
+            problems.append(f"{name} is encrypted with BitLocker, so Omarchy cannot read it. In "
+                            "Windows, turn off BitLocker (Settings > Privacy & security > Device "
+                            "encryption), wait until it finishes decrypting, and try again.")
+            continue
         if volume.mountpoint:
             root = Path(volume.mountpoint)
         else:

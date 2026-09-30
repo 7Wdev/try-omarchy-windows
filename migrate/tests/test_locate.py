@@ -111,11 +111,15 @@ class FindTests(unittest.TestCase):
             {"path": "/dev/nvme0n1p3", "fstype": "ntfs", "label": "Windows", "size": 500,
              "mountpoints": [None]},
             {"path": "/dev/nvme0n1p5", "fstype": "ntfs", "label": None, "size": 9,
-             "mountpoints": ["/run/media/ada/Data"]}]}]}
+             "mountpoints": ["/run/media/ada/Data"]},
+            {"path": "/dev/nvme0n1p6", "fstype": "BitLocker", "label": None, "size": 9,
+             "mountpoints": [None]}]}]}
         runner = fixtures.FakeRunner({"lsblk": json.dumps(tree)}, programs={"lsblk"})
         volumes = locate.list_volumes(runner)
-        self.assertEqual([(volume.device, volume.mountpoint) for volume in volumes],
-                         [("/dev/nvme0n1p3", None), ("/dev/nvme0n1p5", "/run/media/ada/Data")])
+        self.assertEqual([(volume.device, volume.fstype, volume.mountpoint) for volume in volumes],
+                         [("/dev/nvme0n1p3", "ntfs", None),
+                          ("/dev/nvme0n1p5", "ntfs", "/run/media/ada/Data"),
+                          ("/dev/nvme0n1p6", "bitlocker", None)])
 
 
 if __name__ == "__main__":

@@ -92,6 +92,19 @@ class CliTests(CliCase):
         self.assertEqual(status, 2)
 
 
+class LocateTests(unittest.TestCase):
+    def test_bitlocker_drive_is_explained(self):
+        tree = {"blockdevices": [{"path": "/dev/nvme0n1p3", "fstype": "BitLocker",
+                                  "label": "Windows", "size": 1, "mountpoints": [None]}]}
+        runner = fixtures.FakeRunner({"lsblk": json.dumps(tree)}, programs={"lsblk"})
+        errors = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(errors):
+            status = cli.main(["--yes"], runner=runner)
+        self.assertEqual(status, 1)
+        self.assertIn("encrypted with BitLocker", errors.getvalue())
+        self.assertFalse(any(command.startswith("mount") for command in runner.commands()))
+
+
 class SelectionTests(unittest.TestCase):
     def inventory(self):
         groups = {}
