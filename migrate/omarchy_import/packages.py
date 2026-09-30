@@ -10,7 +10,10 @@ changing them is a decision the user should make on this computer.
 from dataclasses import dataclass, field
 import os
 from pathlib import Path
+import re
+import shutil
 import subprocess
+import tempfile
 
 from .system import CommandError
 
@@ -196,9 +199,14 @@ def set_background(runner, path, home):
     return StepResult("background", True, "set your background")
 
 
+CONFIG_ERROR = re.compile(r"\S+\.(?:lua|conf):\d+")
+ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
 def verify_hyprland(runner, home):
     """Check the imported Hyprland config parses, so a problem shows now and
-    not at the next login."""
+    not at the next login. Only a reported error in a config file counts; if
+    Hyprland cannot run the check at all, nothing is said."""
     if runner.which("Hyprland") is None:
         return None
     for name in ("hyprland.lua", "hyprland.conf"):
@@ -207,16 +215,25 @@ def verify_hyprland(runner, home):
             break
     else:
         return None
+    environment = dict(os.environ)
+    scratch = None
+    if not environment.get("XDG_RUNTIME_DIR"):
+        scratch = tempfile.mkdtemp(prefix="try-omarchy-import-hypr-")
+        environment["XDG_RUNTIME_DIR"] = scratch
     try:
         result = runner.run(["Hyprland", "--verify-config", "-c", str(config)], check=False,
-                            timeout=60)
+                            timeout=60, env=environment)
     except (OSError, subprocess.TimeoutExpired):
         return None
-    output = (result.stdout or "") + (result.stderr or "")
+    finally:
+        if scratch:
+            shutil.rmtree(scratch, ignore_errors=True)
+    output = ANSI.sub("", (result.stdout or "") + (result.stderr or ""))
     if result.returncode == 0 and "config ok" in output:
         return StepResult("hyprland", True)
-    problem = next((line.strip() for line in output.splitlines()
-                    if line.strip() and not line.startswith("=") and "Config parsing" not in line),
-                   "it could not be parsed")
+    problem = next((line[match.start():].strip() for line in output.splitlines()
+                    for match in [CONFIG_ERROR.search(line)] if match), None)
+    if problem is None:
+        return None
     return StepResult("hyprland", False, f"Hyprland found a problem in your settings: {problem}. "
                       "Fix that line, or copy the file back from the backup folder")

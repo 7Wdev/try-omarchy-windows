@@ -93,11 +93,20 @@ class HyprlandCheckTests(unittest.TestCase):
         self.assertTrue(packages.verify_hyprland(runner, self.home).ok)
 
     def test_problem_is_reported(self):
-        runner = fixtures.FakeRunner(programs={"Hyprland"})
-        runner.failing.add("Hyprland --verify-config")
+        runner = fixtures.FakeRunner({"Hyprland --verify-config":
+                                      "\x1b[1;31mERR\x1b[0m /home/ada/.config/hypr/bindings.lua:30: "
+                                      "hl.bind: dispatcher must be a dispatcher\n"},
+                                     programs={"Hyprland"})
         step = packages.verify_hyprland(runner, self.home)
         self.assertFalse(step.ok)
-        self.assertIn("backup folder", step.detail)
+        self.assertIn("settings: /home/ada/.config/hypr/bindings.lua:30: hl.bind", step.detail)
+        self.assertNotIn("\x1b", step.detail)
+
+    def test_a_check_that_cannot_run_says_nothing(self):
+        runner = fixtures.FakeRunner({"Hyprland --verify-config":
+                                      "CRIT: Critical error thrown: XDG_RUNTIME_DIR is not set!\n"},
+                                     programs={"Hyprland"})
+        self.assertIsNone(packages.verify_hyprland(runner, self.home))
 
     def test_skipped_without_hyprland(self):
         self.assertIsNone(packages.verify_hyprland(fixtures.FakeRunner(), self.home))
