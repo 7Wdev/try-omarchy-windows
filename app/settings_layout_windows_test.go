@@ -32,7 +32,7 @@ func TestNativeSettingsActionsStayVisible(t *testing.T) {
 			procGetWindowThreadProcessId.Call(window, uintptr(unsafe.Pointer(&owner)))
 		}
 		if owner == uint32(cmd.Process.Pid) {
-			button, _, _ := user32.NewProc("GetDlgItem").Call(window, settingsCancelID)
+			button := findSettingsControl(window, settingsCancelID)
 			if button != 0 {
 				break
 			}
@@ -51,12 +51,28 @@ func TestNativeSettingsActionsStayVisible(t *testing.T) {
 				procSendMessageW.Call(window, 0x0115, position, 0)
 				var client [4]int32
 				procGetClientRect.Call(window, uintptr(unsafe.Pointer(&client)))
+
+				viewport := findSettingsControl(window, settingsViewportID)
+				var viewportBounds [4]int32
+				procGetWindowRect.Call(viewport, uintptr(unsafe.Pointer(&viewportBounds)))
+				procScreenToClient.Call(window, uintptr(unsafe.Pointer(&viewportBounds[0])))
+				procScreenToClient.Call(window, uintptr(unsafe.Pointer(&viewportBounds[2])))
+				for _, c := range []uintptr{settingsFullID, settingsCameraOnID, settingsDisplaysID, settingsAppListID} {
+					control := findSettingsControl(window, c)
+					parent, _, _ := user32.NewProc("GetParent").Call(control)
+					if parent != viewport {
+						t.Fatalf("page control %d is outside native clipping viewport", c)
+					}
+				}
 				for _, id := range []uintptr{settingsHelpID, settingsSaveID, settingsCancelID} {
-					control, _, _ := user32.NewProc("GetDlgItem").Call(window, id)
+					control := findSettingsControl(window, id)
 					var bounds [4]int32
 					procGetWindowRect.Call(control, uintptr(unsafe.Pointer(&bounds)))
 					procScreenToClient.Call(window, uintptr(unsafe.Pointer(&bounds[0])))
 					procScreenToClient.Call(window, uintptr(unsafe.Pointer(&bounds[2])))
+					if viewportBounds[3] > bounds[1] {
+						t.Fatalf("viewport %v overlaps action %d at %v", viewportBounds, id, bounds)
+					}
 					if control == 0 || bounds[0] < 0 || bounds[1] < 0 || bounds[2] > client[2] || bounds[3] > client[3] {
 						t.Fatalf("size %v page %d scroll %d: action %d bounds %v outside client %v", size, page, position, id, bounds, client)
 					}

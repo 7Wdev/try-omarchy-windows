@@ -11,8 +11,6 @@ var (
 	procSetScrollInfo = user32.NewProc("SetScrollInfo")
 	procGetScrollInfo = user32.NewProc("GetScrollInfo")
 	procGetFocus      = user32.NewProc("GetFocus")
-	procSetWindowRgn  = user32.NewProc("SetWindowRgn")
-	procCreateRectRgn = syscall.NewLazyDLL("gdi32.dll").NewProc("CreateRectRgn")
 	procDeleteObject  = syscall.NewLazyDLL("gdi32.dll").NewProc("DeleteObject")
 )
 
@@ -21,7 +19,7 @@ type settingsScrollControl struct {
 	x, y, w, h int32
 }
 type settingsScroll struct {
-	window                       uintptr
+	window, viewport             uintptr
 	top, height, content, offset int32
 	controls                     []settingsScrollControl
 }
@@ -45,26 +43,13 @@ func (s *settingsScroll) move(offset int32) {
 	}
 	s.offset = offset
 	for _, c := range s.controls {
-		y := c.y - offset
+		y := c.y - s.top - offset
 		procSetWindowPos.Call(c.handle, 0, uintptr(c.x), uintptr(y), uintptr(c.w), uintptr(c.h), 0x0004|0x0010)
-		// Controls remain native children, clipped to the page viewport so
-		// scrolling cannot cover the navigation or fixed action area.
-		top := max(int32(0), s.top-y)
-		bottom := min(c.h, s.top+s.height-y)
-		if top == 0 && bottom == c.h {
-			procSetWindowRgn.Call(c.handle, 0, 1)
-		} else {
-			region, _, _ := procCreateRectRgn.Call(0, uintptr(top), uintptr(c.w), uintptr(max(top, bottom)))
-			if region != 0 {
-				if ok, _, _ := procSetWindowRgn.Call(c.handle, region, 1); ok == 0 {
-					procDeleteObject.Call(region)
-				}
-			}
-		}
 	} // no z-order change or activation
 	info := settingsScrollInfo{mask: 0x7, max: max(int32(0), s.content-s.top-1), page: uint32(s.height), pos: offset}
 	info.size = uint32(unsafe.Sizeof(info))
 	procSetScrollInfo.Call(s.window, 1, uintptr(unsafe.Pointer(&info)), 1)
+	procInvalidateRect.Call(s.viewport, 0, 1)
 }
 
 func (s *settingsScroll) handle(message, wParam uintptr) bool {
@@ -112,4 +97,46 @@ func (s *settingsScroll) revealFocus() {
 		}
 		return
 	}
+}
+
+// A native child viewport clips page controls without hiding them from Tab
+// navigation. The fixed navigation and actions remain children of the frame.
+const settingsViewportID = 2099
+
+func createSettingsViewport(parent, instance uintptr) uintptr {
+	class, _ := syscall.UTF16PtrFromString("TryOmarchySettingsViewport")
+	callback := syscall.NewCallback(func(h, message, w, l uintptr) uintptr {
+		switch message {
+		case wmCommand, 0x002b, 0x0133, 0x0134, 0x0135, wmCtlcolorstatic, 0x020a:
+			result, _, _ := procSendMessageW.Call(parent, message, w, l)
+			return result
+		case 0x0014: // WM_ERASEBKGND uses the parent palette.
+			brush, _, _ := procSendMessageW.Call(parent, wmCtlcolorstatic, w, h)
+			var rect [4]int32
+			procGetClientRect.Call(h, uintptr(unsafe.Pointer(&rect)))
+			procFillRect.Call(w, uintptr(unsafe.Pointer(&rect)), brush)
+			return 1
+		}
+		result, _, _ := procDefWindowProcW.Call(h, message, w, l)
+		return result
+	})
+	type windowClass struct {
+		size, style                   uint32
+		callback                      uintptr
+		classExtra, windowExtra       int32
+		instance, icon, cursor, brush uintptr
+		menu, name                    *uint16
+		smallIcon                     uintptr
+	}
+	wc := windowClass{size: uint32(unsafe.Sizeof(windowClass{})), callback: callback, instance: instance, brush: colorBtnface + 1, name: class}
+	if atom, _, err := procRegisterClassExW.Call(uintptr(unsafe.Pointer(&wc))); atom == 0 {
+		logf("settings viewport: %v", err)
+		return 0
+	}
+	// WS_EX_CONTROLPARENT lets native dialog navigation enter the viewport.
+	viewport, _, err := procCreateWindowExW.Call(0x00010000, uintptr(unsafe.Pointer(class)), 0, wsChild|wsVisible|0x02000000, 0, 0, 1, 1, parent, settingsViewportID, instance, 0)
+	if viewport == 0 {
+		logf("settings viewport: %v", err)
+	}
+	return viewport
 }

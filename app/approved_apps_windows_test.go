@@ -59,7 +59,7 @@ func TestApprovedAppsSettingsNative(t *testing.T) {
 			var owner uint32
 			procGetWindowThreadProcessId.Call(window, uintptr(unsafe.Pointer(&owner)))
 			if owner == uint32(cmd.Process.Pid) {
-				list, _, _ = user32.NewProc("GetDlgItem").Call(window, settingsAppListID)
+				list = findSettingsControl(window, settingsAppListID)
 				if list != 0 {
 					break
 				}

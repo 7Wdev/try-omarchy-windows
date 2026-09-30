@@ -666,7 +666,7 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 
 	const clientW, clientH = 500, 650
 	rect := [4]int32{0, 0, clientW, clientH}
-	style := uintptr(wsCaption | wsSysmenu | wsVscroll | 0x00040000) // WS_THICKFRAME
+	style := uintptr(wsCaption | wsSysmenu | wsVscroll | 0x02000000 | 0x00040000) // WS_THICKFRAME
 	procAdjustWindowRectEx.Call(uintptr(unsafe.Pointer(&rect[0])), style, 0, 0)
 	// AdjustWindowRectEx excludes the vertical scrollbar from its calculation.
 	scrollbarWidth, _, _ := procGetSystemMetrics.Call(2) // SM_CXVSCROLL
@@ -697,12 +697,22 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 	}
 
 	scroll.window = hwnd
+	scroll.viewport = createSettingsViewport(hwnd, hInst)
+	if scroll.viewport == 0 {
+		procDestroyWindow.Call(hwnd)
+		return false
+	}
 	font, _, _ := procGetStockObject.Call(defaultGuiFont)
+	bodyControls := false
 	mk := func(class, label string, x, y, cx, cy int32, style, id uintptr) uintptr {
 		c, _ := syscall.UTF16PtrFromString(class)
 		t, _ := syscall.UTF16PtrFromString(label)
+		parent, positionY := hwnd, y
+		if bodyControls {
+			parent, positionY = scroll.viewport, y-scroll.top
+		}
 		h, _, _ := procCreateWindowExW.Call(0, uintptr(unsafe.Pointer(c)), uintptr(unsafe.Pointer(t)),
-			wsChild|wsVisible|style, uintptr(x), uintptr(y), uintptr(cx), uintptr(cy), hwnd, id, hInst, 0)
+			wsChild|wsVisible|style, uintptr(x), uintptr(positionY), uintptr(cx), uintptr(cy), parent, id, hInst, 0)
 		procSendMessageW.Call(h, wmSetfont, font, 1)
 		scroll.controls = append(scroll.controls, settingsScrollControl{h, x, y, cx, cy})
 		return h
@@ -713,6 +723,7 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 	}
 	common = append(common, scroll.controls...)
 	scroll.controls = nil
+	bodyControls = true
 	y := int32(56)
 	hFull = mk("BUTTON", "Open fullscreen (Immersive)", left, y, 300, 22, bsAutocheckbox|wsTabstop, settingsFullID)
 	if current.Fullscreen {
@@ -1033,6 +1044,7 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 	pages[4] = append(pages[4], scroll.controls...)
 	pageHeights[4] = y
 	scroll.controls = nil
+	bodyControls = false
 	footerText, saveText, cancelText := "Save, then restart Omarchy to apply changes.", "Save", "Cancel"
 	if launcher {
 		footerText, saveText, cancelText = "Your files persist between sessions. Choose your settings, then launch.", "Launch Omarchy", "Close"
@@ -1048,6 +1060,7 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 		procGetClientRect.Call(hwnd, uintptr(unsafe.Pointer(&client)))
 		width, height := client[2], client[3]
 		scroll.height = max(int32(1), height-scroll.top-80)
+		procSetWindowPos.Call(scroll.viewport, 0, 0, uintptr(scroll.top), uintptr(width), uintptr(scroll.height), 0x0004|0x0010)
 		scroll.controls = append(scroll.controls[:0], pages[currentPage]...)
 		for i, c := range common {
 			x := int32(16) + int32(i)*(width-32)/5
