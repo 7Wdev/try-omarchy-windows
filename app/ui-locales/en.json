@@ -23,5 +23,19 @@
   "settings.section.graphics": "Graphics",
   "settings.section.network": "Network and updates",
   "settings.section.recovery": "Backup and recovery",
-  "settings.section.apps": "Approved Windows apps"
+  "settings.section.apps": "Approved Windows apps",
+  "setup.cancel": "Cancel",
+  "setup.continue": "Continue",
+  "setup.account.title": "Choose your first launch",
+  "setup.account.body": "Create your Linux account on the first Omarchy screen. Quick start signs in as omarchy.",
+  "setup.account.personal": "My own username and password (recommended)",
+  "setup.account.quick": "Quick start (omarchy / omarchy)",
+  "setup.share.title": "Share files with Windows",
+  "setup.share.body": "Omarchy can read and change only the folder created for sharing.",
+  "setup.share.yes": "Create Omarchy Shared (recommended)",
+  "setup.share.no": "Not now",
+  "setup.shortcut.title": "Keep Try Omarchy handy",
+  "setup.shortcut.body": "Choose where you want a launcher shortcut.",
+  "setup.shortcut.start": "Start menu",
+  "setup.shortcut.desktop": "Desktop"
 }

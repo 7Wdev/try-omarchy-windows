@@ -1,7 +1,7 @@
 # Windows and Mac feature review
 
-Reviewed September 21 and refreshed September 24, 2026 against Mac source commit
-[`28f4722fab3e16ae26a7cb8fab2ab7908b1833e4`](https://github.com/omacom/try-omarchy/tree/28f4722fab3e16ae26a7cb8fab2ab7908b1833e4).
+Reviewed September 21 and refreshed September 30, 2026 against Mac source commit
+[`b2a78a1a3391092cc6942411079fd5d3fccedbb5`](https://github.com/omacom/try-omarchy/tree/b2a78a1a3391092cc6942411079fd5d3fccedbb5).
 This is an implementation and acceptance tracker, not a claim that every feature
 is shipped or hardware-tested. The release gates in
 [RELEASING.md](RELEASING.md) and [TESTING.md](TESTING.md) still apply.
@@ -10,11 +10,13 @@ The refreshed Mac baseline is newer than the original comparison.
 It adds automatic startup with in-guest settings access, host battery mirroring,
 guest-memory reclamation, precise trackpad scrolling, stable bridged identities,
 keyboard-geometry and language work, update discovery, and runtime reliability
-fixes. Equivalent behavior is tracked below only where it makes sense on Windows.
+fixes. September source also adds experimental host USB passthrough, graphics
+and audio continuity fixes, and safer management placement. Mac source features
+are separate from its published `v0.4.1` release. Equivalent behavior is tracked below only where it makes sense on Windows.
 
 ## Corrections to the previous handoff
 
-- Windows already has native first-run controls and four native Settings pages.
+- Windows already has native first-run controls and five native Settings pages.
   The missing piece was an ordinary pre-boot entry point, not an entirely new UI
   framework. This candidate opens those controls before boot with a **Launch
   Omarchy** action. Explicit runtime commands retain direct startup; `-start`
@@ -55,15 +57,24 @@ fixes. Equivalent behavior is tracked below only where it makes sense on Windows
 | Guest RAM reclamation | Shipped with r19 in `v0.2.0`; three physical touch/free cycles returned about 797 MiB after the third 768 MiB allocation | Follow up on concrete memory reports |
 | Keyboard and language | Windows time zone, keyboard layout and display language follow the host | Physical ANSI/ISO/JIS geometry and broader input-method acceptance |
 
-Windows Hello, true bridged networking, and embedded Windows app windows remain
-feature work. Live audio switching shipped in `v0.3.0` with r20c; public `v0.2.0`
-remains the previous r19 release. The [signed and public v0.3.0 acceptance
-record](evidence/V030-SIGNED-CANDIDATE-2026-09-24.md) and
-[publish run](https://github.com/omacom/try-omarchy-windows/actions/runs/35978943238)
-record the release checks. Settings, battery mirroring, live memory reclamation,
-approved app launch, and fullscreen monitor selection shipped in `v0.2.0`. Pinch
-is on by default since `v0.4.0`; its physical gesture and scrolling checks
-passed on the laptop.
+Public `v0.6.2` is the current Windows release. Windows Hello sudo shipped in
+`v0.5.0`; process-scoped 1Password unlock and direct application drops shipped in
+`v0.6.0`. Live audio switching shipped in `v0.3.0`, and pinch is enabled by
+default since `v0.4.0`. These are shipped features with the hardware limits
+listed above.
+
+True LAN bridging (#166) and embedded Windows app windows (#160) remain separate
+work. The guest watchdog change in `v0.6.1` addresses service restarts during a
+host suspension, but does not establish that #216's XWayland authorization
+failure is resolved. Reporter confirmation and a physical Modern Standby S0
+check remain outstanding.
+
+The current source shares Mac's Tokyo Night palette, Try Omarchy mark and type
+hierarchy across the Windows launcher, Settings, About, USB and setup windows.
+Settings retain visible actions while pages scroll, hide manual CPU/RAM fields
+for automatic profiles and explain when choices apply. This polish is source
+work until a new Windows release publishes it. Native VM checks do not establish
+mixed-monitor DPI, screen-reader user acceptance or broad physical coverage.
 
 ## Work sequence toward comparable everyday use
 
@@ -73,11 +84,10 @@ passed on the laptop.
    [public and physical acceptance record](evidence/V030-SIGNED-CANDIDATE-2026-09-24.md)
    documents the available laptop checks. Two physical endpoints per direction
    and hotplug remain to be tested on suitable hardware.
-2. **Add signed Windows Hello approval (#165).** Mirror the Mac's opt-in sudo
+2. **Maintain shipped Windows Hello approval (#165).** Mirror the Mac's opt-in sudo
    model: enroll only after the guest password, pair a per-guest public key,
    sign a fresh request with Windows Hello, and verify it inside guest PAM.
-   Denial and unsupported hosts must fall back to password. After PIN setup,
-   the current laptop can test approval and denial in the eventual guest flow.
+   Denial and unsupported hosts must fall back to password. Approval, denial and password fallback were checked on the laptop.
    Shipped in `v0.5.0`. The Mac's separate, process-scoped 1Password unlock
    ([#176](https://github.com/omacom/try-omarchy-windows/issues/176)) followed
    in `v0.6.0` without changing general guest PAM policy.
@@ -92,7 +102,7 @@ passed on the laptop.
    reliable in normal use. Direct drops shipped in `v0.6.0` through a guest
    drag source under the pointer.
 5. **Polish input, language and graphics.** Use specific reports and available
-   machines to address keyboard geometry/IME, shipping automatic pinch, and
+   machines to address keyboard geometry/IME, shipped automatic pinch, and
    the Intel/NVIDIA Vulkan issue (#173).
    Keep the existing CPU/OpenGL fallback.
 

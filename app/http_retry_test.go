@@ -74,3 +74,13 @@ func TestGetWithSetupRetryStopsAfterBound(t *testing.T) {
 		t.Fatal("persistent DNS failure was accepted")
 	}
 }
+
+func TestSetupFailureHelpSeparatesFolderAccessFromNetwork(t *testing.T) {
+	err := fmt.Errorf("preparing guest: %w", &os.PathError{Op: "write", Path: "guest.next", Err: os.ErrPermission})
+	if got := setupFailureHelp(err); !strings.Contains(got, "folder permissions") {
+		t.Fatalf("permission failure advice: %q", got)
+	}
+	if got := setupFailureHelp(fmt.Errorf("archive checksum mismatch")); strings.Contains(got, "connection") || !strings.Contains(got, "retry setup") {
+		t.Fatalf("preparation failure advice: %q", got)
+	}
+}
