@@ -17,10 +17,8 @@ import (
 )
 
 // The settings window (-settings): the rows of settings.json as plain Win32
-// controls, the same rows the mac start menu has. It edits the file and
-// nothing else; the next launch reads it. Plain system controls on purpose,
-// so it behaves like every other Windows dialog with keyboard, high DPI and
-// screen readers, unlike the custom-painted splash.
+// controls. Preferences retain their existing persistence and live watchers;
+// branded native controls preserve Windows keyboard and accessibility roles.
 
 var (
 	procRedrawWindow       = user32.NewProc("RedrawWindow")
@@ -131,6 +129,9 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 		}
 	}
 	runtime.LockOSThread()
+	brand := newWindowBrand()
+	defer brand.close()
+	brand.contentTop = 136
 	guard, err := lockMoveStore(hostMoveStore())
 	if err != nil {
 		errorBox(err.Error())
@@ -268,6 +269,8 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 	var footer []settingsScrollControl
 	var layout func()
 	var currentPage int
+	var manualControls []uintptr
+	var manualStart, manualEnd int32
 
 	text := func(handle uintptr) string {
 		n, _, _ := procSendMessageW.Call(handle, wmGettextlength, 0, 0)
@@ -357,6 +360,9 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 	}
 
 	wndProc := syscall.NewCallback(func(h, msg, wParam, lParam uintptr) uintptr {
+		if result, handled := brand.handle(h, msg, wParam, lParam); handled {
+			return result
+		}
 		if scroll.handle(msg, wParam) {
 			return 0
 		}
@@ -490,7 +496,7 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 					if !portable {
 						target := filepath.Join(dataDir, stableLauncherName)
 						if err = syncSignInShortcut(target, dataDir, updatedLaunch.LaunchAtSignIn); err != nil {
-							errorBox("Windows sign-in startup could not be updated:\n\n" + err.Error())
+							errorBox("Other settings were saved, but Windows sign-in startup could not be updated:\n\n" + err.Error())
 							return 0
 						}
 					}
@@ -541,12 +547,12 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 							*row.value, row.rememberedName, row.rememberedID, row.endpoints)
 					}
 					if err := saveAudioSelection(dataDir, updated, updatedEndpoints); err != nil {
-						errorBox("Audio preferences could not be saved:\n\n" + err.Error())
+						errorBox("Other settings were saved, but audio preferences could not be saved:\n\n" + err.Error())
 						return 0
 					}
 					if audioLive {
 						if err := publishSavedAudioRoutes(dataDir, updated, microphoneDisabled); err != nil {
-							errorBox("Audio choices were saved, but could not be applied to the running Omarchy session:\n\n" + err.Error())
+							errorBox("Audio choices were saved, but could not be sent to the running Omarchy session:\n\n" + err.Error())
 							return 0
 						}
 					}
@@ -664,7 +670,7 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 		return false
 	}
 
-	const clientW, clientH = 500, 650
+	const clientW, clientH = 560, 710
 	rect := [4]int32{0, 0, clientW, clientH}
 	style := uintptr(wsCaption | wsSysmenu | wsVscroll | 0x02000000 | 0x00040000) // WS_THICKFRAME
 	procAdjustWindowRectEx.Call(uintptr(unsafe.Pointer(&rect[0])), style, 0, 0)
@@ -678,8 +684,8 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 	if available := work[3] - work[1] - 16; hgt > available {
 		hgt = available
 	}
-	scroll.top = 56
-	scroll.height = hgt - (rect[3] - rect[1] - clientH) - scroll.top - 80
+	scroll.top = brand.contentTop
+	scroll.height = hgt - (rect[3] - rect[1] - clientH) - scroll.top - 104
 	scroll.content = clientH
 	x := work[0] + (work[2]-work[0]-w)/2
 	yWindow := work[1] + (work[3]-work[1]-hgt)/2
@@ -702,7 +708,24 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 		procDestroyWindow.Call(hwnd)
 		return false
 	}
-	font, _, _ := procGetStockObject.Call(defaultGuiFont)
+	brand.window(hwnd)
+	brand.panelControls[scroll.viewport] = true
+	font := brand.font
+	var headerIcon uintptr
+	addHeader := func(label string, x, y, w, h int32, style uintptr) uintptr {
+		class, _ := syscall.UTF16PtrFromString("STATIC")
+		text, _ := syscall.UTF16PtrFromString(label)
+		control, _, _ := procCreateWindowExW.Call(0, uintptr(unsafe.Pointer(class)), uintptr(unsafe.Pointer(text)), wsChild|wsVisible|style, uintptr(x), uintptr(y), uintptr(w), uintptr(h), hwnd, 0, hInst, 0)
+		procSendMessageW.Call(control, wmSetfont, font, 1)
+		return control
+	}
+	headerIcon, _, _ = procLoadImageW.Call(hInst, 1, imageIcon, 44, 44, 0)
+	defer procDestroyIcon.Call(headerIcon)
+	headerImage := addHeader("", 24, 22, 44, 44, 3)
+	procSendMessageW.Call(headerImage, 0x0172, imageIcon, headerIcon)
+	heading := addHeader(uiText("brand.name"), 84, 20, 340, 34, ssNoprefix)
+	procSendMessageW.Call(heading, wmSetfont, brand.heading, 1)
+	addHeader("WINDOWS  ·  "+currentVersion, 86, 57, 380, 24, ssNoprefix)
 	bodyControls := false
 	mk := func(class, label string, x, y, cx, cy int32, style, id uintptr) uintptr {
 		c, _ := syscall.UTF16PtrFromString(class)
@@ -713,18 +736,30 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 		}
 		h, _, _ := procCreateWindowExW.Call(0, uintptr(unsafe.Pointer(c)), uintptr(unsafe.Pointer(t)),
 			wsChild|wsVisible|style, uintptr(x), uintptr(positionY), uintptr(cx), uintptr(cy), parent, id, hInst, 0)
-		procSendMessageW.Call(h, wmSetfont, font, 1)
+		brand.control(h, class, style)
+		if bodyControls {
+			brand.panelControls[h] = true
+		}
 		scroll.controls = append(scroll.controls, settingsScrollControl{h, x, y, cx, cy})
 		return h
 	}
-	const left, labelW, fieldX, fieldW = 16, 150, 170, 294
+	const left, labelW, fieldX, fieldW = 24, 150, 184, 340
 	for i, label := range []string{"General", "Devices", "Advanced", "Recovery", "Apps"} {
-		mk("BUTTON", label, 16+int32(i)*94, 12, 90, 28, wsTabstop, settingsPageBase+uintptr(i))
+		mk("BUTTON", label, 16+int32(i)*106, 94, 102, 30, wsTabstop, settingsPageBase+uintptr(i))
 	}
 	common = append(common, scroll.controls...)
 	scroll.controls = nil
 	bodyControls = true
-	y := int32(56)
+	y := scroll.top
+	section := func(label string) {
+		if y > scroll.top {
+			y += 16
+		}
+		h := mk("STATIC", label, left, y, clientW-32, 24, ssNoprefix, 0)
+		brand.sectionControls[h] = true
+		y += 32
+	}
+	section(uiText("settings.section.display"))
 	hFull = mk("BUTTON", "Open fullscreen (Immersive)", left, y, 300, 22, bsAutocheckbox|wsTabstop, settingsFullID)
 	if current.Fullscreen {
 		procSendMessageW.Call(hFull, bmSetcheck, bstChecked, 0)
@@ -777,6 +812,7 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 		procSendMessageW.Call(hAltTab, bmSetcheck, bstChecked, 0)
 	}
 	y += 30
+	section(uiText("settings.section.resources"))
 	mk("STATIC", "Resource profile", left, y+3, labelW, 20, ssNoprefix, 0)
 	hResourceProfile = mk("COMBOBOX", "", fieldX, y, fieldW, 130, 0x0003|wsVscroll|wsTabstop, settingsResourceProfileID)
 	for i, label := range []string{"Balanced", "Maximum performance", "Manual"} {
@@ -787,6 +823,8 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 		}
 	}
 	y += 34
+	manualStart = y
+	manualIndex := len(scroll.controls)
 	mk("STATIC", "Memory (GiB)", left, y+3, labelW, 20, ssNoprefix, 0)
 	hMem = mk("EDIT", memoryGiBText(current.MemoryMiB), fieldX, y, 100, 24, wsBorder|wsTabstop|esAutohscroll, settingsMemID)
 	mk("STATIC", "0 = automatic", fieldX+112, y+3, fieldW-112, 20, ssNoprefix, 0)
@@ -795,7 +833,11 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 	hCPUs = mk("EDIT", strconv.Itoa(current.CPUs), fieldX, y, 100, 24, wsBorder|wsTabstop|esAutohscroll, settingsCPUsID)
 	mk("STATIC", fmt.Sprintf("0 = automatic; up to %d", min(maximumGuestCPUs, hostSnapshot.LogicalCPUs)), fieldX+112, y+3, fieldW-112, 20, ssNoprefix, 0)
 	y += 34
-	hResourceHelp = mk("STATIC", "", left, y, clientW-2*left, 92, ssNoprefix, 0)
+	manualEnd = y
+	for _, c := range scroll.controls[manualIndex:] {
+		manualControls = append(manualControls, c.handle)
+	}
+	hResourceHelp = mk("STATIC", "", left, y, clientW-2*left, 76, ssNoprefix, 0)
 	updateResourceControls = func() {
 		profile := selectedProfile()
 		enabled := uintptr(0)
@@ -818,9 +860,13 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 		}
 		help += fmt.Sprintf("\nPC: %d logical CPUs, %.1f GiB RAM; %.1f GiB available when Settings opened. Applies next boot; no live resizing.", hostSnapshot.LogicalCPUs, float64(hostSnapshot.TotalMiB)/1024, float64(hostSnapshot.AvailableMiB)/1024)
 		setText(hResourceHelp, help)
+		if layout != nil {
+			layout()
+		}
 	}
 	updateResourceControls()
-	y += 100
+	y += 84
+	section(uiText("settings.section.storage"))
 	mk("STATIC", "Disk capacity (GiB)", left, y+3, labelW, 20, ssNoprefix, 0)
 	hDisk = mk("EDIT", strconv.Itoa(storage.DiskGiB), fieldX, y, 100, 24, wsBorder|wsTabstop|esAutohscroll, settingsDiskID)
 	y += 28
@@ -839,7 +885,7 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 	mk("STATIC", "Location", left, y+3, labelW, 20, ssNoprefix, 0)
 	mk("EDIT", dataDir, fieldX, y, fieldW, 22, wsBorder|wsTabstop|esAutohscroll|0x0800, 0) // ES_READONLY; long paths remain selectable.
 	y += 24
-	mk("STATIC", "Shared folder", left, y+3, labelW, 20, ssNoprefix, 0)
+	mk("STATIC", "Shared folder\n(next start)", left, y+3, labelW, 32, ssNoprefix, 0)
 	hShare = mk("EDIT", current.Share, fieldX, y, fieldW-80, 24, wsBorder|wsTabstop|esAutohscroll, settingsShareID)
 	mk("BUTTON", "Browse...", fieldX+fieldW-72, y, 72, 24, wsTabstop, settingsBrowseID)
 	y += 28
@@ -852,9 +898,8 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 	pages[0] = append(pages[0], scroll.controls...)
 	pageHeights[0] = y
 	scroll.controls = nil
-	y = 56
-	mk("STATIC", "Camera and audio", left, y, 450, 24, ssNoprefix, 0)
-	y += 30
+	y = scroll.top
+	section(uiText("settings.section.camera"))
 	hCameraOn = mk("BUTTON", "Allow camera access", left, y, 440, 24, bsAutocheckbox|wsTabstop, settingsCameraOnID)
 	if !prefs.CameraDisabled {
 		procSendMessageW.Call(hCameraOn, bmSetcheck, bstChecked, 0)
@@ -876,7 +921,7 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 	}
 	procSendMessageW.Call(hCamera, 0x14E, uintptr(selected), 0)
 	y += 38
-	cameraHelp := "The camera opens only when an app inside Omarchy requests it."
+	cameraHelp := "Applies next start. The camera opens only when an Omarchy app requests it."
 	if cameraErr != nil {
 		cameraHelp = "Windows could not list cameras. Check privacy settings and reconnect your camera."
 	} else if len(cameras) == 0 {
@@ -884,7 +929,7 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 	}
 	mk("STATIC", cameraHelp, left, y, 450, 42, ssNoprefix, 0)
 	y += 50
-	hMicrophoneOn = mk("BUTTON", "Allow microphone access", left, y, 440, 24, bsAutocheckbox|wsTabstop, settingsMicrophoneOnID)
+	hMicrophoneOn = mk("BUTTON", "Allow microphone access (next start)", left, y, 440, 24, bsAutocheckbox|wsTabstop, settingsMicrophoneOnID)
 	if !prefs.MicrophoneDisabled {
 		procSendMessageW.Call(hMicrophoneOn, bmSetcheck, bstChecked, 0)
 	}
@@ -909,6 +954,7 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 		y += 38
 		return h
 	}
+	section(uiText("settings.section.sound"))
 	hAudioOutput = addAudioCombo("Sound output", settingsAudioOutputID, audioDevices.Output, audioPrefs.Output)
 	hAudioInput = addAudioCombo("Microphone", settingsAudioInputID, audioDevices.Input, audioPrefs.Input)
 	audioHelp := "Changes apply at next VM start. Missing devices use Windows defaults at startup."
@@ -919,13 +965,13 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 	} else if endpointErr != nil {
 		audioHelp = "Stable Windows audio IDs are unavailable. Choices still apply by device name."
 	} else if audioLive {
-		audioHelp = "Audio choices switch live when Omarchy is running. Microphone permission still applies next boot. Missing devices use Windows defaults."
+		audioHelp = "Saved audio choices are sent to a running session. Microphone permission applies next start. Missing devices use Windows defaults."
 	}
 	mk("STATIC", audioHelp, left, y, 450, 42, ssNoprefix, 0)
 	y += 50
 	mk("BUTTON", "Windows sound devices...", left, y, 260, 28, wsTabstop, settingsSoundID)
 	y += 36
-	mk("STATIC", "Choose Windows playback and recording defaults before launching. Restart Omarchy if a device change is not picked up.", left, y, 450, 42, ssNoprefix, 0)
+	mk("STATIC", "Choose Windows playback and recording defaults before launching. If a saved choice is not picked up, restart Omarchy.", left, y, 450, 42, ssNoprefix, 0)
 	y += 50
 	mk("BUTTON", "Camera privacy...", left, y, 210, 28, wsTabstop, settingsPrivacyID)
 	mk("BUTTON", "Microphone privacy...", left+224, y, 224, 28, wsTabstop, settingsMicrophonePrivacyID)
@@ -933,7 +979,8 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 	pages[1] = append(pages[1], scroll.controls...)
 	pageHeights[1] = y
 	scroll.controls = nil
-	y = 56
+	y = scroll.top
+	section(uiText("settings.section.graphics"))
 	mk("STATIC", "Guest displays", left, y+3, labelW, 20, ssNoprefix, 0)
 	hDisplays = mk("EDIT", strconv.Itoa(guestDisplayCount(current.Displays)), fieldX, y, 100, 24, wsBorder|wsTabstop|esAutohscroll, settingsDisplaysID)
 	mk("STATIC", "1 to 16 displays", fieldX+112, y+3, fieldW-112, 20, ssNoprefix, 0)
@@ -959,6 +1006,7 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 	}
 	mk("STATIC", graphics, left, y, clientW-2*left, 76, ssNoprefix, 0)
 	y += 84
+	section(uiText("settings.section.network"))
 	mk("STATIC", "Port forwards\nLocal: tcp:2222:22\nLAN: tcp:IP:8080:80", left, y+3, labelW, 60, ssNoprefix, 0)
 	hFwd = mk("EDIT", strings.Join(current.Forwards, "\r\n"), fieldX, y, fieldW, 72,
 		wsBorder|wsTabstop|wsVscroll|esMultiline|esAutovscroll, settingsFwdID)
@@ -969,11 +1017,10 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 		procSendMessageW.Call(hLANPublic, bmSetcheck, bstChecked, 0)
 	}
 	y += 32
-	mk("STATIC", "SSH public key file\n(blank: your ~/.ssh/id_*.pub)", left, y+3, labelW, 40, ssNoprefix, 0)
+	mk("STATIC", "SSH public key file", left, y+3, labelW, 24, ssNoprefix, 0)
 	hKey = mk("EDIT", current.SSHKey, fieldX, y, fieldW, 24, wsBorder|wsTabstop|esAutohscroll, settingsKeyID)
-	// The two-line key label above is 40 px tall from y+3; start the next
-	// row below it or the label's second line paints over this text.
-	y += 50
+	mk("STATIC", "Blank uses your Windows ~/.ssh/id_*.pub key.", left, y+28, clientW-2*left, 22, ssNoprefix, 0)
+	y += 58
 	hUpdateOn = mk("BUTTON", "Check for launcher updates automatically", left, y, 450, 24, bsAutocheckbox|wsTabstop, settingsUpdateOnID)
 	if !prefs.AutomaticUpdatesDisabled {
 		procSendMessageW.Call(hUpdateOn, bmSetcheck, bstChecked, 0)
@@ -986,9 +1033,8 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 	pages[2] = append(pages[2], scroll.controls...)
 	pageHeights[2] = y
 	scroll.controls = nil
-	y = 56
-	mk("STATIC", "Backup and recovery", left, y, clientW-2*left, 20, ssNoprefix, 0)
-	y += 24
+	y = scroll.top
+	section(uiText("settings.section.recovery"))
 	for _, control := range []struct {
 		label string
 		id    uintptr
@@ -1021,16 +1067,15 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 	pages[3] = append(pages[3], scroll.controls...)
 	pageHeights[3] = y + 40
 	scroll.controls = nil
-	y = 56
-	mk("STATIC", "Approved Windows apps", left, y, clientW-2*left, 24, ssNoprefix, 0)
-	y += 30
+	y = scroll.top
+	section(uiText("settings.section.apps"))
 	mk("STATIC", "Only apps you choose here can be launched from Omarchy. The app runs on Windows, outside the guest.", left, y, clientW-2*left, 48, ssNoprefix, 0)
 	y += 52
 	hApprovedApps = mk("LISTBOX", "", left, y, clientW-2*left, 240, wsBorder|wsVscroll|wsTabstop|0x0001, settingsAppListID) // LBS_NOTIFY
 	refreshApprovedApps = func() {
 		procSendMessageW.Call(hApprovedApps, 0x184, 0, 0) // LB_RESETCONTENT
 		for _, app := range approvedApps.Apps {
-			label, _ := syscall.UTF16PtrFromString(app.Name + " — " + app.Path)
+			label, _ := syscall.UTF16PtrFromString(app.Name + " - " + app.Path)
 			procSendMessageW.Call(hApprovedApps, 0x180, 0, uintptr(unsafe.Pointer(label))) // LB_ADDSTRING
 		}
 	}
@@ -1045,23 +1090,44 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 	pageHeights[4] = y
 	scroll.controls = nil
 	bodyControls = false
-	footerText, saveText, cancelText := "Save, then restart Omarchy to apply changes.", "Save", "Cancel"
+	footerText, saveText, cancelText := uiText("settings.save_hint"), "Save", "Cancel"
 	if launcher {
-		footerText, saveText, cancelText = "Your files persist between sessions. Choose your settings, then launch.", "Launch Omarchy", "Close"
+		footerText, saveText, cancelText = uiText("launcher.launch_hint"), "Launch Omarchy", "Close"
 	}
-	mk("STATIC", footerText, left, 0, 460, 24, ssNoprefix, 0)
-	mk("BUTTON", "Help and shortcuts", left, 30, 150, 26, wsTabstop, settingsHelpID)
-	mk("BUTTON", saveText, clientW-16-246, 30, 150, 26, bsDefpushbutton|wsTabstop, settingsSaveID)
-	mk("BUTTON", cancelText, clientW-16-84, 30, 84, 26, wsTabstop, settingsCancelID)
+	mk("STATIC", footerText, left, 0, clientW-48, 36, ssNoprefix, 0)
+	mk("BUTTON", "Help", left, 46, 100, 36, wsTabstop, settingsHelpID)
+	mk("BUTTON", saveText, clientW-24-262, 46, 154, 36, bsDefpushbutton|wsTabstop, settingsSaveID)
+	mk("BUTTON", cancelText, clientW-24-100, 46, 100, 36, wsTabstop, settingsCancelID)
+	brand.primary, _, _ = user32.NewProc("GetDlgItem").Call(hwnd, settingsSaveID)
 	footer = append([]settingsScrollControl{}, scroll.controls...)
 	scroll.controls = nil
 	layout = func() {
 		var client [4]int32
 		procGetClientRect.Call(hwnd, uintptr(unsafe.Pointer(&client)))
 		width, height := client[2], client[3]
-		scroll.height = max(int32(1), height-scroll.top-80)
+		scroll.height = max(int32(1), height-scroll.top-104)
 		procSetWindowPos.Call(scroll.viewport, 0, 0, uintptr(scroll.top), uintptr(width), uintptr(scroll.height), 0x0004|0x0010)
 		scroll.controls = append(scroll.controls[:0], pages[currentPage]...)
+		scroll.content = pageHeights[currentPage] + 12
+		manual := selectedProfile() == resourceManual
+		if currentPage == 0 {
+			for _, handle := range manualControls {
+				show := uintptr(0)
+				if manual {
+					show = swShow
+				}
+				procShowWindow.Call(handle, show)
+			}
+			if !manual {
+				scroll.content -= manualEnd - manualStart
+			}
+		}
+		for i := range scroll.controls {
+			c := &scroll.controls[i]
+			if currentPage == 0 && !manual && c.y >= manualEnd {
+				c.y -= manualEnd - manualStart
+			}
+		}
 		for i, c := range common {
 			x := int32(16) + int32(i)*(width-32)/5
 			procSetWindowPos.Call(c.handle, 0, uintptr(x), uintptr(c.y), uintptr((width-32)/5-4), uintptr(c.h), 0x0004|0x0010)
@@ -1072,23 +1138,24 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 				w = width - 32
 			}
 			if i == 2 {
-				x = width - 16 - 246
+				x = width - 24 - 262
 			}
 			if i == 3 {
-				x = width - 16 - 84
+				x = width - 24 - 100
 			}
-			procSetWindowPos.Call(c.handle, 0, uintptr(x), uintptr(height-76+c.y), uintptr(w), uintptr(c.h), 0x0004|0x0010)
+			procSetWindowPos.Call(c.handle, 0, uintptr(x), uintptr(height-100+c.y), uintptr(w), uintptr(c.h), 0x0004|0x0010)
 		}
 		for i := range scroll.controls {
 			c := &scroll.controls[i]
-			if c.x+c.w >= clientW-36 {
-				c.w = max(int32(20), width-36-c.x)
+			if c.x+c.w >= clientW-48 {
+				c.w = max(int32(20), width-48-c.x)
 			}
 		}
 		scroll.move(scroll.offset)
 	}
 	selectPage = func(index int) {
 		currentPage = index
+		brand.activeTab = common[index].handle
 		for _, page := range pages {
 			for _, c := range page {
 				procShowWindow.Call(c.handle, 0)
@@ -1128,7 +1195,7 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 			switch strings.ToLower(syscall.UTF16ToString(class[:])) {
 			case "button":
 				style, _, _ := user32.NewProc("GetWindowLongW").Call(m.hwnd, ^uintptr(15)) // GWL_STYLE
-				if style&0xf <= bsDefpushbutton {
+				if style&0xf <= bsDefpushbutton || style&0xf == 0xb {
 					procSendMessageW.Call(m.hwnd, 0x00f5, 0, 0) // BM_CLICK
 				} else {
 					procSendMessageW.Call(hwnd, wmCommand, settingsSaveID, 0)

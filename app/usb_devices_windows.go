@@ -17,6 +17,7 @@ type usbUIResult struct {
 }
 type usbUIState struct {
 	window, list, status uintptr
+	brand                *windowBrand
 	buttons              []uintptr
 	devices              []usbDevice
 	busy, closing, done  bool
@@ -98,6 +99,9 @@ func usbWindowProc(hwnd, message, w, l uintptr) uintptr {
 		r, _, _ := procDefWindowProcW.Call(hwnd, message, w, l)
 		return r
 	}
+	if result, handled := s.brand.handle(hwnd, message, w, l); handled {
+		return result
+	}
 	switch message {
 	case usbResultMessage:
 		result := <-s.results
@@ -164,7 +168,8 @@ func usbWindowProc(hwnd, message, w, l uintptr) uintptr {
 func runUSBDeviceUI() error {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
-	s := &usbUIState{results: make(chan usbUIResult, 1)}
+	s := &usbUIState{results: make(chan usbUIResult, 1), brand: newWindowBrand()}
+	defer s.brand.close()
 	usbUI = s
 	defer func() { usbUI = nil }()
 	instance, _, _ := procGetModuleHandleW.Call(0)
@@ -186,15 +191,21 @@ func runUSBDeviceUI() error {
 		usbUIRegistered = true
 	}
 	title, _ := syscall.UTF16PtrFromString("USB devices")
-	style := uintptr(wsCaption | wsSysmenu)
-	rect := [4]int32{0, 0, 660, 350}
+	style := uintptr(wsCaption | wsSysmenu | 0x02000000)
+	frame := [4]int32{}
+	procAdjustWindowRectEx.Call(uintptr(unsafe.Pointer(&frame)), style, 0, 0)
+	work := [4]int32{}
+	procSystemParametersInfoW.Call(0x30, 0, uintptr(unsafe.Pointer(&work)), 0)
+	width := int(min(int32(660), work[2]-work[0]-32-(frame[2]-frame[0])))
+	height := int(min(int32(350), work[3]-work[1]-32-(frame[3]-frame[1])))
+	rect := [4]int32{0, 0, int32(width), int32(height)}
 	procAdjustWindowRectEx.Call(uintptr(unsafe.Pointer(&rect[0])), style, 0, 0)
 	var err error
-	s.window, _, err = procCreateWindowExW.Call(0, uintptr(unsafe.Pointer(class)), uintptr(unsafe.Pointer(title)), style|wsVisible, 100, 100, uintptr(rect[2]-rect[0]), uintptr(rect[3]-rect[1]), 0, 0, instance, 0)
+	s.window, _, err = procCreateWindowExW.Call(0, uintptr(unsafe.Pointer(class)), uintptr(unsafe.Pointer(title)), style|wsVisible, uintptr(work[0]+16), uintptr(work[1]+16), uintptr(rect[2]-rect[0]), uintptr(rect[3]-rect[1]), 0, 0, instance, 0)
 	if s.window == 0 {
 		return err
 	}
-	font, _, _ := procGetStockObject.Call(defaultGuiFont)
+	s.brand.window(s.window)
 	var controlErr error
 	control := func(class, label string, x, y, width, height int, style, id uintptr) uintptr {
 		c, _ := syscall.UTF16PtrFromString(class)
@@ -203,20 +214,21 @@ func runUSBDeviceUI() error {
 		if h == 0 {
 			controlErr = err
 		}
-		procSendMessageW.Call(h, wmSetfont, font, 1)
+		s.brand.control(h, class, style)
 		return h
 	}
-	control("STATIC", "Attach a device to Omarchy, then release it when you want to use it in Windows.", 16, 16, 628, 24, ssNoprefix, 0)
-	s.list = control("LISTBOX", "", 16, 48, 628, 182, wsTabstop|wsBorder|wsVscroll|1, 4300)
-	s.status = control("STATIC", "", 16, 240, 628, 54, ssNoprefix, 0)
+	control("STATIC", "Attach a device to Omarchy, then release it when you want to use it in Windows.", 16, 16, width-32, 40, ssNoprefix, 0)
+	s.list = control("LISTBOX", "", 16, 64, width-32, height-168, wsTabstop|wsBorder|wsVscroll|1, 4300)
+	s.status = control("STATIC", "", 16, height-94, width-32, 48, ssNoprefix, 0)
 	for _, button := range []struct {
 		text string
 		x    int
 		id   uintptr
 	}{{"Refresh", 16, 4301}, {"Attach", 128, 4302}, {"Release", 240, 4303}} {
-		s.buttons = append(s.buttons, control("BUTTON", button.text, button.x, 306, 100, 28, wsTabstop, button.id))
+		s.buttons = append(s.buttons, control("BUTTON", button.text, button.x, height-44, 100, 28, wsTabstop, button.id))
 	}
-	control("BUTTON", "Close", 544, 306, 100, 28, wsTabstop, 2)
+	s.brand.primary, _, _ = user32.NewProc("GetDlgItem").Call(s.window, 4302)
+	control("BUTTON", "Close", width-116, height-44, 100, 28, wsTabstop, 2)
 	if controlErr != nil {
 		procDestroyWindow.Call(s.window)
 		return controlErr
@@ -228,6 +240,14 @@ func runUSBDeviceUI() error {
 		result, _, _ := procGetMessageW.Call(uintptr(unsafe.Pointer(&message)), 0, 0, 0)
 		if result == 0 || int32(result) == -1 {
 			break
+		}
+		if message.message == wmKeydown && message.wParam == 13 {
+			focus, _, _ := procGetFocus.Call()
+			id, _, _ := user32.NewProc("GetDlgCtrlID").Call(focus)
+			if id == 2 || id >= 4301 && id <= 4303 {
+				procSendMessageW.Call(s.window, wmCommand, id, 0)
+				continue
+			}
 		}
 		if handled, _, _ := procIsDialogMessageW.Call(s.window, uintptr(unsafe.Pointer(&message))); handled != 0 {
 			continue
