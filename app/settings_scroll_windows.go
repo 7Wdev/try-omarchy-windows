@@ -2,12 +2,18 @@
 
 package main
 
-import "unsafe"
+import (
+	"syscall"
+	"unsafe"
+)
 
 var (
 	procSetScrollInfo = user32.NewProc("SetScrollInfo")
 	procGetScrollInfo = user32.NewProc("GetScrollInfo")
 	procGetFocus      = user32.NewProc("GetFocus")
+	procSetWindowRgn  = user32.NewProc("SetWindowRgn")
+	procCreateRectRgn = syscall.NewLazyDLL("gdi32.dll").NewProc("CreateRectRgn")
+	procDeleteObject  = syscall.NewLazyDLL("gdi32.dll").NewProc("DeleteObject")
 )
 
 type settingsScrollControl struct {
@@ -15,9 +21,9 @@ type settingsScrollControl struct {
 	x, y, w, h int32
 }
 type settingsScroll struct {
-	window                  uintptr
-	height, content, offset int32
-	controls                []settingsScrollControl
+	window                       uintptr
+	top, height, content, offset int32
+	controls                     []settingsScrollControl
 }
 type settingsScrollInfo struct {
 	size, mask uint32
@@ -27,7 +33,7 @@ type settingsScrollInfo struct {
 }
 
 func (s *settingsScroll) move(offset int32) {
-	maximum := s.content - s.height
+	maximum := s.content - s.top - s.height
 	if maximum < 0 {
 		maximum = 0
 	}
@@ -39,9 +45,24 @@ func (s *settingsScroll) move(offset int32) {
 	}
 	s.offset = offset
 	for _, c := range s.controls {
-		procSetWindowPos.Call(c.handle, 0, uintptr(c.x), uintptr(c.y-offset), uintptr(c.w), uintptr(c.h), 0x0004|0x0010)
+		y := c.y - offset
+		procSetWindowPos.Call(c.handle, 0, uintptr(c.x), uintptr(y), uintptr(c.w), uintptr(c.h), 0x0004|0x0010)
+		// Controls remain native children, clipped to the page viewport so
+		// scrolling cannot cover the navigation or fixed action area.
+		top := max(int32(0), s.top-y)
+		bottom := min(c.h, s.top+s.height-y)
+		if top == 0 && bottom == c.h {
+			procSetWindowRgn.Call(c.handle, 0, 1)
+		} else {
+			region, _, _ := procCreateRectRgn.Call(0, uintptr(top), uintptr(c.w), uintptr(max(top, bottom)))
+			if region != 0 {
+				if ok, _, _ := procSetWindowRgn.Call(c.handle, region, 1); ok == 0 {
+					procDeleteObject.Call(region)
+				}
+			}
+		}
 	} // no z-order change or activation
-	info := settingsScrollInfo{mask: 0x7, max: s.content - 1, page: uint32(s.height), pos: offset}
+	info := settingsScrollInfo{mask: 0x7, max: max(int32(0), s.content-s.top-1), page: uint32(s.height), pos: offset}
 	info.size = uint32(unsafe.Sizeof(info))
 	procSetScrollInfo.Call(s.window, 1, uintptr(unsafe.Pointer(&info)), 1)
 }
@@ -84,10 +105,10 @@ func (s *settingsScroll) revealFocus() {
 		if c.handle != focus {
 			continue
 		}
-		if c.y < s.offset {
-			s.move(c.y)
-		} else if c.y+c.h > s.offset+s.height {
-			s.move(c.y + c.h - s.height)
+		if c.y < s.offset+s.top {
+			s.move(c.y - s.top)
+		} else if c.y+c.h > s.offset+s.top+s.height {
+			s.move(c.y + c.h - s.top - s.height)
 		}
 		return
 	}

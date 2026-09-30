@@ -265,6 +265,9 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 	var pages [5][]settingsScrollControl
 	var pageHeights [5]int32
 	var common []settingsScrollControl
+	var footer []settingsScrollControl
+	var layout func()
+	var currentPage int
 
 	text := func(handle uintptr) string {
 		n, _, _ := procSendMessageW.Call(handle, wmGettextlength, 0, 0)
@@ -358,6 +361,17 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 			return 0
 		}
 		switch msg {
+		case 0x0005: // WM_SIZE
+			if layout != nil {
+				layout()
+			}
+			return 0
+		case 0x0024: // WM_GETMINMAXINFO, dimensions include non-client frame.
+			if lParam != 0 {
+				limits := (*[10]int32)(unsafe.Pointer(lParam))
+				limits[6], limits[7] = 500, 340
+			}
+			return 0
 		case wmCommand:
 			if id := wParam & 0xffff; id >= settingsPageBase && id < settingsPageBase+uintptr(len(pages)) {
 				if selectPage != nil {
@@ -652,7 +666,7 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 
 	const clientW, clientH = 500, 650
 	rect := [4]int32{0, 0, clientW, clientH}
-	style := uintptr(wsCaption | wsSysmenu | wsVscroll)
+	style := uintptr(wsCaption | wsSysmenu | wsVscroll | 0x00040000) // WS_THICKFRAME
 	procAdjustWindowRectEx.Call(uintptr(unsafe.Pointer(&rect[0])), style, 0, 0)
 	// AdjustWindowRectEx excludes the vertical scrollbar from its calculation.
 	scrollbarWidth, _, _ := procGetSystemMetrics.Call(2) // SM_CXVSCROLL
@@ -664,7 +678,8 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 	if available := work[3] - work[1] - 16; hgt > available {
 		hgt = available
 	}
-	scroll.height = hgt - (rect[3] - rect[1] - clientH)
+	scroll.top = 56
+	scroll.height = hgt - (rect[3] - rect[1] - clientH) - scroll.top - 80
 	scroll.content = clientH
 	x := work[0] + (work[2]-work[0]-w)/2
 	yWindow := work[1] + (work[3]-work[1]-hgt)/2
@@ -1026,24 +1041,54 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 	mk("BUTTON", "Help and shortcuts", left, 30, 150, 26, wsTabstop, settingsHelpID)
 	mk("BUTTON", saveText, clientW-16-246, 30, 150, 26, bsDefpushbutton|wsTabstop, settingsSaveID)
 	mk("BUTTON", cancelText, clientW-16-84, 30, 84, 26, wsTabstop, settingsCancelID)
-	footer := append([]settingsScrollControl{}, scroll.controls...)
+	footer = append([]settingsScrollControl{}, scroll.controls...)
+	scroll.controls = nil
+	layout = func() {
+		var client [4]int32
+		procGetClientRect.Call(hwnd, uintptr(unsafe.Pointer(&client)))
+		width, height := client[2], client[3]
+		scroll.height = max(int32(1), height-scroll.top-80)
+		scroll.controls = append(scroll.controls[:0], pages[currentPage]...)
+		for i, c := range common {
+			x := int32(16) + int32(i)*(width-32)/5
+			procSetWindowPos.Call(c.handle, 0, uintptr(x), uintptr(c.y), uintptr((width-32)/5-4), uintptr(c.h), 0x0004|0x0010)
+		}
+		for i, c := range footer {
+			x, w := c.x, c.w
+			if i == 0 {
+				w = width - 32
+			}
+			if i == 2 {
+				x = width - 16 - 246
+			}
+			if i == 3 {
+				x = width - 16 - 84
+			}
+			procSetWindowPos.Call(c.handle, 0, uintptr(x), uintptr(height-76+c.y), uintptr(w), uintptr(c.h), 0x0004|0x0010)
+		}
+		for i := range scroll.controls {
+			c := &scroll.controls[i]
+			if c.x+c.w >= clientW-36 {
+				c.w = max(int32(20), width-36-c.x)
+			}
+		}
+		scroll.move(scroll.offset)
+	}
 	selectPage = func(index int) {
+		currentPage = index
 		for _, page := range pages {
 			for _, c := range page {
 				procShowWindow.Call(c.handle, 0)
 			}
 		}
-		scroll.controls = append([]settingsScrollControl{}, common...)
+		scroll.controls = nil
 		for _, c := range pages[index] {
 			procShowWindow.Call(c.handle, swShow)
 			scroll.controls = append(scroll.controls, c)
 		}
-		for _, c := range footer {
-			c.y += pageHeights[index] + 12
-			scroll.controls = append(scroll.controls, c)
-		}
-		scroll.content = pageHeights[index] + 80
-		scroll.move(0)
+		scroll.content = pageHeights[index] + 12
+		scroll.offset = 0
+		layout()
 		procRedrawWindow.Call(hwnd, 0, 0, 0x185)
 	}
 	selectPage(0)
