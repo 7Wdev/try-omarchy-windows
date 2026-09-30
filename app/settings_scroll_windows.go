@@ -2,12 +2,16 @@
 
 package main
 
-import "unsafe"
+import (
+	"syscall"
+	"unsafe"
+)
 
 var (
 	procSetScrollInfo = user32.NewProc("SetScrollInfo")
 	procGetScrollInfo = user32.NewProc("GetScrollInfo")
 	procGetFocus      = user32.NewProc("GetFocus")
+	procDeleteObject  = syscall.NewLazyDLL("gdi32.dll").NewProc("DeleteObject")
 )
 
 type settingsScrollControl struct {
@@ -15,9 +19,9 @@ type settingsScrollControl struct {
 	x, y, w, h int32
 }
 type settingsScroll struct {
-	window                  uintptr
-	height, content, offset int32
-	controls                []settingsScrollControl
+	window, viewport             uintptr
+	top, height, content, offset int32
+	controls                     []settingsScrollControl
 }
 type settingsScrollInfo struct {
 	size, mask uint32
@@ -27,7 +31,7 @@ type settingsScrollInfo struct {
 }
 
 func (s *settingsScroll) move(offset int32) {
-	maximum := s.content - s.height
+	maximum := s.content - s.top - s.height
 	if maximum < 0 {
 		maximum = 0
 	}
@@ -39,11 +43,13 @@ func (s *settingsScroll) move(offset int32) {
 	}
 	s.offset = offset
 	for _, c := range s.controls {
-		procSetWindowPos.Call(c.handle, 0, uintptr(c.x), uintptr(c.y-offset), uintptr(c.w), uintptr(c.h), 0x0004|0x0010)
+		y := c.y - s.top - offset
+		procSetWindowPos.Call(c.handle, 0, uintptr(c.x), uintptr(y), uintptr(c.w), uintptr(c.h), 0x0004|0x0010)
 	} // no z-order change or activation
-	info := settingsScrollInfo{mask: 0x7, max: s.content - 1, page: uint32(s.height), pos: offset}
+	info := settingsScrollInfo{mask: 0x7, max: max(int32(0), s.content-s.top-1), page: uint32(s.height), pos: offset}
 	info.size = uint32(unsafe.Sizeof(info))
 	procSetScrollInfo.Call(s.window, 1, uintptr(unsafe.Pointer(&info)), 1)
+	procInvalidateRect.Call(s.viewport, 0, 1)
 }
 
 func (s *settingsScroll) handle(message, wParam uintptr) bool {
@@ -84,11 +90,53 @@ func (s *settingsScroll) revealFocus() {
 		if c.handle != focus {
 			continue
 		}
-		if c.y < s.offset {
-			s.move(c.y)
-		} else if c.y+c.h > s.offset+s.height {
-			s.move(c.y + c.h - s.height)
+		if c.y < s.offset+s.top {
+			s.move(c.y - s.top)
+		} else if c.y+c.h > s.offset+s.top+s.height {
+			s.move(c.y + c.h - s.top - s.height)
 		}
 		return
 	}
+}
+
+// A native child viewport clips page controls without hiding them from Tab
+// navigation. The fixed navigation and actions remain children of the frame.
+const settingsViewportID = 2099
+
+func createSettingsViewport(parent, instance uintptr) uintptr {
+	class, _ := syscall.UTF16PtrFromString("TryOmarchySettingsViewport")
+	callback := syscall.NewCallback(func(h, message, w, l uintptr) uintptr {
+		switch message {
+		case wmCommand, 0x002b, 0x0133, 0x0134, 0x0135, wmCtlcolorstatic, 0x020a:
+			result, _, _ := procSendMessageW.Call(parent, message, w, l)
+			return result
+		case 0x0014: // WM_ERASEBKGND uses the parent palette.
+			brush, _, _ := procSendMessageW.Call(parent, wmCtlcolorstatic, w, h)
+			var rect [4]int32
+			procGetClientRect.Call(h, uintptr(unsafe.Pointer(&rect)))
+			procFillRect.Call(w, uintptr(unsafe.Pointer(&rect)), brush)
+			return 1
+		}
+		result, _, _ := procDefWindowProcW.Call(h, message, w, l)
+		return result
+	})
+	type windowClass struct {
+		size, style                   uint32
+		callback                      uintptr
+		classExtra, windowExtra       int32
+		instance, icon, cursor, brush uintptr
+		menu, name                    *uint16
+		smallIcon                     uintptr
+	}
+	wc := windowClass{size: uint32(unsafe.Sizeof(windowClass{})), callback: callback, instance: instance, brush: colorBtnface + 1, name: class}
+	if atom, _, err := procRegisterClassExW.Call(uintptr(unsafe.Pointer(&wc))); atom == 0 {
+		logf("settings viewport: %v", err)
+		return 0
+	}
+	// WS_EX_CONTROLPARENT lets native dialog navigation enter the viewport.
+	viewport, _, err := procCreateWindowExW.Call(0x00010000, uintptr(unsafe.Pointer(class)), 0, wsChild|wsVisible|0x02000000, 0, 0, 1, 1, parent, settingsViewportID, instance, 0)
+	if viewport == 0 {
+		logf("settings viewport: %v", err)
+	}
+	return viewport
 }

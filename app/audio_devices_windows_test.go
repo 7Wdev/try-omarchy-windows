@@ -113,7 +113,7 @@ func TestAudioSettingsNative(t *testing.T) {
 				procGetWindowThreadProcessId.Call(window, uintptr(unsafe.Pointer(&owner)))
 				if owner == uint32(cmd.Process.Pid) {
 					for _, id := range []uintptr{settingsAudioOutputID, settingsAudioInputID, settingsSaveID} {
-						controls[id], _, _ = user32.NewProc("GetDlgItem").Call(window, id)
+						controls[id] = findSettingsControl(window, id)
 					}
 					if controls[settingsAudioInputID] != 0 && controls[settingsSaveID] != 0 {
 						break

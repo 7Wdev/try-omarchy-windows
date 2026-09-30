@@ -84,7 +84,7 @@ func TestLauncherWindowKeyboard(t *testing.T) {
 						if settingsOnly {
 							id = settingsMemID
 						}
-						target, _, _ = user32.NewProc("GetDlgItem").Call(window, id)
+						target = findSettingsControl(window, id)
 						if target != 0 {
 							break
 						}
@@ -96,7 +96,7 @@ func TestLauncherWindowKeyboard(t *testing.T) {
 				t.Fatal("launcher controls did not appear")
 			}
 			if settingsOnly {
-				value, _ := syscall.UTF16PtrFromString("2")
+				value, _ := syscall.UTF16PtrFromString("1")
 				procSendMessageW.Call(target, wmSettext, 0, uintptr(unsafe.Pointer(value)))
 			}
 			procPostMessageW.Call(target, wmKeydown, 13, 0)
@@ -111,7 +111,7 @@ func TestLauncherWindowKeyboard(t *testing.T) {
 			}
 			if settingsOnly {
 				settings, err := loadSettings(settingsPath(dir))
-				if err != nil || settings.MemoryMiB != 2048 {
+				if err != nil || settings.MemoryMiB != 1024 {
 					t.Fatalf("saved memory: %d, error: %v", settings.MemoryMiB, err)
 				}
 			} else if _, err := os.Stat(settingsPath(dir)); !os.IsNotExist(err) {
@@ -144,7 +144,7 @@ func TestAutomaticStartSettingNative(t *testing.T) {
 			var owner uint32
 			procGetWindowThreadProcessId.Call(window, uintptr(unsafe.Pointer(&owner)))
 			if owner == uint32(cmd.Process.Pid) {
-				checkbox, _, _ = user32.NewProc("GetDlgItem").Call(window, settingsStartAutomaticallyID)
+				checkbox = findSettingsControl(window, settingsStartAutomaticallyID)
 				if checkbox != 0 {
 					break
 				}
@@ -204,9 +204,9 @@ func TestSignInFullscreenSettingsNative(t *testing.T) {
 				var owner uint32
 				procGetWindowThreadProcessId.Call(window, uintptr(unsafe.Pointer(&owner)))
 				if owner == uint32(cmd.Process.Pid) {
-					signIn, _, _ = user32.NewProc("GetDlgItem").Call(window, settingsLaunchAtSignInID)
-					full, _, _ = user32.NewProc("GetDlgItem").Call(window, settingsFullID)
-					display, _, _ = user32.NewProc("GetDlgItem").Call(window, settingsFullscreenDisplayID)
+					signIn = findSettingsControl(window, settingsLaunchAtSignInID)
+					full = findSettingsControl(window, settingsFullID)
+					display = findSettingsControl(window, settingsFullscreenDisplayID)
 					if signIn != 0 && full != 0 && display != 0 {
 						break
 					}
@@ -298,4 +298,13 @@ func TestSnapshotsWindowHiddenStartup(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("Snapshots did not exit after closing")
 	}
+}
+
+func findSettingsControl(window, id uintptr) uintptr {
+	control, _, _ := user32.NewProc("GetDlgItem").Call(window, id)
+	if control == 0 {
+		viewport, _, _ := user32.NewProc("GetDlgItem").Call(window, settingsViewportID)
+		control, _, _ = user32.NewProc("GetDlgItem").Call(viewport, id)
+	}
+	return control
 }
