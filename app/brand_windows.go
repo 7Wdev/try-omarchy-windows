@@ -32,14 +32,14 @@ type brandControl struct {
 }
 
 type windowBrand struct {
-	background, panel, text, muted, accent uintptr
-	brushes                                []uintptr
-	font, heading                          uintptr
-	primary, activeTab                     uintptr
-	controls                               []brandControl
-	highContrast                           bool
-	contentTop                             int32
-	panelControls, sectionControls         map[uintptr]bool
+	background, panel, text, panelText, muted, accent uintptr
+	brushes                                           []uintptr
+	font, heading                                     uintptr
+	primary, activeTab                                uintptr
+	controls                                          []brandControl
+	highContrast                                      bool
+	contentTop                                        int32
+	panelControls, sectionControls                    map[uintptr]bool
 }
 
 func newWindowBrand() *windowBrand {
@@ -68,10 +68,12 @@ func (t *windowBrand) refreshColors() {
 	procSystemParametersInfoW.Call(0x42, uintptr(hc.size), uintptr(unsafe.Pointer(&hc)), 0) // SPI_GETHIGHCONTRAST
 	t.highContrast = hc.flags&1 != 0
 	t.background, t.panel, t.text, t.muted, t.accent = colBg, brandPanel, colText, colDim, colGreen
+	t.panelText = t.text
 	if t.highContrast {
 		t.background, _, _ = procGetSysColor.Call(15)
 		t.panel, _, _ = procGetSysColor.Call(5)
 		t.text, _, _ = procGetSysColor.Call(18)
+		t.panelText, _, _ = procGetSysColor.Call(8)
 		t.muted, _, _ = procGetSysColor.Call(17)
 		t.accent, _, _ = procGetSysColor.Call(13)
 	}
@@ -148,15 +150,19 @@ func (t *windowBrand) handle(hwnd, message, w, l uintptr) (uintptr, bool) {
 		if t.sectionControls[l] && !t.highContrast {
 			color = colGreen
 		}
-		if enabled, _, _ := procIsWindowEnabled.Call(l); enabled == 0 {
+		enabled, _, _ := procIsWindowEnabled.Call(l)
+		if enabled == 0 {
 			color = t.muted
 		}
-		procSetTextColor.Call(w, color)
 		procSetBkMode.Call(w, transparentBkMode)
 		background, brush := t.background, t.brushes[0]
 		if message == 0x0133 || message == 0x0134 || t.panelControls[l] {
 			background, brush = t.panel, t.brushes[1]
+			if t.highContrast && enabled != 0 {
+				color = t.panelText
+			}
 		}
+		procSetTextColor.Call(w, color)
 		procSetBkColor.Call(w, background)
 		return brush, true
 	case 0x002b: // WM_DRAWITEM
