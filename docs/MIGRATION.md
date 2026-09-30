@@ -22,7 +22,8 @@ recovery > Install Omarchy...**. It checks whether Omarchy is still running,
 whether Fast Startup is on and whether BitLocker is on for the drives it needs,
 and lists only what is left, each with a button that does it or opens the right
 place. Once nothing is left it shows the installation steps and the command to
-run afterwards.
+run afterwards. If Windows cannot report encryption status, it offers a button
+to check BitLocker settings yourself.
 
 1. **Shut Omarchy down from inside the trial** (Omarchy menu > System >
    Shutdown), so the trial's disk is saved cleanly. Keep Try Omarchy installed

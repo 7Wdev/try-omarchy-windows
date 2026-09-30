@@ -55,11 +55,12 @@ type installReadiness struct {
 	ShutdownRequested bool
 	// FastStartup is true when it is on or cannot be read. Turning it off
 	// is harmless either way.
-	FastStartup    bool
-	BitLocker      bitLockerState
-	BitLockerDrive string
-	SystemDrive    string
-	SystemFree     int64
+	FastStartup        bool
+	BitLocker          bitLockerState
+	BitLockerDrive     string
+	BitLockerUnchecked []string
+	SystemDrive        string
+	SystemFree         int64
 }
 
 type installProbes struct {
@@ -108,11 +109,16 @@ func assessInstallReadiness(dir string, probes installProbes) installReadiness {
 			r.SystemFree = free
 		}
 	}
-	if probes.bitLocker != nil {
-		for _, drive := range installDrives(r.SystemDrive, dir) {
-			if state := probes.bitLocker(drive); state > r.BitLocker {
-				r.BitLocker, r.BitLockerDrive = state, drive
-			}
+	for _, drive := range installDrives(r.SystemDrive, dir) {
+		state := bitLockerUnknown
+		if probes.bitLocker != nil {
+			state = probes.bitLocker(drive)
+		}
+		if state == bitLockerUnknown {
+			r.BitLockerUnchecked = append(r.BitLockerUnchecked, drive)
+		}
+		if state > r.BitLocker {
+			r.BitLocker, r.BitLockerDrive = state, drive
 		}
 	}
 	return r
@@ -187,17 +193,24 @@ func installSteps(r installReadiness) (string, []installButton) {
 	if r.SystemFree >= 0 {
 		room = fmt.Sprintf(" It has %s free.", formatGiB(r.SystemFree))
 	}
-	body := "Your PC is ready for Omarchy.\n\n" +
+	intro := "Next, install Omarchy next to Windows.\n\n"
+	var buttons []installButton
+	if len(r.BitLockerUnchecked) > 0 {
+		intro = "Windows couldn't check encryption on " + strings.Join(r.BitLockerUnchecked, ", ") +
+			". Check BitLocker settings before installing.\n\n"
+		buttons = append(buttons, installButton{"Open BitLocker settings", installBitLocker})
+	}
+	body := intro +
 		"1. Shrink " + drive + " in Disk Management to make room." + room + "\n" +
 		"2. Install Omarchy from a USB stick into the free space. The install guide shows how.\n" +
 		"3. In the new Omarchy, open a terminal (Super+Enter) and run:\n\n" +
 		importCommand + "\n\n" +
 		"Keep Try Omarchy installed until you've run it. Uninstalling it deletes the trial."
-	return body, []installButton{
-		{"Open Disk Management", installDiskManagement},
-		{"Open the install guide", installGuide},
-		{"Done", installDone},
-	}
+	return body, append(buttons,
+		installButton{"Open Disk Management", installDiskManagement},
+		installButton{"Open the install guide", installGuide},
+		installButton{"Done", installDone},
+	)
 }
 
 func systemDriveLabel() string {

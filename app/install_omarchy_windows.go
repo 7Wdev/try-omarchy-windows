@@ -186,6 +186,20 @@ func shellOpen(target string) error {
 	return nil
 }
 
+// chooseInstallAction keeps prerequisites compact and gives the install steps
+// enough space for the command and the warning about uninstalling.
+func chooseInstallAction(title, body string, buttons []installButton) (int, error) {
+	textHeight := int32(180)
+	for _, button := range buttons {
+		if button.action == installDiskManagement {
+			// Keep the import command and uninstall warning visible together.
+			textHeight = 320
+			break
+		}
+	}
+	return chooseActionWithTextHeight(title, body, textHeight, installButtonLabels(buttons)...)
+}
+
 // runInstallOmarchyUI walks through getting ready to install Omarchy next to
 // Windows. Each pass shows only what is left to do, and the install steps
 // once nothing is.
@@ -195,7 +209,7 @@ func runInstallOmarchyUI(dir string) error {
 		r := assessInstallReadiness(dir, windowsInstallProbes())
 		r.ShutdownRequested = shutdownRequested
 		body, buttons := installPage(r)
-		choice, err := chooseAction("Install Omarchy on this PC", body, installButtonLabels(buttons)...)
+		choice, err := chooseInstallAction("Install Omarchy on this PC", body, buttons)
 		if err != nil || choice == 0 {
 			return err
 		}
@@ -221,7 +235,7 @@ func runInstallOmarchyUI(dir string) error {
 			openWindowsURL(exportGuideURL)
 			return nil
 		case installDiskManagement:
-			if err := shellOpen("diskmgmt.msc"); err != nil {
+			if err := shellOpen(system32("diskmgmt.msc")); err != nil {
 				errorBox(err.Error())
 			}
 		case installGuide:

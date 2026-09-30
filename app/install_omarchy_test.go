@@ -101,7 +101,7 @@ func TestInstallReadyGoesStraightToTheSteps(t *testing.T) {
 		t.Fatalf("unexpected readiness %+v", r)
 	}
 	body, buttons := installPage(r)
-	for _, want := range []string{"ready", "Shrink C:", "200.0 GiB free", importCommand, "Keep Try Omarchy installed"} {
+	for _, want := range []string{"Next, install Omarchy", "Shrink C:", "200.0 GiB free", importCommand, "Keep Try Omarchy installed"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("steps lack %q:\n%s", want, body)
 		}
@@ -160,9 +160,40 @@ func TestInstallTurnsOffFastStartupItCannotRead(t *testing.T) {
 func TestInstallUnknownBitLockerDoesNotBlock(t *testing.T) {
 	f := readyInstall
 	f.bitLocker = nil
-	body, _ := installPage(assessInstallReadiness(installDir(t, "disk.raw"), f.probes()))
+	body, buttons := installPage(assessInstallReadiness(installDir(t, "disk.raw"), f.probes()))
 	if !strings.Contains(body, importCommand) {
 		t.Fatalf("unknown BitLocker state blocked the steps:\n%s", body)
+	}
+	if !strings.Contains(body, "couldn't check encryption on C:") || strings.Contains(body, "Your PC is ready") {
+		t.Fatalf("unknown BitLocker state was presented as ready:\n%s", body)
+	}
+	if !sameActions(buttons, installBitLocker, installDiskManagement, installGuide, installDone) {
+		t.Fatalf("buttons = %v", buttonActions(buttons))
+	}
+}
+
+func TestInstallUnknownTrialDriveEncryptionIsNotHiddenBySystemDrive(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows drive paths")
+	}
+	// The Windows drive is known to be off, but the trial's drive could not
+	// be checked. Its unknown status must survive choosing the worst state.
+	f := readyInstall
+	probes := f.probes()
+	probes.systemDrive = func() string { return "Z:" }
+	probes.bitLocker = func(drive string) bitLockerState {
+		if drive == "Z:" {
+			return bitLockerOff
+		}
+		return bitLockerUnknown
+	}
+	r := assessInstallReadiness(installDir(t, "disk.raw"), probes)
+	if r.BitLocker != bitLockerOff || len(r.BitLockerUnchecked) != 1 || r.BitLockerUnchecked[0] == "Z:" {
+		t.Fatalf("unexpected encryption readiness %+v", r)
+	}
+	body, buttons := installPage(r)
+	if !strings.Contains(body, "couldn't check encryption on "+r.BitLockerUnchecked[0]) || buttons[0].action != installBitLocker {
+		t.Fatalf("unknown trial drive state missing from steps:\n%s", body)
 	}
 }
 
