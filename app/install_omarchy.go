@@ -123,9 +123,9 @@ func installChecklist(r installReadiness) (string, []installButton) {
 			[]installButton{{"Close", installDone}}
 	}
 	var b strings.Builder
-	b.WriteString("You can install Omarchy next to Windows on this PC and keep what you set up " +
-		"here. After installing, one command in the new Omarchy brings your settings, apps, " +
-		"files and projects over from this trial.\n\nBefore you start:\n\n")
+	b.WriteString("Install Omarchy next to Windows and keep what you set up here: after installing, " +
+		"one command in the new Omarchy brings this trial over. Keep Try Omarchy installed until " +
+		"then, since uninstalling it deletes the trial.\n\n")
 	mark := func(done bool) string {
 		if done {
 			return "Done: "
@@ -158,18 +158,18 @@ func installChecklist(r installReadiness) (string, []installButton) {
 		b.WriteString(fmt.Sprintf("Then: make room by shrinking %s in Disk Management. It has %s free "+
 			"now.\n", r.SystemDrive, formatGiB(r.SystemFree)))
 	}
-	b.WriteString("\nKeep Try Omarchy installed until the import is done. Uninstalling deletes the trial.")
 	var buttons []installButton
 	if r.FastStartup {
 		buttons = append(buttons, installButton{"Turn off Fast Startup", installFastStartup})
 	}
-	buttons = append(buttons, installButton{"Encryption settings", installEncryption})
+	// The first button is the highlighted one, so it is the next thing to do.
 	if r.Running {
 		buttons = append(buttons, installButton{"Check again", installRecheck})
 	} else {
 		buttons = append(buttons, installButton{"Next", installNext})
 	}
-	buttons = append(buttons, installButton{"Close", installDone})
+	buttons = append(buttons, installButton{"Encryption settings", installEncryption},
+		installButton{"Close", installDone})
 	return b.String(), buttons
 }
 

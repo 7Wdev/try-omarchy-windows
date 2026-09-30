@@ -79,7 +79,7 @@ func TestInstallReadinessReady(t *testing.T) {
 			t.Errorf("checklist lacks %q:\n%s", want, body)
 		}
 	}
-	if got := buttonActions(buttons); len(got) != 3 || got[0] != installEncryption || got[1] != installNext || got[2] != installDone {
+	if got := buttonActions(buttons); len(got) != 3 || got[0] != installNext || got[1] != installEncryption || got[2] != installDone {
 		t.Fatalf("buttons = %v", got)
 	}
 }
@@ -94,7 +94,7 @@ func TestInstallReadinessBlockers(t *testing.T) {
 	if !strings.Contains(body, "To do: shut Omarchy down") || !strings.Contains(body, "To do: turn off Fast Startup") {
 		t.Fatalf("checklist:\n%s", body)
 	}
-	if got := buttonActions(buttons); got[0] != installFastStartup || got[len(got)-2] != installRecheck {
+	if got := buttonActions(buttons); len(got) != 4 || got[0] != installFastStartup || got[1] != installRecheck {
 		t.Fatalf("buttons = %v", got)
 	}
 }

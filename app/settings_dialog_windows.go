@@ -1087,8 +1087,8 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 		procEnableWindow.Call(cleanupButton, 0)
 	}
 	y += 40
-	mk("STATIC", "Ready to install Omarchy for real? Install it next to Windows and bring this trial along.", left, y, clientW-2*left, 36, ssNoprefix, 0)
-	y += 40
+	mk("STATIC", "Ready to install Omarchy for real? Install it next to Windows and bring this trial along.", left, y, clientW-2*left, 42, ssNoprefix, 0)
+	y += 48
 	mk("BUTTON", "Install Omarchy...", left, y, 160, 26, wsTabstop, settingsInstallOmarchyID)
 	pages[3] = append(pages[3], scroll.controls...)
 	pageHeights[3] = y + 40
