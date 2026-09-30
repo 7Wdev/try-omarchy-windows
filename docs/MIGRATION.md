@@ -138,7 +138,7 @@ Other options: `--data FOLDER`, `--cleanup`, and `--help` for the full list.
 If Windows will be gone, or Omarchy goes on another computer, export your
 setup inside the trial first.
 
-### Export inside Omarchy
+### Export inside the trial
 
 Open a terminal (SUPER+RETURN) and run:
 
@@ -146,43 +146,30 @@ Open a terminal (SUPER+RETURN) and run:
 try-omarchy-export
 ```
 
-It writes `omarchy-export-<date>.tar.gz` to the shared Windows folder when
-Try Omarchy was started with `-share`, otherwise to your home folder. Pass a
-directory to choose another place. The archive contains:
+It shows the same list as the import, sized for the space where the archive
+goes, and writes `omarchy-export-<date>.tar.gz` to the shared Windows folder
+when there is one, otherwise to your home folder. Pass a folder to put it
+somewhere else, for example `try-omarchy-export /run/media/$USER/USB`.
 
-- `home/`: an allowlist of Omarchy, Hyprland, terminal, bar, notification,
-  input, and other desktop configuration; `~/.local/bin`; and shell dotfiles
-  (`.bashrc`, `.zshrc`, `.gitconfig`, and friends).
-- `theme`: the name of the theme you had selected.
-- `packages/repo.txt` and `packages/aur.txt`: packages you added on top of the
-  factory image, split by where they come from.
-- `restore.sh` and `manifest.json`.
+Only what you changed goes in. Keys, sign-ins and browser profiles are only
+included when you pick them; the archive then says so, because anyone with
+the file could use them. Keep it private and delete it once you have imported
+it.
 
-Left out on purpose: unlisted application config, `~/.ssh`, `~/.gnupg`,
-password managers, browser profiles, and caches. Those either may hold secrets
-you should move yourself or are rebuilt on the new machine. The allowlist
-avoids common credential files under `~/.config`, but the archive is still
-your data. Review it before sharing it with anyone.
+### Import on the new install
 
-### Restore on the real install
-
-Copy the archive over (USB stick, the shared folder, `scp` through the SSH
-preset), then as the user who should receive the configuration:
+Copy the archive over, then as the account that should receive it:
 
 ```
 tar -xzf omarchy-export-<date>.tar.gz
-cd omarchy-export-<date>
-./restore.sh
+omarchy-export-<date>/import.sh
 ```
 
-The script backs up anything it replaces under
-`~/.omarchy-restore-backup/<time>`, installs the repository packages with
-pacman and the AUR packages with yay, and selects your theme. Log out and back
-in afterwards so Hyprland and the shell pick up the restored configuration.
+The archive carries its own copy of the importer, so this works without a
+network connection. It works like the import above: it shows what it can
+bring over, asks before changing anything, backs up what it replaces, and can
+be run again.
 
-It keeps the destination's `monitors.lua` and `monitors.conf`, and does not
-replace its Omarchy runtime location. Linked Hyprland configuration requires
-manual review rather than automatic replacement. Package or theme failures,
-including missing `yay` or `omarchy-theme-set`, produce an incomplete-restore
-message and a nonzero exit status. Configuration already restored and its
-backups remain available.
+Exports from earlier Try Omarchy versions contain `restore.sh` instead. Run
+that one the same way; it backs up what it replaces under
+`~/.omarchy-restore-backup/<time>`.

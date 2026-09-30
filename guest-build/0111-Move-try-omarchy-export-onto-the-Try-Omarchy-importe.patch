@@ -1,0 +1,529 @@
+From 683ff9d2a4e922bbeb279e507a91460028339888 Mon Sep 17 00:00:00 2001
+From: Tyler South <tsouth2@gmail.com>
+Date: Wed, 30 Sep 2026 09:46:39 -0400
+Subject: [PATCH] Move try-omarchy-export onto the Try Omarchy importer
+
+try-omarchy-export now hands off to the importer that the release helper
+builds from the launcher repository into
+/usr/local/lib/try-omarchy/try-omarchy-import.pyz. The archive carries
+only what the user changed, with the skeleton copies as merge bases, and
+the importer itself, so a clean install runs the same code with import.sh.
+Compatibility revision 44 delivers the wrapper and the importer to existing
+guests.
+---
+ .../usr/local/bin/try-omarchy-export          | 206 +----------------
+ guest/scripts/finalize-rootfs.sh              |   4 +-
+ guest/tests/test_overlay_scripts.py           | 211 ++++--------------
+ guest/tests/verify.py                         |  14 +-
+ 4 files changed, 66 insertions(+), 369 deletions(-)
+
+diff --git a/guest/factory-overlay/usr/local/bin/try-omarchy-export b/guest/factory-overlay/usr/local/bin/try-omarchy-export
+index 0fed736..6bc5998 100755
+--- a/guest/factory-overlay/usr/local/bin/try-omarchy-export
++++ b/guest/factory-overlay/usr/local/bin/try-omarchy-export
+@@ -1,200 +1,18 @@
+ #!/bin/bash
+-# Export the parts of this trial worth carrying to a real Omarchy install:
+-# configuration under the home directory, the current theme, and the packages
+-# added on top of the factory image. Writes one archive with a restore script
+-# inside it, to the shared Windows folder when one is mounted, otherwise to
+-# the home directory. Only an explicit allowlist of desktop configuration is
+-# copied so credentials hidden in unrelated application config stay behind.
++# Pack this trial into one archive for another computer or a clean Omarchy
++# install: settings, themes, the apps you added, and the folders, app data,
++# browser profiles and keys you pick. The Try Omarchy importer does the work
++# and travels inside the archive, so the new install runs the same code with
++# import.sh. Installing Omarchy next to Windows needs no export at all: the
++# importer reads the trial straight off the Windows drive.
+ #
+-# Usage: try-omarchy-export [DESTINATION-DIRECTORY]
++# Usage: try-omarchy-export [DESTINATION-DIRECTORY] [--select LIST] [--yes]
++# Default destination: /mnt/host when the Windows share is mounted, else $HOME.
+ set -euo pipefail
+ 
+-usage() {
+-  echo "Usage: try-omarchy-export [DESTINATION-DIRECTORY]"
+-  echo "Default destination: /mnt/host when the Windows share is mounted, else \$HOME."
+-}
+-
+-fail() {
+-  echo "try-omarchy-export: $*" >&2
+-  exit 1
+-}
+-
+-case ${1:-} in
+-  -h | --help)
+-    usage
+-    exit 0
+-    ;;
+-esac
+-
+-destination=${1:-}
+-if [[ -z $destination ]]; then
+-  if mountpoint -q /mnt/host && [[ -w /mnt/host ]]; then
+-    destination=/mnt/host
+-  else
+-    destination=$HOME
+-  fi
+-fi
+-[[ -d $destination && -w $destination ]] || fail "destination is not a writable directory: $destination"
+-
+-factory_lock=${TRY_OMARCHY_FACTORY_LOCK:-/usr/share/try-omarchy/packages.lock.txt}
+-[[ -f $factory_lock ]] || fail "factory package list not found: $factory_lock"
+-
+-stamp=$(date +%Y%m%d-%H%M%S)
+-name="omarchy-export-$stamp"
+-work=$(mktemp -d)
+-trap 'rm -rf "$work"' EXIT
+-stage="$work/$name"
+-mkdir -p "$stage/home" "$stage/packages"
+-
+-# Configuration. Do not copy ~/.config wholesale: GitHub clients, sync tools,
+-# browsers, and other applications commonly store credentials there. Keep this
+-# list limited to Omarchy and desktop configuration that is useful on the real
+-# install. The archive is still user data and should be reviewed before it is
+-# shared with anyone.
+-copy_home() {
+-  local relative=$1
+-  [[ -e $HOME/$relative ]] || return 0
+-  mkdir -p "$stage/home/$(dirname "$relative")"
+-  cp -a "$HOME/$relative" "$stage/home/$relative"
+-}
+-for item in \
+-  .config/alacritty .config/autostart .config/btop .config/fastfetch \
+-  .config/fcitx5 .config/fontconfig .config/foot .config/ghostty \
+-  .config/hypr .config/imv .config/kitty .config/mako .config/omarchy \
+-  .config/starship.toml .config/tmux .config/uwsm .config/walker \
+-  .config/waybar .config/wireplumber .config/xournalpp \
+-  .local/bin \
+-  .bashrc .bash_profile .zshrc .zprofile .profile .gitconfig \
+-  .tmux.conf .vimrc .inputrc; do
+-  copy_home "$item"
+-done
+-
+-# Theme name, so restore can select it without depending on symlink layout.
+-theme=""
+-if [[ -f $HOME/.local/state/omarchy/current/theme.name ]]; then
+-  theme=$(<"$HOME/.local/state/omarchy/current/theme.name")
+-elif command -v omarchy-theme-current >/dev/null; then
+-  theme=$(omarchy-theme-current 2>/dev/null || true)
+-  theme=${theme//$'\n'/}
+-fi
+-printf '%s\n' "$theme" >"$stage/theme"
+-
+-# Packages the user added beyond the factory image, split into the ones the
+-# repositories provide and the ones that came from the AUR.
+-pacman -Qqe 2>/dev/null | LC_ALL=C sort >"$work/explicit"
+-awk '{print $1}' "$factory_lock" | LC_ALL=C sort >"$work/factory"
+-LC_ALL=C comm -23 "$work/explicit" "$work/factory" >"$work/added"
+-# pacman exits nonzero when nothing is foreign; that is the common case here.
+-{ pacman -Qqm 2>/dev/null || true; } | LC_ALL=C sort >"$work/foreign"
+-LC_ALL=C comm -23 "$work/added" "$work/foreign" >"$stage/packages/repo.txt"
+-LC_ALL=C comm -12 "$work/added" "$work/foreign" >"$stage/packages/aur.txt"
+-
+-created=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+-omarchy_version=$(cat /usr/share/omarchy/version 2>/dev/null || echo unknown)
+-jq -n \
+-  --arg kind try-omarchy-export \
+-  --argjson schemaVersion 1 \
+-  --arg created "$created" \
+-  --arg omarchyVersion "$omarchy_version" \
+-  --arg user "$(id -un)" \
+-  --arg theme "$theme" \
+-  --argjson repoPackages "$(wc -l <"$stage/packages/repo.txt")" \
+-  --argjson aurPackages "$(wc -l <"$stage/packages/aur.txt")" \
+-  '{kind: $kind, schemaVersion: $schemaVersion, created: $created,
+-    omarchyVersion: $omarchyVersion, user: $user, theme: $theme,
+-    repoPackages: $repoPackages, aurPackages: $aurPackages}' \
+-  >"$stage/manifest.json"
+-
+-cat >"$stage/restore.sh" <<'RESTORE'
+-#!/bin/bash
+-# Restore a Try Omarchy export on a real Omarchy install. Run it as the user
+-# who should receive the configuration, from the extracted export directory.
+-# It backs up anything it replaces under ~/.omarchy-restore-backup/<time>.
+-set -euo pipefail
+-here=$(cd "$(dirname "$0")" && pwd)
+-backup_root="$HOME/.omarchy-restore-backup"
+-mkdir -p "$backup_root"
+-backup=$(mktemp -d "$backup_root/$(date +%Y%m%d-%H%M%S).XXXXXX")
+-
+-# Dotfiles are replaced as units. ~/.config and ~/.local/share are merged one
+-# application directory at a time, so the real install keeps configuration
+-# for apps the trial never touched.
+-entries() {
+-  find "$here/home" -mindepth 1 -maxdepth 1 ! -name .config ! -name .local -print0
+-  [[ -d $here/home/.config ]] && find "$here/home/.config" -mindepth 1 -maxdepth 1 -print0
+-  [[ -d $here/home/.local/share ]] && find "$here/home/.local/share" -mindepth 1 -maxdepth 1 -print0
+-  [[ -e $here/home/.local/bin ]] && printf '%s\0' "$here/home/.local/bin"
+-  return 0
+-}
+-
+-incomplete=0
+-echo "Restoring configuration into $HOME (backups in $backup)"
+-while IFS= read -r -d '' path; do
+-  relative=${path#"$here/home/"}
+-  target="$HOME/$relative"
+-  # The destination owns its Omarchy installation and display configuration.
+-  [[ $relative == .local/share/omarchy ]] && continue
+-  if [[ $relative == .config/hypr && ( -L $path || -L $target ) ]]; then
+-    echo "Skipped linked Hyprland configuration; review it manually: $path" >&2
+-    incomplete=1
+-    continue
+-  fi
+-  if [[ -e $target || -L $target ]]; then
+-    mkdir -p "$backup/$(dirname "$relative")"
+-    mv "$target" "$backup/$relative"
+-  fi
+-  mkdir -p "$(dirname "$target")"
+-  cp -a "$path" "$target"
+-  if [[ $relative == .config/hypr ]]; then
+-    for monitor in monitors.lua monitors.conf; do
+-      saved="$backup/$relative/$monitor"
+-      if [[ -e $saved || -L $saved ]]; then
+-        cp -a --remove-destination "$saved" "$target/$monitor"
+-      fi
+-    done
+-  fi
+-  echo "  restored $relative"
+-done < <(entries)
+-
+-if [[ -s $here/packages/repo.txt ]]; then
+-  echo "Installing repository packages"
+-  if ! sudo pacman -S --needed --noconfirm - <"$here/packages/repo.txt"; then
+-    echo "Repository packages remain incomplete; review packages/repo.txt" >&2
+-    incomplete=1
+-  fi
+-fi
+-if [[ -s $here/packages/aur.txt ]]; then
+-  if ! command -v yay >/dev/null; then
+-    echo "AUR packages remain incomplete: yay is unavailable; review packages/aur.txt" >&2
+-    incomplete=1
+-  elif ! yay -S --needed --noconfirm - <"$here/packages/aur.txt"; then
+-    echo "AUR packages remain incomplete; review packages/aur.txt" >&2
+-    incomplete=1
+-  fi
+-fi
+-
+-theme=$(<"$here/theme")
+-if [[ -n $theme ]]; then
+-  if ! command -v omarchy-theme-set >/dev/null; then
+-    echo "Theme restore remains incomplete: omarchy-theme-set is unavailable" >&2
+-    incomplete=1
+-  elif ! omarchy-theme-set "$theme"; then
+-    echo "Theme $theme could not be selected; pick it from the Omarchy menu" >&2
+-    incomplete=1
+-  fi
+-fi
+-if ((incomplete)); then
+-  echo "Restore incomplete. Configuration backups are in $backup; review the errors above." >&2
++importer=${TRY_OMARCHY_IMPORTER:-/usr/local/lib/try-omarchy/try-omarchy-import.pyz}
++if [[ ! -f $importer ]]; then
++  echo "try-omarchy-export: the importer is missing ($importer). Update Omarchy from the Try Omarchy launcher." >&2
+   exit 1
+ fi
+-echo "Done. Log out and back in to load the restored configuration."
+-RESTORE
+-chmod 0755 "$stage/restore.sh"
+-
+-archive="$destination/$name.tar.gz"
+-tar -C "$work" -czf "$archive" "$name"
+-echo "Exported to $archive"
+-echo "  theme: ${theme:-unknown}"
+-echo "  repository packages added: $(wc -l <"$stage/packages/repo.txt")"
+-echo "  AUR packages added: $(wc -l <"$stage/packages/aur.txt")"
+-echo "On a real Omarchy install: extract it and run $name/restore.sh"
++exec python3 "$importer" export "$@"
+diff --git a/guest/scripts/finalize-rootfs.sh b/guest/scripts/finalize-rootfs.sh
+index cdbfe12..2d563f0 100755
+--- a/guest/scripts/finalize-rootfs.sh
++++ b/guest/scripts/finalize-rootfs.sh
+@@ -154,6 +154,7 @@ compat_paths=(
+   etc/systemd/user/try-omarchy-factory-update-notice.service
+   etc/systemd/user/graphical-session.target.wants/try-omarchy-factory-update-notice.service
+   usr/local/bin/try-omarchy-export
++  usr/local/lib/try-omarchy/try-omarchy-import.pyz
+   usr/local/lib/try-omarchy/agent
+   usr/local/lib/try-omarchy/battery-apply
+   usr/local/lib/try-omarchy/apply-host-locale
+@@ -204,7 +205,8 @@ tar -C / -cf /usr/share/try-omarchy/compat-overlay.tar "${compat_paths[@]}"
+ # Revision 41 turns off system service watchdogs, which fire after Windows
+ # sleeps and restart logind under the running desktop.
+ # Revision 42 makes SSH accept only keys for the quick-start account.
+-compat_revision=42
++# Revision 44 moves try-omarchy-export onto the Try Omarchy importer.
++compat_revision=44
+ printf '%s:%s\n' "$compat_revision" "$kernel_release" >/usr/share/try-omarchy/compat-version
+ 
+ # Fail the build if DKMS or networking modules were not packaged for this kernel.
+diff --git a/guest/tests/test_overlay_scripts.py b/guest/tests/test_overlay_scripts.py
+index 6c0e5f3..6cf9bdb 100644
+--- a/guest/tests/test_overlay_scripts.py
++++ b/guest/tests/test_overlay_scripts.py
+@@ -12,6 +12,7 @@ import socket
+ import subprocess
+ import tarfile
+ import tempfile
++import time
+ import unittest
+ from concurrent.futures import ThreadPoolExecutor
+ from pathlib import Path
+@@ -246,180 +247,52 @@ class RequestSshdTests(OverlayCase):
+ 
+ 
+ class ExportTests(OverlayCase):
+-    def setUp(self) -> None:
+-        super().setUp()
+-        self.lock = self.root / "factory.lock"
+-        self.lock.write_text("base 3-3\ngit 2.55.0-1\nomarchy 4.0.2-1\n")
+-        self.fake("pacman", 'case "$1" in -Qqe) printf "base\\ngit\\ncowsay\\nomarchy\\nsome-aur-tool\\n";; -Qqm) printf "some-aur-tool\\n";; *) exit 1;; esac')
+-        (self.home / ".config/hypr").mkdir(parents=True)
+-        (self.home / ".config/hypr/monitors.conf").write_text("monitor=,preferred\n")
+-        (self.home / ".config/hypr/bindings.lua").write_text("-- personal binding\n")
+-        (self.home / ".local/share").mkdir(parents=True)
+-        (self.home / ".local/share/omarchy").symlink_to("/usr/share/omarchy")
+-        (self.home / ".config/chromium").mkdir()
+-        (self.home / ".config/chromium/Cookies").write_text("secret")
+-        (self.home / ".config/gh").mkdir()
+-        (self.home / ".config/gh/hosts.yml").write_text("oauth_token: secret\n")
+-        (self.home / ".config/rclone").mkdir()
+-        (self.home / ".config/rclone/rclone.conf").write_text("password = secret\n")
+-        (self.home / ".ssh").mkdir()
+-        (self.home / ".ssh/id_ed25519").write_text("private")
+-        (self.home / ".bashrc").write_text("export PS1=x\n")
+-        (self.home / ".local/state/omarchy/current").mkdir(parents=True)
+-        (self.home / ".local/state/omarchy/current/theme.name").write_text("tokyo-night\n")
++    """try-omarchy-export hands off to the Try Omarchy importer, which the
++    release helper builds from the launcher repository into the overlay. Its
++    own tests live there; these pin the hand-off and one real export."""
+ 
+-    def export(self) -> Path:
++    importer = OVERLAY / "usr/local/lib/try-omarchy/try-omarchy-import.pyz"
++
++    def test_arguments_go_to_the_importer_export_command(self) -> None:
++        fake = self.root / "importer.pyz"
++        fake.write_text(f"import sys\nopen({str(self.log)!r}, 'w').write(' '.join(sys.argv[1:]))\n")
++        result = self.run_script(EXPORT, "/mnt/usb", "--yes", TRY_OMARCHY_IMPORTER=str(fake))
++        self.assertEqual(result.returncode, 0, result.stderr)
++        self.assertEqual(self.log.read_text(), "export /mnt/usb --yes")
++
++    def test_missing_importer_is_explained(self) -> None:
++        result = self.run_script(EXPORT, TRY_OMARCHY_IMPORTER=str(self.root / "missing.pyz"))
++        self.assertEqual(result.returncode, 1)
++        self.assertIn("importer is missing", result.stderr)
++
++    def test_export_packs_changes_and_the_importer(self) -> None:
++        self.assertTrue(self.importer.is_file(),
++                        "scripts/release/build-guest.sh builds the importer into the overlay")
++        root = self.root / "trial"
++        home = root / "home/tester"
++        (root / "etc/skel/.config/hypr").mkdir(parents=True)
++        (root / "etc/skel/.config/hypr/bindings.lua").write_text("-- defaults\n")
++        (root / "etc/passwd").write_text(f"tester:x:{os.getuid()}:{os.getgid()}::/home/tester:/bin/bash\n")
++        (home / ".local/state/omarchy/done").mkdir(parents=True)
++        shutil.copytree(root / "etc/skel", home, dirs_exist_ok=True)
++        (home / ".local/state/omarchy/done/finalize-user").touch()
++        time.sleep(0.05)
++        (home / ".config/hypr/bindings.lua").write_text("-- defaults\nbind(\"SUPER + N\")\n")
++        (home / ".ssh").mkdir()
++        (home / ".ssh/id_ed25519").write_text("private")
+         dest = self.root / "dest"
+         dest.mkdir()
+-        result = self.run_script(EXPORT, str(dest), TRY_OMARCHY_FACTORY_LOCK=str(self.lock))
++        result = self.run_script(EXPORT, "--root", str(root), "--yes", "--select", "defaults",
++                                 str(dest), TRY_OMARCHY_IMPORTER=str(self.importer))
+         self.assertEqual(result.returncode, 0, result.stderr)
+-        archives = list(dest.glob("omarchy-export-*.tar.gz"))
+-        self.assertEqual(len(archives), 1)
+-        return archives[0]
+-
+-    def test_archive_carries_config_theme_and_added_packages_but_no_secrets(self) -> None:
+-        archive = self.export()
++        archive = next(dest.glob("omarchy-export-*.tar.gz"))
+         with tarfile.open(archive) as tar:
+-            names = [m.name.split("/", 1)[1] for m in tar.getmembers() if "/" in m.name]
+-            member = lambda name: tar.extractfile(next(m for m in tar.getmembers() if m.name.endswith("/" + name))).read().decode()
+-            self.assertIn("home/.config/hypr/monitors.conf", names)
+-            self.assertIn("home/.bashrc", names)
+-            self.assertNotIn("home/.local/share/omarchy", names)
+-            self.assertIn("restore.sh", names)
+-            self.assertNotIn("home/.ssh/id_ed25519", names)
+-            self.assertFalse(any(".ssh" in n for n in names), names)
+-            self.assertFalse(any("chromium" in n for n in names), names)
+-            self.assertFalse(any("hosts.yml" in n or "rclone.conf" in n for n in names), names)
+-            self.assertEqual(member("theme").strip(), "tokyo-night")
+-            self.assertEqual(member("packages/repo.txt").split(), ["cowsay"])
+-            self.assertEqual(member("packages/aur.txt").split(), ["some-aur-tool"])
+-            self.assertIn('"theme": "tokyo-night"', member("manifest.json"))
+-
+-    def test_manifest_escapes_user_controlled_theme_text(self) -> None:
+-        (self.home / ".local/state/omarchy/current/theme.name").write_text('night-"quoted"\n')
+-        archive = self.export()
+-        with tarfile.open(archive) as tar:
+-            manifest = json.load(tar.extractfile(next(m for m in tar.getmembers() if m.name.endswith("/manifest.json"))))
+-        self.assertEqual(manifest["theme"], 'night-"quoted"')
+-
+-    def test_export_on_a_factory_image_with_nothing_added(self) -> None:
+-        self.fake("pacman", 'case "$1" in -Qqe) printf "base\\ngit\\nomarchy\\n";; -Qqm) exit 1;; *) exit 1;; esac')
+-        archive = self.export()
+-        with tarfile.open(archive) as tar:
+-            repo = tar.extractfile(next(m for m in tar.getmembers() if m.name.endswith("/packages/repo.txt"))).read()
+-            self.assertEqual(repo, b"")
+-
+-    def test_restore_merges_per_app_and_backs_up_what_it_replaces(self) -> None:
+-        archive = self.export()
+-        real = self.root / "real"
+-        (real / ".config/keep").mkdir(parents=True)
+-        (real / ".config/keep/k").write_text("keepme")
+-        (real / ".config/hypr").mkdir()
+-        (real / ".config/hypr/monitors.conf").write_text("OLD")
+-        (real / ".bashrc").write_text("old")
+-        (real / ".config/hypr/monitors.lua").write_text("-- native display\n")
+-        (real / ".local/share").mkdir(parents=True)
+-        (real / ".local/share/omarchy").symlink_to("/opt/custom-omarchy")
+-        for tool in ("sudo", "pacman", "yay", "omarchy-theme-set"):
+-            self.fake(tool, f'echo "{tool} $*" >>"{self.log}"')
+-        with tarfile.open(archive) as tar:
+-            tar.extractall(real, filter="fully_trusted")
+-        restore = next(real.glob("omarchy-export-*/restore.sh"))
+-        result = subprocess.run(["bash", str(restore)], env=dict(self.env, HOME=str(real)), cwd=real,
+-                                capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
+-        self.assertEqual(result.returncode, 0, result.stderr)
+-        self.assertEqual((real / ".config/hypr/monitors.conf").read_text(), "OLD")
+-        self.assertEqual((real / ".config/keep/k").read_text(), "keepme")
+-        self.assertEqual((real / ".config/hypr/monitors.lua").read_text(), "-- native display\n")
+-        self.assertEqual((real / ".config/hypr/bindings.lua").read_text(), "-- personal binding\n")
+-        self.assertEqual(os.readlink(real / ".local/share/omarchy"), "/opt/custom-omarchy")
+-        self.assertEqual((real / ".bashrc").read_text(), "export PS1=x\n")
+-        backups = sorted(p.relative_to(next((real / ".omarchy-restore-backup").iterdir())).as_posix()
+-                         for p in (real / ".omarchy-restore-backup").rglob("*") if p.is_file())
+-        self.assertEqual(backups, [".bashrc", ".config/hypr/monitors.conf", ".config/hypr/monitors.lua"])
+-        calls = self.log.read_text()
+-        self.assertIn("sudo pacman -S --needed --noconfirm -", calls)
+-        self.assertIn("yay -S --needed --noconfirm -", calls)
+-        self.assertIn("omarchy-theme-set tokyo-night", calls)
+-
+-
+-    def test_restore_reports_incomplete_package_or_theme_work(self) -> None:
+-        archive = self.export()
+-        for index, failed in enumerate(("sudo", "yay", "omarchy-theme-set")):
+-            with self.subTest(failed=failed):
+-                for tool in ("sudo", "yay", "omarchy-theme-set"):
+-                    self.fake(tool, f'echo "{tool}" >>"{self.log}"; exit {1 if tool == failed else 0}')
+-                real = self.root / f"restore-failure-{index}"
+-                real.mkdir()
+-                with tarfile.open(archive) as tar:
+-                    tar.extractall(real, filter="fully_trusted")
+-                restore = next(real.glob("omarchy-export-*/restore.sh"))
+-                result = subprocess.run(["bash", str(restore)], env=dict(self.env, HOME=str(real)),
+-                                        capture_output=True, text=True, timeout=60)
+-                self.assertNotEqual(result.returncode, 0, result.stdout)
+-                self.assertIn("incomplete", result.stderr.lower())
+-                self.assertNotIn("Done.", result.stdout)
+-                self.assertTrue((real / ".bashrc").exists())
+-
+-    def test_restore_reports_missing_optional_helpers(self) -> None:
+-        archive = self.export()
+-        isolated = self.root / "restore-bin"
+-        isolated.mkdir()
+-        for tool in ("bash", "date", "dirname", "mkdir", "mktemp", "find", "cp", "mv"):
+-            (isolated / tool).symlink_to(shutil.which(tool))
+-        sudo = isolated / "sudo"
+-        sudo.write_text("#!/bin/bash\nexit 0\n")
+-        sudo.chmod(0o755)
+-        real = self.root / "restore-missing"
+-        real.mkdir()
+-        with tarfile.open(archive) as tar:
+-            tar.extractall(real, filter="fully_trusted")
+-        restore = next(real.glob("omarchy-export-*/restore.sh"))
+-        result = subprocess.run(["/bin/bash", str(restore)],
+-                                env=dict(self.env, HOME=str(real), PATH=str(isolated)),
+-                                capture_output=True, text=True, timeout=60)
+-        self.assertNotEqual(result.returncode, 0, result.stdout)
+-        self.assertIn("yay", result.stderr)
+-        self.assertIn("omarchy-theme-set", result.stderr)
+-        self.assertNotIn("Done.", result.stdout)
+-
+-
+-    def test_restore_preserves_relative_destination_hypr_link(self) -> None:
+-        archive = self.export()
+-        real = self.root / "linked-target"
+-        (real / ".config").mkdir(parents=True)
+-        (real / "dotfiles/hypr").mkdir(parents=True)
+-        (real / "dotfiles/hypr/monitors.lua").write_text("native display")
+-        (real / ".config/hypr").symlink_to("../dotfiles/hypr")
+-        for tool in ("sudo", "yay", "omarchy-theme-set"):
+-            self.fake(tool, "exit 0")
+-        with tarfile.open(archive) as tar:
+-            tar.extractall(real, filter="fully_trusted")
+-        restore = next(real.glob("omarchy-export-*/restore.sh"))
+-        result = subprocess.run(["bash", str(restore)], env=dict(self.env, HOME=str(real)),
+-                                capture_output=True, text=True, timeout=60)
+-        self.assertNotEqual(result.returncode, 0)
+-        self.assertEqual(os.readlink(real / ".config/hypr"), "../dotfiles/hypr")
+-        self.assertEqual((real / ".config/hypr/monitors.lua").read_text(), "native display")
+-
+-    def test_repeated_restores_keep_separate_backups(self) -> None:
+-        archive = self.export()
+-        real = self.root / "repeated-restore"
+-        real.mkdir()
+-        for tool in ("sudo", "yay", "omarchy-theme-set"):
+-            self.fake(tool, "exit 0")
+-        self.fake("date", "echo 20260912-120000")
+-        with tarfile.open(archive) as tar:
+-            tar.extractall(real, filter="fully_trusted")
+-        restore = next(real.glob("omarchy-export-*/restore.sh"))
+-        for content in ("original", "later edit"):
+-            (real / ".bashrc").write_text(content)
+-            result = subprocess.run(["bash", str(restore)], env=dict(self.env, HOME=str(real)),
+-                                    capture_output=True, text=True, timeout=60)
+-            self.assertEqual(result.returncode, 0, result.stderr)
+-        backups = list((real / ".omarchy-restore-backup").iterdir())
+-        self.assertEqual(len(backups), 2)
+-        self.assertEqual({(backup / ".bashrc").read_text() for backup in backups}, {"original", "later edit"})
++            names = {m.name.split("/", 1)[1] for m in tar.getmembers() if "/" in m.name}
++        self.assertIn("import.sh", names)
++        self.assertIn("try-omarchy-import.pyz", names)
++        self.assertIn("trial-root/home/tester/.config/hypr/bindings.lua", names)
++        self.assertIn("trial-root/etc/skel/.config/hypr/bindings.lua", names)
++        self.assertFalse(any(".ssh" in name for name in names), names)
+ 
+ 
+ if __name__ == "__main__":
+diff --git a/guest/tests/verify.py b/guest/tests/verify.py
+index e72e55b..c31c6a7 100755
+--- a/guest/tests/verify.py
++++ b/guest/tests/verify.py
+@@ -258,12 +258,15 @@ def main() -> None:
+ 
+     exporter = GUEST / "factory-overlay/usr/local/bin/try-omarchy-export"
+     export_text = read(exporter)
++    importer = GUEST / "factory-overlay/usr/local/lib/try-omarchy/try-omarchy-import.pyz"
+     check(
+         exporter.stat().st_mode & stat.S_IXUSR != 0
+-        and "packages.lock.txt" in export_text
+-        and "restore.sh" in export_text
+-        and ".ssh" not in export_text.replace("Never ~/.ssh", ""),
+-        "the export command carries configuration and added packages but no keys",
++        and "try-omarchy-import.pyz" in export_text
++        and 'export "$@"' in export_text
++        and importer.is_file()
++        and importer.stat().st_mode & stat.S_IXUSR != 0
++        and importer.read_bytes().startswith(b"#!/usr/bin/env python3\n"),
++        "the export command hands off to the bundled Try Omarchy importer",
+     )
+ 
+     share_link = read(GUEST / "factory-overlay/usr/local/lib/try-omarchy/share-link")
+@@ -293,7 +296,8 @@ def main() -> None:
+         "system services run without watchdogs, which fire after Windows sleeps",
+     )
+     check(
+-        "compat_revision=42" in finalize_rootfs
++        "compat_revision=44" in finalize_rootfs
++        and "usr/local/lib/try-omarchy/try-omarchy-import.pyz" in compat_paths
+         and "usr/share/try-omarchy/quick-start-sshd.conf" in compat_paths
+         and "etc/systemd/system/service.d/10-try-omarchy-watchdog.conf" in compat_paths
+         and "usr/local/lib/try-omarchy/catch-up" in compat_paths
+-- 
+2.55.0
+
