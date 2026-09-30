@@ -98,6 +98,7 @@ func logf(format string, a ...any) {
 func fatal(format string, a ...any) {
 	msg := fmt.Sprintf(format, a...)
 	logf("FATAL %s", msg)
+	uiDone()
 	errorBox(msg)
 	os.Exit(1)
 }

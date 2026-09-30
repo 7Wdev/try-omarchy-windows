@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"time"
 )
 
@@ -53,5 +54,12 @@ func setupFailureHelp(err error) string {
 	if errors.Is(err, errInsufficientDiskSpace) || isDiskFull(err) {
 		return "Your PC is out of disk space. Free up a few gigabytes, then start Try Omarchy again."
 	}
-	return "Check your connection and start Try Omarchy again."
+	if errors.Is(err, os.ErrPermission) {
+		return "Windows could not access the Omarchy folder. Check folder permissions and Windows Security's protected-folder settings, then start Try Omarchy again."
+	}
+	var networkErr net.Error
+	if errors.As(err, &networkErr) {
+		return "Check your connection and start Try Omarchy again."
+	}
+	return "Start Try Omarchy again to retry setup. If it still fails, copy this error and open source and support from About."
 }
