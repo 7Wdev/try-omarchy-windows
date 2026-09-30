@@ -10,6 +10,7 @@ changing them is a decision the user should make on this computer.
 from dataclasses import dataclass, field
 import os
 from pathlib import Path
+import subprocess
 
 from .system import CommandError
 
@@ -193,3 +194,29 @@ def set_background(runner, path, home):
     except CommandError:
         return StepResult("background", False, "the trial's background could not be set")
     return StepResult("background", True, "set your background")
+
+
+def verify_hyprland(runner, home):
+    """Check the imported Hyprland config parses, so a problem shows now and
+    not at the next login."""
+    if runner.which("Hyprland") is None:
+        return None
+    for name in ("hyprland.lua", "hyprland.conf"):
+        config = Path(home) / ".config/hypr" / name
+        if config.is_file():
+            break
+    else:
+        return None
+    try:
+        result = runner.run(["Hyprland", "--verify-config", "-c", str(config)], check=False,
+                            timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    output = (result.stdout or "") + (result.stderr or "")
+    if result.returncode == 0 and "config ok" in output:
+        return StepResult("hyprland", True)
+    problem = next((line.strip() for line in output.splitlines()
+                    if line.strip() and not line.startswith("=") and "Config parsing" not in line),
+                   "it could not be parsed")
+    return StepResult("hyprland", False, f"Hyprland found a problem in your settings: {problem}. "
+                      "Fix that line, or copy the file back from the backup folder")

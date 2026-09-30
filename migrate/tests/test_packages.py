@@ -79,5 +79,29 @@ class PackagePlanTests(unittest.TestCase):
         self.assertIsNone(packages.background_path(None, "/home/omarchy", home))
 
 
+class HyprlandCheckTests(unittest.TestCase):
+    def setUp(self):
+        scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(scratch.cleanup)
+        self.home = Path(scratch.name)
+        fixtures.write(self.home / ".config/hypr/hyprland.lua", b"-- config\n", fixtures.HOME_EDIT)
+
+    def test_clean_config(self):
+        runner = fixtures.FakeRunner({"Hyprland --verify-config":
+                                      "======== Config parsing result:\n\nconfig ok\n"},
+                                     programs={"Hyprland"})
+        self.assertTrue(packages.verify_hyprland(runner, self.home).ok)
+
+    def test_problem_is_reported(self):
+        runner = fixtures.FakeRunner(programs={"Hyprland"})
+        runner.failing.add("Hyprland --verify-config")
+        step = packages.verify_hyprland(runner, self.home)
+        self.assertFalse(step.ok)
+        self.assertIn("backup folder", step.detail)
+
+    def test_skipped_without_hyprland(self):
+        self.assertIsNone(packages.verify_hyprland(fixtures.FakeRunner(), self.home))
+
+
 if __name__ == "__main__":
     unittest.main()

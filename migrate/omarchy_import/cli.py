@@ -352,6 +352,8 @@ def run(args, ui, runner, stack, state):
         steps.extend(_install_packages(ui, runner, package_plan))
     if _imported(result, ".config/mise/"):
         steps.append(packages.mise_install(runner, home))
+    if _imported(result, ".config/hypr/"):
+        steps.append(packages.verify_hyprland(runner, home))
     if "theme" in chosen:
         if theme != _current_theme(home):
             steps.append(packages.set_theme(runner, theme))
