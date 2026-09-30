@@ -2,12 +2,15 @@ param([Parameter(Mandatory)][string]$Qemu)
 $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot\..\qmp-transport.ps1"
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ('tom-qmp-' + [Guid]::NewGuid().ToString('N').Substring(0,8))
-$previousCache = $env:LOCALAPPDATA
+$previousTemp = $env:TEMP
+$previousTmp = $env:TMP
 $process = $null
 try {
-    $env:LOCALAPPDATA = $testRoot
-    Initialize-OmarchyQmpControl
+    $env:TEMP = $testRoot
+    $env:TMP = $testRoot
     $path = Get-OmarchyQmpPath
+    if ($path -ne (Join-Path $testRoot 'TryOmarchyIPC\tools.sock')) { throw 'Fixture escaped its isolated temporary directory' }
+    Initialize-OmarchyQmpControl
     $arguments = @('-machine','none','-nodefaults','-display','none','-S','-qmp',("unix:{0},server=on,wait=off" -f $path))
     $process = Start-Process -FilePath $Qemu -ArgumentList $arguments -WindowStyle Hidden -PassThru
     $deadline = [DateTime]::UtcNow.AddSeconds(10)
@@ -37,12 +40,12 @@ try {
     Write-Output 'PASS: 20 consecutive private QMP connections and status queries'
 } finally {
     if ($process -and -not $process.HasExited) { $process.Kill(); $process.WaitForExit() }
-    $env:LOCALAPPDATA = $previousCache
+    $env:TEMP = $previousTemp
+    $env:TMP = $previousTmp
     # Remove only the known socket and empty directories created by this fixture.
     $socketPath = Join-Path $testRoot 'TryOmarchyIPC\tools.sock'
     if (Test-Path -LiteralPath $socketPath) { Remove-Item -LiteralPath $socketPath -Force }
     if (Test-Path -LiteralPath (Join-Path $testRoot 'TryOmarchyIPC')) { [IO.Directory]::Delete((Join-Path $testRoot 'TryOmarchyIPC')) }
-    # Windows may create its own Microsoft/Windows/Caches tree under the
-    # overridden LOCALAPPDATA. Preserve anything outside our known IPC files.
+    # Preserve anything outside the known fixture files.
     if ((Test-Path -LiteralPath $testRoot) -and @(Get-ChildItem -LiteralPath $testRoot -Force).Count -eq 0) { [IO.Directory]::Delete($testRoot) }
 }

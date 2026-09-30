@@ -55,8 +55,8 @@ public class OmarchyUnixEndPoint : EndPoint {
 }
 function Get-OmarchyQmpPath([int]$Role=4445) {
  $name=switch($Role){4445 {'tools.sock'} 4446 {'forward.sock'} 4447 {'supervisor.sock'} default {throw 'Unknown QMP control role'}}
- $cache=$env:LOCALAPPDATA
- if([string]::IsNullOrWhiteSpace($cache)){throw 'LOCALAPPDATA is unavailable'}
+ $cache=[IO.Path]::GetTempPath()
+ if([string]::IsNullOrWhiteSpace($cache)){throw 'Windows temporary directory is unavailable'}
  if([Text.Encoding]::UTF8.GetByteCount((Join-Path $cache 'TryOmarchyIPC\supervisor.sock')) -gt 103){$cache=[OmarchyUnixEndPoint]::ShortPath($cache)}
  $path=Join-Path $cache "TryOmarchyIPC\$name"
  if([Text.Encoding]::UTF8.GetByteCount($path) -gt 103){throw 'Private control path is too long'}
