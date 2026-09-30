@@ -17,6 +17,11 @@ There are two ways:
 
 ### Before you leave Windows
 
+Try Omarchy can walk you through this: open **Settings > Backup and recovery >
+Install Omarchy...**. It checks that Omarchy is shut down and that Fast Startup
+is off (and can turn it off for you), then shows the installation steps and
+the command to run afterwards.
+
 1. **Shut Omarchy down from inside the trial** (Omarchy menu > System >
    Shutdown), so the trial's disk is saved cleanly. Keep Try Omarchy installed
    until the import is done: uninstalling it deletes the trial.
