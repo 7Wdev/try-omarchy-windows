@@ -61,6 +61,11 @@ class ListMergeTests(unittest.TestCase):
         merged = textmerge.merge_lists(".bash_history", b"ls\nls\n", b"pwd\n")
         self.assertEqual(merged, b"ls\nls\npwd\n")
 
+    def test_history_is_not_repeated_on_a_second_import(self):
+        first = textmerge.merge_lists(".bash_history", b"ls\ncd x\n", b"pwd\n")
+        second = textmerge.merge_lists(".bash_history", b"ls\ncd x\necho new\n", first)
+        self.assertEqual(second, b"ls\ncd x\necho new\npwd\n")
+
 
 @unittest.skipUnless(textmerge.git_available(), "git is needed for three-way merges")
 class Merge3Tests(unittest.TestCase):
@@ -115,9 +120,16 @@ type=string
 value=home
 """
 
-    def test_trial_items_win_and_native_only_items_stay(self):
+    def test_this_computers_item_stays_unless_its_browser_comes_over(self):
+        kept = textmerge.merge_keyrings(fixtures.KEYRING_CHROMIUM,
+                                        fixtures.KEYRING_EMPTY + self.NATIVE_ITEM).decode()
+        self.assertIn("secret=native-secret", kept)
+        self.assertNotIn("trial-secret", kept)
+        self.assertIn("secret=hunter2", kept)
+
+    def test_trial_items_win_for_imported_browsers_and_native_only_items_stay(self):
         merged = textmerge.merge_keyrings(fixtures.KEYRING_CHROMIUM,
-                                          fixtures.KEYRING_EMPTY + self.NATIVE_ITEM)
+                                          fixtures.KEYRING_EMPTY + self.NATIVE_ITEM, {"chromium"})
         text = merged.decode()
         self.assertIn("secret=trial-secret", text)
         self.assertNotIn("native-secret", text)

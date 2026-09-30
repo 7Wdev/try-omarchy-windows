@@ -88,6 +88,28 @@ class LeftoverTests(unittest.TestCase):
         self.assertFalse(attach.is_our_loop_backing("/home/ada/try-omarchy-import-x.cow"))
         self.assertFalse(attach.is_our_loop_backing("/var/tmp/other.cow"))
 
+    def test_cleanup_unmounts_windows_drives_last(self):
+        from omarchy_import import cli
+        from omarchy_import.ui import UI
+        import io
+        from unittest import mock
+        runner = fixtures.FakeRunner({
+            "dmsetup ls": "try-omarchy-import-77-2\t(254:0)\n",
+            "losetup --list": "/dev/loop5 /run/user/1000/try-omarchy-import/x/windows-1/VMs/vm/disk.raw\n",
+        })
+        mounts = ["/run/user/1000/try-omarchy-import/x/windows-1",
+                  "/run/user/1000/try-omarchy-import/x/trial-2"]
+        with mock.patch.object(attach, "leftover_mounts", return_value=mounts), \
+                mock.patch.object(attach, "remove_scratch_files", return_value=0):
+            cli.cleanup(UI(interactive=False, stream=io.StringIO()), runner)
+        commands = runner.commands()
+        order = [commands.index(command) for command in (
+            "umount /run/user/1000/try-omarchy-import/x/trial-2",
+            "dmsetup remove try-omarchy-import-77-2",
+            "losetup --detach /dev/loop5",
+            "umount /run/user/1000/try-omarchy-import/x/windows-1")]
+        self.assertEqual(order, sorted(order))
+
     def test_cleanup_removes_snapshots_before_loops(self):
         from omarchy_import import cli
         from omarchy_import.ui import UI

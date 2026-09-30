@@ -36,7 +36,7 @@ TRANSFORM_KINDS = (SETTINGS, APPS, KEYS)
 HYPR_BLOCK_FILES = {".config/hypr/input.lua", ".config/hypr/monitors.lua"}
 BOOKMARKS = ".config/gtk-3.0/bookmarks"
 
-APPLYING = ("create", "replace", "merge", "conflict", "mkdir", "replace-profile")
+APPLYING = ("create", "replace", "merge", "conflict", "mkdir", "replace-profile", "profile-complete")
 
 
 @dataclass
@@ -166,7 +166,11 @@ def scan(home, classifier, baseline_ns=None, progress=None):
 
     def walk_group(path, relative, place):
         nonlocal count
-        entry = describe(path, relative)
+        try:
+            entry = describe(path, relative)
+        except OSError:
+            skipped.append((relative, "could not be read"))
+            return
         adjusted = classifier.override(relative, place, entry.kind, entry.target)
         if adjusted.kind == SKIP:
             skipped.append((relative, adjusted.reason))
@@ -191,7 +195,11 @@ def scan(home, classifier, baseline_ns=None, progress=None):
             return
         for child in children:
             child_relative = f"{relative}/{child.name}" if relative else child.name
-            entry = describe(child.path, child_relative)
+            try:
+                entry = describe(child.path, child_relative)
+            except OSError:
+                skipped.append((child_relative, "could not be read"))
+                continue
             if child_relative in classify.CONTAINERS and entry.kind == "directory":
                 walk_container(child.path, child_relative)
                 continue
@@ -284,6 +292,8 @@ class Planner:
         self.resolution = resolution
         self.can_merge = textmerge.git_available()
         self.defaults = TrialDefaults(context.trial_skel, context.trial_baseline_ns)
+        # Keyring items of browsers being imported win over this computer's.
+        self.keyring_apps = set()
 
     # Content helpers ------------------------------------------------------
 
@@ -324,6 +334,8 @@ class Planner:
     def _read_trial(self, group, entry):
         path = group.source_base / entry.relative
         limit = textmerge.TEXT_LIMIT if group.kind in TRANSFORM_KINDS else 0
+        if entry.relative in textmerge.LIST_FILES:
+            limit = textmerge.LIST_LIMIT
         if limit and entry.size <= limit:
             return safefs.source_read(path, limit)
         return None
@@ -345,12 +357,26 @@ class Planner:
                             entry.relative.startswith(textmerge.KEYRING_DIRECTORY + "/"):
                         keyring.add(entry)
                 wanted.append(keyring)
+        self.keyring_apps = set()
         for group in wanted:
             if group.kind == BROWSER:
-                actions.extend(self._plan_browser(group))
-            else:
-                for entry in group.entries:
+                self.keyring_apps.update(classify.BROWSER_KEYRING_APPS.get(group.id.split("/", 1)[1], ()))
+        for group in wanted:
+            if group.kind == BROWSER:
+                try:
+                    actions.extend(self._plan_browser(group))
+                except OSError as error:
+                    root = group.entries[0].relative if group.entries else group.id
+                    actions.append(Action(root, "directory", group.id, "skip",
+                                          f"could not be read ({error.strerror or error})"))
+                continue
+            for entry in group.entries:
+                try:
                     actions.append(self._plan_entry(group, entry))
+                except OSError as error:
+                    actions.append(Action(entry.relative, entry.kind, group.id, "skip",
+                                          f"could not be read ({error.strerror or error})",
+                                          entry=entry))
         actions = self._prune_directories(actions)
         return Plan(actions, list(inventory.skipped), [group.id for group in wanted], self.resolution)
 
@@ -403,16 +429,11 @@ class Planner:
         journal = self._journal_state(relative, metadata)
         if journal == "imported" and self._source_changed(relative, entry):
             # The trial was used again after the last import and this
-            # computer's copy is still exactly what that import wrote.
-            if relative in textmerge.LIST_FILES or relative.endswith(".keyring"):
-                # Merged files keep this computer's entries: merge again.
-                return self._plan_file(group, entry, base, metadata)
-            planned = (self._plan_symlink if entry.kind == "symlink" else self._plan_file)(
-                group, entry, base, None)
-            if planned.action == "create":
-                planned.action = "replace"
-                planned.reason = "updated from the trial"
-            return planned
+            # computer's copy is still exactly what that import wrote, so it
+            # can be replaced like a default. Merges run again against it,
+            # which keeps anything the earlier import merged in.
+            planner = self._plan_symlink if entry.kind == "symlink" else self._plan_file
+            return planner(group, entry, base, metadata, own_import=True)
         if journal is not None:
             base.action = journal
             base.reason = {"imported": "imported by an earlier run",
@@ -435,7 +456,7 @@ class Planner:
         action.action = "mkdir"
         return action
 
-    def _plan_symlink(self, group, entry, action, metadata):
+    def _plan_symlink(self, group, entry, action, metadata, own_import=False):
         target = self.context.rewriter.path(entry.target)
         action.content = target.encode()
         if group.kind in CHANGED_ONLY_KINDS and self._trial_default(entry.relative, entry, None):
@@ -448,15 +469,15 @@ class Planner:
         if current_kind == "symlink" and self.destination.readlink(entry.relative) == target:
             action.action = "same"
             return action
-        if current_kind == "symlink" and self._home_default(entry.relative, metadata):
+        if current_kind == "symlink" and (own_import or self._home_default(entry.relative, metadata)):
             action.action = "replace"
-            action.reason = "replaces the link Omarchy set up"
+            action.reason = "updated from the trial" if own_import else "replaces the link Omarchy set up"
             return action
         action.action = "skip"
         action.reason = "something different already exists here on this computer"
         return action
 
-    def _plan_file(self, group, entry, action, metadata):
+    def _plan_file(self, group, entry, action, metadata, own_import=False):
         relative = entry.relative
         raw = self._read_trial(group, entry)
         if group.kind in CHANGED_ONLY_KINDS and self._trial_default(relative, entry, raw):
@@ -478,7 +499,8 @@ class Planner:
             return action
 
         if content is not None:
-            current = self.destination.read(relative, textmerge.TEXT_LIMIT)
+            limit = textmerge.LIST_LIMIT if relative in textmerge.LIST_FILES else textmerge.TEXT_LIMIT
+            current = self.destination.read(relative, limit)
             if current == content:
                 action.action = "same"
                 return action
@@ -491,9 +513,16 @@ class Planner:
             current = None
 
         if group.kind == FILES:
+            if own_import:
+                action.action = "replace"
+                action.reason = "updated from the trial"
+                action.backup = True
+                return action
             return self._conflict(action, "a different file with this name is already here",
                                   files=True)
 
+        if relative in textmerge.LIST_FILES and (content is None or current is None):
+            return self._conflict(action, "too large to combine line by line", beside=True)
         if relative in textmerge.LIST_FILES and content is not None and current is not None:
             merged = textmerge.merge_lists(relative, content, current)
             if merged == current:
@@ -506,7 +535,7 @@ class Planner:
             action.backup = True
             return action
 
-        if self._home_default(relative, metadata):
+        if own_import or self._home_default(relative, metadata):
             action.backup = True
             base = self._trial_skel_content(relative)
             if self.can_merge and content is not None and current is not None and base is not None \
@@ -526,7 +555,7 @@ class Planner:
                                      "is kept in the backup")
                     return action
             action.action = "replace"
-            action.reason = "replaces Omarchy's default"
+            action.reason = "updated from the trial" if own_import else "replaces Omarchy's default"
             return action
         return self._conflict(action, "you already changed this on this computer")
 
@@ -547,7 +576,7 @@ class Planner:
         action.action = "conflict"
         action.reason = reason
         if files or beside or self.resolution == "keep":
-            if self._conflict_copy_imported(action.relative):
+            if self._conflict_copy_imported(action.relative, action.entry):
                 action.action = "imported"
                 action.reason = "an earlier run already put the trial's copy next to it"
                 return action
@@ -556,10 +585,15 @@ class Planner:
             action.backup = True
         return action
 
-    def _conflict_copy_imported(self, relative):
-        """True if an earlier run already wrote the trial's copy next to relative."""
-        return any(record.get("state") == "done" and record.get("conflict_of") == relative
-                   for record in self.context.journal.values())
+    def _conflict_copy_imported(self, relative, entry):
+        """True if an earlier run already wrote the trial's current copy next to relative."""
+        for record in self.context.journal.values():
+            if record.get("state") != "done" or record.get("conflict_of") != relative:
+                continue
+            if entry is None or (record.get("source_size"), record.get("source_mtime_ns")) == \
+                    (entry.size, entry.mtime_ns):
+                return True
+        return False
 
     def _sibling_name(self, relative, files):
         parent, _, name = relative.rpartition("/")
@@ -593,7 +627,7 @@ class Planner:
             return self._conflict(action, "this computer's keyring is protected by a password",
                                   beside=True)
         try:
-            merged = textmerge.merge_keyrings(raw, current)
+            merged = textmerge.merge_keyrings(raw, current, self.keyring_apps)
         except (ValueError, UnicodeDecodeError):
             return self._conflict(action, "the keyring could not be read", beside=True)
         if merged == current:
@@ -618,9 +652,13 @@ class Planner:
         if running:
             return [Action(root, "directory", group.id, "skip",
                            f"close {group.label} before importing its profile")]
-        if any(path == root or path.startswith(root + "/") for path in self.context.journal):
+        record = self.context.journal.get(root) or {}
+        if record.get("kind") == "profile-complete":
             return [Action(root, "directory", group.id, "imported", "imported by an earlier run")]
-        if metadata is not None:
+        # An earlier run moved this computer's profile aside but did not
+        # finish copying: carry on where it stopped.
+        resuming = record.get("kind") == "profile"
+        if metadata is not None and not resuming:
             actions.append(Action(root, "directory", group.id, "replace-profile",
                                   f"this computer's {group.label} profile is moved to the backup",
                                   expected=safefs.Fingerprint.of(metadata), backup=True))
@@ -630,8 +668,32 @@ class Planner:
                             entry=entry, size=entry.size, source=group.source_base / entry.relative)
             if entry.kind == "symlink":
                 action.content = self.context.rewriter.path(entry.target).encode()
+            if resuming:
+                self._resume_profile_entry(action)
             actions.append(action)
+        actions.append(Action(root, "directory", group.id, "profile-complete"))
         return actions
+
+    def _resume_profile_entry(self, action):
+        try:
+            current = self.destination.lstat(action.relative)
+        except safefs.UnsafePath as error:
+            action.action, action.reason = "skip", f"{error.path} {error.reason}"
+            return
+        if current is None:
+            return
+        if action.kind == "directory":
+            action.action = "same"
+            return
+        state = self._journal_state(action.relative, current)
+        if state == "imported":
+            action.action, action.reason = "imported", "imported by an earlier run"
+        elif action.kind == "file" and safefs.kind_of(current) == "file" and \
+                current.st_size == action.entry.size and \
+                self.destination.hash(action.relative)[0] == safefs.source_hash(action.source)[0]:
+            action.action = "same"
+        else:
+            action.action, action.reason = "skip", "something else is already here"
 
     def _prune_directories(self, actions):
         """Only create folders that will hold something, or that the user made."""

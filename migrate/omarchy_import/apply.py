@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import time
+import uuid
 
 from . import safefs
 
@@ -95,7 +96,9 @@ class Report:
 
 
 def new_run_id():
-    return time.strftime("%Y%m%d-%H%M%S")
+    # The time sorts the backup folders; the suffix keeps two runs in the same
+    # second from sharing one.
+    return f"{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
 
 
 class Applier:
@@ -110,15 +113,20 @@ class Applier:
         journal = Journal(self.destination.home, self.run_id)
         try:
             self._cleanup(plan)
-            total = sum(1 for action in plan.actions if action.action in
-                        ("create", "replace", "merge", "conflict", "mkdir", "replace-profile"))
+            steps = ("create", "replace", "merge", "conflict", "mkdir", "replace-profile")
+            total = sum(1 for action in plan.actions if action.action in steps)
+            troubled_groups = set()
             done = 0
             # A browser profile that could not be moved aside must not be
             # mixed with the trial's: everything under it is skipped.
             blocked = []
             for action in plan.actions:
-                if action.action not in ("create", "replace", "merge", "conflict", "mkdir",
-                                         "replace-profile"):
+                if action.action == "profile-complete":
+                    self._profile_complete(action, journal, troubled_groups)
+                    continue
+                if action.action not in steps:
+                    if action.action == "skip":
+                        troubled_groups.add(action.group)
                     continue
                 done += 1
                 if self.progress:
@@ -127,7 +135,9 @@ class Applier:
                        for root in blocked):
                     self.report.add(action.relative, action.action, "skipped",
                                     "this computer's profile could not be moved aside")
+                    troubled_groups.add(action.group)
                     continue
+                before = len(self.report.results)
                 try:
                     self._one(action, journal)
                 except safefs.Changed:
@@ -148,10 +158,21 @@ class Applier:
                         blocked.append(action.relative)
                     self.report.add(action.relative, action.action, "failed",
                                     error.strerror or str(error))
+                if any(result.status != "done" for result in self.report.results[before:]):
+                    troubled_groups.add(action.group)
         finally:
             journal.close()
             os.sync()
         return self.report
+
+    def _profile_complete(self, action, journal, troubled_groups):
+        """Mark a browser profile finished, so later runs leave it alone."""
+        if action.group in troubled_groups:
+            self.report.add(action.relative, action.action, "skipped",
+                            "part of the profile did not come over; run the import again")
+            return
+        journal.write({"path": action.relative, "state": "done", "kind": "profile-complete"},
+                      durable=True)
 
     def _cleanup(self, plan):
         """Remove temporary files an interrupted run left in folders we touch."""

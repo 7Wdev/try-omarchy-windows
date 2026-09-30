@@ -21,7 +21,10 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
+import stat
 import tarfile
+import tempfile
 import time
 import zipfile
 
@@ -30,7 +33,10 @@ from .packages import PackagePlan
 from .plan import TrialDefaults, scan
 from .selection import SelectionError, option_rows, resolve_selection
 from .trial import BACKGROUND_LINK, THEME_NAME, Trial, TrialError
+from .system import running_programs
 from .ui import UI, Cancelled, human_size, plain_label
+
+SPOOL_IN_MEMORY = 16 * 1024 * 1024
 
 IMPORT_SH = """#!/bin/bash
 # Bring this Try Omarchy export into this Omarchy install. Run it as the
@@ -114,21 +120,37 @@ class Writer:
         self.tar.addfile(info, io.BytesIO(data))
 
     def copy(self, name, source):
-        """Copy a regular file or symlink from the trial without following links."""
-        metadata = os.lstat(source)
-        self._parent(name)
-        if os.path.islink(source):
-            info = self._info(name, tarfile.SYMTYPE, 0o777, metadata.st_mtime)
-            info.linkname = os.readlink(source)
-            self.tar.addfile(info)
-            return 0
-        fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
-        with os.fdopen(fd, "rb") as stream:
+        """Copy a regular file or symlink from the trial without following links.
+
+        The trial is running, so files can change or vanish while exporting.
+        Each file is read into a spool first and the archive member is written
+        from that, so a file that shrinks or grows cannot corrupt the archive.
+        Returns the bytes written, or None if the file disappeared.
+        """
+        try:
+            metadata = os.lstat(source)
+            if stat.S_ISLNK(metadata.st_mode):
+                info = self._info(name, tarfile.SYMTYPE, 0o777, metadata.st_mtime)
+                info.linkname = os.readlink(source)
+                self._parent(name)
+                self.tar.addfile(info)
+                return 0
+            fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        except FileNotFoundError:
+            return None
+        with os.fdopen(fd, "rb") as stream, \
+                tempfile.SpooledTemporaryFile(max_size=SPOOL_IN_MEMORY) as spool:
             opened = os.fstat(stream.fileno())
+            if not stat.S_ISREG(opened.st_mode):
+                return None
+            shutil.copyfileobj(stream, spool, 1024 * 1024)
+            size = spool.tell()
+            spool.seek(0)
             info = self._info(name, tarfile.REGTYPE, opened.st_mode & 0o777, opened.st_mtime)
-            info.size = opened.st_size
-            self.tar.addfile(info, stream)
-        return opened.st_size
+            info.size = size
+            self._parent(name)
+            self.tar.addfile(info, spool)
+        return size
 
     def _parent(self, name):
         parent = name.rpartition("/")[0]
@@ -171,6 +193,9 @@ def main(argv=None):
     except (ExportError, TrialError) as error:
         ui.error(str(error))
         return 1
+    except OSError as error:
+        ui.error(f"{error}. No archive was written.")
+        return 1
     except (Cancelled, KeyboardInterrupt):
         ui.say()
         ui.say("Stopped. No archive was written.")
@@ -209,6 +234,16 @@ def run(args, ui):
         chosen = {row[0] for row, pick in zip(rows, picks) if pick}
     groups = [inventory.groups[row[0]] for row in rows
               if row[0] in chosen and row[0] in inventory.groups]
+    running = running_programs()
+    for group in [group for group in groups if group.kind == classify.BROWSER]:
+        identity = group.id.split("/", 1)[1]
+        if running & set(classify.BROWSER_PROCESSES.get(identity, ())):
+            ui.warn(f"{group.label} is open, so its profile is left out. Close it and export "
+                    "again to include it.")
+            groups.remove(group)
+    keyring = _keyring_for_browsers(inventory, groups)
+    if keyring is not None:
+        groups.append(keyring)
     secrets = any(group.kind in (classify.KEYS, classify.BROWSER) for group in groups)
     if secrets:
         ui.warn("The archive will contain keys, sign-ins or a browser profile. Anyone with the "
@@ -246,7 +281,10 @@ def run(args, ui):
                             entry.relative, entry, read=lambda path=source: _read(path)):
                         continue
                     _write_parents(out, home, home_prefix, entry.relative)
-                    written += out.copy(f"{home_prefix}/{entry.relative}", source)
+                    copied = out.copy(f"{home_prefix}/{entry.relative}", source)
+                    if copied is None:
+                        continue
+                    written += copied
                     included += 1
                     skel = trial.skel / entry.relative
                     if os.path.lexists(skel) and not os.path.isdir(skel):
@@ -270,6 +308,23 @@ def run(args, ui):
     ui.say("On the new install, extract it and run import.sh inside:")
     ui.say(f"  tar -xzf {final.name} && {name}/import.sh")
     return 0
+
+
+def _keyring_for_browsers(inventory, groups):
+    """A browser profile's saved logins need the login keyring; bring it along."""
+    if not any(group.kind == classify.BROWSER for group in groups):
+        return None
+    if any(group.id == classify.KEYS_GROUP for group in groups):
+        return None
+    keys = inventory.groups.get(classify.KEYS_GROUP)
+    if keys is None:
+        return None
+    keyring = type(keys)(classify.KEYS_GROUP, classify.KEYS, keys.label,
+                         source_base=keys.source_base)
+    for entry in keys.entries:
+        if entry.relative.startswith(".local/share/keyrings"):
+            keyring.entries.append(entry)
+    return keyring if keyring.entries else None
 
 
 def _read(path):

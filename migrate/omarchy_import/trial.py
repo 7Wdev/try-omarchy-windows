@@ -126,12 +126,11 @@ class Trial:
         if not candidates:
             raise TrialError("the trial disk has no user account yet; start Try Omarchy once "
                              "and finish setup before importing")
-        self.accounts = candidates
-        self.account = candidates[0]
         group_text = _read_text(self.root / "etc/group")
-        self.account = Account(self.account.name, self.account.uid, self.account.gid,
-                               self.account.home,
-                               groups_of(group_text, self.account.name, self.account.gid))
+        self.accounts = [Account(account.name, account.uid, account.gid, account.home,
+                                 groups_of(group_text, account.name, account.gid))
+                         for account in candidates]
+        self.account = self.accounts[0]
 
     def choose(self, name):
         for account in self.accounts:

@@ -34,6 +34,7 @@ class PlaceTests(unittest.TestCase):
         self.assertEqual(self.place(".config/obsidian").kind, SETTINGS)  # in skel
         self.assertEqual(self.place(".config/gh").kind, KEYS)
         self.assertEqual(self.place(".config/chromium").group, "browser/chromium")
+        self.assertEqual(self.place(".config/mozilla"), Place(BROWSER, "browser/firefox-xdg", "Firefox"))
         self.assertEqual(self.place(".config/pulse").kind, SKIP)
         self.assertEqual(self.place(".config/Slack"), Place(APPS, "apps/.config/Slack", "Slack"))
 

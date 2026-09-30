@@ -86,6 +86,26 @@ class CliTests(CliCase):
         status, _ = self.main("--yes", "--select", "settings,nope")
         self.assertEqual(status, 2)
 
+    def test_json_needs_dry_run_or_yes(self):
+        status, _ = self.main("--json")
+        self.assertEqual(status, 2)
+        self.assertFalse((self.home / ".config/mise/config.toml").exists())
+
+    def test_mounts_that_could_not_be_undone_are_reported(self):
+        from omarchy_import import attach
+        errors = io.StringIO()
+        original = attach.Session.close
+
+        def failing_close(session):
+            original(session)
+            return ["umount /tmp/x: busy"]
+
+        with mock.patch.object(attach.Session, "close", failing_close), \
+                contextlib.redirect_stdout(errors):
+            cli.main(["--root", str(self.root), "--yes", "--select", "settings"],
+                     runner=self.runner)
+        self.assertIn("--cleanup", errors.getvalue())
+
     def test_refuses_to_run_as_root(self):
         with mock.patch("os.geteuid", return_value=0):
             status, _ = self.main("--yes")

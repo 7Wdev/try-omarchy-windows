@@ -11,6 +11,12 @@ class Cancelled(Exception):
     pass
 
 
+def printable(text):
+    """File names from disk may hold bytes that are not UTF-8 (surrogate
+    escapes); show them as replacement characters instead of crashing."""
+    return str(text).encode("utf-8", "surrogateescape").decode("utf-8", "replace")
+
+
 class UI:
     def __init__(self, interactive=True, use_gum=None, stream=None):
         self.stream = stream or sys.stdout
@@ -22,7 +28,7 @@ class UI:
     # Output ---------------------------------------------------------------
 
     def say(self, text=""):
-        print(text, file=self.stream, flush=True)
+        print(printable(text), file=self.stream, flush=True)
 
     def heading(self, text):
         if self.gum:
@@ -32,15 +38,17 @@ class UI:
             self.say("=" * len(text))
 
     def warn(self, text):
+        text = printable(text)
         if self.gum:
             subprocess.run(["gum", "style", "--foreground", "214", text])
         else:
             self.say(f"Warning: {text}")
 
     def error(self, text):
-        print(f"Error: {text}", file=sys.stderr, flush=True)
+        print(f"Error: {printable(text)}", file=sys.stderr, flush=True)
 
     def progress(self, done, total, label=""):
+        label = printable(label)
         if not self.stream.isatty():
             if done == total or done % 500 == 0:
                 self.say(f"  {done}/{total}")
@@ -52,6 +60,7 @@ class UI:
         print(f"\r\033[K{text}", end="" if done < total else "\n", file=self.stream, flush=True)
 
     def pager(self, text):
+        text = printable(text)
         if self.interactive and shutil.which("less"):
             subprocess.run(["less", "-R", "-F", "-X"], input=text, text=True)
         else:
@@ -106,6 +115,7 @@ class UI:
             picked = [option for option, on in zip(options, selected) if on]
             if picked:
                 argv += ["--selected", ",".join(picked)]
+            options = [printable(option) for option in options]
             result = subprocess.run([*argv, "--", *options], stdout=subprocess.PIPE, text=True)
             if result.returncode != 0:
                 raise Cancelled()

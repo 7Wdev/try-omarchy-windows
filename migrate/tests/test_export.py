@@ -16,6 +16,9 @@ from tests import fixtures
 
 class ExportCase(unittest.TestCase):
     def setUp(self):
+        running = mock.patch.object(export, "running_programs", return_value=set())
+        self.running = running.start()
+        self.addCleanup(running.stop)
         scratch = tempfile.TemporaryDirectory()
         self.addCleanup(scratch.cleanup)
         self.base = Path(scratch.name)
@@ -81,12 +84,39 @@ class ExportTests(ExportCase):
                          0o600)
 
     def test_nothing_is_left_when_the_export_fails(self):
+        errors = io.StringIO()
         with mock.patch.object(export, "importer_archive", side_effect=OSError("disk full")):
-            with contextlib.redirect_stdout(io.StringIO()), \
-                    contextlib.redirect_stderr(io.StringIO()), self.assertRaises(OSError):
-                export.main(["--root", str(self.root), "--yes", "--select", "settings",
-                             str(self.dest)])
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(errors):
+                status = export.main(["--root", str(self.root), "--yes", "--select", "settings",
+                                      str(self.dest)])
+        self.assertEqual(status, 1)
+        self.assertIn("No archive was written", errors.getvalue())
         self.assertEqual(list(self.dest.iterdir()), [])
+
+    def test_a_browser_profile_brings_the_keyring(self):
+        names = self.names(self.export("browser"))
+        self.assertIn("trial-root/home/omarchy/.config/chromium/Default/Bookmarks", names)
+        self.assertIn("trial-root/home/omarchy/.local/share/keyrings/Default_keyring.keyring", names)
+        self.assertNotIn("trial-root/home/omarchy/.ssh/id_ed25519", names)
+
+    def test_an_open_browser_is_left_out(self):
+        self.running.return_value = {"chromium"}
+        names = self.names(self.export("browser,settings"))
+        self.assertFalse(any("chromium/Default" in name for name in names))
+
+    def test_files_that_vanish_or_change_while_exporting(self):
+        original = export.Writer.copy
+        target = self.trial_home / "Documents/resume.md"
+
+        def racing_copy(writer, name, source):
+            if Path(source) == target:
+                target.unlink()
+            return original(writer, name, source)
+
+        with mock.patch.object(export.Writer, "copy", racing_copy):
+            names = self.names(self.export("settings,files"))
+        self.assertNotIn("trial-root/home/omarchy/Documents/resume.md", names)
+        self.assertIn("trial-root/home/omarchy/.bashrc", names)
 
     def test_round_trip_through_the_bundled_importer(self):
         root = self.extract(self.export("all"))

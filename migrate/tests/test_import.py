@@ -243,6 +243,101 @@ class ApplyTests(ImportCase):
         self.assertEqual(leftovers, [])
 
 
+class ReviewRegressionTests(ImportCase):
+    def test_interrupted_browser_import_finishes_on_the_next_run(self):
+        plan = self.plan(("browser/chromium",))
+        partial = [action for action in plan.actions][:2]  # moved aside, root folder made
+        self.assertEqual(partial[0].action, "replace-profile")
+        plan.actions = partial
+        self.apply(plan)
+        self.assertFalse((self.home / ".config/chromium/Default/Bookmarks").exists())
+        again = self.plan(("browser/chromium",))
+        self.assertNotIn("replace-profile", [action.action for action in again.actions])
+        self.apply(again)
+        self.assertTrue((self.home / ".config/chromium/Default/Bookmarks").exists())
+        done = self.plan(("browser/chromium",))
+        self.assertEqual(done.actions[0].action, "imported")
+
+    def test_names_that_are_not_utf8_come_over(self):
+        name = b"caf\xe9.txt".decode("utf-8", "surrogateescape")
+        fixtures.write(self.trial_home / "Documents" / name, b"menu\n", fixtures.TRIAL_EDIT)
+        report = self.run_import(("files/Documents",))
+        self.assertEqual(report.failures(), [])
+        self.assertEqual((self.home / "Documents" / name).read_bytes(), b"menu\n")
+
+    def test_later_trial_changes_keep_what_was_merged_in(self):
+        self.run_import()
+        self.assertIn(b"new release", self.read(".config/hypr/bindings.lua"))
+        fixtures.write(self.trial_home / ".config/hypr/bindings.lua",
+                       fixtures.TRIAL_BINDINGS + b'bind("SUPER", "N", "notes")\n'
+                       b'bind("SUPER", "M", "music")\n', fixtures.TRIAL_EDIT + 900)
+        plan = self.plan()
+        action = self.actions(plan)[".config/hypr/bindings.lua"]
+        self.assertIn(action.action, ("merge", "replace"))
+        self.assertTrue(action.backup)
+        self.apply(plan)
+        merged = self.read(".config/hypr/bindings.lua")
+        self.assertIn(b"new release", merged)
+        self.assertIn(b'"music"', merged)
+
+    def test_keys_alone_keep_this_computers_browser_key(self):
+        native = fixtures.KEYRING_EMPTY + b"""
+[1]
+item-type=0
+display-name=Chromium Safe Storage
+secret=native-secret
+mtime=1
+ctime=1
+
+[1:attribute0]
+name=application
+type=string
+value=chromium
+"""
+        fixtures.write(self.home / ".local/share/keyrings/Default_keyring.keyring", native,
+                       fixtures.HOME_EDIT, 0o600)
+        self.run_import(("keys",))
+        keyring = self.read(".local/share/keyrings/Default_keyring.keyring")
+        self.assertIn(b"native-secret", keyring)
+        self.assertNotIn(b"trial-secret", keyring)
+
+    def test_an_unreadable_file_is_skipped_not_fatal(self):
+        locked = self.trial_home / ".config/hypr/private.lua"
+        fixtures.write(locked, b"secret\n", fixtures.TRIAL_EDIT)
+        os.chmod(locked, 0)
+        self.addCleanup(os.chmod, locked, 0o600)
+        if os.access(locked, os.R_OK):
+            self.skipTest("running as root")
+        plan = self.plan()
+        action = self.actions(plan)[".config/hypr/private.lua"]
+        self.assertEqual(action.action, "skip")
+        self.assertIn("could not be read", action.reason)
+        self.apply(plan)
+        self.assertIn(b'"notes"', self.read(".config/hypr/bindings.lua"))
+
+    def test_a_large_history_is_still_merged(self):
+        history = b"".join(b"echo %d\n" % number for number in range(200_000))
+        self.assertGreater(len(history), textmerge.TEXT_LIMIT)
+        fixtures.write(self.trial_home / ".bash_history", history, fixtures.TRIAL_EDIT)
+        fixtures.write(self.home / ".bash_history", b"typed here\n", fixtures.HOME_EDIT)
+        self.run_import()
+        merged = self.read(".bash_history")
+        self.assertTrue(merged.startswith(b"echo 0\n"))
+        self.assertTrue(merged.endswith(b"typed here\n"))
+
+    def test_a_copy_beside_is_refreshed_after_trial_changes(self):
+        fixtures.write(self.home / ".bashrc", b"# mine\n", fixtures.HOME_EDIT)
+        self.run_import(resolution="keep")
+        fixtures.write(self.trial_home / ".bashrc", b"alias gs='git status -s'\n",
+                       fixtures.TRIAL_EDIT + 900)
+        plan = self.plan(resolution="keep")
+        action = self.actions(plan)[".bashrc"]
+        self.assertEqual(action.action, "conflict")
+        self.apply(plan)
+        self.assertEqual(self.read(".bashrc"), b"# mine\n")
+        self.assertIn(b"git status -s", self.read(".bashrc.from-try-omarchy-2"))
+
+
 class InterruptedImportTests(ImportCase):
     def test_import_killed_midway_finishes_on_the_next_run(self):
         # Add enough files that the kill lands in the middle.

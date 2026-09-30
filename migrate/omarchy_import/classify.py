@@ -86,6 +86,7 @@ BROWSERS = {
     ".config/microsoft-edge-dev": ("microsoft-edge-dev", "Microsoft Edge Dev"),
     ".config/net.imput.helium": ("helium", "Helium"),
     ".mozilla": ("firefox", "Firefox"),
+    ".config/mozilla": ("firefox-xdg", "Firefox"),
     ".librewolf": ("librewolf", "LibreWolf"),
     ".zen": ("zen", "Zen Browser"),
 }
@@ -105,8 +106,25 @@ BROWSER_PROCESSES = {
     "microsoft-edge-dev": ("msedge",),
     "helium": ("helium",),
     "firefox": ("firefox", "firefox-bin"),
+    "firefox-xdg": ("firefox", "firefox-bin"),
     "librewolf": ("librewolf",),
     "zen": ("zen", "zen-bin"),
+}
+
+# The keyring application names each Chromium-based browser stores its
+# "Safe Storage" key under.
+BROWSER_KEYRING_APPS = {
+    "chromium": ("chromium",),
+    "google-chrome": ("chrome",),
+    "google-chrome-beta": ("chrome",),
+    "google-chrome-unstable": ("chrome",),
+    "brave": ("brave",),
+    "vivaldi": ("vivaldi",),
+    "vivaldi-snapshot": ("vivaldi",),
+    "microsoft-edge": ("microsoft-edge", "msedge"),
+    "microsoft-edge-beta": ("microsoft-edge", "msedge"),
+    "microsoft-edge-dev": ("microsoft-edge", "msedge"),
+    "helium": ("helium",),
 }
 
 CONFIG_KEYS = {"gh", "hub", "op", "1Password", "rclone", "github-copilot", "gcloud", "doctl",

@@ -18,6 +18,8 @@ import subprocess
 import tempfile
 
 TEXT_LIMIT = 1024 * 1024
+# Shell histories and similar lists can grow large; they are still merged.
+LIST_LIMIT = 32 * 1024 * 1024
 
 TRY_BLOCKS = {
     b"-- BEGIN TRY OMARCHY PINCH DEVICE": b"-- END TRY OMARCHY PINCH DEVICE",
@@ -121,8 +123,15 @@ def merge_lists(relative, ours, theirs):
     ours_lines = _lines(ours)
     theirs_lines = _lines(theirs)
     if mode == "history":
-        # Trial history first, then anything typed on this computer.
-        combined = ours_lines + theirs_lines
+        # Trial history first, then anything typed on this computer. After an
+        # earlier import this computer's history starts with the trial's
+        # history as it was then; that shared start is not repeated.
+        shared = 0
+        for mine, other in zip(ours_lines, theirs_lines):
+            if mine != other:
+                break
+            shared += 1
+        combined = ours_lines + theirs_lines[shared:]
     else:
         seen = set(theirs_lines)
         combined = theirs_lines + [line for line in ours_lines if line not in seen]
@@ -241,16 +250,35 @@ def keyring_items(data):
     return parse_keyring(data)[1]
 
 
-def merge_keyrings(trial, current):
-    """Merge the trial keyring into this computer's; trial items win on a clash.
+def _item_application(lines):
+    """The application attribute of a keyring item, such as chromium."""
+    for index, line in enumerate(lines):
+        if line == "name=application":
+            for following in lines[index + 1:index + 4]:
+                if following.startswith("value="):
+                    return following[len("value="):]
+    return None
 
-    Items are renumbered; an item that only exists on this computer keeps its
-    content.
+
+def merge_keyrings(trial, current, trial_wins=()):
+    """Merge the trial keyring into this computer's.
+
+    Items only in one keyring are kept. When both have the same item (same
+    name and attributes), this computer's stays, except for applications in
+    trial_wins: a browser whose profile comes from the trial needs the
+    trial's key to read its saved logins. Items are renumbered.
     """
     trial_header, trial_items = parse_keyring(trial)
     current_header, current_items = parse_keyring(current)
+    current_by_identity = {_item_identity(lines): lines for _, lines in current_items}
     trial_identities = {_item_identity(lines) for _, lines in trial_items}
-    merged = [lines for _, lines in trial_items]
+    merged = []
+    for _, lines in trial_items:
+        identity = _item_identity(lines)
+        if identity in current_by_identity and _item_application(lines) not in set(trial_wins):
+            merged.append(current_by_identity[identity])
+        else:
+            merged.append(lines)
     merged += [lines for _, lines in current_items if _item_identity(lines) not in trial_identities]
     header = current_header or trial_header
     output = ["[keyring]", *[line for line in header if line.strip()], ""]

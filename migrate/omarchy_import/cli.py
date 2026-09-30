@@ -18,10 +18,12 @@ from .selection import RESERVE_BYTES, SelectionError, option_rows, resolve_selec
 from .ui import UI, Cancelled, human_size, plain_label
 
 class RunState:
-    """Whether anything on this computer may have changed yet."""
+    """Whether anything on this computer may have changed yet, and the
+    mount session to report on afterwards."""
 
     def __init__(self):
         self.started = False
+        self.session = None
 
 
 class Stop(Exception):
@@ -75,6 +77,9 @@ def main(argv=None, runner=None):
         ui.error("run this as the account that should receive your trial, not as root. "
                  "It asks for your password when it needs to mount something.")
         return 2
+    if args.json and not (args.yes or args.dry_run):
+        ui.error("--json shows the plan with --dry-run, or imports without asking with --yes")
+        return 2
     if not ui.interactive and not (args.yes or args.json or args.dry_run):
         ui.error("run this in a terminal to choose what to bring over, or pass --yes to "
                  "accept the defaults")
@@ -84,8 +89,13 @@ def main(argv=None, runner=None):
     runner = runner or Runner()
     state = RunState()
     try:
-        with contextlib.ExitStack() as stack:
-            return run(args, ui, runner, stack, state)
+        try:
+            with contextlib.ExitStack() as stack:
+                return run(args, ui, runner, stack, state)
+        finally:
+            if state.session is not None and state.session.errors:
+                ui.warn("Some of what the import mounted could not be undone ("
+                        + "; ".join(state.session.errors) + "). Run this again with --cleanup.")
     except Stop as stop:
         if str(stop):
             ui.error(str(stop))
@@ -104,17 +114,26 @@ def main(argv=None, runner=None):
 
 
 def cleanup(ui, runner=None):
-    """Undo what an interrupted run left: mounts, then snapshots, then loop devices."""
+    """Undo what an interrupted run left, innermost first: the trial mounts,
+    snapshots, loop devices, then the Windows drives they were read from."""
     runner = runner or Runner()
     status = 0
     cleaned = 0
-    for mountpoint in attach.leftover_mounts():
-        try:
-            runner.run(["umount", mountpoint], sudo=True)
-            cleaned += 1
-        except CommandError as error:
-            ui.error(str(error))
-            status = 1
+    mounts = attach.leftover_mounts()
+    windows = [path for path in mounts if os.path.basename(path).startswith("windows-")]
+    inner = [path for path in mounts if path not in windows]
+
+    def unmount(paths):
+        nonlocal status, cleaned
+        for mountpoint in paths:
+            try:
+                runner.run(["umount", mountpoint], sudo=True)
+                cleaned += 1
+            except CommandError as error:
+                ui.error(str(error))
+                status = 1
+
+    unmount(inner)
     try:
         for line in runner.run(["dmsetup", "ls"], sudo=True).stdout.splitlines():
             name = line.split()[0] if line.split() else ""
@@ -124,12 +143,15 @@ def cleanup(ui, runner=None):
         for line in runner.run(["losetup", "--list", "--noheadings", "--output",
                                 "NAME,BACK-FILE"], sudo=True).stdout.splitlines():
             parts = line.split(None, 1)
-            if len(parts) == 2 and attach.is_our_loop_backing(parts[1]):
+            if len(parts) == 2 and (attach.is_our_loop_backing(parts[1]) or any(
+                    parts[1].strip().startswith(path + "/") for path in windows)):
                 runner.run(["losetup", "--detach", parts[0]], sudo=True, check=False)
                 cleaned += 1
     except CommandError as error:
         ui.error(str(error))
         status = 1
+    unmount(windows)
+    cleaned += attach.remove_scratch_files()
     ui.say("Cleaned up what an earlier run left behind." if cleaned else "Nothing was left behind.")
     return status
 
@@ -258,6 +280,7 @@ def free_bytes(path):
 
 def run(args, ui, runner, stack, state):
     session = stack.enter_context(attach.Session(runner))
+    state.session = session
     home = Path.home()
     ui.heading("Import from Try Omarchy")
     root, install = find_trial(args, ui, runner, session)

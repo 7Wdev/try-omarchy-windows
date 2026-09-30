@@ -26,6 +26,11 @@ class TrialTests(unittest.TestCase):
         self.assertTrue(trial.is_try)
         self.assertEqual(trial.share_names(), {"Windows"})
 
+    def test_a_chosen_account_keeps_its_groups(self):
+        trial = Trial(self.root)
+        trial.choose("ada")
+        self.assertIn("docker", trial.account.groups)
+
     def test_packages_added_on_top_of_the_image(self):
         packages = Trial(self.root).packages()
         self.assertEqual(sorted(packages.added), ["cowsay", "figlet"])

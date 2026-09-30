@@ -61,12 +61,13 @@ class Session:
         self.workdir = Path(workdir) if workdir else runtime_directory()
         self._undo = []
         self._counter = 0
+        self.errors = []
 
     def __enter__(self):
         return self
 
     def __exit__(self, *arguments):
-        self.close()
+        self.errors.extend(self.close())
 
     def _mountpoint(self, name):
         self._counter += 1
@@ -169,6 +170,46 @@ def is_our_loop_backing(path):
     parts = Path(path).parts
     return name == "disk.raw" and len(parts) >= 3 and parts[-2].lower() == "vm" \
         and parts[-3].lower().startswith("tryomarchy")
+
+
+def remove_scratch_files():
+    """Delete snapshot scratch files of ours that no loop device uses anymore."""
+    removed = 0
+    try:
+        names = os.listdir("/var/tmp")
+    except OSError:
+        return 0
+    for name in names:
+        if not (name.startswith(COW_PREFIX) and name.endswith(".cow")):
+            continue
+        path = os.path.join("/var/tmp", name)
+        try:
+            metadata = os.lstat(path)
+            if metadata.st_uid != os.getuid() or not stat.S_ISREG(metadata.st_mode):
+                continue
+            if _loop_uses(path):
+                continue
+            os.unlink(path)
+            removed += 1
+        except OSError:
+            continue
+    return removed
+
+
+def _loop_uses(path):
+    try:
+        for name in os.listdir("/sys/block"):
+            if not name.startswith("loop"):
+                continue
+            try:
+                with open(f"/sys/block/{name}/loop/backing_file", encoding="utf-8") as source:
+                    if source.read().strip() == path:
+                        return True
+            except OSError:
+                continue
+    except OSError:
+        return True
+    return False
 
 
 def leftover_mounts():
