@@ -194,5 +194,6 @@ func portableRecoveryAllowed(action, backup, restore string) bool {
 	if restore != "" {
 		return false
 	}
-	return action == "backup" || action == "restore" || action == "snapshots" || action == "portable-create" || action == "" && backup != ""
+	return action == "backup" || action == "restore" || action == "snapshots" || action == "portable-create" ||
+		action == "install-omarchy" || action == "" && backup != ""
 }

@@ -70,6 +70,7 @@ const (
 	settingsAppListID            = 2125
 	settingsAltTabID             = 2126
 	settingsUSBSelectionID       = 2127
+	settingsInstallOmarchyID     = 2130
 	settingsSaveID               = 2001
 	settingsCancelID             = 2002
 	settingsBrowseID             = 2003
@@ -636,6 +637,8 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 				launchRecovery("reset")
 			case settingsUninstallID:
 				launchRecovery("uninstall")
+			case settingsInstallOmarchyID:
+				launchRecovery("install-omarchy")
 			}
 			return 0
 		case settingsRecoveryDone:
@@ -1083,6 +1086,10 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 	if portable || stateErr != nil || state.Retained == nil || !state.Retained.Booted || !pathsEqual(state.Retained.Destination, dataDir) {
 		procEnableWindow.Call(cleanupButton, 0)
 	}
+	y += 40
+	mk("STATIC", "Ready to install Omarchy for real? Install it next to Windows and bring this trial along.", left, y, clientW-2*left, 36, ssNoprefix, 0)
+	y += 40
+	mk("BUTTON", "Install Omarchy...", left, y, 160, 26, wsTabstop, settingsInstallOmarchyID)
 	pages[3] = append(pages[3], scroll.controls...)
 	pageHeights[3] = y + 40
 	scroll.controls = nil
