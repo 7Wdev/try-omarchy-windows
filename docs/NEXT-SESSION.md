@@ -25,7 +25,8 @@ For all GitHub mutations under `/home/bts/Projects`, invoke `/home/bts/.local/bi
 The importer in [#241](https://github.com/omacom/try-omarchy-windows/pull/241)
 is merged. [#242](https://github.com/omacom/try-omarchy-windows/pull/242)
 (guest export) and [#243](https://github.com/omacom/try-omarchy-windows/pull/243)
-(Windows walkthrough) remain draft. Their baseline heads passed CI.
+(Windows walkthrough) remain draft. #243's follow-up commit `85ca7f6` passes
+all four CI checks (run `36766031530`).
 The #243 follow-up reports unknown encryption status with a BitLocker
 settings button and opens Disk Management using its full Windows system path.
 The short prerequisite pages are compact; the install steps have enough text
@@ -45,13 +46,22 @@ file exclusions ignored and signatures 1.459.485.0. This is not SmartScreen
 or signed-release acceptance. Screenshots, logs, the build and cleanup evidence
 are retained locally under `/data/try-omarchy-install-review-20260930/`.
 
+The #242 existing-disk check now passes. A disposable copy of the customized
+revision-39 trial booted with the exact CI candidate from run `36742607778`
+(source `496c23d`), received revision 44 through the initramfs compatibility
+repair, preserved its custom files and exported 159 files. The archive's
+bundled importer matches the installed one, and the exporter still works
+after reboot. A network-isolated omabox copied documents, a Git workspace,
+Chromium bookmarks and test SSH keys with matching bytes. The broader import
+also copied settings, then reported the unavailable mise downloads and the
+old fixture's invalid `hl.bind` line. Those follow-up steps are not a clean
+settings acceptance. Evidence is retained locally under
+`/data/try-omarchy-export-upgrade-20260930/`; the original trial is unchanged.
+
 Next checks:
 
 - On a PC with UAC enabled, test Fast Startup permission approval and
   cancellation. The VM cannot provide this acceptance as configured.
-- Upgrade a disposable existing trial to the #242 guest candidate, then run
-  `try-omarchy-export` and verify the bundled offline import. Fresh-image CI
-  does not cover this upgrade path.
 - Run the real ISO dual-boot and import test on an owner-approved spare disk.
   Keep the Windows installation and trial intact through the import.
 - Before publishing, scan and validate the exact signed launcher. The native
