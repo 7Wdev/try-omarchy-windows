@@ -1,9 +1,7 @@
 package main
 
 import (
-	"encoding/binary"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,43 +17,71 @@ const (
 	dualBootGuideURL  = "https://learn.omacom.io/2/the-omarchy-manual/120/dual-boot-install"
 	migrationGuideURL = "https://github.com/omacom/try-omarchy-windows/blob/master/docs/MIGRATION.md"
 	exportGuideURL    = migrationGuideURL + "#replacing-windows-or-moving-to-another-computer"
-	ext4Magic         = 0xEF53
-	ext4NeedsRecovery = 0x4
 )
+
+// bitLockerState is ordered so that the drive needing the most work wins.
+type bitLockerState int
+
+const (
+	bitLockerUnknown bitLockerState = iota
+	bitLockerOff
+	bitLockerDecrypting
+	bitLockerOn
+)
+
+// bitLockerFromShell reads the System.Volume.BitLockerProtection property
+// Explorer uses for its drive icons. Measured on Windows 11: 1 on, 2 off,
+// 3 encrypting, 4 decrypting, 5 suspended, 6 locked. Everything but off and
+// decrypting leaves the drive encrypted, which the Omarchy installer refuses.
+func bitLockerFromShell(value int32) bitLockerState {
+	switch value {
+	case 0:
+		return bitLockerUnknown
+	case 2:
+		return bitLockerOff
+	case 4:
+		return bitLockerDecrypting
+	default:
+		return bitLockerOn
+	}
+}
 
 type installReadiness struct {
 	Portable    bool
 	DiskMissing bool
 	Running     bool
-	// Unclean means the trial's filesystem was not shut down cleanly. The
-	// importer copes, but the last changes are only in its journal.
-	Unclean          bool
-	FastStartup      bool
-	FastStartupKnown bool
-	SystemDrive      string
-	SystemFree       int64
+	// ShutdownRequested is set by the walkthrough after it asked Omarchy to
+	// shut down, so a slow shutdown reads as in progress.
+	ShutdownRequested bool
+	// FastStartup is true when it is on or cannot be read. Turning it off
+	// is harmless either way.
+	FastStartup    bool
+	BitLocker      bitLockerState
+	BitLockerDrive string
+	SystemDrive    string
+	SystemFree     int64
 }
 
 type installProbes struct {
 	diskLocked  func(path string) bool
 	fastStartup func() (on, known bool)
+	bitLocker   func(drive string) bitLockerState
 	freeBytes   func(path string) (int64, error)
 	systemDrive func() string
 }
 
-// ext4Unclean reports whether a raw ext4 image still needs journal recovery.
-// ok is false when the file is not an ext4 filesystem this check understands.
-func ext4Unclean(r io.ReaderAt) (unclean, ok bool) {
-	block := make([]byte, 1024)
-	if _, err := r.ReadAt(block, 1024); err != nil {
-		return false, false
+// installDrives lists the Windows drive and, if different, the drive that
+// holds the trial: the installer needs the first, the importer reads both.
+func installDrives(systemDrive, dir string) []string {
+	var drives []string
+	for _, drive := range []string{systemDrive, filepath.VolumeName(dir)} {
+		drive = strings.ToUpper(drive)
+		if len(drive) != 2 || drive[1] != ':' || (len(drives) > 0 && drives[0] == drive) {
+			continue
+		}
+		drives = append(drives, drive)
 	}
-	if binary.LittleEndian.Uint16(block[0x38:]) != ext4Magic {
-		return false, false
-	}
-	state := binary.LittleEndian.Uint16(block[0x3A:])
-	incompat := binary.LittleEndian.Uint32(block[0x60:])
-	return incompat&ext4NeedsRecovery != 0 || state&1 == 0, true
+	return drives
 }
 
 func assessInstallReadiness(dir string, probes installProbes) installReadiness {
@@ -69,12 +95,10 @@ func assessInstallReadiness(dir string, probes installProbes) installReadiness {
 		r.DiskMissing = !r.Portable
 	} else if probes.diskLocked != nil && probes.diskLocked(disk) {
 		r.Running = true
-	} else if file, err := os.Open(disk); err == nil {
-		r.Unclean, _ = ext4Unclean(file)
-		file.Close()
 	}
 	if probes.fastStartup != nil {
-		r.FastStartup, r.FastStartupKnown = probes.fastStartup()
+		on, known := probes.fastStartup()
+		r.FastStartup = on || !known
 	}
 	if probes.systemDrive != nil {
 		r.SystemDrive = probes.systemDrive()
@@ -84,20 +108,26 @@ func assessInstallReadiness(dir string, probes installProbes) installReadiness {
 			r.SystemFree = free
 		}
 	}
+	if probes.bitLocker != nil {
+		for _, drive := range installDrives(r.SystemDrive, dir) {
+			if state := probes.bitLocker(drive); state > r.BitLocker {
+				r.BitLocker, r.BitLockerDrive = state, drive
+			}
+		}
+	}
 	return r
 }
 
 type installAction int
 
 const (
-	installNext installAction = iota
-	installRecheck
+	installRecheck installAction = iota
+	installShutDown
 	installFastStartup
-	installEncryption
+	installBitLocker
 	installExportGuide
 	installDiskManagement
-	installDualBootGuide
-	installMigrationGuide
+	installGuide
 	installDone
 )
 
@@ -106,88 +136,66 @@ type installButton struct {
 	action installAction
 }
 
-// installChecklist is the first page: what has to be true before installing.
-func installChecklist(r installReadiness) (string, []installButton) {
+// installPage is what the walkthrough shows next: what still has to be done,
+// each with a button that does it or opens the right place, or the install
+// steps once nothing is left.
+func installPage(r installReadiness) (string, []installButton) {
 	if r.Portable {
-		return "This is a portable Try Omarchy. Omarchy cannot read a portable disk directly, " +
-				"so move your setup with an export instead:\n\n" +
-				"1. Start Omarchy from this portable copy.\n" +
-				"2. Open a terminal (Super+Enter) and run try-omarchy-export.\n" +
-				"3. Install Omarchy, then run import.sh from the export.\n\n" +
-				"The guide has the details.",
+		return "Omarchy can't read a portable copy's disk directly, so bring your setup over " +
+				"with an export: start Omarchy from this copy, run try-omarchy-export in a " +
+				"terminal, and follow the steps it prints.",
 			[]installButton{{"Open the guide", installExportGuide}, {"Close", installDone}}
 	}
 	if r.DiskMissing {
-		return "This installation has no Omarchy disk yet. Start Omarchy once and set it up, " +
-				"then come back here when you are ready to install it for real.",
+		return "Start Omarchy and set it up first, then come back here.",
 			[]installButton{{"Close", installDone}}
 	}
-	var b strings.Builder
-	b.WriteString("Install Omarchy next to Windows and keep what you set up here: after installing, " +
-		"one command in the new Omarchy brings this trial over. Keep Try Omarchy installed until " +
-		"then, since uninstalling it deletes the trial.\n\n")
-	mark := func(done bool) string {
-		if done {
-			return "Done: "
-		}
-		return "To do: "
-	}
-	if r.Running {
-		b.WriteString(mark(false) + "shut Omarchy down, from its menu (System > Shutdown) or with " +
-			"Shut down Omarchy in the tray.\n")
-	} else {
-		b.WriteString(mark(true) + "Omarchy is shut down.\n")
-		if r.Unclean {
-			b.WriteString("   It was not shut down cleanly last time. That is fine, but starting it " +
-				"once and shutting it down from its menu saves your latest changes properly.\n")
-		}
-	}
-	switch {
-	case !r.FastStartupKnown:
-		b.WriteString("Check: turn off Fast Startup in Control Panel > Power Options > Choose what " +
-			"the power buttons do.\n")
-	case r.FastStartup:
-		b.WriteString(mark(false) + "turn off Fast Startup. With it on, Windows never fully shuts " +
-			"down and Omarchy cannot read your files safely.\n")
-	default:
-		b.WriteString(mark(true) + "Fast Startup is off.\n")
-	}
-	b.WriteString("Check: turn off BitLocker (Device encryption). The Omarchy installer needs it off, " +
-		"and it lets Omarchy read this drive.\n")
-	if r.SystemFree >= 0 {
-		b.WriteString(fmt.Sprintf("Then: make room by shrinking %s in Disk Management. It has %s free "+
-			"now.\n", r.SystemDrive, formatGiB(r.SystemFree)))
-	}
+	var todo []string
 	var buttons []installButton
+	if r.Running && r.ShutdownRequested {
+		todo = append(todo, "Omarchy is shutting down.")
+	} else if r.Running {
+		todo = append(todo, "Shut down Omarchy.")
+		buttons = append(buttons, installButton{"Shut down Omarchy", installShutDown})
+	}
 	if r.FastStartup {
+		todo = append(todo, "Turn off Fast Startup, so Windows fully shuts down.")
 		buttons = append(buttons, installButton{"Turn off Fast Startup", installFastStartup})
 	}
-	// The first button is the highlighted one, so it is the next thing to do.
-	if r.Running {
-		buttons = append(buttons, installButton{"Check again", installRecheck})
-	} else {
-		buttons = append(buttons, installButton{"Next", installNext})
+	switch r.BitLocker {
+	case bitLockerOn:
+		todo = append(todo, "Turn off BitLocker on "+r.BitLockerDrive+". Omarchy can't install next to "+
+			"an encrypted drive.")
+		buttons = append(buttons, installButton{"Open BitLocker settings", installBitLocker})
+	case bitLockerDecrypting:
+		todo = append(todo, "Wait for "+r.BitLockerDrive+" to finish decrypting.")
 	}
-	buttons = append(buttons, installButton{"Encryption settings", installEncryption},
-		installButton{"Close", installDone})
-	return b.String(), buttons
+	if len(todo) == 0 {
+		return installSteps(r)
+	}
+	body := "Before installing Omarchy next to Windows:\n\n• " + strings.Join(todo, "\n• ")
+	return body, append(buttons, installButton{"Check again", installRecheck}, installButton{"Close", installDone})
 }
 
-// installSteps is the second page: how to install and what to run afterwards.
-func installSteps() (string, []installButton) {
-	body := "1. Open Disk Management, right-click " + systemDriveLabel() + " and choose Shrink " +
-		"Volume. The space you free becomes Omarchy's.\n" +
-		"2. Follow the Omarchy manual's dual boot guide to make a USB installer and install " +
-		"Omarchy into the free space. Omarchy then starts by default; run limine-scan in " +
-		"Omarchy to add Windows to its boot menu.\n" +
-		"3. Start Omarchy, open a terminal (Super+Enter) and run:\n\n" +
+// installSteps is the last page: how to install and what to run afterwards.
+func installSteps(r installReadiness) (string, []installButton) {
+	drive := r.SystemDrive
+	if drive == "" {
+		drive = "C:"
+	}
+	room := ""
+	if r.SystemFree >= 0 {
+		room = fmt.Sprintf(" It has %s free.", formatGiB(r.SystemFree))
+	}
+	body := "Your PC is ready for Omarchy.\n\n" +
+		"1. Shrink " + drive + " in Disk Management to make room." + room + "\n" +
+		"2. Install Omarchy from a USB stick into the free space. The install guide shows how.\n" +
+		"3. In the new Omarchy, open a terminal (Super+Enter) and run:\n\n" +
 		importCommand + "\n\n" +
-		"It finds this trial on the Windows drive and asks what to bring over. The same command " +
-		"is in the migration guide, which you can open in the new Omarchy's browser."
+		"Keep Try Omarchy installed until you've run it. Uninstalling it deletes the trial."
 	return body, []installButton{
 		{"Open Disk Management", installDiskManagement},
-		{"Dual boot guide", installDualBootGuide},
-		{"Migration guide", installMigrationGuide},
+		{"Open the install guide", installGuide},
 		{"Done", installDone},
 	}
 }

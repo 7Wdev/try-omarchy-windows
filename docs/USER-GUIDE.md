@@ -245,9 +245,9 @@ curl -fsSL https://github.com/omacom/try-omarchy-windows/releases/latest/downloa
 
 It reads the trial straight off the Windows drive and brings over your
 settings, themes, apps, files and projects, and if you pick them, your
-browser profile and sign-ins. Turn off BitLocker and Fast Startup and shut
-Omarchy down in the trial before installing. **Settings > Backup and
-recovery > Install Omarchy...** checks these and shows the steps, and the
+browser profile and sign-ins. BitLocker and Fast Startup have to be off, and
+Omarchy shut down, before installing. **Settings > Backup and recovery >
+Install Omarchy...** checks these, helps turn them off and shows the steps. The
 [migration guide](MIGRATION.md) has the details.
 
 To replace Windows or move to another computer, run `try-omarchy-export`

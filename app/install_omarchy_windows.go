@@ -3,30 +3,123 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strings"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
 const fastStartupKey = `SYSTEM\CurrentControlSet\Control\Session Manager\Power`
 
+var propsys = syscall.NewLazyDLL(system32("propsys.dll"))
+
+func diskLocked(path string) bool {
+	// The launcher opens the disk without sharing, so a running Omarchy
+	// makes this fail the same way Back up does.
+	file, err := openBackupDisk(path)
+	if err != nil {
+		return true
+	}
+	file.Close()
+	return false
+}
+
 func windowsInstallProbes() installProbes {
 	return installProbes{
-		diskLocked: func(path string) bool {
-			// The launcher opens the disk without sharing, so a running
-			// Omarchy makes this fail the same way Back up does.
-			file, err := openBackupDisk(path)
-			if err != nil {
-				return true
-			}
-			file.Close()
-			return false
-		},
+		diskLocked:  diskLocked,
 		fastStartup: fastStartupEnabled,
+		bitLocker: func(drive string) bitLockerState {
+			value, ok := bitLockerProtection(drive)
+			if !ok {
+				return bitLockerUnknown
+			}
+			return bitLockerFromShell(value)
+		},
 		freeBytes:   platformDiskFreeBytes,
 		systemDrive: systemDriveLabel,
 	}
+}
+
+// bitLockerProtection reads a drive's BitLocker status the way Explorer does
+// for its drive icons, through the shell property system. Unlike
+// manage-bde or the BitLocker WMI class it needs no administrator rights.
+func bitLockerProtection(drive string) (int32, bool) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	hr, _, _ := ole32.NewProc("CoInitializeEx").Call(0, 2)
+	if uint32(hr) != 0x80010106 { // An existing COM apartment is also usable.
+		if int32(hr) < 0 {
+			return 0, false
+		}
+		defer ole32.NewProc("CoUninitialize").Call()
+	}
+	name, _ := syscall.UTF16PtrFromString("System.Volume.BitLockerProtection")
+	var key propertyKey
+	if hr, _, _ := propsys.NewProc("PSGetPropertyKeyFromName").Call(uintptr(unsafe.Pointer(name)), uintptr(unsafe.Pointer(&key))); int32(hr) < 0 {
+		return 0, false
+	}
+	path, err := syscall.UTF16PtrFromString(drive + `\`)
+	if err != nil {
+		return 0, false
+	}
+	iidShellItem2 := comGUID{0x7e9fb0d3, 0x919f, 0x4307, [8]byte{0xab, 0x2e, 0x9b, 0x18, 0x60, 0x31, 0x0c, 0x93}}
+	var item uintptr
+	if hr, _, _ := shell32.NewProc("SHCreateItemFromParsingName").Call(uintptr(unsafe.Pointer(path)), 0, uintptr(unsafe.Pointer(&iidShellItem2)), uintptr(unsafe.Pointer(&item))); int32(hr) < 0 {
+		return 0, false
+	}
+	defer recoveryCOMCall(item, 2)
+	var value int32
+	if hr := recoveryCOMCall(item, 16, uintptr(unsafe.Pointer(&key)), uintptr(unsafe.Pointer(&value))); int32(hr) < 0 { // IShellItem2::GetInt32
+		return 0, false
+	}
+	return value, true
+}
+
+// openBitLockerSettings opens the page that turns BitLocker off: Device
+// encryption in Settings on Windows Home, the BitLocker page in Control Panel
+// on the editions that have one.
+func openBitLockerSettings() {
+	var key syscall.Handle
+	path, _ := syscall.UTF16PtrFromString(`SOFTWARE\Microsoft\Windows NT\CurrentVersion`)
+	if syscall.RegOpenKeyEx(syscall.HKEY_LOCAL_MACHINE, path, 0, syscall.KEY_READ, &key) == nil {
+		edition := registryString(key, "EditionID")
+		syscall.RegCloseKey(key)
+		if edition != "" && !strings.HasPrefix(edition, "Core") {
+			cmd := exec.Command(system32("control.exe"), "/name", "Microsoft.BitLockerDriveEncryption")
+			if cmd.Start() == nil {
+				cmd.Process.Release()
+				return
+			}
+		}
+	}
+	openWindowsURL("ms-settings:deviceencryption")
+}
+
+// requestOmarchyShutdown asks the running Omarchy to shut down the way the
+// window's close button does, then waits a little for it to finish.
+func requestOmarchyShutdown(dir string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	c, err := dialQMPControl(ctx, qmpToolsPort)
+	if err != nil {
+		return err
+	}
+	err = c.Call(ctx, "system_powerdown", nil, nil)
+	c.Close()
+	if err != nil {
+		return err
+	}
+	disk := filepath.Join(dir, "vm", "disk.raw")
+	for deadline := time.Now().Add(15 * time.Second); time.Now().Before(deadline) && diskLocked(disk); {
+		time.Sleep(500 * time.Millisecond)
+	}
+	return nil
 }
 
 func readLocalMachineDword(path, name string) (uint32, bool) {
@@ -94,53 +187,45 @@ func shellOpen(target string) error {
 }
 
 // runInstallOmarchyUI walks through getting ready to install Omarchy next to
-// Windows: the checklist first, then the installation steps.
+// Windows. Each pass shows only what is left to do, and the install steps
+// once nothing is.
 func runInstallOmarchyUI(dir string) error {
+	shutdownRequested := false
 	for {
-		body, buttons := installChecklist(assessInstallReadiness(dir, windowsInstallProbes()))
+		r := assessInstallReadiness(dir, windowsInstallProbes())
+		r.ShutdownRequested = shutdownRequested
+		body, buttons := installPage(r)
 		choice, err := chooseAction("Install Omarchy on this PC", body, installButtonLabels(buttons)...)
 		if err != nil || choice == 0 {
 			return err
 		}
 		switch buttons[choice-1].action {
+		case installShutDown:
+			if err := requestOmarchyShutdown(dir); err != nil {
+				errorBox("Omarchy did not respond. Shut it down from its menu instead.\n\n" + err.Error())
+			} else {
+				shutdownRequested = true
+			}
 		case installFastStartup:
 			code, err := runElevated("-disable-fast-startup")
 			if err != nil {
 				errorBox("Fast Startup could not be turned off:\n\n" + err.Error())
 			} else if code == errorCancelled {
-				// The user declined the Windows prompt; show the checklist again.
+				// The user declined the Windows prompt; show the list again.
 			} else if code != 0 {
 				errorBox("Fast Startup could not be turned off. Turn it off in Control Panel > Power Options > Choose what the power buttons do.")
 			}
-		case installEncryption:
-			openWindowsURL("ms-settings:deviceencryption")
+		case installBitLocker:
+			openBitLockerSettings()
 		case installExportGuide:
 			openWindowsURL(exportGuideURL)
 			return nil
-		case installNext:
-			return runInstallStepsUI()
-		case installDone:
-			return nil
-		}
-	}
-}
-
-func runInstallStepsUI() error {
-	body, buttons := installSteps()
-	for {
-		choice, err := chooseAction("Install Omarchy on this PC", body, installButtonLabels(buttons)...)
-		if err != nil || choice == 0 {
-			return err
-		}
-		switch buttons[choice-1].action {
 		case installDiskManagement:
 			if err := shellOpen("diskmgmt.msc"); err != nil {
 				errorBox(err.Error())
 			}
-		case installDualBootGuide:
+		case installGuide:
 			openWindowsURL(dualBootGuideURL)
-		case installMigrationGuide:
-			openWindowsURL(migrationGuideURL)
 		case installDone:
 			return nil
 		}

@@ -17,10 +17,12 @@ There are two ways:
 
 ### Before you leave Windows
 
-Try Omarchy can walk you through this: open **Settings > Backup and recovery >
-Install Omarchy...**. It checks that Omarchy is shut down and that Fast Startup
-is off (and can turn it off for you), then shows the installation steps and
-the command to run afterwards.
+Try Omarchy can do most of this for you: open **Settings > Backup and
+recovery > Install Omarchy...**. It checks whether Omarchy is still running,
+whether Fast Startup is on and whether BitLocker is on for the drives it needs,
+and lists only what is left, each with a button that does it or opens the right
+place. Once nothing is left it shows the installation steps and the command to
+run afterwards.
 
 1. **Shut Omarchy down from inside the trial** (Omarchy menu > System >
    Shutdown), so the trial's disk is saved cleanly. Keep Try Omarchy installed
