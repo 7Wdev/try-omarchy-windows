@@ -12,7 +12,7 @@ Start with the [quick start](../README.md#try-it). For supported hardware and cu
 | Update an existing Linux guest | [Guest upgrades](GUEST-UPGRADES.md) |
 | Back up, restore, or reset a guest | [Backup and recovery](BACKUP.md) |
 | Move an installation to another drive | [Moving an installation](MOVING.md) |
-| Export Omarchy configuration | [Configuration migration](MIGRATION.md) |
+| Install Omarchy for real and bring your trial along | [Moving to a real install](MIGRATION.md) |
 | Launch approved Windows apps | [Windows app bridge](WINDOWS-APP-BRIDGE.md) |
 | Approve `sudo` with Windows Hello | [Windows Hello for guest sudo](WINDOWS-HELLO.md) |
 | Zoom with a touchpad pinch | [Trackpad pinch](PINCH-ZOOM.md) |
