@@ -1017,11 +1017,10 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 		procSendMessageW.Call(hLANPublic, bmSetcheck, bstChecked, 0)
 	}
 	y += 32
-	mk("STATIC", "SSH public key file\n(blank: your ~/.ssh/id_*.pub)", left, y+3, labelW, 40, ssNoprefix, 0)
+	mk("STATIC", "SSH public key file", left, y+3, labelW, 24, ssNoprefix, 0)
 	hKey = mk("EDIT", current.SSHKey, fieldX, y, fieldW, 24, wsBorder|wsTabstop|esAutohscroll, settingsKeyID)
-	// The two-line key label above is 40 px tall from y+3; start the next
-	// row below it or the label's second line paints over this text.
-	y += 50
+	mk("STATIC", "Blank uses your Windows ~/.ssh/id_*.pub key.", left, y+28, clientW-2*left, 22, ssNoprefix, 0)
+	y += 58
 	hUpdateOn = mk("BUTTON", "Check for launcher updates automatically", left, y, 450, 24, bsAutocheckbox|wsTabstop, settingsUpdateOnID)
 	if !prefs.AutomaticUpdatesDisabled {
 		procSendMessageW.Call(hUpdateOn, bmSetcheck, bstChecked, 0)
