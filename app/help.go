@@ -1,6 +1,6 @@
 package main
 
-const everydayHelp = `Settings groups everyday options, devices, advanced options and recovery. Devices controls camera selection and camera/microphone access. About and updates checks for launcher updates. Use 0 for automatic resources. Save, then restart Omarchy.
+const everydayHelp = `Settings groups everyday options, devices, advanced options and recovery. Devices controls camera selection and camera/microphone access. About and updates checks for launcher updates. Balanced and Maximum size resources at launch; Manual exposes CPU and RAM choices. Display, camera/microphone access, resources, disk growth and shared folders apply next start. Saved audio choices are sent to a running session when its runtime supports live switching. Alt+Tab and approved-app choices are picked up while running. Local port forwards can change live; LAN rules and SSH forwards wait for the next start. If a live change fails, use diagnostics or restart Omarchy.
 
 Back up, Restore, Snapshots, Portable copy, Reset, Move and Uninstall are in Settings. Close Omarchy first. Reclaim and its status are in the tray.
 

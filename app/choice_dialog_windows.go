@@ -22,12 +22,17 @@ func chooseAction(title, body string, labels ...string) (int, error) {
 	go func() {
 		runtime.LockOSThread()
 		// Let Go retire this UI thread on return, including any pending messages.
+		brand := newWindowBrand()
+		defer brand.close()
 		var selected int
 		var dialogErr error
 		defer func() { done <- result{selected, dialogErr} }()
 		instance, _, _ := procGetModuleHandleW.Call(0)
 		class, _ := syscall.UTF16PtrFromString("TryOmarchyChoice")
 		callback := syscall.NewCallback(func(h, message, w, l uintptr) uintptr {
+			if result, handled := brand.handle(h, message, w, l); handled {
+				return result
+			}
 			switch message {
 			case wmCommand:
 				id := int(w & 0xffff)
@@ -67,32 +72,35 @@ func chooseAction(title, body string, labels ...string) (int, error) {
 			return
 		}
 		defer user32.NewProc("UnregisterClassW").Call(uintptr(unsafe.Pointer(class)), instance)
-		const width, bodyHeight = 520, 260
-		height := int32(bodyHeight + 24 + 40*len(labels))
-		rect := [4]int32{0, 0, width, height}
-		style := uintptr(wsCaption | wsSysmenu)
-		procAdjustWindowRectEx.Call(uintptr(unsafe.Pointer(&rect[0])), style, 0, 0)
-		sx, _, _ := procGetSystemMetrics.Call(smCxscreen)
-		sy, _, _ := procGetSystemMetrics.Call(smCyscreen)
-		w, h := rect[2]-rect[0], rect[3]-rect[1]
+		style := uintptr(wsCaption | wsSysmenu | 0x02000000)
+		work := [4]int32{}
+		procSystemParametersInfoW.Call(0x30, 0, uintptr(unsafe.Pointer(&work)), 0)
+		frame := [4]int32{}
+		procAdjustWindowRectEx.Call(uintptr(unsafe.Pointer(&frame)), style, 0, 0)
+		width := min(int32(520), work[2]-work[0]-32-(frame[2]-frame[0]))
+		bodyHeight := min(int32(260), work[3]-work[1]-32-(frame[3]-frame[1])-24-int32(40*len(labels)))
+		bodyHeight = max(int32(56), bodyHeight)
+		height := bodyHeight + 24 + int32(40*len(labels))
+		w, h := width+frame[2]-frame[0], height+frame[3]-frame[1]
 		titlePtr, _ := syscall.UTF16PtrFromString(title)
 		hwnd, _, err := procCreateWindowExW.Call(0, uintptr(unsafe.Pointer(class)), uintptr(unsafe.Pointer(titlePtr)),
-			style, uintptr((int32(sx)-w)/2), uintptr((int32(sy)-h)/2), uintptr(w), uintptr(h), 0, 0, instance, 0)
+			style, uintptr(work[0]+(work[2]-work[0]-w)/2), uintptr(work[1]+(work[3]-work[1]-h)/2), uintptr(w), uintptr(h), 0, 0, instance, 0)
 		if hwnd == 0 {
 			dialogErr = fmt.Errorf("create choice window: %w", err)
 			return
 		}
-		font, _, _ := procGetStockObject.Call(defaultGuiFont)
+		brand.window(hwnd)
+
 		add := func(kind, label string, y, height int32, style, id uintptr) uintptr {
 			k, _ := syscall.UTF16PtrFromString(kind)
 			t, _ := syscall.UTF16PtrFromString(label)
 			control, _, err := procCreateWindowExW.Call(0, uintptr(unsafe.Pointer(k)), uintptr(unsafe.Pointer(t)),
-				wsChild|wsVisible|style, 20, uintptr(y), width-40, uintptr(height), hwnd, id, instance, 0)
+				wsChild|wsVisible|style, 20, uintptr(y), uintptr(width-40), uintptr(height), hwnd, id, instance, 0)
 			if control == 0 {
 				dialogErr = fmt.Errorf("create choice control: %w", err)
 				return 0
 			}
-			procSendMessageW.Call(control, wmSetfont, font, 1)
+			brand.control(control, kind, style)
 			return control
 		}
 		// Read-only multiline text remains selectable and scrollable when a
@@ -108,6 +116,7 @@ func chooseAction(title, body string, labels ...string) (int, error) {
 			button := add("BUTTON", label, bodyHeight+int32(i)*40, 32, buttonStyle, uintptr(3001+i))
 			if i == 0 {
 				first = button
+				brand.primary = button
 			}
 		}
 		if dialogErr != nil {
