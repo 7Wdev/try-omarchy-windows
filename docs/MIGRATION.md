@@ -37,6 +37,8 @@ the command to run afterwards.
    Shrink Volume. The space you free up becomes Omarchy's.
 5. **Install Omarchy into the free space** by following the Omarchy manual's
    [dual boot guide](https://learn.omacom.io/2/the-omarchy-manual/120/dual-boot-install).
+   Omarchy then starts by default. Windows is still there: run `limine-scan`
+   in Omarchy to add it to the boot menu.
 
 ### After installing
 

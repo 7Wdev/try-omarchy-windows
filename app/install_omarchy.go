@@ -178,7 +178,8 @@ func installSteps() (string, []installButton) {
 	body := "1. Open Disk Management, right-click " + systemDriveLabel() + " and choose Shrink " +
 		"Volume. The space you free becomes Omarchy's.\n" +
 		"2. Follow the Omarchy manual's dual boot guide to make a USB installer and install " +
-		"Omarchy into the free space.\n" +
+		"Omarchy into the free space. Omarchy then starts by default; run limine-scan in " +
+		"Omarchy to add Windows to its boot menu.\n" +
 		"3. Start Omarchy, open a terminal (Super+Enter) and run:\n\n" +
 		importCommand + "\n\n" +
 		"It finds this trial on the Windows drive and asks what to bring over. The same command " +
