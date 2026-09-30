@@ -157,8 +157,9 @@ def describe(data_dir, volume=None, windows_user=None):
             install.share = settings["share"]
         if disk_format == "qcow2":
             install.problems.append(
-                "this is a portable install, whose disk Omarchy cannot read directly. Open it in "
-                "Try Omarchy on Windows and choose Get ready to install Omarchy first.")
+                "this is a portable install, whose disk Omarchy cannot read directly. Start it in "
+                "Try Omarchy on Windows, run try-omarchy-export in a terminal there, and follow "
+                "the steps it prints.")
         else:
             try:
                 install.superblock = read_superblock(disk)

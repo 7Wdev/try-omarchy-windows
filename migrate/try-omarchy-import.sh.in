@@ -3,10 +3,10 @@
 #
 #   curl -fsSL https://github.com/omacom/try-omarchy-windows/releases/latest/download/try-omarchy-import.sh | bash
 #
-# Next to a copy of try-omarchy-import.pyz (the folder Try Omarchy for Windows
-# puts on C:, or an extracted try-omarchy-export), it uses that copy when its
-# checksum matches this release. Otherwise it downloads the importer from the
-# same release. Options are passed on; try --help.
+# Next to a copy of try-omarchy-import.pyz (an extracted try-omarchy-export),
+# it uses that copy when its checksum matches this release. Otherwise it
+# downloads the importer from the same release. Options are passed on; try
+# --help.
 set -euo pipefail
 
 version=@VERSION@
