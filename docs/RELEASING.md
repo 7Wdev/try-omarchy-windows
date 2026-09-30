@@ -43,8 +43,10 @@ artifact for verification. Use it after changing the OIDC or signing configurati
 1. Add the new version section to `CHANGELOG.md` and push it to `master`.
 2. Run the `Release` workflow with phase `prepare` and the new release tag.
 3. The workflow applies the locked guest patches, runs the guest contract tests,
-   rebuilds the image, boots the instant account headlessly, authenticates every
-   artifact, and creates a draft release.
+   rebuilds the image, builds the Try Omarchy importer (`try-omarchy-import.pyz`
+   and its bootstrap `try-omarchy-import.sh`, stamped with the release tag),
+   boots the instant account headlessly, authenticates every artifact, and
+   creates a draft release.
 4. Download the draft `SHA256SUMS`, add it under `app/testdata`, and update
    `defaultReleaseURL`, `defaultSumsSHA256`, and the embedded fixture name in
    `app/manifest.go`. Update `currentVersion` in `app/update.go` and the numeric and text versions

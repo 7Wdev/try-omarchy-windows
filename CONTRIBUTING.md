@@ -8,6 +8,7 @@ For larger features, check the [open issues](https://github.com/omacom/try-omarc
 
 - `app/`: Go launcher, Windows integration, and unit tests
 - `guest-build/`: pinned Linux guest source and patch series
+- `migrate/`: the importer that brings a trial into an installed Omarchy
 - `runtime-build/`: QEMU and graphics runtime build and patch series
 - `scripts/release/`: artifact validation, signing helpers, and guest build checks
 - `docs/`: user guides, acceptance instructions, and evidence
@@ -32,6 +33,9 @@ python3 -m unittest discover -s scripts/release -p 'test_*.py'
 python3 -m unittest discover -s scripts/gpu -p 'test_*.py'
 python3 runtime-build/validate-lock.py
 ```
+
+For importer changes, run `python3 -m unittest discover -s migrate/tests -t migrate`
+and see [migrate/README.md](migrate/README.md).
 
 For guest changes, follow [guest-build/README.md](guest-build/README.md) and run `scripts/release/build-guest.sh --contract-only`. This fetches and patches the pinned guest source; a contract test is not a full VM boot.
 

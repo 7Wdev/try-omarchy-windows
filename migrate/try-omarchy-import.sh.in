@@ -1,0 +1,54 @@
+#!/bin/bash
+# Bring your Try Omarchy trial into this Omarchy install.
+#
+#   curl -fsSL https://github.com/omacom/try-omarchy-windows/releases/latest/download/try-omarchy-import.sh | bash
+#
+# Next to a copy of try-omarchy-import.pyz (an extracted try-omarchy-export),
+# it uses that copy when its checksum matches this release. Otherwise it
+# downloads the importer from the same release. Options are passed on; try
+# --help.
+set -euo pipefail
+
+version=@VERSION@
+sha256=@SHA256@
+url="https://github.com/omacom/try-omarchy-windows/releases/download/$version/try-omarchy-import.pyz"
+
+if ! command -v python3 >/dev/null; then
+  echo "try-omarchy-import needs Python 3. Install it with: sudo pacman -S python" >&2
+  exit 1
+fi
+
+here=""
+if [[ -n ${BASH_SOURCE[0]:-} && -f ${BASH_SOURCE[0]} ]]; then
+  here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+fi
+
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+importer="$work/try-omarchy-import.pyz"
+
+if [[ -n $here && -f $here/try-omarchy-import.pyz ]] &&
+  [[ $(sha256sum "$here/try-omarchy-import.pyz" | cut -d' ' -f1) == "$sha256" ]]; then
+  cp "$here/try-omarchy-import.pyz" "$importer"
+else
+  echo "Downloading try-omarchy-import $version"
+  curl -fsSL --retry 3 -o "$importer" "$url"
+  if [[ $(sha256sum "$importer" | cut -d' ' -f1) != "$sha256" ]]; then
+    echo "The downloaded importer does not match this release; nothing was changed." >&2
+    exit 1
+  fi
+fi
+
+arguments=("$@")
+if [[ -n $here && -f $here/trial-root/etc/passwd ]]; then
+  arguments=(--root "$here/trial-root" "${arguments[@]}")
+fi
+
+# When this script arrives through a pipe, questions still need the terminal.
+status=0
+if [[ ! -t 0 ]] && { : </dev/tty; } 2>/dev/null; then
+  python3 "$importer" "${arguments[@]}" </dev/tty || status=$?
+else
+  python3 "$importer" "${arguments[@]}" || status=$?
+fi
+exit "$status"

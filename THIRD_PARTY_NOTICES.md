@@ -41,6 +41,12 @@ original code.
   <https://vivaldi.com/partners/linux/>.
 - **dockur/windows** — MIT; used only as a development and test environment, not
   redistributed.
+- **Omarchy Mac installer migration experiment**: MIT, copyright David
+  Heinemeier Hansson. The importer in `migrate/` adapts the restore approach
+  from `omacom/omarchy-mac-installer` (branch `explore/try-omarchy-migration`,
+  commit `4b313ad880bc7f0ecb3c3245195175bedfae80a6`): the no-follow descriptor
+  walk, link-then-rename publication, backups before replacement, and the
+  resume rules. It is a one-time adaptation, not kept in sync.
 
 See `guest-build/source.lock.json`, `guest-build/runtime.lock.json`,
 `runtime-build/sources.lock.json`, and `scripts/release/` for exact source
