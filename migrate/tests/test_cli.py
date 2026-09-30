@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from omarchy_import import cli
+from omarchy_import import cli, selection
 from omarchy_import.plan import Group, Inventory
 from tests import fixtures
 
@@ -103,8 +103,8 @@ class SelectionTests(unittest.TestCase):
         return Inventory(groups, [])
 
     def test_defaults_fit_the_free_space(self):
-        free = cli.RESERVE_BYTES + 100
-        rows = {row[0]: row[2] for row in cli.option_rows(self.inventory(), None, "tokyo", free)}
+        free = selection.RESERVE_BYTES + 100
+        rows = {row[0]: row[2] for row in selection.option_rows(self.inventory(), None, "tokyo", free)}
         self.assertTrue(rows["settings"])
         self.assertTrue(rows["files/Small"])
         self.assertFalse(rows["files/Big"])
@@ -115,13 +115,13 @@ class SelectionTests(unittest.TestCase):
         self.assertTrue(rows["theme"])
 
     def test_keywords(self):
-        rows = cli.option_rows(self.inventory(), None, None, 10**12)
-        self.assertEqual(cli.resolve_selection("files,keys", rows),
+        rows = selection.option_rows(self.inventory(), None, None, 10**12)
+        self.assertEqual(selection.resolve_selection("files,keys", rows),
                          {"files/Big", "files/Small", "keys"})
-        self.assertEqual(cli.resolve_selection("all", rows), {row[0] for row in rows})
-        self.assertNotIn("keys", cli.resolve_selection("defaults", rows))
-        with self.assertRaises(cli.Stop):
-            cli.resolve_selection("bogus", rows)
+        self.assertEqual(selection.resolve_selection("all", rows), {row[0] for row in rows})
+        self.assertNotIn("keys", selection.resolve_selection("defaults", rows))
+        with self.assertRaises(selection.SelectionError):
+            selection.resolve_selection("bogus", rows)
 
 
 if __name__ == "__main__":

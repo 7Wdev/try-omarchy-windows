@@ -14,11 +14,8 @@ from .plan import Context, Planner, scan
 from .safefs import Destination
 from .system import CommandError, Runner
 from .trial import Trial, TrialError, marker_time
+from .selection import RESERVE_BYTES, SelectionError, option_rows, resolve_selection
 from .ui import UI, Cancelled, human_size, plain_label
-
-RESERVE_BYTES = 2 * 1000 ** 3
-SMALL_APP_BYTES = 100 * 1000 ** 2
-
 
 class RunState:
     """Whether anything on this computer may have changed yet."""
@@ -39,7 +36,9 @@ def build_parser():
     parser = argparse.ArgumentParser(
         prog="try-omarchy-import",
         description="Bring your Try Omarchy setup into this Omarchy install: settings, "
-                    "themes, apps, files, and optionally browser profiles and sign-ins.")
+                    "themes, apps, files, and optionally browser profiles and sign-ins. "
+                    "Inside Try Omarchy, 'try-omarchy-import export' (try-omarchy-export) "
+                    "packs a trial into an archive instead.")
     source = parser.add_mutually_exclusive_group()
     source.add_argument("--data", metavar="FOLDER",
                         help="a Try Omarchy data folder on a mounted Windows drive")
@@ -64,6 +63,10 @@ def build_parser():
 
 
 def main(argv=None, runner=None):
+    argv = sys.argv[1:] if argv is None else list(argv)
+    if argv[:1] == ["export"]:
+        from .export import main as export_main
+        return export_main(argv[1:])
     args = build_parser().parse_args(argv)
     ui = UI(interactive=not (args.yes or args.json))
     if args.cleanup:
@@ -248,67 +251,6 @@ def free_bytes(path):
     return stats.f_bavail * stats.f_frsize
 
 
-def option_rows(inventory, package_plan, theme, free):
-    """(id, label, default) rows for the selection list, defaults sized to fit."""
-    rows = []
-    budget = free - RESERVE_BYTES
-    groups = inventory.ordered()
-    for group in groups:
-        if group.kind == classify.SETTINGS:
-            budget -= group.bytes
-    for group in groups:
-        size = human_size(group.bytes)
-        if group.kind == classify.SETTINGS:
-            rows.append((group.id, f"Settings and customizations ({group.changed} files {size})",
-                         True))
-        elif group.kind == classify.FILES:
-            default = group.bytes <= budget
-            if default:
-                budget -= group.bytes
-            label = group.label if group.id == classify.LOOSE_FILES_GROUP else f"{group.label} folder"
-            rows.append((group.id, f"{label} ({size})", default))
-        elif group.kind == classify.APPS:
-            default = group.bytes <= SMALL_APP_BYTES and group.bytes <= budget
-            if default:
-                budget -= group.bytes
-            rows.append((group.id, f"{group.label} app data ({size})", default))
-        elif group.kind == classify.BROWSER:
-            rows.append((group.id, f"{group.label} profile with bookmarks and saved logins ({size})",
-                         False))
-        elif group.kind == classify.KEYS:
-            rows.append((group.id, "Keys and sign-ins: SSH and GPG keys, keyring, command line "
-                                   f"logins ({group.changed} files)", False))
-    if package_plan is not None and not package_plan.empty():
-        count = len(package_plan.repo) + len(package_plan.aur) + len(package_plan.flatpaks)
-        rows.append(("packages", f"Apps you installed ({count} to install)", True))
-    if theme:
-        rows.append(("theme", f"Theme and background ({theme})", True))
-    return rows
-
-
-def resolve_selection(text, rows):
-    known = {row[0] for row in rows}
-    chosen = set()
-    for token in (part.strip() for part in text.split(",")):
-        if not token:
-            continue
-        if token == "all":
-            chosen.update(known)
-        elif token == "defaults":
-            chosen.update(row[0] for row in rows if row[2])
-        elif token == "none":
-            continue
-        elif token in ("settings", "keys", "packages", "theme"):
-            chosen.update(row_id for row_id in known if row_id == token)
-        elif token in ("files", "apps", "browser"):
-            chosen.update(row_id for row_id in known if row_id.startswith(token + "/"))
-        elif token in known:
-            chosen.add(token)
-        else:
-            raise Stop(f"unknown group {token}; run with --dry-run --json to list them", 2)
-    return chosen
-
-
 def run(args, ui, runner, stack, state):
     session = stack.enter_context(attach.Session(runner))
     home = Path.home()
@@ -339,7 +281,10 @@ def run(args, ui, runner, stack, state):
     free = free_bytes(home)
     rows = option_rows(inventory, package_plan, theme, free)
     if args.select:
-        chosen = resolve_selection(args.select, rows)
+        try:
+            chosen = resolve_selection(args.select, rows)
+        except SelectionError as error:
+            raise Stop(str(error), 2) from None
     else:
         picks = ui.choose_many("What do you want to bring over?",
                                [plain_label(row[1]) for row in rows], [row[2] for row in rows])

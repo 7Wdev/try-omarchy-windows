@@ -236,6 +236,45 @@ def _lstat(path):
         return None
 
 
+class TrialDefaults:
+    """Decides whether a trial path is still Omarchy's default.
+
+    A path counts as untouched when it equals the trial's /etc/skel copy
+    (ignoring Try Omarchy's appended blocks), or when it last changed before
+    Omarchy finished setting the account up.
+    """
+
+    def __init__(self, skel, baseline_ns):
+        self.skel = Path(skel)
+        self.baseline_ns = baseline_ns
+
+    @staticmethod
+    def normalize(relative, data):
+        if data is None:
+            return None
+        if relative in HYPR_BLOCK_FILES:
+            data = textmerge.strip_try_blocks(data)
+        return data
+
+    def is_default(self, relative, entry, data=None, read=None):
+        """data is the trial file's content if already read; read() reads it on demand."""
+        metadata = _lstat(self.skel / relative)
+        if metadata is not None:
+            skel_kind = _entry_kind(metadata)
+            if entry.kind == "symlink" and skel_kind == "symlink":
+                if os.readlink(self.skel / relative) == entry.target:
+                    return True
+            elif entry.kind == "file" and skel_kind == "file":
+                if metadata.st_size == entry.size or relative in HYPR_BLOCK_FILES:
+                    if data is None and read is not None and entry.size <= textmerge.TEXT_LIMIT * 64:
+                        data = read()
+                    skel_data = safefs.source_read(self.skel / relative, textmerge.TEXT_LIMIT * 64)
+                    if skel_data is not None and data is not None and \
+                            self.normalize(relative, skel_data) == self.normalize(relative, data):
+                        return True
+        return self.baseline_ns is not None and entry.changed_ns <= self.baseline_ns
+
+
 class Planner:
     def __init__(self, context, destination, resolution="trial"):
         if resolution not in ("trial", "keep"):
@@ -244,15 +283,12 @@ class Planner:
         self.destination = destination
         self.resolution = resolution
         self.can_merge = textmerge.git_available()
+        self.defaults = TrialDefaults(context.trial_skel, context.trial_baseline_ns)
 
     # Content helpers ------------------------------------------------------
 
     def _normalize(self, relative, data):
-        if data is None:
-            return None
-        if relative in HYPR_BLOCK_FILES:
-            data = textmerge.strip_try_blocks(data)
-        return data
+        return TrialDefaults.normalize(relative, data)
 
     def _prepare(self, group_kind, relative, data):
         """The trial content as it should land on this computer."""
@@ -265,22 +301,7 @@ class Planner:
         return data
 
     def _trial_default(self, relative, entry, data):
-        """True if the trial file is still Omarchy's default."""
-        skel = self.context.trial_skel / relative
-        metadata = _lstat(skel)
-        if metadata is not None:
-            skel_kind = _entry_kind(metadata)
-            if entry.kind == "symlink" and skel_kind == "symlink":
-                if os.readlink(skel) == entry.target:
-                    return True
-            elif entry.kind == "file" and skel_kind == "file":
-                if metadata.st_size == entry.size or relative in HYPR_BLOCK_FILES:
-                    skel_data = safefs.source_read(skel, textmerge.TEXT_LIMIT * 64)
-                    if skel_data is not None and data is not None and \
-                            self._normalize(relative, skel_data) == self._normalize(relative, data):
-                        return True
-        baseline = self.context.trial_baseline_ns
-        return baseline is not None and entry.changed_ns <= baseline
+        return self.defaults.is_default(relative, entry, data)
 
     def _home_default(self, relative, metadata):
         """True if this computer's file is still what Omarchy set up."""
