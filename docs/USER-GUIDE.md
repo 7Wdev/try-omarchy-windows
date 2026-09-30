@@ -236,13 +236,21 @@ if ssh complains.
 
 ## Taking your setup to a real Omarchy install
 
-Inside Omarchy, run `try-omarchy-export`. It writes one archive with your
-desktop configuration, theme, and the packages you added, to the shared Windows folder
-when one is mounted (`-share`) or to your home folder otherwise. On the real
-install, extract it and run the `restore.sh` inside. Keys, password stores,
-browser profiles, and unlisted application configs are deliberately left out.
-Review the archive before sharing it with anyone. See the
-[migration guide](MIGRATION.md).
+Install Omarchy next to Windows on the same PC, then run one command in the
+new install:
+
+```
+curl -fsSL https://github.com/omacom/try-omarchy-windows/releases/latest/download/try-omarchy-import.sh | bash
+```
+
+It reads the trial straight off the Windows drive and brings over your
+settings, themes, apps, files and projects, and if you pick them, your
+browser profile and sign-ins. Turn off BitLocker and Fast Startup and shut
+Omarchy down in the trial before installing; the
+[migration guide](MIGRATION.md) walks through it.
+
+To replace Windows or move to another computer, run `try-omarchy-export`
+inside the trial first and restore the archive on the new install.
 
 ## Offline portable mode
 

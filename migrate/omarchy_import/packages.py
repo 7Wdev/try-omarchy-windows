@@ -1,0 +1,195 @@
+"""Reinstall the apps the trial added, set the theme, and report the rest.
+
+Packages the user added on top of the Try Omarchy image are compared with
+what this computer already has and what its repositories offer. The rest are
+treated as AUR packages and installed with yay. Flatpak apps are reinstalled
+from Flathub. Services and group memberships are only reported, since
+changing them is a decision the user should make on this computer.
+"""
+
+from dataclasses import dataclass, field
+import os
+from pathlib import Path
+
+from .system import CommandError
+
+# Groups that grant nothing a person notices on a current Omarchy install
+# (logind hands out device access), or that every account already has.
+QUIET_GROUPS = {"users", "audio", "video", "render", "kvm", "storage", "optical", "network",
+                "power", "sys", "adm", "systemd-journal", "lp", "wheel"}
+
+
+@dataclass
+class PackagePlan:
+    repo: list = field(default_factory=list)
+    aur: list = field(default_factory=list)
+    installed: list = field(default_factory=list)
+    flatpaks: list = field(default_factory=list)
+    services: list = field(default_factory=list)
+    groups: list = field(default_factory=list)
+    has_yay: bool = False
+    has_flatpak: bool = False
+
+    def empty(self):
+        return not (self.repo or self.aur or self.flatpaks)
+
+
+def _lines(runner, argv):
+    try:
+        return runner.run(argv).stdout.splitlines()
+    except (CommandError, OSError):
+        return []
+
+
+def plan_packages(trial, runner):
+    plan = PackagePlan()
+    added = trial.packages().added
+    installed = set(_lines(runner, ["pacman", "-Qq"]))
+    available = set()
+    for line in _lines(runner, ["pacman", "-Sl"]):
+        parts = line.split()
+        if len(parts) >= 2:
+            available.add(parts[1])
+    for name in added:
+        if name in installed:
+            plan.installed.append(name)
+        elif name in available:
+            plan.repo.append(name)
+        else:
+            plan.aur.append(name)
+    plan.has_yay = runner.which("yay") is not None
+    plan.has_flatpak = runner.which("flatpak") is not None
+    if plan.has_flatpak:
+        present = set(_lines(runner, ["flatpak", "list", "--app", "--columns=application"]))
+        plan.flatpaks = [(app, scope) for app, scope in trial.flatpaks() if app not in present]
+    else:
+        plan.flatpaks = list(trial.flatpaks())
+    enabled = set()
+    for line in _lines(runner, ["systemctl", "list-unit-files", "--state=enabled", "--no-legend",
+                                "--no-pager"]):
+        parts = line.split()
+        if parts:
+            enabled.add(parts[0])
+    plan.services = [unit for unit in trial.enabled_services() if unit not in enabled]
+    mine = set(" ".join(_lines(runner, ["id", "-Gn"])).split())
+    existing = set()
+    for line in _lines(runner, ["getent", "group"]):
+        existing.add(line.split(":", 1)[0])
+    plan.groups = [group for group in trial.account.groups
+                   if group not in mine and group in existing and group != trial.account.name
+                   and group not in QUIET_GROUPS]
+    return plan
+
+
+def _count(items, noun):
+    return f"{len(items)} {noun}" + ("" if len(items) == 1 else "s")
+
+
+@dataclass
+class StepResult:
+    name: str
+    ok: bool
+    detail: str = ""
+
+
+def install_repo(runner, names):
+    if not names:
+        return StepResult("packages", True)
+    try:
+        runner.run(["pacman", "-S", "--needed", "--noconfirm", *names], sudo=True, capture=False)
+    except CommandError as error:
+        return StepResult("packages", False, f"pacman stopped ({error.returncode}); "
+                          f"install these yourself: {' '.join(names)}")
+    return StepResult("packages", True, f"installed {_count(names, 'package')}")
+
+
+def install_aur(runner, names, has_yay):
+    if not names:
+        return StepResult("aur", True)
+    if not has_yay:
+        return StepResult("aur", False, "yay is not installed; these came from the AUR: "
+                          + " ".join(names))
+    try:
+        runner.run(["yay", "-S", "--needed", "--noconfirm", *names], capture=False)
+    except CommandError as error:
+        return StepResult("aur", False, f"yay stopped ({error.returncode}); "
+                          f"install these yourself: {' '.join(names)}")
+    return StepResult("aur", True, f"installed {_count(names, 'AUR package')}")
+
+
+def install_flatpaks(runner, apps, has_flatpak):
+    if not apps:
+        return StepResult("flatpak", True)
+    if not has_flatpak:
+        return StepResult("flatpak", False, "Flatpak is not installed; the trial had: "
+                          + " ".join(app for app, _ in apps))
+    failed = []
+    for scope in ("system", "user"):
+        ids = [app for app, app_scope in apps if app_scope == scope]
+        if not ids:
+            continue
+        try:
+            runner.run(["flatpak", "install", "--noninteractive", "-y", f"--{scope}", "flathub",
+                        *ids], capture=False)
+        except CommandError:
+            failed.extend(ids)
+    if failed:
+        return StepResult("flatpak", False, "these Flatpak apps did not install: " + " ".join(failed))
+    return StepResult("flatpak", True, f"installed {_count(apps, 'Flatpak app')}")
+
+
+def mise_install(runner, home):
+    config = Path(home) / ".config/mise/config.toml"
+    if not config.exists() or runner.which("mise") is None:
+        return None
+    try:
+        runner.run(["mise", "install", "--yes"], capture=False, cwd=home)
+    except CommandError as error:
+        return StepResult("mise", False, f"mise install stopped ({error.returncode}); "
+                          "run it again later")
+    return StepResult("mise", True, "installed your mise tools")
+
+
+def set_theme(runner, theme):
+    if not theme:
+        return None
+    if runner.which("omarchy-theme-set") is None:
+        return StepResult("theme", False, f"pick the {theme} theme from the Omarchy menu")
+    try:
+        runner.run(["omarchy-theme-set", theme], capture=False)
+    except CommandError:
+        return StepResult("theme", False, f"the {theme} theme could not be set; "
+                          "pick it from the Omarchy menu")
+    return StepResult("theme", True, f"switched to {theme}")
+
+
+def background_path(trial_background, trial_home, home):
+    """Where the trial's background is on this computer, or None."""
+    if not trial_background:
+        return None
+    trial_home = trial_home.rstrip("/")
+    theme_backgrounds = f"{trial_home}/.local/state/omarchy/current/theme/backgrounds/"
+    if trial_background.startswith(theme_backgrounds):
+        candidate = Path(home) / ".local/state/omarchy/current/theme/backgrounds" / \
+            trial_background[len(theme_backgrounds):]
+    elif trial_background.startswith(trial_home + "/"):
+        candidate = Path(home) / trial_background[len(trial_home) + 1:]
+    else:
+        candidate = Path(trial_background)
+    return candidate if candidate.is_file() else None
+
+
+def set_background(runner, path, home):
+    if path is None or runner.which("omarchy-theme-bg-set") is None:
+        return None
+    current = Path(home) / ".local/state/omarchy/current/background"
+    try:
+        if os.path.realpath(current) == os.path.realpath(path):
+            return None
+    except OSError:
+        pass
+    try:
+        runner.run(["omarchy-theme-bg-set", str(path)], capture=False)
+    except CommandError:
+        return StepResult("background", False, "the trial's background could not be set")
+    return StepResult("background", True, "set your background")

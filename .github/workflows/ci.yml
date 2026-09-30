@@ -77,6 +77,24 @@ jobs:
         working-directory: app
         run: go test ./...
 
+  importer:
+    name: Importer
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Test the Try Omarchy importer
+        run: |
+          python3 -m py_compile migrate/build.py migrate/omarchy_import/*.py
+          python3 -W error::ResourceWarning -m unittest discover -s migrate/tests -t migrate
+
+      - name: Build the importer release files
+        run: |
+          python3 migrate/build.py --version v0.0.0-ci --output "$RUNNER_TEMP/importer"
+          bash -n "$RUNNER_TEMP/importer/try-omarchy-import.sh"
+          "$RUNNER_TEMP/importer/try-omarchy-import.pyz" --version
+
   guest-contract:
     name: Guest contract
     runs-on: ubuntu-latest
