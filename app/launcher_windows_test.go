@@ -81,7 +81,8 @@ func TestSecondInstallGetsFolderShortcutsAfterGlobalConflict(t *testing.T) {
 		t.Fatal(err)
 	}
 	message, err := finishLauncherShortcutChoice(paths, newTarget, dir, true, false, true)
-	if err != nil || !strings.Contains(message, "beside this installation") {
+	if err != nil || !strings.Contains(message, "Your Start menu already has a Try Omarchy shortcut") ||
+		!strings.Contains(message, "open Start Omarchy in:\n"+dir) || strings.Contains(message, `\\`) {
 		t.Fatalf("folder fallback: message=%q err=%v", message, err)
 	}
 	if !shortcutOfferRecorded(dir) {

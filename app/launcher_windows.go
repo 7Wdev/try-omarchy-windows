@@ -3,6 +3,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -110,7 +111,7 @@ func writeLauncherShortcuts(paths []string, target, dir string, startMenu, deskt
 			return fmt.Errorf("checking Windows shortcut %q: %w", path, err)
 		}
 		if !sameShortcutTarget(ownedTarget, target) {
-			return fmt.Errorf("Windows shortcut %q already belongs to another installation", path)
+			return shortcutOwnedError{desktop: i == 2}
 		}
 	}
 	for i, path := range paths {
@@ -174,10 +175,30 @@ func finishLauncherShortcutChoice(paths []string, target, dir string, startMenu,
 		return "", fmt.Errorf("Windows shortcut: %v; folder shortcuts: %w", globalErr, folderErr)
 	}
 	if globalErr != nil {
-		return "Windows could not use the selected shortcut because " + globalErr.Error() +
-			"\n\nOpen Start Omarchy or Settings beside this installation. Your existing Windows shortcuts were not changed.", nil
+		var owned shortcutOwnedError
+		if errors.As(globalErr, &owned) {
+			return fmt.Sprintf("Your %s already has a Try Omarchy shortcut for another installation, so it was left as it is.\n\n"+
+				"To start this installation, open Start Omarchy in:\n%s", owned.place(), dir), nil
+		}
+		return fmt.Sprintf("Windows could not create the shortcut (%v). Your existing shortcuts were not changed.\n\n"+
+			"To start this installation, open Start Omarchy in:\n%s", globalErr, dir), nil
 	}
 	return "", nil
+}
+
+// shortcutOwnedError is a Start menu or desktop shortcut that already starts
+// another Try Omarchy installation.
+type shortcutOwnedError struct{ desktop bool }
+
+func (e shortcutOwnedError) place() string {
+	if e.desktop {
+		return "desktop"
+	}
+	return "Start menu"
+}
+
+func (e shortcutOwnedError) Error() string {
+	return "the " + e.place() + " shortcut belongs to another installation"
 }
 
 func updateLaunchShortcuts(target, dir string, startAutomatically bool) error {
