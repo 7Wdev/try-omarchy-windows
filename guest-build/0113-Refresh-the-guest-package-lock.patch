@@ -1,0 +1,68 @@
+From 5f50bd7575e1ec43cb721682805bf611a91cad08 Mon Sep 17 00:00:00 2001
+From: Try Omarchy Release <actions@users.noreply.github.com>
+Date: Thu, 1 Oct 2026 00:47:59 +0000
+Subject: [PATCH] Refresh the guest package lock
+
+gdb 17.2-1 -> 18.1-1
+gdb-common 17.2-1 -> 18.1-1
+git 2.55.0-1 -> 2.56.0-1
+libwireplumber 0.5.17-2 -> 0.5.18-1
+pam 1.7.2-2 -> 1.7.3-1
+wireplumber 0.5.17-2 -> 0.5.18-1
+---
+ guest/packages.lock.json | 12 ++++++------
+ 1 file changed, 6 insertions(+), 6 deletions(-)
+
+diff --git a/guest/packages.lock.json b/guest/packages.lock.json
+index d42d7af..140438e 100644
+--- a/guest/packages.lock.json
++++ b/guest/packages.lock.json
+@@ -97,15 +97,15 @@
+     "gcc-libs": "16.2.1+r23+gd564253eb6c8-1",
+     "gcr": "3.41.2-2",
+     "gcr-4": "4.4.1-1",
+-    "gdb": "17.2-1",
+-    "gdb-common": "17.2-1",
++    "gdb": "18.1-1",
++    "gdb-common": "18.1-1",
+     "gdbm": "1.26-2",
+     "gdk-pixbuf2": "2.44.7-1",
+     "gettext": "1.0-2",
+     "gexiv2": "0.16.2-2",
+     "gexiv2-common": "0.16.2-2",
+     "giflib": "6.1.3-2",
+-    "git": "2.55.0-1",
++    "git": "2.56.0-1",
+     "glib-networking": "1:2.80.1-1",
+     "glib2": "2.88.3-1",
+     "glibc": "2.44+r50+g1848099f063e-1",
+@@ -382,7 +382,7 @@
+     "libvterm": "0.3.3-2",
+     "libwacom": "2.20.0-1",
+     "libwebp": "1.6.0-2",
+-    "libwireplumber": "0.5.17-2",
++    "libwireplumber": "0.5.18-1",
+     "libx11": "1.8.13-1",
+     "libxau": "1.0.12-1",
+     "libxcb": "1.17.0-1",
+@@ -488,7 +488,7 @@
+     "pacman-contrib": "1.13.1-1",
+     "pacman-mirrorlist": "20260610-1",
+     "pahole": "1:1.32-1",
+-    "pam": "1.7.2-2",
++    "pam": "1.7.3-1",
+     "pambase": "20260616-1",
+     "pamixer": "1.6-4",
+     "pango": "1:1.58.2-1",
+@@ -618,7 +618,7 @@
+     "wayland-protocols": "1.49-1",
+     "webrtc-audio-processing-1": "1.3-5",
+     "which": "2.25-1",
+-    "wireplumber": "0.5.17-2",
++    "wireplumber": "0.5.18-1",
+     "wl-clipboard": "1:2.3.0-1",
+     "woff2-font-awesome": "7.3.1-1",
+     "wpa_supplicant": "2:2.12-1",
+-- 
+2.55.0
+
