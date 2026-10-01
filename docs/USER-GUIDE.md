@@ -13,6 +13,12 @@ files and keeps an existing working installation. If setup fails, use the error
 to check connection, disk space or folder access, then reopen Try Omarchy to
 retry. Copy a persistent error when contacting support through About.
 
+While Omarchy starts, the setup window stays up with the starter keys and the
+Omarchy window appears once its desktop and wallpaper are drawn, usually 40 to
+60 seconds after launch. Cancel at that point shuts Omarchy down. The first
+start with your own account shows the window right away instead, so Omarchy's
+setup form can be filled in, and so do restarts from inside Omarchy.
+
 Releases are Authenticode-signed by **Brandon South** through Azure Artifact Signing with a Microsoft identity-verified certificate. Windows shows that name as the verified publisher. Check it in the file's Properties > Digital Signatures tab or run `Get-AuthenticodeSignature .\TryOmarchy.exe` in PowerShell; the SignerCertificate subject should read `CN=Brandon South`. A publisher change will be announced in the changelog.
 
 After the first successful setup, Try Omarchy offers optional Start-menu and Desktop shortcuts. Start-menu installs include a separate settings shortcut. They point to a stable copy of the signed launcher in the chosen data folder, so the original download can be moved or deleted. Opening a newer downloaded release refreshes that stable copy.

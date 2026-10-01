@@ -89,7 +89,9 @@ func buildQemuArgs(cfg *config, cmdline string) []string {
 		"-initrd", filepath.Join(cfg.guestDir, "initramfs-linux.img"),
 		"-append", cmdline+" tryomarchy.render="+render,
 		"-device", "virtio-keyboard-pci", "-device", "virtio-tablet-pci",
-		"-device", "virtio-net-pci,netdev=n0", "-netdev", netdevArg(cfg.forwards),
+		// No option ROM: the guest boots its kernel directly, and iPXE would
+		// only print its banner on the display.
+		"-device", "virtio-net-pci,netdev=n0,romfile=", "-netdev", netdevArg(cfg.forwards),
 		"-device", "virtio-rng-pci",
 		// The camera bridge needs a bulk channel the host can write without
 		// going through slirp. The launcher listens on loopback (as it does

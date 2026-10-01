@@ -172,7 +172,12 @@ func screenSize(fullscreen bool) (int, int) {
 	return int(r.right - r.left), int(r.bottom-r.top) - 31 // minus title bar
 }
 
+// foregroundPid is the process of the foreground window. A guest window that
+// is still invisible while Omarchy boots does not count as the VM having focus.
 func foregroundPid() uint32 {
+	if curtainUp.Load() {
+		return 0
+	}
 	hwnd, _, _ := procGetForegroundWindow.Call()
 	if hwnd == 0 {
 		return 0
@@ -291,7 +296,12 @@ func enumTitleProc(hwnd, _ uintptr) uintptr {
 		}
 		setTaskbarIdentity(hwnd)
 	}
-	uiDone()
+	if curtainUp.Load() {
+		concealForCurtain(hwnd)
+		curtainTaskbar(hwnd)
+	} else {
+		uiDone()
+	}
 	if enumTitleIcon != 0 {
 		procSendMessageW.Call(hwnd, 0x80, 1, enumTitleIcon)
 		procSendMessageW.Call(hwnd, 0x80, 0, enumTitleIcon)
@@ -376,6 +386,13 @@ func enforceDisplayWindows(pid uint32, dir string, fullscreen bool, fullscreenDi
 		selected = foreground
 	}
 	qemuHwnd.Store(selected)
+	primary := uintptr(0)
+	for hwnd, state := range enumTitleWindows {
+		if state.index == 0 {
+			primary = hwnd
+		}
+	}
+	curtainTick(primary)
 }
 
 func clipboardGetText() (string, bool) {

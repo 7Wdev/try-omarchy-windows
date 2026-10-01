@@ -742,6 +742,9 @@ func main() {
 	cmdline := strings.ReplaceAll(spec.Runtime.KernelCommandLine, "console=tty0 ", "")
 	cmdline = strings.ReplaceAll(cmdline, "console=hvc0", "console=ttyS0")
 	cmdline += " vt.global_cursor_default=0"
+	// The kernel's setup code prints "Probing EDD" on the display while it
+	// asks the BIOS about disks, which a virtio disk does not need.
+	cmdline += " edd=off"
 	if cfg.instant {
 		cmdline += " tryomarchy.instant=1"
 	}
@@ -844,6 +847,7 @@ func main() {
 	}
 	cfg.audio = "sdl"
 
+	startBootCurtain(cfg)
 	for relaunch := true; relaunch; {
 		relaunch = supervise(cfg, cmdline)
 	}
@@ -1090,7 +1094,20 @@ func watch(cfg *config, qmp *qmpConn, exited <-chan error) bool {
 	defer ticker.Stop()
 	procDown := false
 	movedBootPending := false
+	// Cancel in the setup window, which stays up while Omarchy boots, shuts
+	// the guest down. Early in its boot the guest misses the power button, so
+	// it is pressed again once Omarchy reports that it is up; stopping it
+	// outright could interrupt a first boot's account setup. A guest that
+	// still has not shut down is stopped.
+	var stopDeadline <-chan time.Time
+	pressAgainWhenUp := false
 	for reason == "" && !procDown {
+		if pressAgainWhenUp && bootAnnouncedReady.Load() {
+			pressAgainWhenUp = false
+			logf("guest is up - asking it again to shut down")
+			qmp.writeLine(`{"execute":"system_powerdown"}`)
+			stopDeadline = time.After(30 * time.Second)
+		}
 		if guestReady.Swap(false) {
 			commitLauncherUpdate(cfg.dir)
 			commitPayloadUpdates(cfg.dir)
@@ -1120,6 +1137,25 @@ func watch(cfg *config, qmp *qmpConn, exited <-chan error) bool {
 			if r := shutdownReason(line); r != "" {
 				reason = r
 			}
+		case <-setupCancelWake:
+			if stopDeadline == nil {
+				logf("startup cancelled - shutting the guest down")
+				if err := qmp.writeLine(`{"execute":"system_powerdown"}`); err != nil {
+					procDown = waitExit(exited, 15*time.Second, cfg)
+					break
+				}
+				pressAgainWhenUp = !bootAnnouncedReady.Load()
+				wait := 30 * time.Second
+				if pressAgainWhenUp {
+					wait = 90 * time.Second
+				}
+				stopDeadline = time.After(wait)
+			}
+		case <-stopDeadline:
+			logf("guest did not shut down after the cancel - stopping it")
+			qmp.writeLine(`{"execute":"quit"}`)
+			stopDeadline = nil
+			procDown = waitExit(exited, 15*time.Second, cfg)
 		case <-ticker.C:
 			tick++
 			if tick%5 == 0 {

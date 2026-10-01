@@ -48,6 +48,9 @@ type clipBridge struct {
 	setPaths             func([]string) bool
 	setDropPaths         func([]string) bool
 	dropRequests         chan droppedFiles
+	// sessionStarted runs when the guest connects: the bridge starts with
+	// the desktop session.
+	sessionStarted func()
 }
 
 func (b *clipBridge) acceptPush(l net.Listener) {
@@ -106,6 +109,9 @@ func (b *clipBridge) acceptPull(l net.Listener) {
 		}
 		b.mu.Unlock()
 		logf("clipboard: guest connected")
+		if b.sessionStarted != nil {
+			b.sessionStarted()
+		}
 		b.sendCurrentHost(c)
 		// Legacy guests never send a greeting. Release their initial file
 		// selection after a short grace period, but keep listening so a slow

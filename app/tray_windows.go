@@ -301,6 +301,7 @@ func runTray(cfg trayLaunchConfig, ready chan<- uintptr, done chan<- struct{}) {
 		switch command {
 		case trayCommandShow:
 			if qemuWindow := qemuHwnd.Load(); qemuWindow != 0 {
+				liftCurtain("asked for from the tray")
 				// Approved Windows apps minimize a fullscreen VM. SW_SHOW leaves
 				// a minimized window minimized; restore it before focusing it.
 				procShowWindow.Call(qemuWindow, swRestore)
@@ -380,6 +381,7 @@ func runTray(cfg trayLaunchConfig, ready chan<- uintptr, done chan<- struct{}) {
 			switch event {
 			case wmLButtonDblClk:
 				if qemuWindow := qemuHwnd.Load(); qemuWindow != 0 {
+					liftCurtain("asked for from the tray")
 					procShowWindow.Call(qemuWindow, swRestore)
 					procSetForegroundWindow.Call(qemuWindow)
 				}
