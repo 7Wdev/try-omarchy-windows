@@ -897,6 +897,7 @@ func supervise(cfg *config, cmdline string) bool {
 		logf("booting - %s (attempt %d)", mode, attempt)
 		pendingReboot.Store(false)
 		guestReady.Store(false)
+		guestBootStarted()
 		controlDir, err := prepareQMPControl()
 		if err != nil {
 			fatal("Cannot prepare private VM controls: %v", err)
@@ -1213,6 +1214,7 @@ func runLifecycleListener() {
 				case "ready":
 					logf("guest userspace announced ready")
 					guestReady.Store(true)
+					guestDesktopReady()
 				case "reclaim":
 					c.SetWriteDeadline(time.Now().Add(3 * time.Second))
 					if err := requestReclaimError(); err != nil {

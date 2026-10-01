@@ -20,8 +20,13 @@ const (
 	minimumRememberedHeight  = 320
 	minimumVisibleWidth      = 200
 	minimumVisibleHeight     = 120
-	windowTitleBarHeight     = 31
 	windowPlacementSchemaNow = 1
+	// How much bigger an ordinary resizable window is than its client area,
+	// in the 96 DPI units the launcher works in (it is not DPI aware): 8 px
+	// borders left, right and bottom, and a 31 px caption with its top
+	// border. Windows 10 and 11 agree.
+	windowFrameWidth  = 16
+	windowFrameHeight = 39
 )
 
 type screenRect struct{ Left, Top, Right, Bottom int32 }
@@ -110,7 +115,68 @@ func (p *windowPlacement) sameAs(o *windowPlacement) bool {
 }
 
 // consoleSize is the guest console resolution that fills the remembered
-// window, so the picture matches the window from the first frame.
+// window's client area, so the picture matches the window from the first
+// frame. A console bigger than the client area made QEMU grow the window to
+// fit it, and the bigger window was remembered for the next launch.
 func (p *windowPlacement) consoleSize() (int, int) {
-	return int(p.Normal.width()), int(p.Normal.height()) - windowTitleBarHeight
+	return int(p.Normal.width()) - windowFrameWidth, int(p.Normal.height()) - windowFrameHeight
+}
+
+// fittedTo returns the placement moved, and shrunk if it has to be, so the
+// window lies inside the work area (the display minus the taskbar) of the
+// display it is mostly on. Windows' invisible resize borders may hang over
+// the edges, as they do for a snapped window. Launchers before v0.7.2 could
+// remember a window that had grown past the screen.
+func (p *windowPlacement) fittedTo(works []screenRect) *windowPlacement {
+	if p == nil || len(works) == 0 {
+		return p
+	}
+	r := p.Normal
+	best, bestArea := works[0], int64(-1)
+	for _, w := range works {
+		width := max(0, min(r.Right, w.Right)-max(r.Left, w.Left))
+		height := max(0, min(r.Bottom, w.Bottom)-max(r.Top, w.Top))
+		if area := int64(width) * int64(height); area > bestArea {
+			best, bestArea = w, area
+		}
+	}
+	border := int32(windowFrameWidth / 2)
+	area := screenRect{best.Left - border, best.Top, best.Right + border, best.Bottom + border}
+	width, height := min(r.width(), area.width()), min(r.height(), area.height())
+	left := min(max(r.Left, area.Left), area.Right-width)
+	top := min(max(r.Top, area.Top), area.Bottom-height)
+	fitted := *p
+	fitted.Normal = screenRect{left, top, left + width, top + height}
+	return &fitted
+}
+
+type placementStep int
+
+const (
+	placementKeep    placementStep = iota
+	placementSave                  // the user placed the window: remember it
+	placementRestore               // something else resized it: put it back
+)
+
+// nextPlacementStep decides what the title enforcer does with a VM window
+// whose placement is now. last is the placement remembered for it and target
+// where it belongs. While the guest boots or shuts down (held), QEMU resizes
+// the window to whatever the guest's display is; those changes are undone,
+// not remembered. Once the guest's desktop follows the window, any change is
+// the user's: a drag, Snap, or a tool that arranges windows.
+func nextPlacementStep(now, last, target *windowPlacement, userMoved, dragging, held bool) placementStep {
+	switch {
+	case now == nil || dragging:
+		return placementKeep
+	case userMoved || last == nil || now.Maximized != last.Maximized:
+		return placementSave
+	case held:
+		if target != nil && !now.Maximized && !target.Maximized && now.Normal != target.Normal {
+			return placementRestore
+		}
+		return placementKeep
+	case !now.sameAs(last):
+		return placementSave
+	}
+	return placementKeep
 }
