@@ -213,8 +213,9 @@ func releaseQemuCursor() {
 // handoff needs no locking.
 type displayWindowState struct {
 	index     int
-	last      *windowPlacement
-	themeSet  bool // the title bar theme below was applied or refused
+	last      *windowPlacement // the placement remembered for the window
+	target    *windowPlacement // where the window belongs (see nextPlacementStep)
+	themeSet  bool             // the title bar theme below was applied or refused
 	darkTitle bool
 }
 
@@ -274,9 +275,11 @@ func enumTitleProc(hwnd, _ uintptr) uintptr {
 			if err != nil || !placement.usable(monitors) {
 				placement = initialDisplayPlacement(index, monitors)
 			}
+			placement = placement.fittedTo(workAreas(enumTitleMonitorDetails))
 			if placement == nil || !applyPlacement(hwnd, placement) {
 				procShowWindow.Call(hwnd, swShowMaximized)
 			}
+			state.last, state.target = placement, placement
 		}
 		if enumTitleFullscreen {
 			monitors := enumTitleMonitorDetails
@@ -307,6 +310,11 @@ func enumTitleProc(hwnd, _ uintptr) uintptr {
 		if now := capturePlacement(hwnd); now != nil && !now.usable(enumTitleMonitors) {
 			if restored := initialDisplayPlacement(state.index, enumTitleMonitors); restored != nil {
 				applyPlacement(hwnd, restored)
+				state.target = restored
+				restored.SavedAt = time.Now()
+				if saveDisplayPlacement(enumTitleDir, state.index, *restored) == nil {
+					state.last = restored
+				}
 			}
 		}
 	}
@@ -321,11 +329,16 @@ func enumTitleProc(hwnd, _ uintptr) uintptr {
 		}
 	}
 	if !enumTitleFullscreen {
-		if now := capturePlacement(hwnd); now != nil && !now.sameAs(state.last) {
+		now := capturePlacement(hwnd)
+		switch nextPlacementStep(now, state.last, state.target, takeUserMoved(hwnd), beingDragged(hwnd), !guestFollowsWindow.Load()) {
+		case placementSave:
 			now.SavedAt = time.Now()
 			if saveDisplayPlacement(enumTitleDir, state.index, *now) == nil {
 				state.last = now
 			}
+			state.target = now
+		case placementRestore:
+			applyPlacement(hwnd, state.target)
 		}
 	}
 	return 1

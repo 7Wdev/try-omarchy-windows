@@ -123,6 +123,7 @@ func (a *guestAgent) serve(c net.Conn) {
 	}
 	a.mu.Unlock()
 	logf("agent: guest agent connected (%s)", strings.TrimSpace(strings.TrimPrefix(first, "hello ")))
+	guestAgentConnected()
 	a.sendTime("connect")
 	a.sendBattery()
 	a.sendApprovedApps()
@@ -185,7 +186,8 @@ func (a *guestAgent) read(c net.Conn, r *bufio.Reader) {
 		}
 	}
 	a.mu.Lock()
-	if a.conn == c {
+	current := a.conn == c
+	if current {
 		if a.zeroFillPending {
 			a.zeroFillStatus = "Preparation interrupted. Reconnect the guest and try again."
 			a.zeroFillPending = false
@@ -193,6 +195,10 @@ func (a *guestAgent) read(c net.Conn, r *bufio.Reader) {
 		a.conn = nil
 	}
 	a.mu.Unlock()
+	if current {
+		// The guest is shutting down or its agent restarted.
+		guestAgentDisconnected()
+	}
 	c.Close()
 }
 

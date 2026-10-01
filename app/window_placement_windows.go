@@ -21,6 +21,7 @@ type hostMonitor struct {
 	Name    string
 	Bounds  screenRect
 	Primary bool
+	Work    screenRect // Bounds minus the taskbar
 }
 
 type monitorInfoEx struct {
@@ -48,9 +49,9 @@ func enumMonitorsProc(monitor, _ uintptr, rect *screenRect, _ uintptr) uintptr {
 	enumMonitorsResult = append(enumMonitorsResult, *rect)
 	info := monitorInfoEx{Size: uint32(unsafe.Sizeof(monitorInfoEx{}))}
 	if ok, _, _ := procGetMonitorInfoW.Call(monitor, uintptr(unsafe.Pointer(&info))); ok != 0 {
-		enumMonitorDetails = append(enumMonitorDetails, hostMonitor{syscall.UTF16ToString(info.Device[:]), info.Bounds, info.Flags&1 != 0})
+		enumMonitorDetails = append(enumMonitorDetails, hostMonitor{syscall.UTF16ToString(info.Device[:]), info.Bounds, info.Flags&1 != 0, info.Work})
 	} else {
-		enumMonitorDetails = append(enumMonitorDetails, hostMonitor{Bounds: *rect})
+		enumMonitorDetails = append(enumMonitorDetails, hostMonitor{Bounds: *rect, Work: *rect})
 	}
 	return 1
 }
@@ -130,5 +131,13 @@ func rememberedWindow(dir string) *windowPlacement {
 	if !p.usable(monitorRects()) {
 		return nil
 	}
-	return p
+	return p.fittedTo(workAreas(hostMonitors()))
+}
+
+func workAreas(monitors []hostMonitor) []screenRect {
+	areas := make([]screenRect, 0, len(monitors))
+	for _, monitor := range monitors {
+		areas = append(areas, monitor.Work)
+	}
+	return areas
 }

@@ -197,8 +197,8 @@ func runWinKeyHook() {
 	if mh, _, _ := procSetWindowsHookExW.Call(whMouseLL, mcb, 0, 0); mh == 0 {
 		logf("closeguard: mouse hook failed - X clicks will be ignored (window-close=off)")
 	}
-	// The title hook shares this pump too.
-	installTitleHook()
+	// The VM window events share this pump too.
+	installQemuWindowHooks()
 	var m msgStruct
 	for {
 		procMsgWaitForMultipleObj.Call(0, 0, 0, 800, qsAllinput)
@@ -295,7 +295,12 @@ func runTitleEnforcer(dir string, fullscreen bool, fullscreenDisplay string) {
 			enumTitlePid = 0
 			qemuHwnd.Store(0)
 		}
-		time.Sleep(time.Second)
+		select {
+		case <-qemuWindowChanged:
+			// Let a burst of window events settle, then look once.
+			time.Sleep(30 * time.Millisecond)
+		case <-time.After(time.Second):
+		}
 	}
 
 }

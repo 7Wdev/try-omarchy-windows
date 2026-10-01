@@ -897,6 +897,7 @@ func supervise(cfg *config, cmdline string) bool {
 		logf("booting - %s (attempt %d)", mode, attempt)
 		pendingReboot.Store(false)
 		guestReady.Store(false)
+		guestBootStarted()
 		controlDir, err := prepareQMPControl()
 		if err != nil {
 			fatal("Cannot prepare private VM controls: %v", err)
@@ -1191,7 +1192,10 @@ var (
 func runLifecycleListener() {
 	l, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", lifecyclePort))
 	if err != nil {
-		fatal("Try Omarchy looks like it's already running (port %d is in use).", lifecyclePort)
+		if activateRunningInstance() {
+			os.Exit(0)
+		}
+		fatal("Try Omarchy is already running, or another program is using its port %d. Close it and try again.", lifecyclePort)
 	}
 	go func() {
 		for {
@@ -1213,6 +1217,7 @@ func runLifecycleListener() {
 				case "ready":
 					logf("guest userspace announced ready")
 					guestReady.Store(true)
+					guestDesktopReady()
 				case "reclaim":
 					c.SetWriteDeadline(time.Now().Add(3 * time.Second))
 					if err := requestReclaimError(); err != nil {
