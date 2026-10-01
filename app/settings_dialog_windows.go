@@ -220,6 +220,8 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 		return false
 	}
 	hostSnapshot := measureHostResources(true)
+	runningMiB := runningGuestMiB()
+	hostSnapshot.AvailableMiB = min(hostSnapshot.TotalMiB, hostSnapshot.AvailableMiB+runningMiB)
 	cameras, cameraErr := listCameraDevices()
 	if prefs.CameraID != "" {
 		found := false
@@ -875,7 +877,11 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 				help += " Measures Windows usage again at launch and leaves extra headroom."
 			}
 		}
-		help += fmt.Sprintf("\nPC: %d logical CPUs, %.1f GiB RAM; %.1f GiB available when Settings opened. Applies next boot; no live resizing.", hostSnapshot.LogicalCPUs, float64(hostSnapshot.TotalMiB)/1024, float64(hostSnapshot.AvailableMiB)/1024)
+		available := "available when Settings opened"
+		if runningMiB > 0 {
+			available = "available once Omarchy shuts down"
+		}
+		help += fmt.Sprintf("\nPC: %d logical CPUs, %.1f GiB RAM; %.1f GiB %s. Applies next boot; no live resizing.", hostSnapshot.LogicalCPUs, float64(hostSnapshot.TotalMiB)/1024, float64(hostSnapshot.AvailableMiB)/1024, available)
 		setText(hResourceHelp, help)
 		if layout != nil {
 			layout()

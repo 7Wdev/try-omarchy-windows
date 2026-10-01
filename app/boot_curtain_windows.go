@@ -47,7 +47,7 @@ var (
 	curtainPainted   atomic.Int32
 	curtainCapturing atomic.Bool
 	curtainBoot      time.Time
-	curtainSlowShown bool
+	curtainStatus    string
 )
 
 type curtainWindow struct {
@@ -196,9 +196,19 @@ func curtainTick(primary uintptr) {
 		liftCurtain(reason)
 		return
 	}
-	if !curtainSlowShown && !times.boot.IsZero() && now.Sub(times.boot) >= curtainSlowNotice {
-		curtainSlowShown = true
-		uiStatus("Omarchy is taking longer than usual to start...")
+	// Cancel puts its own status up.
+	if !setupCancelled() {
+		status := "Starting Omarchy..."
+		switch {
+		case !times.boot.IsZero() && now.Sub(times.boot) >= curtainSlowNotice:
+			status = "Omarchy is taking longer than usual to start..."
+		case times.checkPaint():
+			status = "Starting the desktop..."
+		}
+		if status != curtainStatus {
+			curtainStatus = status
+			uiStatus("%s", status)
+		}
 	}
 	if primary != 0 && times.checkPaint() && curtainCapturing.CompareAndSwap(false, true) {
 		go func() {

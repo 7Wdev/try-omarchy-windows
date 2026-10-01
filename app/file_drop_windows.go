@@ -136,7 +136,7 @@ func fileDropWindowProc(hwnd, message, w, l uintptr) uintptr {
 			if err := sendDroppedFiles(paths); err != nil {
 				usbSetText(state.status, err.Error())
 			} else {
-				usbSetText(state.status, "Sending files to Omarchy…")
+				usbSetText(state.status, "Sending files to Omarchy...")
 			}
 			return 0
 		case wmCommand:
@@ -224,7 +224,7 @@ func showFileDropWindow(paths []string) {
 		procSendMessageW.Call(state.list, 0x180, 0, uintptr(unsafe.Pointer(text)))
 	}
 	state.status = control("STATIC", "Ready", 16, 264, 536, 30, 0, ssNoprefix)
-	control("BUTTON", "Choose a file…", 16, 302, 150, 28, 4602, wsTabstop)
+	control("BUTTON", "Choose a file...", 16, 302, 150, 28, 4602, wsTabstop)
 	control("BUTTON", "Open received folder", 176, 302, 190, 28, 4601, wsTabstop)
 	control("BUTTON", "Close", 452, 302, 100, 28, 2, wsTabstop)
 	shell32.NewProc("DragAcceptFiles").Call(hwnd, 1)
