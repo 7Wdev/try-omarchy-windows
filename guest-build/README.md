@@ -97,6 +97,14 @@ it on the new install. Keys, sign-ins and browser profiles are only included
 when picked. Compatibility revision 44 delivers the wrapper and the importer to
 existing guests.
 
+Patch 0114 updates the guest to Omarchy 4.0.4. That release moves bare-metal
+installs to Omarchy's own kernel through a migration that installs
+`linux-omarchy` and adds it to the Limine boot menu. The guest has no bootloader
+and boots the kernel the launcher supplies, so the build replaces that one
+migration with a step that only prints a message. The rest of the release is
+installer and hardware files the guest does not use. The runtime package becomes
+`4.0.4-1`, so Update > Omarchy brings existing guests to it.
+
 The second command needs Docker and currently takes about ten minutes. Release
 CI also boots the resulting factory image with `scripts/release/smoke-guest.py`
 before it uploads anything.
