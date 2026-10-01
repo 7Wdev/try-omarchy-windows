@@ -86,6 +86,17 @@ account is created, and catch-up adds it once to existing quick-start disks.
 The first-desktop notice now says "Quick-start login" and suggests `passwd`.
 Compatibility revision 42 delivers the drop-in and scripts to existing guests.
 
+Patch 0112 moves `try-omarchy-export` onto the Try Omarchy importer in
+[`migrate/`](../migrate/README.md). The release helper builds the importer into
+`/usr/local/lib/try-omarchy/try-omarchy-import.pyz` after applying the patches,
+so the guest, the release asset and every export carry the same code. The
+command is now a wrapper that runs `try-omarchy-import.pyz export`. The archive
+holds only what the user changed in the groups they pick, the skeleton copies
+of those files as merge bases, and the importer with an `import.sh` that runs
+it on the new install. Keys, sign-ins and browser profiles are only included
+when picked. Compatibility revision 44 delivers the wrapper and the importer to
+existing guests.
+
 The second command needs Docker and currently takes about ten minutes. Release
 CI also boots the resulting factory image with `scripts/release/smoke-guest.py`
 before it uploads anything.
