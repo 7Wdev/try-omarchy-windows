@@ -6,24 +6,36 @@ import (
 	"testing/fstest"
 )
 
-func TestEmbeddedEnglishLauncherMessages(t *testing.T) {
+func TestEmbeddedLauncherMessages(t *testing.T) {
 	catalogs, err := readUICatalogs(uiLocaleFiles)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := selectUILanguage([]string{"zh-CN"}, catalogs); got != "en" {
-		t.Fatalf("untranslated Windows language must fall back to English, got %q", got)
+	if got := selectUILanguage([]string{"zh-CN"}, catalogs); got != "zh-Hans" {
+		t.Fatalf("Simplified Chinese Windows language must select zh-Hans, got %q", got)
+	}
+	translator := uiTranslator{language: "zh-Hans", catalogs: catalogs}
+	for key := range catalogs["en"] {
+		if catalogs["zh-Hans"][key] == "" {
+			t.Errorf("Simplified Chinese catalog is missing a translation: %s", key)
+		}
+	}
+	if got := translator.text("about.title"); got != "关于 Try Omarchy" {
+		t.Errorf("Simplified Chinese title is incorrect: %q", got)
 	}
 	message := uiTextWith("about.body", map[string]string{
 		"version": "v0.5.0", "website": "https://tryomarchy.com", "source": "https://github.com/omacom/try-omarchy-windows",
 	})
-	for _, want := range []string{"Try Omarchy v0.5.0", "Website: https://tryomarchy.com", "Source, help and issue reporting: https://github.com/omacom/try-omarchy-windows"} {
+	for _, want := range []string{"Try Omarchy v0.5.0", "https://tryomarchy.com", "https://github.com/omacom/try-omarchy-windows"} {
 		if !strings.Contains(message, want) {
 			t.Errorf("About message is missing %q", want)
 		}
 	}
 	if uiPlaceholder.MatchString(message) {
 		t.Errorf("About message has an unfilled placeholder: %q", message)
+	}
+	if got := (uiTranslator{language: "en", catalogs: catalogs}).text("about.title"); got != "About Try Omarchy" {
+		t.Fatalf("English catalog changed unexpectedly: %q", got)
 	}
 	for _, key := range []string{"about.no_update", "about.update_available"} {
 		message := uiTextWith(key, map[string]string{"installed": "v0.5.0", "latest": "v0.6.0"})
