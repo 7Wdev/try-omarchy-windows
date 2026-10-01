@@ -1,0 +1,55 @@
+From c536bec1e00a569b3ee830d940cfdb455f4c677a Mon Sep 17 00:00:00 2001
+From: Tyler South <tsouth2@gmail.com>
+Date: Thu, 1 Oct 2026 19:15:21 -0400
+Subject: [PATCH] Leave linux-headers files out of the delivered kernel modules
+
+---
+ guest/factory-overlay/etc/initcpio/install/tryomarchy_compat | 5 ++++-
+ guest/tests/test_kernel_module_delivery.py                   | 5 ++++-
+ 2 files changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/guest/factory-overlay/etc/initcpio/install/tryomarchy_compat b/guest/factory-overlay/etc/initcpio/install/tryomarchy_compat
+index 71cd997..dbb37c8 100755
+--- a/guest/factory-overlay/etc/initcpio/install/tryomarchy_compat
++++ b/guest/factory-overlay/etc/initcpio/install/tryomarchy_compat
+@@ -7,10 +7,13 @@ build() {
+     # including TUN and the DKMS camera module, not just early-boot drivers.
+     # Keep build headers out of the initramfs and avoid a duplicate archive in
+     # the factory rootfs. add_file copies the archive into the build tree.
++    # linux-headers owns build/ and vdso/. Unowned copies of them on the disk
++    # make pacman refuse the next linux-headers upgrade, and with it the whole
++    # Update > Omarchy, so the package installs those files itself.
+     local modules_archive
+     modules_archive=$(mktemp) || return 1
+     if ! tar --exclude="$KERNELVERSION/build" --exclude="$KERNELVERSION/source" \
+-        --exclude="$KERNELVERSION/vmlinuz" -C /usr/lib/modules \
++        --exclude="$KERNELVERSION/vmlinuz" --exclude="$KERNELVERSION/vdso" -C /usr/lib/modules \
+         -cf "$modules_archive" "$KERNELVERSION"; then
+         rm -f "$modules_archive"
+         return 1
+diff --git a/guest/tests/test_kernel_module_delivery.py b/guest/tests/test_kernel_module_delivery.py
+index c1fd42c..c65376d 100644
+--- a/guest/tests/test_kernel_module_delivery.py
++++ b/guest/tests/test_kernel_module_delivery.py
+@@ -74,7 +74,8 @@ command tar "$@"
+ 
+     def test_install_archive_includes_modules_and_excludes_headers(self):
+         source = self.root / 'source'
+-        for name in ['modules.order', 'kernel/drivers/net/tun.ko', 'updates/dkms/v4l2loopback.ko', 'build/header.h', 'source/source.c', 'vmlinuz']:
++        for name in ['modules.order', 'kernel/drivers/net/tun.ko', 'updates/dkms/v4l2loopback.ko', 'build/header.h', 'source/source.c', 'vmlinuz',
++                     'vdso/vdso64.so']:
+             file = source / self.kernel / name
+             file.parent.mkdir(parents=True, exist_ok=True)
+             file.write_text(name)
+@@ -89,6 +90,8 @@ command tar "$@"
+         self.assertIn(self.kernel + '/kernel/drivers/net/tun.ko', names)
+         self.assertIn(self.kernel + '/updates/dkms/v4l2loopback.ko', names)
+         self.assertFalse(any('/build' in name or '/source' in name or name.endswith('/vmlinuz') for name in names))
++        # linux-headers owns vdso/; an unowned copy blocks its next upgrade.
++        self.assertFalse(any('/vdso' in name for name in names))
+ 
+     def test_readiness_waits_for_complete_module_delivery(self):
+         ready = (GUEST / 'factory-overlay/usr/local/lib/try-omarchy/guest-ready').read_text()
+-- 
+2.56.0
+
