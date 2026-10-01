@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.8.0 - 2026-10-01
+
+- Omarchy's window stays invisible while Omarchy boots and fades in once the
+  desktop and wallpaper are drawn. The setup window stays up with the starter
+  keys and says when the desktop is starting, and Cancel shuts Omarchy down.
+  The first start with your own account still shows the window for Omarchy's
+  setup form. The network card's boot ROM and the kernel's EDD probe no longer
+  print on screen.
+- The window keeps the place and size you gave it while Omarchy starts and shuts
+  down. Starting Try Omarchy while it runs brings the window forward, and a
+  second installation whose shortcut is taken says where to start it.
+- The window title stays "Try Omarchy" instead of briefly showing QEMU's.
+- Omarchy pauses before Windows sleeps, including Modern Standby, and resumes
+  on wake. A pause you made yourself is left alone.
+- Files copied before Omarchy started that are gone by then no longer show a
+  transfer error.
+- Settings counts the running Omarchy's memory as available for the next boot.
+- The launcher is available in Korean (#256, thanks @seunghan91). Every Settings
+  page and its messages can now be translated, and `TRY_OMARCHY_UI_LANGUAGE`
+  picks a language without changing Windows.
+- The importer says "1 file" rather than "1 files".
+- The guest moves to Omarchy 4.0.4. Its switch to Omarchy's own kernel is
+  skipped, since the launcher supplies the kernel.
+
 ## v0.7.1 - 2026-10-01
 
 - Security: the Linux importer only passes package and Flatpak names from the
