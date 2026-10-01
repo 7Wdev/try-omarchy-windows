@@ -4,7 +4,6 @@ package main
 
 import (
 	"bytes"
-	"fmt"
 	"io"
 	"os"
 	"runtime"
@@ -259,6 +258,10 @@ func enumTitleProc(hwnd, _ uintptr) uintptr {
 	title := syscall.UTF16ToString(buf[:])
 	state, known := enumTitleWindows[hwnd]
 	index, parsed := displayIndexFromTitle(title)
+	if !parsed {
+		// The title hook may have renamed it before this saw QEMU's title.
+		index, parsed = recordedDisplayIndex(hwnd)
+	}
 	if !known || parsed && state.index != index {
 		if !parsed {
 			return 1
@@ -290,11 +293,7 @@ func enumTitleProc(hwnd, _ uintptr) uintptr {
 		procSendMessageW.Call(hwnd, 0x80, 1, enumTitleIcon)
 		procSendMessageW.Call(hwnd, 0x80, 0, enumTitleIcon)
 	}
-	wanted := appTitle
-	if state.index > 0 {
-		wanted = fmt.Sprintf("%s display %d", appTitle, state.index+1)
-	}
-	if title != wanted {
+	if wanted := displayWindowTitle(state.index); title != wanted {
 		value, _ := syscall.UTF16PtrFromString(wanted)
 		procSetWindowTextW.Call(hwnd, uintptr(unsafe.Pointer(value)))
 	}
