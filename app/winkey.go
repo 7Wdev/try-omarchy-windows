@@ -197,6 +197,8 @@ func runWinKeyHook() {
 	if mh, _, _ := procSetWindowsHookExW.Call(whMouseLL, mcb, 0, 0); mh == 0 {
 		logf("closeguard: mouse hook failed - X clicks will be ignored (window-close=off)")
 	}
+	// The title hook shares this pump too.
+	installTitleHook()
 	var m msgStruct
 	for {
 		procMsgWaitForMultipleObj.Call(0, 0, 0, 800, qsAllinput)

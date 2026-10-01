@@ -39,6 +39,27 @@ func TestMultipleDisplayDeviceIncludesEnabledOutputs(t *testing.T) {
 	}
 }
 
+// QEMU's SDL frontend titles a grabbed window like this on every focus change.
+// The launcher must recognise it and replace it with its own title.
+func TestQEMUGrabTitleBecomesOurs(t *testing.T) {
+	for title, want := range map[string]string{
+		"QEMU (" + appTitle + "-0) - Press Ctrl-Alt-G to exit grab":       appTitle,
+		"QEMU (" + appTitle + "-0)":                                       appTitle,
+		"QEMU (" + appTitle + "-1) [Stopped]":                             appTitle + " display 2",
+		"QEMU (" + appTitle + "-2) - Press Ctrl-Alt-Shift-G to exit grab": appTitle + " display 3",
+	} {
+		index, ok := displayIndexFromTitle(title)
+		if !ok || displayWindowTitle(index) != want {
+			t.Fatalf("%q -> %d %v %q", title, index, ok, displayWindowTitle(index))
+		}
+	}
+	for index := 0; index < maximumGuestDisplays; index++ {
+		if _, ok := displayIndexFromTitle(displayWindowTitle(index)); ok {
+			t.Fatalf("our own title for display %d looks like QEMU's", index)
+		}
+	}
+}
+
 func TestDisplayIdentityAndIndependentPlacements(t *testing.T) {
 	index, ok := displayIndexFromTitle("QEMU (" + appTitle + "-2) [Stopped]")
 	if !ok || index != 2 {

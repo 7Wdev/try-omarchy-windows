@@ -45,6 +45,14 @@ func displayDevice(cfg *config, hostmem uint64) string {
 	return string(data)
 }
 
+// displayWindowTitle is the title of the window showing guest display index.
+func displayWindowTitle(index int) string {
+	if index == 0 {
+		return appTitle
+	}
+	return fmt.Sprintf("%s display %d", appTitle, index+1)
+}
+
 func displayIndexFromTitle(title string) (int, bool) {
 	prefix := "QEMU (" + appTitle + "-"
 	if !strings.HasPrefix(title, prefix) {
