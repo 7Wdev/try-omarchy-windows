@@ -60,8 +60,8 @@ last=$(ls "$repo_root"/guest-build/*.patch | sed 's/.*\/\([0-9]*\)-.*/\1/' | sor
 next=$(printf '%04d' $((10#$last + 1)))
 git -C "$work" format-patch --quiet -1 --start-number "$((10#$next))" -o "$repo_root/guest-build/"
 python3 "$repo_root/migrate/build.py" --version "${RELEASE_TAG:-dev}" --output "$work/importer" >/dev/null
-install -Dm644 "$work/importer/try-omarchy-import.pyz" \
-  "$work/guest/overlay/usr/local/lib/try-omarchy/try-omarchy-import.pyz"
+install -Dm0755 "$work/importer/try-omarchy-import.pyz" \
+  "$work/guest/factory-overlay/usr/local/lib/try-omarchy/try-omarchy-import.pyz"
 "$work/guest/test"
 echo "wrote guest-build/$next-Refresh-the-guest-package-lock.patch"
 printf '%s\n' "$summary"
