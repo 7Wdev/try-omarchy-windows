@@ -34,6 +34,17 @@ func TestEmbeddedLauncherMessages(t *testing.T) {
 	if uiPlaceholder.MatchString(message) {
 		t.Errorf("About message has an unfilled placeholder: %q", message)
 	}
+	if got := selectUILanguage([]string{"ko-KR"}, catalogs); got != "ko" {
+		t.Fatalf("Korean Windows language must select ko, got %q", got)
+	}
+	for key := range catalogs["en"] {
+		if catalogs["ko"][key] == "" {
+			t.Errorf("Korean catalog is missing a translation: %s", key)
+		}
+	}
+	if got := (uiTranslator{language: "ko", catalogs: catalogs}).text("about.title"); got != "Try Omarchy 정보" {
+		t.Errorf("Korean title is incorrect: %q", got)
+	}
 	if got := (uiTranslator{language: "en", catalogs: catalogs}).text("about.title"); got != "About Try Omarchy" {
 		t.Fatalf("English catalog changed unexpectedly: %q", got)
 	}
