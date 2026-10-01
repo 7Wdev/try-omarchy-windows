@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.7.1 - 2026-10-01
+
+- Security: the Linux importer only passes package and Flatpak names from the
+  trial to pacman, yay and Flatpak when they are valid names, and always after
+  `--`. A crafted trial could otherwise hand yay an option that runs another
+  program.
+- Security: the importer only runs commands from the system folders, with a
+  PATH of just those. A script the import put in `~/.local/bin` could otherwise
+  run in place of mise, sudo or the package tools when that folder came first
+  in PATH. AUR builds ignore the home folder's yay, makepkg and git settings,
+  and sudo forgets its cached password before imported settings run (mise, the
+  Hyprland check, the theme switch).
+- Security: trial account homes must be under `/home` without `.` or `..`
+  parts, and links on the trial disk are followed inside the trial only, so a
+  crafted trial cannot point the importer at other files on the computer.
+- The importer no longer prints control characters from file names, checks
+  service, theme and background names, applies your umask to imported files,
+  and mounts its ID-mapped copy of the trial with nodev, nosuid and noexec.
+- The importer's list says that everything checked comes along and Enter
+  continues.
+- The launcher's About and update screens, first-launch questions and Settings
+  section titles are available in Simplified Chinese (#246, thanks
+  @Dazzle-sys).
+
 ## v0.7.0 - 2026-09-30
 
 - Install Omarchy next to Windows and bring your trial setup along. Open
