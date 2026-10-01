@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	currentVersion         = "v0.8.0"
+	currentVersion         = "v0.7.1"
 	defaultUpdateURL       = "https://github.com/omacom/try-omarchy-windows/releases/latest/download/update-v2.json"
 	legacyReleaseBase      = "https://github.com/tsouth89/try-omarchy-windows/releases/download/"
 	transferredReleaseBase = "https://github.com/omacom/try-omarchy-windows/releases/download/"
