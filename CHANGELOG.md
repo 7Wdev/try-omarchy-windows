@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.7.0 - 2026-09-30
+
+- Install Omarchy next to Windows and bring your trial setup along. Open
+  Settings > Backup and recovery > Install Omarchy for a short checklist,
+  buttons for Windows settings and Disk Management, and the import command.
+  BitLocker status is checked through Windows without PowerShell or elevation.
+- Import settings, files and app data from the Windows trial into your Linux
+  account. Unchanged defaults stay in place, changed files are backed up before
+  replacement, and a repeat import keeps your later edits. Browser profiles
+  and sign-ins are optional.
+- `try-omarchy-export` includes the same importer with its selected files,
+  for moving to another PC or replacing Windows.
+- First-launch screens and Settings use the updated Try Omarchy branding,
+  clearer sections and native Windows controls.
+- Remember a selected USB device before starting Omarchy, so it can attach
+  on the next launch. Disconnected saved devices stay visible in Settings.
+- Follow Windows time-zone changes while preserving a time zone you chose
+  yourself inside Omarchy.
+
 ## v0.6.2 - 2026-09-29
 
 - Security: SSH no longer accepts the quick-start account's public password.
