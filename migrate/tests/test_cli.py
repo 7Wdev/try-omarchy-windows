@@ -75,6 +75,22 @@ class CliTests(CliCase):
         self.main("--yes", "--select", "settings")
         self.assertIn("mise install --yes", self.runner.commands())
 
+    def test_the_trials_background_follows_the_theme_switch(self):
+        # The trial's background is one of the theme's own, which only shows
+        # up here once omarchy-theme-set has switched to that theme.
+        self.runner.programs.add("omarchy-theme-bg-set")
+        wanted = self.home / ".local/state/omarchy/current/theme/backgrounds/1-gruvbox.jpg"
+        original = cli.packages.set_theme
+
+        def set_theme(runner, theme):
+            fixtures.write(wanted, b"jpg", fixtures.HOME_EDIT)
+            return original(runner, theme)
+
+        with mock.patch.object(cli.packages, "set_theme", set_theme):
+            status, output = self.main("--yes", "--select", "theme")
+        self.assertEqual(status, 0, output)
+        self.assertIn(f"omarchy-theme-bg-set {wanted}", self.runner.commands())
+
     def test_theme_is_left_alone_when_it_is_already_current(self):
         fixtures.write(self.home / ".local/state/omarchy/current/theme.name", b"gruvbox\n",
                        fixtures.HOME_EDIT)

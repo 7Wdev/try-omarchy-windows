@@ -373,9 +373,7 @@ def run(args, ui, runner, stack, state):
     applier = Applier(destination, progress=lambda done, total, action: ui.progress(
         done, total, action.relative))
     result = applier.apply(plan)
-    background = None
-    if "theme" in chosen:
-        background = packages.background_path(trial.background(), account.home, home)
+    trial_background = trial.background() if "theme" in chosen else None
     # Nothing more is read from the trial. Unmounting now still uses the
     # password sudo cached at the start.
     session.finish()
@@ -392,6 +390,8 @@ def run(args, ui, runner, stack, state):
     if "theme" in chosen:
         if theme != _current_theme(home):
             steps.append(packages.set_theme(runner, theme))
+        # After the theme switch, which puts the theme's backgrounds in place.
+        background = packages.background_path(trial_background, account.home, home)
         steps.append(packages.set_background(runner, background, home))
 
     summary = report.result_summary(result, steps)
