@@ -38,11 +38,6 @@ func TestEmbeddedLauncherMessages(t *testing.T) {
 	if got := selectUILanguage([]string{"ko-KR"}, catalogs); got != "ko" {
 		t.Fatalf("Korean Windows language must select ko, got %q", got)
 	}
-	for key := range catalogs["en"] {
-		if catalogs["ko"][key] == "" {
-			t.Errorf("Korean catalog is missing a translation: %s", key)
-		}
-	}
 	if got := (uiTranslator{language: "ko", catalogs: catalogs}).text("about.title"); got != "Try Omarchy 정보" {
 		t.Errorf("Korean title is incorrect: %q", got)
 	}

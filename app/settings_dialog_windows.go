@@ -124,7 +124,7 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 				}
 				cmd := exec.Command(filepath.Join(resolved, stableLauncherName), "-dir", dataDir, modeFlag)
 				if err := cmd.Start(); err != nil {
-					errorBox("Could not reopen moved Settings: " + err.Error())
+					errorBox(uiTextWith("settings.error.reopen_moved", map[string]string{"error": err.Error()}))
 				}
 				return false
 			}
@@ -151,33 +151,33 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 		if errors.Is(err, errSetupCancelled) {
 			return false
 		}
-		errorBox("Try Omarchy cannot read its settings:\n\n" + err.Error() + "\n\nFix or delete the file, then open the settings again.")
+		errorBox(uiTextWith("settings.error.read_settings", map[string]string{"error": err.Error()}))
 		return false
 	}
 
 	prefs, err := loadDesktopPreferences(dataDir)
 	if err != nil {
-		errorBox("Cannot read device and update preferences:\n\n" + err.Error())
+		errorBox(uiTextWith("settings.error.read_devices", map[string]string{"error": err.Error()}))
 		return false
 	}
 	launchPrefs, err := loadLaunchPreferences(dataDir)
 	if err != nil {
-		errorBox("Cannot read launch preferences:\n\n" + err.Error())
+		errorBox(uiTextWith("settings.error.read_launch", map[string]string{"error": err.Error()}))
 		return false
 	}
 	keyboardPrefs, err := loadKeyboardPreferences(dataDir)
 	if err != nil {
-		errorBox("Cannot read keyboard preferences:\n\n" + err.Error())
+		errorBox(uiTextWith("settings.error.read_keyboard", map[string]string{"error": err.Error()}))
 		return false
 	}
 	audioPrefs, err := loadAudioPreferences(dataDir)
 	if err != nil {
-		errorBox("Cannot read audio preferences:\n\n" + err.Error())
+		errorBox(uiTextWith("settings.error.read_audio", map[string]string{"error": err.Error()}))
 		return false
 	}
 	endpointPrefs, err := loadAudioEndpoints(dataDir)
 	if err != nil {
-		errorBox("Cannot read audio endpoint preferences:\n\n" + err.Error())
+		errorBox(uiTextWith("settings.error.read_endpoints", map[string]string{"error": err.Error()}))
 		return false
 	}
 	audioEndpointDevices, endpointErr := listAudioEndpoints()
@@ -211,12 +211,12 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 	audioDevices.Input = retainAudio(audioDevices.Input, audioPrefs.Input)
 	resourcePrefs, err := loadResourcePreferences(dataDir)
 	if err != nil {
-		errorBox("Cannot read resource preferences:\n\n" + err.Error())
+		errorBox(uiTextWith("settings.error.read_resources", map[string]string{"error": err.Error()}))
 		return false
 	}
 	approvedApps, err := loadApprovedWindowsApps(dataDir)
 	if err != nil {
-		errorBox("Cannot read approved Windows apps:\n\n" + err.Error())
+		errorBox(uiTextWith("settings.error.read_apps", map[string]string{"error": err.Error()}))
 		return false
 	}
 	hostSnapshot := measureHostResources(true)
@@ -231,7 +231,7 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 			}
 		}
 		if !found {
-			cameras = append(cameras, cameraDevice{prefs.CameraID, "Selected camera (disconnected)"})
+			cameras = append(cameras, cameraDevice{prefs.CameraID, uiText("settings.camera.disconnected")})
 		}
 	}
 
@@ -240,7 +240,7 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 		if errors.Is(err, errSetupCancelled) {
 			return false
 		}
-		errorBox("Try Omarchy cannot read its storage preferences:\n\n" + err.Error())
+		errorBox(uiTextWith("settings.error.read_storage", map[string]string{"error": err.Error()}))
 		return false
 	}
 	guard.Close()
@@ -311,7 +311,7 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 		}
 		selectedDisplay, _, _ := procSendMessageW.Call(hFullscreenDisplay, 0x147, 0, 0) // CB_GETCURSEL
 		if selectedDisplay >= uintptr(len(fullscreenChoices)) {
-			return s, fmt.Errorf("choose a fullscreen display")
+			return s, errors.New(uiText("settings.error.fullscreen_display"))
 		}
 		s.FullscreenDisplay = fullscreenChoices[selectedDisplay]
 		// Presets are launch-time intent: current memory pressure (including
@@ -323,7 +323,7 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 		}
 		s.Displays, err = strconv.Atoi(strings.TrimSpace(text(hDisplays)))
 		if err != nil || s.Displays < 1 || s.Displays > maximumGuestDisplays {
-			return s, fmt.Errorf("choose 1 to %d guest displays", maximumGuestDisplays)
+			return s, errors.New(uiTextWith("settings.error.displays", map[string]string{"max": strconv.Itoa(maximumGuestDisplays)}))
 		}
 		checkedLAN, _, _ := procSendMessageW.Call(hLANPublic, bmGetcheck, 0, 0)
 		s.LANPublic = checkedLAN == bstChecked
@@ -336,7 +336,7 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 		return s, s.validate()
 	}
 	browseFolder := func() {
-		if selected, ok := browseForFolder(hwnd, "Choose the Windows folder to share with Omarchy"); ok {
+		if selected, ok := browseForFolder(hwnd, uiText("settings.storage.browse_prompt")); ok {
 			setText(hShare, selected)
 			procSendMessageW.Call(hShareOn, bmSetcheck, bstChecked, 0)
 		}
@@ -355,7 +355,7 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 		cmd := exec.Command(self, args...)
 		cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: createNoWindow}
 		if err = cmd.Start(); err != nil {
-			errorBox("Could not open recovery controls:\n\n" + err.Error())
+			errorBox(uiTextWith("settings.error.recovery", map[string]string{"error": err.Error()}))
 			return
 		}
 		procAllowSetForeground.Call(uintptr(cmd.Process.Pid))
@@ -393,10 +393,10 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 			case settingsAppAddID:
 				path, ok, err := chooseExecutablePath(hwnd)
 				if err != nil {
-					errorBox("Could not choose Windows app:\n\n" + err.Error())
+					errorBox(uiTextWith("settings.error.choose_app", map[string]string{"error": err.Error()}))
 				} else if ok {
 					if err := approveWindowsExecutable(&approvedApps, path); err != nil {
-						errorBox("Could not approve Windows app:\n\n" + err.Error())
+						errorBox(uiTextWith("settings.error.approve_app", map[string]string{"error": err.Error()}))
 					} else {
 						refreshApprovedApps()
 					}
@@ -435,7 +435,7 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 					}
 				}
 				if e != nil {
-					errorBox("Could not open USB choices: " + e.Error())
+					errorBox(uiTextWith("settings.error.usb", map[string]string{"error": e.Error()}))
 				}
 			case settingsMicrophonePrivacyID:
 				openWindowsURL("ms-settings:privacy-microphone")
@@ -444,7 +444,7 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 			case settingsPrivacyID:
 				openWindowsURL("ms-settings:privacy-webcam")
 			case settingsHelpID:
-				infoBox(everydayHelp)
+				infoBox(uiText("help.everyday"))
 			case settingsSaveID:
 				guard, err := lockMoveStore(hostMoveStore())
 				if err != nil {
@@ -476,12 +476,12 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 				}
 				if err == nil && diskGiB != storage.DiskGiB {
 					if storageErr := saveStorageSettings(dataDir, diskGiB); storageErr != nil {
-						errorBox("Other settings were saved, but disk capacity could not be saved:\n\n" + storageErr.Error())
+						errorBox(uiTextWith("settings.error.save_disk", map[string]string{"error": storageErr.Error()}))
 						return 0
 					}
 				}
 				if err != nil {
-					errorBox("These settings cannot be saved:\n\n" + err.Error())
+					errorBox(uiTextWith("settings.error.cannot_save", map[string]string{"error": err.Error()}))
 					return 0
 				}
 				if err == nil {
@@ -498,11 +498,11 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 					} else if index <= uintptr(len(cameras)) {
 						updated.CameraID = cameras[index-1].ID
 					} else {
-						errorBox("Choose a camera before saving.")
+						errorBox(uiText("settings.error.choose_camera"))
 						return 0
 					}
 					if err = saveDesktopPreferences(dataDir, updated); err != nil {
-						errorBox("Other settings were saved, but device and update preferences could not be saved:\n\n" + err.Error())
+						errorBox(uiTextWith("settings.error.save_devices", map[string]string{"error": err.Error()}))
 						return 0
 					}
 					v, _, _ = procSendMessageW.Call(hStartAutomatically, bmGetcheck, 0, 0)
@@ -513,7 +513,7 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 					if !portable {
 						target := filepath.Join(dataDir, stableLauncherName)
 						if err = syncSignInShortcut(target, dataDir, updatedLaunch.LaunchAtSignIn); err != nil {
-							errorBox("Other settings were saved, but Windows sign-in startup could not be updated:\n\n" + err.Error())
+							errorBox(uiTextWith("settings.error.save_sign_in", map[string]string{"error": err.Error()}))
 							return 0
 						}
 					}
@@ -523,13 +523,13 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 								logf("restoring sign-in shortcut after settings save failed: %v", rollbackErr)
 							}
 						}
-						errorBox("Other settings were saved, but automatic startup could not be saved:\n\n" + err.Error())
+						errorBox(uiTextWith("settings.error.save_startup", map[string]string{"error": err.Error()}))
 						return 0
 					}
 					if !portable {
 						target := filepath.Join(dataDir, stableLauncherName)
 						if err = updateLaunchShortcuts(target, dataDir, updatedLaunch.StartAutomatically); err != nil {
-							errorBox("Other settings were saved, but Windows shortcuts could not be updated:\n\n" + err.Error())
+							errorBox(uiTextWith("settings.error.save_shortcuts", map[string]string{"error": err.Error()}))
 							return 0
 						}
 					}
@@ -553,7 +553,7 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 					} {
 						index, _, _ := procSendMessageW.Call(row.control, 0x147, 0, 0)
 						if index > uintptr(len(row.names)) {
-							errorBox("Choose an audio device before saving.")
+							errorBox(uiText("settings.error.choose_audio"))
 							return 0
 						}
 						*row.value = ""
@@ -564,22 +564,22 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 							*row.value, row.rememberedName, row.rememberedID, row.endpoints)
 					}
 					if err := saveAudioSelection(dataDir, updated, updatedEndpoints); err != nil {
-						errorBox("Other settings were saved, but audio preferences could not be saved:\n\n" + err.Error())
+						errorBox(uiTextWith("settings.error.save_audio", map[string]string{"error": err.Error()}))
 						return 0
 					}
 					if audioLive {
 						if err := publishSavedAudioRoutes(dataDir, updated, microphoneDisabled); err != nil {
-							errorBox("Audio choices were saved, but could not be sent to the running Omarchy session:\n\n" + err.Error())
+							errorBox(uiTextWith("settings.error.send_audio", map[string]string{"error": err.Error()}))
 							return 0
 						}
 					}
 				}
 				if err := saveResourcePreferences(dataDir, selectedProfile()); err != nil {
-					errorBox("Other settings were saved, but the resource profile could not be saved:\n\n" + err.Error())
+					errorBox(uiTextWith("settings.error.save_profile", map[string]string{"error": err.Error()}))
 					return 0
 				}
 				if err := saveApprovedWindowsApps(dataDir, approvedApps); err != nil {
-					errorBox("Other settings were saved, but approved Windows apps could not be saved:\n\n" + err.Error())
+					errorBox(uiTextWith("settings.error.save_apps", map[string]string{"error": err.Error()}))
 					return 0
 				}
 				// Only write the file for a real change. Older launchers reject
@@ -587,7 +587,7 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 				altTabCheck, _, _ := procSendMessageW.Call(hAltTab, bmGetcheck, 0, 0)
 				if toWindows := altTabCheck != bstChecked; toWindows != keyboardPrefs.AltTabToWindows {
 					if err := saveKeyboardPreferences(dataDir, keyboardPreferences{AltTabToWindows: toWindows}); err != nil {
-						errorBox("Other settings were saved, but the Alt+Tab choice could not be saved:\n\n" + err.Error())
+						errorBox(uiTextWith("settings.error.save_alt_tab", map[string]string{"error": err.Error()}))
 						return 0
 					}
 				}
@@ -651,7 +651,7 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 					}
 					cmd := exec.Command(filepath.Join(resolved, stableLauncherName), "-dir", resolved, modeFlag)
 					if err := cmd.Start(); err != nil {
-						errorBox("Open Settings at " + resolved + ": " + err.Error())
+						errorBox(uiTextWith("settings.error.open_moved", map[string]string{"path": resolved, "error": err.Error()}))
 					}
 					procDestroyWindow.Call(h)
 					return 0
@@ -708,9 +708,9 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 	scroll.content = clientH
 	x := work[0] + (work[2]-work[0]-w)/2
 	yWindow := work[1] + (work[3]-work[1]-hgt)/2
-	windowTitle := appTitle + " settings"
+	windowTitle := uiText("settings.window_title")
 	if launcher {
-		windowTitle = appTitle
+		windowTitle = uiText("brand.name")
 	}
 	title, _ := syscall.UTF16PtrFromString(windowTitle)
 	var err2 error
@@ -762,8 +762,92 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 		scroll.controls = append(scroll.controls, settingsScrollControl{h, x, y, cx, cy})
 		return h
 	}
-	const left, labelW, fieldX, fieldW = 24, 150, 184, 340
-	for i, label := range []string{"General", "Devices", "Advanced", "Recovery", "Apps"} {
+	// The sizes below are what English needs. A longer translation makes its
+	// control taller or wider and moves the rows under it down, instead of
+	// being cut off.
+	const left, checkboxTextInset = 24, 20
+	measure := func(text string, width int32) (int32, int32) { return measureText(hwnd, font, text, width) }
+	// The label column is as wide as its longest label, within reason.
+	labelW := int32(150)
+	for _, name := range []string{
+		uiText("settings.display.fullscreen_display"), uiText("settings.resources.profile"), uiText("settings.resources.memory"),
+		uiText("settings.resources.cpus"), uiText("settings.storage.capacity"), uiText("settings.storage.location"),
+		uiText("settings.storage.shared_folder"), uiText("settings.camera.camera"), uiText("settings.sound.output"),
+		uiText("settings.sound.microphone"), uiText("settings.graphics.displays"), uiText("settings.graphics.rendering"),
+		uiText("settings.network.forwards"), uiText("settings.network.ssh_key"),
+	} {
+		width, _ := measure(name, 0)
+		labelW = max(labelW, min(width+8, 230))
+	}
+	fieldX := left + labelW + 10
+	fieldW := clientW - fieldX - 36
+	// fieldLabel names a field in the label column and returns how much
+	// taller than cy its text needs to be.
+	fieldLabel := func(text string, y, cy int32) int32 {
+		_, height := measure(text, labelW)
+		height = max(cy, height)
+		mk("STATIC", text, left, y+3, labelW, height, ssNoprefix, 0)
+		return height - cy
+	}
+	// note is a wrapped paragraph at least cy tall. It returns the y below
+	// it: y+advance for English, more for a longer translation.
+	note := func(text string, x, y, w, cy, advance int32) int32 {
+		_, height := measure(text, w)
+		height = max(cy, height)
+		mk("STATIC", text, x, y, w, height, ssNoprefix, 0)
+		return y + advance + height - cy
+	}
+	// check is a checkbox across the rest of the row whose label wraps when
+	// it does not fit on one line. It returns how much taller than cy it is.
+	check := func(text string, x, y, cy int32, id uintptr) (uintptr, int32) {
+		w := clientW - left - x
+		_, height := measure(text, w-checkboxTextInset)
+		style := uintptr(bsAutocheckbox | wsTabstop)
+		if height > cy {
+			style |= bsMultiline
+		}
+		height = max(cy, height)
+		return mk("BUTTON", text, x, y, w, height, style, id), height - cy
+	}
+	// buttons lays out a row of buttons, each at least its English width,
+	// and moves the rest to a new line when a translation does not fit. It
+	// returns the buttons and how much lower the row ends.
+	type rowButton struct {
+		text  string
+		width int32
+		id    uintptr
+	}
+	buttons := func(x, y, h, gap int32, row ...rowButton) ([]uintptr, int32) {
+		handles := make([]uintptr, 0, len(row))
+		start, grow := x, int32(0)
+		for _, b := range row {
+			width, _ := measure(b.text, 0)
+			width = max(b.width, width+24)
+			if x > start && x+width > clientW-left {
+				x, grow = start, grow+h+8
+			}
+			handles = append(handles, mk("BUTTON", b.text, x, y+grow, width, h, wsTabstop, b.id))
+			x += width + gap
+		}
+		return handles, grow
+	}
+	// grid lays out a set of equal buttons width wide, as many to a row as
+	// fit and the rows balanced, so four become two rows of two rather
+	// than three and one. It returns the buttons and how much lower the
+	// grid ends than one row.
+	grid := func(x, y, h, gap, width int32, cells ...rowButton) ([]uintptr, int32) {
+		columns := max(1, min(int32(len(cells)), (clientW-left-x+gap)/(width+gap)))
+		rows := (int32(len(cells)) + columns - 1) / columns
+		columns = (int32(len(cells)) + rows - 1) / rows
+		handles := make([]uintptr, 0, len(cells))
+		for i, cell := range cells {
+			column, row := int32(i)%columns, int32(i)/columns
+			handles = append(handles, mk("BUTTON", cell.text, x+column*(width+gap), y+row*(h+8), width, h, wsTabstop, cell.id))
+		}
+		return handles, (rows - 1) * (h + 8)
+	}
+	for i, label := range []string{uiText("settings.tab.general"), uiText("settings.tab.devices"), uiText("settings.tab.advanced"),
+		uiText("settings.tab.recovery"), uiText("settings.tab.apps")} {
 		mk("BUTTON", label, 16+int32(i)*106, 94, 102, 30, wsTabstop, settingsPageBase+uintptr(i))
 	}
 	common = append(common, scroll.controls...)
@@ -774,30 +858,34 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 		if y > scroll.top {
 			y += 16
 		}
-		h := mk("STATIC", label, left, y, clientW-32, 24, ssNoprefix, 0)
+		_, height := measure(label, clientW-32)
+		height = max(24, height)
+		h := mk("STATIC", label, left, y, clientW-32, height, ssNoprefix, 0)
 		brand.sectionControls[h] = true
-		y += 32
+		y += 32 + height - 24
 	}
+	var grow int32
 	section(uiText("settings.section.display"))
-	hFull = mk("BUTTON", "Open fullscreen (Immersive)", left, y, 300, 22, bsAutocheckbox|wsTabstop, settingsFullID)
+	hFull, grow = check(uiText("settings.display.fullscreen"), left, y, 22, settingsFullID)
 	if current.Fullscreen {
 		procSendMessageW.Call(hFull, bmSetcheck, bstChecked, 0)
 	}
-	y += 30
-	mk("STATIC", "Fullscreen display", left, y+3, labelW, 20, ssNoprefix, 0)
+	y += 30 + grow
+	grow = fieldLabel(uiText("settings.display.fullscreen_display"), y, 20)
 	hFullscreenDisplay = mk("COMBOBOX", "", fieldX, y, fieldW, 180, 0x0003|wsVscroll|wsTabstop, settingsFullscreenDisplayID)
 	addDisplay := func(label, name string) {
 		value, _ := syscall.UTF16PtrFromString(label)
 		procSendMessageW.Call(hFullscreenDisplay, 0x143, 0, uintptr(unsafe.Pointer(value))) // CB_ADDSTRING
 		fullscreenChoices = append(fullscreenChoices, name)
 	}
-	value, _ := syscall.UTF16PtrFromString("Primary display (automatic)")
+	value, _ := syscall.UTF16PtrFromString(uiText("settings.display.primary_automatic"))
 	procSendMessageW.Call(hFullscreenDisplay, 0x143, 0, uintptr(unsafe.Pointer(value)))
 	selectedDisplay := 0
 	for _, monitor := range fullscreenMonitors {
-		label := fmt.Sprintf("%s (%d x %d)", monitor.Name, monitor.Bounds.width(), monitor.Bounds.height())
+		values := map[string]string{"name": monitor.Name, "width": strconv.Itoa(int(monitor.Bounds.width())), "height": strconv.Itoa(int(monitor.Bounds.height()))}
+		label := uiTextWith("settings.display.monitor", values)
 		if monitor.Primary {
-			label += " - primary"
+			label = uiTextWith("settings.display.monitor_primary", values)
 		}
 		addDisplay(label, monitor.Name)
 		if monitor.Name == current.FullscreenDisplay {
@@ -805,58 +893,92 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 		}
 	}
 	if current.FullscreenDisplay != "" && selectedDisplay == 0 {
-		addDisplay(current.FullscreenDisplay+" (disconnected)", current.FullscreenDisplay)
+		addDisplay(uiTextWith("settings.display.disconnected", map[string]string{"name": current.FullscreenDisplay}), current.FullscreenDisplay)
 		selectedDisplay = len(fullscreenChoices) - 1
 	}
 	procSendMessageW.Call(hFullscreenDisplay, 0x14e, uintptr(selectedDisplay), 0) // CB_SETCURSEL
-	y += 34
-	hStartAutomatically = mk("BUTTON", "Start automatically from Windows shortcuts", left, y, 360, 22, bsAutocheckbox|wsTabstop, settingsStartAutomaticallyID)
+	y += 34 + grow
+	hStartAutomatically, grow = check(uiText("settings.display.start_automatically"), left, y, 22, settingsStartAutomaticallyID)
 	if launchPrefs.StartAutomatically {
 		procSendMessageW.Call(hStartAutomatically, bmSetcheck, bstChecked, 0)
 	}
 	if portable {
 		procEnableWindow.Call(hStartAutomatically, 0)
 	}
-	y += 30
-	hLaunchAtSignIn = mk("BUTTON", "Launch when I sign in to Windows", left, y, 360, 22, bsAutocheckbox|wsTabstop, settingsLaunchAtSignInID)
+	y += 30 + grow
+	hLaunchAtSignIn, grow = check(uiText("settings.display.launch_at_sign_in"), left, y, 22, settingsLaunchAtSignInID)
 	if launchPrefs.LaunchAtSignIn {
 		procSendMessageW.Call(hLaunchAtSignIn, bmSetcheck, bstChecked, 0)
 	}
 	if portable {
 		procEnableWindow.Call(hLaunchAtSignIn, 0)
 	}
-	y += 30
-	hAltTab = mk("BUTTON", "Send Alt+Tab to Omarchy while its window is focused", left, y, 400, 22, bsAutocheckbox|wsTabstop, settingsAltTabID)
+	y += 30 + grow
+	hAltTab, grow = check(uiText("settings.display.alt_tab"), left, y, 22, settingsAltTabID)
 	if !keyboardPrefs.AltTabToWindows {
 		procSendMessageW.Call(hAltTab, bmSetcheck, bstChecked, 0)
 	}
-	y += 30
+	y += 30 + grow
 	section(uiText("settings.section.resources"))
-	mk("STATIC", "Resource profile", left, y+3, labelW, 20, ssNoprefix, 0)
+	grow = fieldLabel(uiText("settings.resources.profile"), y, 20)
 	hResourceProfile = mk("COMBOBOX", "", fieldX, y, fieldW, 130, 0x0003|wsVscroll|wsTabstop, settingsResourceProfileID)
-	for i, label := range []string{"Balanced", "Maximum performance", "Manual"} {
+	for i, label := range []string{uiText("settings.resources.balanced"), uiText("settings.resources.maximum"), uiText("settings.resources.manual")} {
 		t, _ := syscall.UTF16PtrFromString(label)
 		procSendMessageW.Call(hResourceProfile, 0x143, 0, uintptr(unsafe.Pointer(t))) // CB_ADDSTRING
 		if profileValues[i] == effectiveResourceProfile(resourcePrefs.Profile, current.CPUs, current.MemoryMiB) {
 			procSendMessageW.Call(hResourceProfile, 0x14e, uintptr(i), 0) // CB_SETCURSEL
 		}
 	}
-	y += 34
+	y += 34 + grow
 	manualStart = y
 	manualIndex := len(scroll.controls)
-	mk("STATIC", "Memory (GiB)", left, y+3, labelW, 20, ssNoprefix, 0)
+	// A hint beside a short field; returns how much taller than a line it is.
+	hint := func(text string, y int32) int32 {
+		_, height := measure(text, fieldW-112)
+		height = max(20, height)
+		mk("STATIC", text, fieldX+112, y+3, fieldW-112, height, ssNoprefix, 0)
+		return height - 20
+	}
+	grow = fieldLabel(uiText("settings.resources.memory"), y, 20)
 	hMem = mk("EDIT", memoryGiBText(current.MemoryMiB), fieldX, y, 100, 24, wsBorder|wsTabstop|esAutohscroll, settingsMemID)
-	mk("STATIC", "0 = automatic", fieldX+112, y+3, fieldW-112, 20, ssNoprefix, 0)
-	y += 34
-	mk("STATIC", "Guest CPUs", left, y+3, labelW, 20, ssNoprefix, 0)
+	grow = max(grow, hint(uiText("settings.resources.memory_hint"), y))
+	y += 34 + grow
+	grow = fieldLabel(uiText("settings.resources.cpus"), y, 20)
 	hCPUs = mk("EDIT", strconv.Itoa(current.CPUs), fieldX, y, 100, 24, wsBorder|wsTabstop|esAutohscroll, settingsCPUsID)
-	mk("STATIC", fmt.Sprintf("0 = automatic; up to %d", min(maximumGuestCPUs, hostSnapshot.LogicalCPUs)), fieldX+112, y+3, fieldW-112, 20, ssNoprefix, 0)
-	y += 34
+	grow = max(grow, hint(uiTextWith("settings.resources.cpus_hint", map[string]string{"count": strconv.Itoa(min(maximumGuestCPUs, hostSnapshot.LogicalCPUs))}), y))
+	y += 34 + grow
 	manualEnd = y
 	for _, c := range scroll.controls[manualIndex:] {
 		manualControls = append(manualControls, c.handle)
 	}
-	hResourceHelp = mk("STATIC", "", left, y, clientW-2*left, 76, ssNoprefix, 0)
+	resourceHelp := func(profile string) string {
+		gib := func(mib int) string { return strconv.FormatFloat(float64(mib)/1024, 'f', 1, 64) }
+		help := uiText("settings.resources.manual_help")
+		if profile != resourceManual {
+			plan, err := planGuestResources(profile, hostSnapshot, current.Render != renderCPU, 0, 0, false, false)
+			estimate := map[string]string{"cpus": strconv.Itoa(plan.CPUs), "memory": gib(plan.MemoryMiB)}
+			switch {
+			case err != nil:
+				help = err.Error()
+			case profile == resourceMaximum:
+				help = uiTextWith("settings.resources.estimate_maximum", estimate)
+			default:
+				help = uiTextWith("settings.resources.estimate", estimate)
+			}
+		}
+		pc := map[string]string{"cpus": strconv.Itoa(hostSnapshot.LogicalCPUs), "total": gib(hostSnapshot.TotalMiB), "available": gib(hostSnapshot.AvailableMiB)}
+		if runningMiB > 0 {
+			return help + "\n" + uiTextWith("settings.resources.pc_running", pc)
+		}
+		return help + "\n" + uiTextWith("settings.resources.pc", pc)
+	}
+	// The help changes with the profile; make room for the longest.
+	resourceHelpHeight := int32(76)
+	for _, profile := range profileValues {
+		_, height := measure(resourceHelp(profile), clientW-2*left)
+		resourceHelpHeight = max(resourceHelpHeight, height)
+	}
+	hResourceHelp = mk("STATIC", "", left, y, clientW-2*left, resourceHelpHeight, ssNoprefix, 0)
 	updateResourceControls = func() {
 		profile := selectedProfile()
 		enabled := uintptr(0)
@@ -865,76 +987,59 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 		}
 		procEnableWindow.Call(hMem, enabled)
 		procEnableWindow.Call(hCPUs, enabled)
-		help := "Manual uses your CPU and RAM choices; 0 uses Balanced sizing."
-		if profile != resourceManual {
-			plan, err := planGuestResources(profile, hostSnapshot, current.Render != renderCPU, 0, 0, false, false)
-			if err != nil {
-				help = err.Error()
-			} else {
-				help = fmt.Sprintf("Estimated next boot: %d vCPUs, %.1f GiB RAM.", plan.CPUs, float64(plan.MemoryMiB)/1024)
-			}
-			if profile == resourceMaximum {
-				help += " Measures Windows usage again at launch and leaves extra headroom."
-			}
-		}
-		available := "available when Settings opened"
-		if runningMiB > 0 {
-			available = "available once Omarchy shuts down"
-		}
-		help += fmt.Sprintf("\nPC: %d logical CPUs, %.1f GiB RAM; %.1f GiB %s. Applies next boot; no live resizing.", hostSnapshot.LogicalCPUs, float64(hostSnapshot.TotalMiB)/1024, float64(hostSnapshot.AvailableMiB)/1024, available)
-		setText(hResourceHelp, help)
+		setText(hResourceHelp, resourceHelp(profile))
 		if layout != nil {
 			layout()
 		}
 	}
 	updateResourceControls()
-	y += 84
+	y += 8 + resourceHelpHeight
 	section(uiText("settings.section.storage"))
-	mk("STATIC", "Disk capacity (GiB)", left, y+3, labelW, 20, ssNoprefix, 0)
+	grow = fieldLabel(uiText("settings.storage.capacity"), y, 20)
 	hDisk = mk("EDIT", strconv.Itoa(storage.DiskGiB), fieldX, y, 100, 24, wsBorder|wsTabstop|esAutohscroll, settingsDiskID)
-	y += 28
-	capacityHelp := "0 keeps the default. Increasing grows the disk next launch; lowering never shrinks it. Space is used as files are added."
-	mk("STATIC", capacityHelp, left, y, clientW-2*left, 36, ssNoprefix, 0)
-	y += 38
-	status := ""
+	y += 28 + grow
+	y = note(uiText("settings.storage.capacity_help"), left, y, clientW-2*left, 36, 38)
+	var status []string
 	if disk, err := inspectInstallationDisk(dataDir); err == nil {
-		status = "Current capacity: " + formatGiB(disk.VirtualBytes) + ". "
+		status = append(status, uiTextWith("settings.storage.current_capacity", map[string]string{"size": formatGiB(disk.VirtualBytes)}))
 	}
 	if available, err := diskFreeBytes(dataDir); err == nil {
-		status += "Free on Windows drive: " + formatGiB(available) + "."
+		status = append(status, uiTextWith("settings.storage.free_space", map[string]string{"size": formatGiB(available)}))
 	}
-	mk("STATIC", status, left, y, clientW-2*left, 20, ssNoprefix, 0)
-	y += 26
-	mk("STATIC", "Location", left, y+3, labelW, 20, ssNoprefix, 0)
+	y = note(strings.Join(status, " "), left, y, clientW-2*left, 20, 26)
+	grow = fieldLabel(uiText("settings.storage.location"), y, 20)
 	mk("EDIT", dataDir, fieldX, y, fieldW, 22, wsBorder|wsTabstop|esAutohscroll|0x0800, 0) // ES_READONLY; long paths remain selectable.
-	y += 24
-	mk("STATIC", "Shared folder\n(next start)", left, y+3, labelW, 32, ssNoprefix, 0)
-	hShare = mk("EDIT", current.Share, fieldX, y, fieldW-80, 24, wsBorder|wsTabstop|esAutohscroll, settingsShareID)
-	mk("BUTTON", "Browse...", fieldX+fieldW-72, y, 72, 24, wsTabstop, settingsBrowseID)
+	y += 24 + grow
+	// The two-line label spans the folder field and the checkbox under it.
+	shareLabelBottom := y + 3 + 32 + fieldLabel(uiText("settings.storage.shared_folder"), y, 32)
+	browseText := uiText("settings.storage.browse")
+	browseW, _ := measure(browseText, 0)
+	browseW = max(72, browseW+24)
+	hShare = mk("EDIT", current.Share, fieldX, y, fieldW-browseW-8, 24, wsBorder|wsTabstop|esAutohscroll, settingsShareID)
+	mk("BUTTON", browseText, fieldX+fieldW-browseW, y, browseW, 24, wsTabstop, settingsBrowseID)
 	y += 28
-	hShareOn = mk("BUTTON", "Allow Omarchy to read and change this folder", fieldX, y, fieldW, 22,
-		bsAutocheckbox|wsTabstop, settingsShareOnID)
+	hShareOn, grow = check(uiText("settings.storage.share_allow"), fieldX, y, 22, settingsShareOnID)
 	if current.Share != "" && !current.ShareDisabled {
 		procSendMessageW.Call(hShareOn, bmSetcheck, bstChecked, 0)
 	}
-	y += 34
+	y = max(y+34+grow, shareLabelBottom+8)
 	pages[0] = append(pages[0], scroll.controls...)
 	pageHeights[0] = y
 	scroll.controls = nil
 	y = scroll.top
 	section(uiText("settings.section.camera"))
-	hCameraOn = mk("BUTTON", "Allow camera access", left, y, 440, 24, bsAutocheckbox|wsTabstop, settingsCameraOnID)
+	hCameraOn, grow = check(uiText("settings.camera.allow"), left, y, 24, settingsCameraOnID)
 	if !prefs.CameraDisabled {
 		procSendMessageW.Call(hCameraOn, bmSetcheck, bstChecked, 0)
 	}
-	y += 34
-	mk("STATIC", "Camera", left, y+3, labelW, 24, ssNoprefix, 0)
+	y += 34 + grow
+	grow = fieldLabel(uiText("settings.camera.camera"), y, 24)
 	hCamera = mk("COMBOBOX", "", fieldX, y, fieldW, 180, 0x0003|wsVscroll|wsTabstop, settingsCameraID)
 	addCamera := func(label string) {
 		t, _ := syscall.UTF16PtrFromString(label)
 		procSendMessageW.Call(hCamera, 0x143, 0, uintptr(unsafe.Pointer(t)))
 	}
-	addCamera("Automatic (first available)")
+	addCamera(uiText("settings.camera.automatic"))
 	selected := 0
 	for i, d := range cameras {
 		addCamera(d.Name)
@@ -943,27 +1048,25 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 		}
 	}
 	procSendMessageW.Call(hCamera, 0x14E, uintptr(selected), 0)
-	y += 38
-	cameraHelp := "Applies next start. The camera opens only when an Omarchy app requests it."
+	y += 38 + grow
+	cameraHelp := uiText("settings.camera.help")
 	if cameraErr != nil {
-		cameraHelp = "Windows could not list cameras. Check privacy settings and reconnect your camera."
+		cameraHelp = uiText("settings.camera.list_error")
 	} else if len(cameras) == 0 {
-		cameraHelp = "No Windows camera found. Connect a camera and reopen Settings."
+		cameraHelp = uiText("settings.camera.none")
 	}
-	mk("STATIC", cameraHelp, left, y, 450, 42, ssNoprefix, 0)
-	y += 50
-	hMicrophoneOn = mk("BUTTON", "Allow microphone access (next start)", left, y, 440, 24, bsAutocheckbox|wsTabstop, settingsMicrophoneOnID)
+	y = note(cameraHelp, left, y, 450, 42, 50)
+	hMicrophoneOn, grow = check(uiText("settings.microphone.allow"), left, y, 24, settingsMicrophoneOnID)
 	if !prefs.MicrophoneDisabled {
 		procSendMessageW.Call(hMicrophoneOn, bmSetcheck, bstChecked, 0)
 	}
-	y += 34
-	mk("STATIC", "Turning microphone access off keeps sound playback enabled.", left, y, 450, 42, ssNoprefix, 0)
-	y += 50
+	y += 34 + grow
+	y = note(uiText("settings.microphone.help"), left, y, 450, 42, 50)
 	addAudioCombo := func(label string, id uintptr, names []string, value string) uintptr {
-		mk("STATIC", label, left, y+3, labelW, 24, ssNoprefix, 0)
+		grow := fieldLabel(label, y, 24)
 		h := mk("COMBOBOX", "", fieldX, y, fieldW, 180, 0x0003|wsVscroll|wsTabstop, id)
 		selected := 0
-		for i, name := range append([]string{"Windows default"}, names...) {
+		for i, name := range append([]string{uiText("settings.sound.windows_default")}, names...) {
 			t, _ := syscall.UTF16PtrFromString(name)
 			procSendMessageW.Call(h, 0x143, 0, uintptr(unsafe.Pointer(t)))
 			if i > 0 && name == value {
@@ -974,49 +1077,62 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 		if !audioSupported {
 			procEnableWindow.Call(h, 0)
 		}
-		y += 38
+		y += 38 + grow
 		return h
 	}
 	section(uiText("settings.section.sound"))
-	hAudioOutput = addAudioCombo("Sound output", settingsAudioOutputID, audioDevices.Output, audioPrefs.Output)
-	hAudioInput = addAudioCombo("Microphone", settingsAudioInputID, audioDevices.Input, audioPrefs.Input)
-	audioHelp := "Changes apply at next VM start. Missing devices use Windows defaults at startup."
+	hAudioOutput = addAudioCombo(uiText("settings.sound.output"), settingsAudioOutputID, audioDevices.Output, audioPrefs.Output)
+	hAudioInput = addAudioCombo(uiText("settings.sound.microphone"), settingsAudioInputID, audioDevices.Input, audioPrefs.Input)
+	audioHelp := uiText("settings.sound.help")
 	if !audioSupported {
-		audioHelp = "This graphics engine does not support separate audio choices. Windows defaults are used."
+		audioHelp = uiText("settings.sound.unsupported")
 	} else if audioErr != nil {
-		audioHelp = "Windows could not list audio devices. Saved choices are retained; reconnect devices and reopen Settings."
+		audioHelp = uiText("settings.sound.list_error")
 	} else if endpointErr != nil {
-		audioHelp = "Stable Windows audio IDs are unavailable. Choices still apply by device name."
+		audioHelp = uiText("settings.sound.no_endpoint_ids")
 	} else if audioLive {
-		audioHelp = "Saved audio choices are sent to a running session. Microphone permission applies next start. Missing devices use Windows defaults."
+		audioHelp = uiText("settings.sound.live")
 	}
-	mk("STATIC", audioHelp, left, y, 450, 42, ssNoprefix, 0)
-	y += 50
-	mk("BUTTON", "Windows sound devices...", left, y, 260, 28, wsTabstop, settingsSoundID)
-	y += 36
-	mk("STATIC", "Choose Windows playback and recording defaults before launching. If a saved choice is not picked up, restart Omarchy.", left, y, 450, 42, ssNoprefix, 0)
-	y += 50
-	mk("BUTTON", "Camera privacy...", left, y, 210, 28, wsTabstop, settingsPrivacyID)
-	mk("BUTTON", "Microphone privacy...", left+224, y, 224, 28, wsTabstop, settingsMicrophonePrivacyID)
-	y += 40
-	section("USB (experimental)")
-	mk("BUTTON", "USB device for next start...", left, y, 260, 28, wsTabstop, settingsUSBSelectionID)
-	y += 36
-	mk("STATIC", "Choose one device to attach at startup. Live Attach and Release remain in the tray's USB devices menu.", left, y, clientW-2*left, 42, ssNoprefix, 0)
-	y += 50
+	y = note(audioHelp, left, y, 450, 42, 50)
+	_, grow = buttons(left, y, 28, 0, rowButton{uiText("settings.sound.windows_devices"), 260, settingsSoundID})
+	y += 36 + grow
+	y = note(uiText("settings.sound.defaults_help"), left, y, 450, 42, 50)
+	_, grow = buttons(left, y, 28, 14,
+		rowButton{uiText("settings.sound.camera_privacy"), 210, settingsPrivacyID},
+		rowButton{uiText("settings.sound.microphone_privacy"), 224, settingsMicrophonePrivacyID})
+	y += 40 + grow
+	section(uiText("settings.section.usb"))
+	_, grow = buttons(left, y, 28, 0, rowButton{uiText("settings.usb.choose"), 260, settingsUSBSelectionID})
+	y += 36 + grow
+	y = note(uiText("settings.usb.help"), left, y, clientW-2*left, 42, 50)
 	pages[1] = append(pages[1], scroll.controls...)
 	pageHeights[1] = y
 	scroll.controls = nil
 	y = scroll.top
 	section(uiText("settings.section.graphics"))
-	mk("STATIC", "Guest displays", left, y+3, labelW, 20, ssNoprefix, 0)
+	grow = fieldLabel(uiText("settings.graphics.displays"), y, 20)
 	hDisplays = mk("EDIT", strconv.Itoa(guestDisplayCount(current.Displays)), fieldX, y, 100, 24, wsBorder|wsTabstop|esAutohscroll, settingsDisplaysID)
-	mk("STATIC", "1 to 16 displays", fieldX+112, y+3, fieldW-112, 20, ssNoprefix, 0)
-	y += 34
-	mk("STATIC", "Rendering", left, y+3, labelW, 20, ssNoprefix, 0)
-	hRenderAuto = mk("BUTTON", "Automatic", fieldX, y, 90, 22, bsAutoradiobutton|wsGroup|wsTabstop, settingsRenderAutoID)
-	hRenderGPU = mk("BUTTON", "GPU", fieldX+96, y, 60, 22, bsAutoradiobutton, settingsRenderGPUID)
-	hRenderCPU = mk("BUTTON", "CPU", fieldX+162, y, 60, 22, bsAutoradiobutton, settingsRenderCPUID)
+	grow = max(grow, hint(uiTextWith("settings.graphics.displays_hint", map[string]string{"max": strconv.Itoa(maximumGuestDisplays)}), y))
+	y += 34 + grow
+	grow = fieldLabel(uiText("settings.graphics.rendering"), y, 20)
+	// Radio buttons side by side, each as wide as its label.
+	renderX := fieldX
+	for _, radio := range []struct {
+		text  string
+		width int32
+		style uintptr
+		id    uintptr
+		out   *uintptr
+	}{
+		{uiText("settings.graphics.automatic"), 90, bsAutoradiobutton | wsGroup | wsTabstop, settingsRenderAutoID, &hRenderAuto},
+		{uiText("settings.graphics.gpu"), 60, bsAutoradiobutton, settingsRenderGPUID, &hRenderGPU},
+		{uiText("settings.graphics.cpu"), 60, bsAutoradiobutton, settingsRenderCPUID, &hRenderCPU},
+	} {
+		width, _ := measure(radio.text, 0)
+		width = max(radio.width, width+checkboxTextInset+4)
+		*radio.out = mk("BUTTON", radio.text, renderX, y, width, 22, radio.style, radio.id)
+		renderX += width + 6
+	}
 	switch current.Render {
 	case renderGPU:
 		procSendMessageW.Call(hRenderGPU, bmSetcheck, bstChecked, 0)
@@ -1025,65 +1141,76 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 	default:
 		procSendMessageW.Call(hRenderAuto, bmSetcheck, bstChecked, 0)
 	}
-	y += 24
-	mk("STATIC", "Automatic tries the GPU and remembers when this PC cannot use it. GPU retries every launch.", left, y, clientW-2*left, 36, ssNoprefix, 0)
-	y += 44
-	graphics := "GPU shares Windows graphics through OpenGL / Vulkan. Full GPU passthrough and NVIDIA CUDA / OptiX are not available in this runtime."
+	y += 24 + grow
+	y = note(uiText("settings.graphics.rendering_help"), left, y, clientW-2*left, 36, 44)
+	graphics := uiText("settings.graphics.gpu_note")
 	if probe, err := loadRenderProbe(dataDir); err == nil && probe != nil {
-		graphics += "\nLast successful boot: " + strings.ToUpper(probe.Result) + " rendering (" + probe.RecordedAt.Local().Format("2006-01-02 15:04") + ")."
+		graphics += "\n" + uiTextWith("settings.graphics.last_boot", map[string]string{
+			"mode": strings.ToUpper(probe.Result), "time": probe.RecordedAt.Local().Format("2006-01-02 15:04")})
 	}
-	mk("STATIC", graphics, left, y, clientW-2*left, 76, ssNoprefix, 0)
-	y += 84
+	y = note(graphics, left, y, clientW-2*left, 76, 84)
 	section(uiText("settings.section.network"))
-	mk("STATIC", "Port forwards\nLocal: tcp:2222:22\nLAN: tcp:IP:8080:80", left, y+3, labelW, 60, ssNoprefix, 0)
+	// The three-line label sits beside the taller field.
+	forwardsLabelBottom := y + 3 + 60 + fieldLabel(uiText("settings.network.forwards"), y, 60)
 	hFwd = mk("EDIT", strings.Join(current.Forwards, "\r\n"), fieldX, y, fieldW, 72,
 		wsBorder|wsTabstop|wsVscroll|esMultiline|esAutovscroll, settingsFwdID)
-	y += 82
-	mk("BUTTON", "Add LAN...", left, y, 120, 26, wsTabstop, settingsLANAddID)
-	hLANPublic = mk("BUTTON", "Allow LAN on public networks", left+130, y, clientW-2*left-130, 22, bsAutocheckbox|wsTabstop, settingsLANPublicID)
+	y = max(y+82, forwardsLabelBottom+8)
+	lanText := uiText("settings.network.add_lan")
+	lanW, _ := measure(lanText, 0)
+	lanW = max(120, lanW+24)
+	mk("BUTTON", lanText, left, y, lanW, 26, wsTabstop, settingsLANAddID)
+	hLANPublic, grow = check(uiText("settings.network.lan_public"), left+lanW+10, y, 22, settingsLANPublicID)
 	if current.LANPublic {
 		procSendMessageW.Call(hLANPublic, bmSetcheck, bstChecked, 0)
 	}
-	y += 32
-	mk("STATIC", "SSH public key file", left, y+3, labelW, 24, ssNoprefix, 0)
+	y += 32 + grow
+	grow = fieldLabel(uiText("settings.network.ssh_key"), y, 24)
 	hKey = mk("EDIT", current.SSHKey, fieldX, y, fieldW, 24, wsBorder|wsTabstop|esAutohscroll, settingsKeyID)
-	mk("STATIC", "Blank uses your Windows ~/.ssh/id_*.pub key.", left, y+28, clientW-2*left, 22, ssNoprefix, 0)
-	y += 58
-	hUpdateOn = mk("BUTTON", "Check for launcher updates automatically", left, y, 450, 24, bsAutocheckbox|wsTabstop, settingsUpdateOnID)
+	y = note(uiText("settings.network.ssh_key_help"), left, y+28+grow, clientW-2*left, 22, 30)
+	hUpdateOn, grow = check(uiText("settings.network.automatic_updates"), left, y, 24, settingsUpdateOnID)
 	if !prefs.AutomaticUpdatesDisabled {
 		procSendMessageW.Call(hUpdateOn, bmSetcheck, bstChecked, 0)
 	}
-	y += 34
-	mk("STATIC", "Linux packages and Omarchy are updated from inside the desktop.", left, y, 450, 36, ssNoprefix, 0)
-	y += 42
-	mk("BUTTON", "About and updates...", left, y, 210, 28, wsTabstop, settingsAboutID)
-	y += 40
+	y += 34 + grow
+	y = note(uiText("settings.network.linux_updates"), left, y, 450, 36, 42)
+	_, grow = buttons(left, y, 28, 0, rowButton{uiText("settings.network.about"), 210, settingsAboutID})
+	y += 40 + grow
 	pages[2] = append(pages[2], scroll.controls...)
 	pageHeights[2] = y
 	scroll.controls = nil
 	y = scroll.top
 	section(uiText("settings.section.recovery"))
-	for _, control := range []struct {
-		label string
-		id    uintptr
-		x     int32
-	}{{"Back up...", settingsBackupID, left}, {"Restore...", settingsRestoreID, left + 112}, {"Snapshots...", settingsSnapshotsID, left + 224}, {"Reset guest...", settingsResetID, left + 336}} {
-		button := mk("BUTTON", control.label, control.x, y, 104, 26, wsTabstop, control.id)
-		if portable && control.id == settingsResetID {
-			procEnableWindow.Call(button, 0)
-		}
+	recoveryRow := []rowButton{
+		{uiText("settings.recovery.backup"), 0, settingsBackupID},
+		{uiText("settings.recovery.restore"), 0, settingsRestoreID},
+		{uiText("settings.recovery.snapshots"), 0, settingsSnapshotsID},
+		{uiText("settings.recovery.reset"), 0, settingsResetID},
 	}
-	y += 30
-	help := "Close Omarchy first. Backups use saved settings. Restore creates a separate copy."
+	installRow := []rowButton{
+		{uiText("settings.recovery.uninstall"), 0, settingsUninstallID},
+		{uiText("settings.recovery.move"), 0, settingsMoveID},
+		{uiText("settings.recovery.cleanup"), 0, settingsMoveCleanupID},
+		{uiText("settings.recovery.portable"), 0, settingsPortableID},
+	}
+	// Both rows share one width so their buttons line up; English fits four
+	// across.
+	recoveryW := int32(104)
+	for _, cell := range append(append([]rowButton{}, recoveryRow...), installRow...) {
+		width, _ := measure(cell.text, 0)
+		recoveryW = max(recoveryW, width+16)
+	}
+	recoveryButtons, grow := grid(left, y, 26, 8, recoveryW, recoveryRow...)
 	if portable {
-		help = "Backups and snapshots create independent copies. Close Omarchy first."
+		procEnableWindow.Call(recoveryButtons[3], 0)
 	}
-	mk("STATIC", help, left, y, clientW-2*left, 36, ssNoprefix, 0)
-	y += 42
-	uninstallButton := mk("BUTTON", "Uninstall...", left, y, 104, 26, wsTabstop, settingsUninstallID)
-	moveButton := mk("BUTTON", "Move...", left+112, y, 104, 26, wsTabstop, settingsMoveID)
-	cleanupButton := mk("BUTTON", "Clean up...", left+224, y, 104, 26, wsTabstop, settingsMoveCleanupID)
-	mk("BUTTON", "Portable copy...", left+336, y, 104, 26, wsTabstop, settingsPortableID)
+	y += 30 + grow
+	help := uiText("settings.recovery.help")
+	if portable {
+		help = uiText("settings.recovery.help_portable")
+	}
+	y = note(help, left, y, clientW-2*left, 36, 42)
+	installButtons, grow := grid(left, y, 26, 8, recoveryW, installRow...)
+	uninstallButton, moveButton, cleanupButton := installButtons[0], installButtons[1], installButtons[2]
 	state, stateErr := hostMoveStore().load()
 	if portable {
 		procEnableWindow.Call(uninstallButton, 0)
@@ -1092,17 +1219,15 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 	if portable || stateErr != nil || state.Retained == nil || !state.Retained.Booted || !pathsEqual(state.Retained.Destination, dataDir) {
 		procEnableWindow.Call(cleanupButton, 0)
 	}
-	y += 40
-	mk("STATIC", "Install Omarchy next to Windows and bring this trial along.", left, y, clientW-2*left, 20, ssNoprefix, 0)
-	y += 26
-	mk("BUTTON", "Install Omarchy...", left, y, 160, 26, wsTabstop, settingsInstallOmarchyID)
+	y += 40 + grow
+	y = note(uiText("settings.recovery.install_help"), left, y, clientW-2*left, 20, 26)
+	_, grow = buttons(left, y, 26, 0, rowButton{uiText("settings.recovery.install"), 160, settingsInstallOmarchyID})
 	pages[3] = append(pages[3], scroll.controls...)
-	pageHeights[3] = y + 40
+	pageHeights[3] = y + 40 + grow
 	scroll.controls = nil
 	y = scroll.top
 	section(uiText("settings.section.apps"))
-	mk("STATIC", "Only apps you choose here can be launched from Omarchy. The app runs on Windows, outside the guest.", left, y, clientW-2*left, 48, ssNoprefix, 0)
-	y += 52
+	y = note(uiText("settings.apps.help"), left, y, clientW-2*left, 48, 52)
 	hApprovedApps = mk("LISTBOX", "", left, y, clientW-2*left, 240, wsBorder|wsVscroll|wsTabstop|0x0001, settingsAppListID) // LBS_NOTIFY
 	refreshApprovedApps = func() {
 		procSendMessageW.Call(hApprovedApps, 0x184, 0, 0) // LB_RESETCONTENT
@@ -1113,23 +1238,30 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 	}
 	refreshApprovedApps()
 	y += 250
-	mk("BUTTON", "Add Windows app...", left, y, 190, 28, wsTabstop, settingsAppAddID)
-	mk("BUTTON", "Remove selected", left+200, y, 160, 28, wsTabstop, settingsAppRemoveID)
-	y += 40
-	mk("STATIC", "Save to apply. Entries appear in Omarchy shortly after it starts or while it runs. Launching an app reveals Windows; use the tray icon to return to Omarchy.", left, y, clientW-2*left, 70, ssNoprefix, 0)
-	y += 76
+	_, grow = buttons(left, y, 28, 10,
+		rowButton{uiText("settings.apps.add"), 190, settingsAppAddID},
+		rowButton{uiText("settings.apps.remove"), 160, settingsAppRemoveID})
+	y += 40 + grow
+	y = note(uiText("settings.apps.save_help"), left, y, clientW-2*left, 70, 76)
 	pages[4] = append(pages[4], scroll.controls...)
 	pageHeights[4] = y
 	scroll.controls = nil
 	bodyControls = false
-	footerText, saveText, cancelText := uiText("settings.save_hint"), "Save", "Cancel"
+	footerText, saveText, cancelText := uiText("settings.save_hint"), uiText("settings.save"), uiText("settings.cancel")
 	if launcher {
-		footerText, saveText, cancelText = uiText("launcher.launch_hint"), "Launch Omarchy", "Close"
+		footerText, saveText, cancelText = uiText("launcher.launch_hint"), uiText("launcher.launch"), uiText("launcher.close")
 	}
-	mk("STATIC", footerText, left, 0, clientW-48, 36, ssNoprefix, 0)
-	mk("BUTTON", "Help", left, 46, 100, 36, wsTabstop, settingsHelpID)
-	mk("BUTTON", saveText, clientW-24-262, 46, 154, 36, bsDefpushbutton|wsTabstop, settingsSaveID)
-	mk("BUTTON", cancelText, clientW-24-100, 46, 100, 36, wsTabstop, settingsCancelID)
+	mk("STATIC", footerText, left, 0, clientW-48, 40, ssNoprefix, 0)
+	// The footer's buttons keep their English widths unless a translation
+	// needs more; layout() places Save and Cancel from the right edge.
+	footerWidth := func(text string, minimum int32) int32 {
+		width, _ := measure(text, 0)
+		return max(minimum, width+24)
+	}
+	helpW, saveW, cancelW := footerWidth(uiText("settings.help"), 100), footerWidth(saveText, 154), footerWidth(cancelText, 100)
+	mk("BUTTON", uiText("settings.help"), left, 46, helpW, 36, wsTabstop, settingsHelpID)
+	mk("BUTTON", saveText, clientW-24-cancelW-8-saveW, 46, saveW, 36, bsDefpushbutton|wsTabstop, settingsSaveID)
+	mk("BUTTON", cancelText, clientW-24-cancelW, 46, cancelW, 36, wsTabstop, settingsCancelID)
 	brand.primary, _, _ = user32.NewProc("GetDlgItem").Call(hwnd, settingsSaveID)
 	footer = append([]settingsScrollControl{}, scroll.controls...)
 	scroll.controls = nil
@@ -1170,10 +1302,10 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 				w = width - 32
 			}
 			if i == 2 {
-				x = width - 24 - 262
+				x = width - 24 - footer[3].w - 8 - c.w
 			}
 			if i == 3 {
-				x = width - 24 - 100
+				x = width - 24 - c.w
 			}
 			procSetWindowPos.Call(c.handle, 0, uintptr(x), uintptr(height-100+c.y), uintptr(w), uintptr(c.h), 0x0004|0x0010)
 		}
