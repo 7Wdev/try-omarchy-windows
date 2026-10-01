@@ -75,11 +75,11 @@ EXPECTED_FACTS = {
     "icon-cache": "yes",
     "system-ownership": "yes",
     "update-repository": "active",
-    "runtime-package": "4.0.3-4",
+    "runtime-package": "from build-spec.json",
     "package-database": "clean",
     "lock-pam": "yes",
     "pacman-unlocked": "yes",
-    "omarchy-version": "4.0.3",
+    "omarchy-version": "from build-spec.json",
     "browser-policy": "yes",
     "media-tools": "yes",
     "browser-repair": "yes",
@@ -192,6 +192,7 @@ def main() -> None:
     # The runtime package follows the pinned Omarchy version and the spec's
     # packageRelease, which goes up whenever its dependencies change.
     upstream = spec["upstream"]
+    EXPECTED_FACTS["omarchy-version"] = upstream["version"]
     EXPECTED_FACTS["runtime-package"] = f"{upstream['version']}-{upstream.get('packageRelease', 1)}"
     cmdline = spec["runtime"]["kernelCommandLine"]
     cmdline = cmdline.replace("console=tty0 ", "").replace("console=hvc0", "console=ttyS0")
