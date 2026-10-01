@@ -31,18 +31,23 @@ type clipBridge struct {
 	// sequence reports the Windows clipboard sequence number when available,
 	// so an unchanged clipboard (which may hold a large image) is not read
 	// and converted on every poll.
-	sequence            func() uint32
-	lastSequence        uint32
-	transfers           *fileTransferService
-	transferEnabled     bool
-	transferNegotiating bool
-	outgoingTransfer    string
-	showTransfer        func(*transferProgress)
-	transferError       func(error)
-	getPaths            func() ([]string, bool)
-	setPaths            func([]string) bool
-	setDropPaths        func([]string) bool
-	dropRequests        chan droppedFiles
+	sequence     func() uint32
+	lastSequence uint32
+	// The Windows clipboard sequence when the guest connected. Files copied
+	// before Omarchy started may have moved or been deleted since; failing
+	// to offer those is not worth an error the user never asked for.
+	connectSequence      uint32
+	connectSequenceKnown bool
+	transfers            *fileTransferService
+	transferEnabled      bool
+	transferNegotiating  bool
+	outgoingTransfer     string
+	showTransfer         func(*transferProgress)
+	transferError        func(error)
+	getPaths             func() ([]string, bool)
+	setPaths             func([]string) bool
+	setDropPaths         func([]string) bool
+	dropRequests         chan droppedFiles
 }
 
 func (b *clipBridge) acceptPush(l net.Listener) {
@@ -95,6 +100,10 @@ func (b *clipBridge) acceptPull(l net.Listener) {
 		b.transferEnabled = false
 		b.transferNegotiating = true
 		b.state = clipboardSyncState{}
+		b.connectSequenceKnown = b.sequence != nil
+		if b.connectSequenceKnown {
+			b.connectSequence = b.sequence()
+		}
 		b.mu.Unlock()
 		logf("clipboard: guest connected")
 		b.sendCurrentHost(c)
@@ -172,7 +181,8 @@ func (b *clipBridge) sendCurrentHost(conn net.Conn) {
 			if err != nil {
 				progress.finish()
 				logf("clipboard transfer: %v", err)
-				if b.transferError != nil && !errors.Is(err, context.Canceled) {
+				copiedBeforeConnect := b.connectSequenceKnown && b.sequence != nil && b.sequence() == b.connectSequence
+				if b.transferError != nil && !errors.Is(err, context.Canceled) && !copiedBeforeConnect {
 					go b.transferError(err)
 				}
 				return

@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http/httptest"
 	"os"
@@ -240,5 +241,37 @@ func TestClipboardTransferDoesNotSendReplacedSelection(t *testing.T) {
 	defer service.mu.Unlock()
 	if len(service.jobs) != 0 {
 		t.Fatal("obsolete clipboard archive retained")
+	}
+}
+
+// Files copied before Omarchy started may be gone by the time the guest
+// connects. That is not an error to show; copying missing files later is.
+func TestClipboardFilesGoneBeforeConnectAreNotReported(t *testing.T) {
+	service := newFileTransferService(t.TempDir(), clipboardTransferLimits)
+	defer service.Close()
+	missing := filepath.Join(t.TempDir(), "deleted.jpg")
+	var sequence atomic.Uint32
+	sequence.Store(7)
+	reported := make(chan error, 2)
+	host, guest := net.Pipe()
+	defer host.Close()
+	defer guest.Close()
+	go io.Copy(io.Discard, guest)
+	bridge := &clipBridge{transfers: service, transferEnabled: true, pullConn: host, sequence: sequence.Load,
+		getPaths:        func() ([]string, bool) { return []string{missing}, true },
+		transferError:   func(err error) { reported <- err },
+		connectSequence: 7, connectSequenceKnown: true}
+	bridge.sendCurrentHost(host)
+	select {
+	case err := <-reported:
+		t.Fatalf("files copied before connecting were reported: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	sequence.Store(8) // the user copies again while Omarchy runs
+	bridge.sendCurrentHost(host)
+	select {
+	case <-reported:
+	case <-time.After(time.Second):
+		t.Fatal("a failed copy made while Omarchy runs was not reported")
 	}
 }
