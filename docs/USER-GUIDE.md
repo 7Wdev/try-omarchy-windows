@@ -240,7 +240,7 @@ Install Omarchy next to Windows on the same PC, then run one command in the
 new install:
 
 ```
-curl -fsSL https://github.com/omacom/try-omarchy-windows/releases/latest/download/try-omarchy-import.sh | bash
+curl -fsSL https://tryomarchy.com/import | bash
 ```
 
 It reads the trial straight off the Windows drive and brings over your

@@ -13,7 +13,7 @@ import (
 // Windows drive.
 
 const (
-	importCommand     = "curl -fsSL https://github.com/omacom/try-omarchy-windows/releases/latest/download/try-omarchy-import.sh | bash"
+	importCommand     = "curl -fsSL https://tryomarchy.com/import | bash"
 	dualBootGuideURL  = "https://learn.omacom.io/2/the-omarchy-manual/120/dual-boot-install"
 	migrationGuideURL = "https://github.com/omacom/try-omarchy-windows/blob/master/docs/MIGRATION.md"
 	exportGuideURL    = migrationGuideURL + "#replacing-windows-or-moving-to-another-computer"

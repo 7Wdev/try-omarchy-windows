@@ -48,7 +48,7 @@ to check BitLocker settings yourself.
 Start Omarchy, open a terminal (SUPER+RETURN) and run:
 
 ```
-curl -fsSL https://github.com/omacom/try-omarchy-windows/releases/latest/download/try-omarchy-import.sh | bash
+curl -fsSL https://tryomarchy.com/import | bash
 ```
 
 It asks for your password to read the Windows drive, finds your trial, and
@@ -138,7 +138,7 @@ Options go at the end of the command, after `bash -s --`. For example, to see
 what would happen without changing anything:
 
 ```
-curl -fsSL https://github.com/omacom/try-omarchy-windows/releases/latest/download/try-omarchy-import.sh | bash -s -- --dry-run
+curl -fsSL https://tryomarchy.com/import | bash -s -- --dry-run
 ```
 
 Other options: `--data FOLDER`, `--cleanup`, and `--help` for the full list.
