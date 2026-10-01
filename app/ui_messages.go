@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"os"
 	"regexp"
 	"slices"
 	"strings"
@@ -15,6 +16,17 @@ import (
 var uiLocaleFiles embed.FS
 
 var uiPlaceholder = regexp.MustCompile(`\{[a-z][a-z0-9_]*\}`)
+
+const (
+	// uiLanguageVariable picks the launcher language instead of Windows'
+	// display language, so a translation can be checked without changing
+	// Windows: TRY_OMARCHY_UI_LANGUAGE=ko.
+	uiLanguageVariable = "TRY_OMARCHY_UI_LANGUAGE"
+	// uiPseudoLanguage shows every catalog message accented and about a third
+	// longer. Text that stays plain English was never moved into the catalog,
+	// and text that gets cut off has no room for a longer translation.
+	uiPseudoLanguage = "qps-ploc"
+)
 
 type uiTranslator struct {
 	language string
@@ -32,7 +44,7 @@ func uiText(key string) string {
 		if err != nil {
 			panic(err) // Embedded English strings are required to show any launcher UI.
 		}
-		activeUI = uiTranslator{language: selectUILanguage(preferredUILanguages(), catalogs), catalogs: catalogs}
+		activeUI = uiTranslator{language: launcherUILanguage(os.Getenv(uiLanguageVariable), preferredUILanguages(), catalogs), catalogs: catalogs}
 	})
 	return activeUI.text(key)
 }
@@ -49,6 +61,11 @@ func uiTextWith(key string, values map[string]string) string {
 }
 
 func (t uiTranslator) text(key string) string {
+	if t.language == uiPseudoLanguage {
+		if message := t.catalogs["en"][key]; message != "" {
+			return pseudoLocalize(message)
+		}
+	}
 	if message := t.catalogs[t.language][key]; message != "" {
 		return message
 	}
@@ -112,6 +129,49 @@ func sortedPlaceholders(message string) []string {
 	placeholders := uiPlaceholder.FindAllString(message, -1)
 	slices.Sort(placeholders)
 	return placeholders
+}
+
+// launcherUILanguage applies the override in TRY_OMARCHY_UI_LANGUAGE, if
+// any, before Windows' preferred display languages.
+func launcherUILanguage(override string, preferred []string, catalogs map[string]map[string]string) string {
+	override = strings.TrimSpace(override)
+	if strings.EqualFold(override, uiPseudoLanguage) {
+		return uiPseudoLanguage
+	}
+	if override != "" {
+		preferred = []string{override}
+	}
+	return selectUILanguage(preferred, catalogs)
+}
+
+var pseudoLetters = strings.NewReplacer(
+	"a", "á", "c", "ç", "e", "é", "i", "í", "n", "ñ", "o", "ó", "s", "š", "u", "ú", "y", "ý", "z", "ž",
+	"A", "Á", "C", "Ç", "E", "É", "I", "Í", "N", "Ñ", "O", "Ó", "S", "Š", "U", "Ú", "Y", "Ý", "Z", "Ž",
+)
+
+// pseudoLocalize accents a message and pads each line by about a third,
+// leaving placeholders alone so they are still filled in.
+func pseudoLocalize(message string) string {
+	lines := strings.Split(message, "\n")
+	for i, line := range lines {
+		if line == "" {
+			continue
+		}
+		var out strings.Builder
+		rest := line
+		for rest != "" {
+			at := uiPlaceholder.FindStringIndex(rest)
+			if at == nil {
+				out.WriteString(pseudoLetters.Replace(rest))
+				break
+			}
+			out.WriteString(pseudoLetters.Replace(rest[:at[0]]))
+			out.WriteString(rest[at[0]:at[1]])
+			rest = rest[at[1]:]
+		}
+		lines[i] = "[" + out.String() + " " + strings.Repeat("~", max(2, len([]rune(line))/3)) + "]"
+	}
+	return strings.Join(lines, "\n")
 }
 
 func selectUILanguage(preferred []string, catalogs map[string]map[string]string) string {

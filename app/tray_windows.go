@@ -336,7 +336,7 @@ func runTray(cfg trayLaunchConfig, ready chan<- uintptr, done chan<- struct{}) {
 		case trayCommandAbout:
 			launchControl("-about", &aboutOpen)
 		case trayCommandHelp:
-			infoBox(everydayHelp)
+			infoBox(uiText("help.everyday"))
 		case trayCommandClipboardFiles:
 			if dir, err := clipboardFilesCache(); err == nil {
 				if err = os.MkdirAll(dir, 0700); err == nil {
