@@ -19,3 +19,74 @@ Thousands of users and relatively few bug reports are a useful positive signal f
 The [feature tracker](MAC-PARITY.md), [1.0 quality bar](RELEASE-READINESS.md), [runtime checklist](RUNTIME-VALIDATION.md), and [remote laptop instructions](REMOTE-LAPTOP-TESTING.md) provide details. Historical physical evidence remains under `docs/evidence/`.
 
 For all GitHub mutations under `/home/bts/Projects`, invoke `/home/bts/.local/bin/gh`, verify `gh api user --jq .login` returns `btsouth`, and use the personal git identity. Do not touch historical `bts-cssi` authorship; the user explicitly chose to leave it alone.
+
+## September 30 migration continuation
+
+The importer in [#241](https://github.com/omacom/try-omarchy-windows/pull/241)
+is merged. [#242](https://github.com/omacom/try-omarchy-windows/pull/242)
+(guest export) and [#243](https://github.com/omacom/try-omarchy-windows/pull/243)
+(Windows walkthrough) have passed the physical import and UAC checks below.
+#243's implementation commit `85ca7f6` passes all four CI checks; its latest
+documentation head `77fbce4` also passes (run `36767044791`).
+The #243 follow-up reports unknown encryption status with a BitLocker
+settings button and opens Disk Management using its full Windows system path.
+The short prerequisite pages are compact; the install steps have enough text
+space to show the entire import command and uninstall warning together.
+Focused launcher tests, 13 native Windows tests, Linux and configured Windows
+vet, Windows build and all 112 importer tests pass.
+
+The Windows 11 VM check opened the actual walkthrough, Disk Management and
+the install guide. Native fixtures covered all three prerequisites together,
+decryption in progress and unknown encryption on a separate trial drive; the
+unknown-state button opened BitLocker settings. No disk was encrypted or resized.
+The Fast Startup button changed `HiberbootEnabled` from 1 to 0 and returned to
+the install steps, using a temporary hibernation registry stand-in. Both power
+values were restored. UAC stayed disabled as found, so there was no permission
+prompt. The final unsigned build passed an explicit Defender file scan with
+file exclusions ignored and signatures 1.459.485.0. This is not SmartScreen
+or signed-release acceptance. Screenshots, logs, the build and cleanup evidence
+are retained locally under `/data/try-omarchy-install-review-20260930/`.
+
+The #242 existing-disk check now passes. A disposable copy of the customized
+revision-39 trial booted with the exact CI candidate from run `36742607778`
+(source `496c23d`), received revision 44 through the initramfs compatibility
+repair, preserved its custom files and exported 159 files. The archive's
+bundled importer matches the installed one, and the exporter still works
+after reboot. A network-isolated omabox copied documents, a Git workspace,
+Chromium bookmarks and test SSH keys with matching bytes. The broader import
+also copied settings, then reported the unavailable mise downloads and the
+old fixture's invalid `hl.bind` line. Those follow-up steps are not a clean
+settings acceptance. Evidence is retained locally under
+`/data/try-omarchy-export-upgrade-20260930/`; the original trial is unchanged.
+
+The owner then booted and unlocked the existing laptop Linux installation.
+Real UAC cancellation left Fast Startup enabled; approval turned it off and
+returned to the install steps. The importer found the Windows trial automatically,
+copied its five changed files and installed its mise tools. The customized SD-card
+trial copied 123 changed files, with 112 data files matching the source byte for
+byte. Both reruns made no further changes. The source mounts were read-only and
+ID-mapped to the separate test account. All importer mounts and loop devices were
+removed; 49 primary-account configuration entries remained unchanged. The test
+account, temporary sudo rules, SSH key and firewall rule were removed, and SSH
+was stopped without enabling it. See the [physical acceptance record](
+evidence/MIGRATION-LAPTOP-2026-09-30.md).
+
+Release checks:
+
+- Before publishing, scan and validate the exact signed launcher. The native
+  BitLocker probe needs no elevation or helper process; that alone is not an
+  antivirus or SmartScreen acceptance result.
+- Build and check the combined release candidate, including guest upgrade and
+  the public importer assets. The owner chose to preserve the existing Linux
+  installation, so a fresh ISO install and disk resizing remain untested.
+
+The displayed curl command is not available from v0.6.2: that release has no
+importer assets. A release that includes the importer must publish both files
+before this command can be accepted through the public Latest URL. The guest
+candidate workflow is a CI build, not a release.
+
+Bridge handoff: #233 and #234 merge cleanly into their stacked bases, but the
+bridge control ID 2127 collides with master's USB selection. Reserve 2130 for
+#243's Install Omarchy button. After #242, the bridge patch must follow export
+patch 0112 and use compatibility revision 45 or later. No bridge branch was
+changed during this review.

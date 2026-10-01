@@ -17,6 +17,14 @@ There are two ways:
 
 ### Before you leave Windows
 
+Try Omarchy can do most of this for you: open **Settings > Backup and
+recovery > Install Omarchy...**. It checks whether Omarchy is still running,
+whether Fast Startup is on and whether BitLocker is on for the drives it needs,
+and lists only what is left, each with a button that does it or opens the right
+place. Once nothing is left it shows the installation steps and the command to
+run afterwards. If Windows cannot report encryption status, it offers a button
+to check BitLocker settings yourself.
+
 1. **Shut Omarchy down from inside the trial** (Omarchy menu > System >
    Shutdown), so the trial's disk is saved cleanly. Keep Try Omarchy installed
    until the import is done: uninstalling it deletes the trial.
@@ -32,6 +40,8 @@ There are two ways:
    Shrink Volume. The space you free up becomes Omarchy's.
 5. **Install Omarchy into the free space** by following the Omarchy manual's
    [dual boot guide](https://learn.omacom.io/2/the-omarchy-manual/120/dual-boot-install).
+   Omarchy then starts by default. Windows is still there: run `limine-scan`
+   in Omarchy to add it to the boot menu.
 
 ### After installing
 

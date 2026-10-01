@@ -102,6 +102,8 @@ func runRecoveryUI(dir, action string) error {
 		return resetFromSettings(dir)
 	case "uninstall":
 		return runUninstall(dir)
+	case "install-omarchy":
+		return runInstallOmarchyUI(dir)
 	default:
 		return fmt.Errorf("unknown recovery action")
 	}

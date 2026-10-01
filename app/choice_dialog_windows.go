@@ -14,6 +14,10 @@ import (
 // unrelated actions to Yes/No. Zero means close/Escape; actions are one-based.
 // It runs on its own UI thread and is used before setup or from the About process.
 func chooseAction(title, body string, labels ...string) (int, error) {
+	return chooseActionWithTextHeight(title, body, 260, labels...)
+}
+
+func chooseActionWithTextHeight(title, body string, textHeight int32, labels ...string) (int, error) {
 	type result struct {
 		action int
 		err    error
@@ -78,7 +82,7 @@ func chooseAction(title, body string, labels ...string) (int, error) {
 		frame := [4]int32{}
 		procAdjustWindowRectEx.Call(uintptr(unsafe.Pointer(&frame)), style, 0, 0)
 		width := min(int32(520), work[2]-work[0]-32-(frame[2]-frame[0]))
-		bodyHeight := min(int32(260), work[3]-work[1]-32-(frame[3]-frame[1])-24-int32(40*len(labels)))
+		bodyHeight := min(textHeight, work[3]-work[1]-32-(frame[3]-frame[1])-24-int32(40*len(labels)))
 		bodyHeight = max(int32(56), bodyHeight)
 		height := bodyHeight + 24 + int32(40*len(labels))
 		w, h := width+frame[2]-frame[0], height+frame[3]-frame[1]
