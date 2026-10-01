@@ -15,7 +15,7 @@ from .safefs import Destination
 from .system import CommandError, Runner
 from .trial import Trial, TrialError, marker_time
 from .selection import RESERVE_BYTES, SelectionError, option_rows, resolve_selection
-from .ui import UI, Cancelled, human_size, plain_label
+from .ui import UI, Cancelled, by_count, human_size, plain_label
 
 class RunState:
     """Whether anything on this computer may have changed yet, and the
@@ -333,7 +333,8 @@ def run(args, ui, runner, stack, state):
     plan = Planner(context, destination, resolution).plan(inventory, group_ids)
     if plan.conflicts() and args.resolution is None and ui.interactive:
         ui.say()
-        ui.say(f"{len(plan.conflicts())} files you import were already changed on this computer:")
+        ui.say(by_count(len(plan.conflicts()), "1 file you import was already changed on this "
+                        "computer:", "{n} files you import were already changed on this computer:"))
         for action in plan.conflicts()[:8]:
             ui.say(f"  {action.relative}")
         if len(plan.conflicts()) > 8:
@@ -425,13 +426,15 @@ def _current_theme(home):
 def _install_packages(ui, runner, plan):
     steps = []
     if plan.repo:
-        ui.say(f"Installing {len(plan.repo)} packages: {' '.join(plan.repo)}")
+        ui.say(by_count(len(plan.repo), "Installing 1 package", "Installing {n} packages")
+               + f": {' '.join(plan.repo)}")
         steps.append(packages.install_repo(runner, plan.repo))
     if plan.aur:
-        ui.say(f"Installing {len(plan.aur)} AUR packages: {' '.join(plan.aur)}")
+        ui.say(by_count(len(plan.aur), "Installing 1 AUR package", "Installing {n} AUR packages")
+               + f": {' '.join(plan.aur)}")
         steps.append(packages.install_aur(runner, plan.aur, plan.has_yay))
     if plan.flatpaks:
-        ui.say(f"Installing {len(plan.flatpaks)} Flatpak apps")
+        ui.say(by_count(len(plan.flatpaks), "Installing 1 Flatpak app", "Installing {n} Flatpak apps"))
         steps.append(packages.install_flatpaks(runner, plan.flatpaks, plan.has_flatpak))
     return steps
 

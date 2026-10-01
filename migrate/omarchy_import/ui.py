@@ -180,6 +180,11 @@ def distinct_labels(options):
     return labels
 
 
+def by_count(number, one, many):
+    """one or many, whichever reads right for number, with {n} filled in."""
+    return (one if number == 1 else many).format(n=number)
+
+
 def human_size(size):
     value = float(size)
     for unit in ("bytes", "KB", "MB", "GB", "TB"):

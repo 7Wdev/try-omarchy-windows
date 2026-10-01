@@ -1,7 +1,7 @@
 """The list of groups to pick from, and --select parsing, shared by import and export."""
 
 from . import classify
-from .ui import human_size
+from .ui import by_count, human_size
 
 RESERVE_BYTES = 2 * 1000 ** 3
 SMALL_APP_BYTES = 100 * 1000 ** 2
@@ -22,8 +22,8 @@ def option_rows(inventory, package_plan, theme, free):
     for group in groups:
         size = human_size(group.bytes)
         if group.kind == classify.SETTINGS:
-            rows.append((group.id, f"Settings and customizations ({group.changed} files {size})",
-                         True))
+            files = by_count(group.changed, "1 file", "{n} files")
+            rows.append((group.id, f"Settings and customizations ({files} {size})", True))
         elif group.kind == classify.FILES:
             default = group.bytes <= budget
             if default:
@@ -39,8 +39,9 @@ def option_rows(inventory, package_plan, theme, free):
             rows.append((group.id, f"{group.label} profile with bookmarks and saved logins ({size})",
                          False))
         elif group.kind == classify.KEYS:
+            files = by_count(group.changed, "1 file", "{n} files")
             rows.append((group.id, "Keys and sign-ins: SSH and GPG keys, keyring, command line "
-                                   f"logins ({group.changed} files)", False))
+                                   f"logins ({files})", False))
     if package_plan is not None and not package_plan.empty():
         count = len(package_plan.repo) + len(package_plan.aur) + len(package_plan.flatpaks)
         rows.append(("packages", f"Apps you installed ({count} to install)", True))
