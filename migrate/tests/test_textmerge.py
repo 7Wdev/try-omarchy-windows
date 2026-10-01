@@ -1,4 +1,8 @@
+import os
+from pathlib import Path
+import tempfile
 import unittest
+from unittest import mock
 
 from omarchy_import import textmerge
 from tests import fixtures
@@ -91,6 +95,18 @@ class Merge3Tests(unittest.TestCase):
 
     def test_binary_is_not_merged(self):
         self.assertEqual(textmerge.merge3(b"a\0", b"b\0", b"c\0"), (None, False))
+
+    def test_an_imported_git_earlier_in_path_is_not_used(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            fake = Path(scratch) / "git"
+            fake.write_text(f"#!/bin/sh\ntouch {scratch}/ran\necho fake\n")
+            fake.chmod(0o755)
+            with mock.patch.dict(os.environ, {"PATH": f"{scratch}:{os.environ.get('PATH', '')}"}):
+                self.assertTrue(textmerge.git_available())
+                self.assertEqual(textmerge.merge3(b"a\nb\nc\nd\n", b"a\nb\nc\nD\n",
+                                                  b"A\nb\nc\nd\n"),
+                                 (b"A\nb\nc\nD\n", True))
+            self.assertFalse((Path(scratch) / "ran").exists())
 
 
 class KeyringTests(unittest.TestCase):

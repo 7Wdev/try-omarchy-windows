@@ -15,7 +15,11 @@ import shutil
 import subprocess
 import tempfile
 
+from . import names
 from .system import CommandError
+
+# Backgrounds outside the home folder come from Omarchy's own themes.
+SYSTEM_BACKGROUNDS = "/usr/share/omarchy/"
 
 # Groups that grant nothing a person notices on a current Omarchy install
 # (logind hands out device access), or that every account already has.
@@ -33,6 +37,8 @@ class PackagePlan:
     groups: list = field(default_factory=list)
     has_yay: bool = False
     has_flatpak: bool = False
+    # Trial entries left out because they are not valid package or app names.
+    invalid: int = 0
 
     def empty(self):
         return not (self.repo or self.aur or self.flatpaks)
@@ -47,7 +53,9 @@ def _lines(runner, argv):
 
 def plan_packages(trial, runner):
     plan = PackagePlan()
-    added = trial.packages().added
+    trial_packages = trial.packages()
+    added = trial_packages.added
+    plan.invalid = trial_packages.invalid
     installed = set(_lines(runner, ["pacman", "-Qq"]))
     available = set()
     for line in _lines(runner, ["pacman", "-Sl"]):
@@ -96,34 +104,65 @@ class StepResult:
     detail: str = ""
 
 
-def install_repo(runner, names):
-    if not names:
+def _refuse(step, items, valid):
+    """A failed step if any name is not one the installer should see, else None."""
+    bad = sum(1 for item in items if not valid(item))
+    if not bad:
+        return None
+    return StepResult(step, False, "nothing was installed, because the list has "
+                      f"{bad} {'entry that is' if bad == 1 else 'entries that are'} "
+                      "not a valid name")
+
+
+def install_repo(runner, packages):
+    if not packages:
         return StepResult("packages", True)
+    refused = _refuse("packages", packages, names.package)
+    if refused:
+        return refused
     try:
-        runner.run(["pacman", "-S", "--needed", "--noconfirm", *names], sudo=True, capture=False)
+        runner.run(["pacman", "-S", "--needed", "--noconfirm", "--", *packages], sudo=True,
+                   capture=False)
     except CommandError as error:
         return StepResult("packages", False, f"pacman stopped ({error.returncode}); "
-                          f"install these yourself: {' '.join(names)}")
-    return StepResult("packages", True, f"installed {_count(names, 'package')}")
+                          f"install these yourself: {' '.join(packages)}")
+    return StepResult("packages", True, f"installed {_count(packages, 'package')}")
 
 
-def install_aur(runner, names, has_yay):
-    if not names:
+def install_aur(runner, packages, has_yay):
+    """Install with yay, without the yay, makepkg and git settings in this
+    home folder: the import may just have brought them, and they can name
+    other programs to run."""
+    if not packages:
         return StepResult("aur", True)
+    refused = _refuse("aur", packages, names.package)
+    if refused:
+        return refused
     if not has_yay:
         return StepResult("aur", False, "yay is not installed; these came from the AUR: "
-                          + " ".join(names))
-    try:
-        runner.run(["yay", "-S", "--needed", "--noconfirm", *names], capture=False)
-    except CommandError as error:
-        return StepResult("aur", False, f"yay stopped ({error.returncode}); "
-                          f"install these yourself: {' '.join(names)}")
-    return StepResult("aur", True, f"installed {_count(names, 'AUR package')}")
+                          + " ".join(packages))
+    with tempfile.TemporaryDirectory(prefix="try-omarchy-import-yay-") as config:
+        # makepkg reads $XDG_CONFIG_HOME/pacman/makepkg.conf instead of
+        # ~/.makepkg.conf when it exists.
+        os.mkdir(os.path.join(config, "pacman"))
+        with open(os.path.join(config, "pacman", "makepkg.conf"), "w", encoding="utf-8") as output:
+            output.write("# try-omarchy-import builds with the settings in /etc/makepkg.conf\n")
+        environment = dict(os.environ, XDG_CONFIG_HOME=config, GIT_CONFIG_GLOBAL=os.devnull)
+        try:
+            runner.run(["yay", "-S", "--needed", "--noconfirm", "--", *packages], capture=False,
+                       env=environment)
+        except CommandError as error:
+            return StepResult("aur", False, f"yay stopped ({error.returncode}); "
+                              f"install these yourself: {' '.join(packages)}")
+    return StepResult("aur", True, f"installed {_count(packages, 'AUR package')}")
 
 
 def install_flatpaks(runner, apps, has_flatpak):
     if not apps:
         return StepResult("flatpak", True)
+    refused = _refuse("flatpak", [app for app, _ in apps], names.flatpak)
+    if refused:
+        return refused
     if not has_flatpak:
         return StepResult("flatpak", False, "Flatpak is not installed; the trial had: "
                           + " ".join(app for app, _ in apps))
@@ -133,8 +172,8 @@ def install_flatpaks(runner, apps, has_flatpak):
         if not ids:
             continue
         try:
-            runner.run(["flatpak", "install", "--noninteractive", "-y", f"--{scope}", "flathub",
-                        *ids], capture=False)
+            runner.run(["flatpak", "install", "--noninteractive", "-y", f"--{scope}", "--",
+                        "flathub", *ids], capture=False)
         except CommandError:
             failed.extend(ids)
     if failed:
@@ -157,6 +196,9 @@ def mise_install(runner, home):
 def set_theme(runner, theme):
     if not theme:
         return None
+    if not names.theme(theme):
+        return StepResult("theme", False, "the trial's theme name is not valid; pick a theme from "
+                          "the Omarchy menu")
     if runner.which("omarchy-theme-set") is None:
         return StepResult("theme", False, f"pick the {theme} theme from the Omarchy menu")
     try:
@@ -168,8 +210,10 @@ def set_theme(runner, theme):
 
 
 def background_path(trial_background, trial_home, home):
-    """Where the trial's background is on this computer, or None."""
-    if not trial_background:
+    """Where the trial's background is on this computer, or None. Only a file
+    in this home folder or in Omarchy's own themes counts."""
+    if not trial_background or not trial_background.startswith("/") or \
+            any(part in (".", "..") for part in trial_background.split("/")):
         return None
     trial_home = trial_home.rstrip("/")
     theme_backgrounds = f"{trial_home}/.local/state/omarchy/current/theme/backgrounds/"
@@ -178,8 +222,10 @@ def background_path(trial_background, trial_home, home):
             trial_background[len(theme_backgrounds):]
     elif trial_background.startswith(trial_home + "/"):
         candidate = Path(home) / trial_background[len(trial_home) + 1:]
-    else:
+    elif trial_background.startswith(SYSTEM_BACKGROUNDS):
         candidate = Path(trial_background)
+    else:
+        return None
     return candidate if candidate.is_file() else None
 
 

@@ -216,6 +216,10 @@ class FakeRunner:
         self.running = set(running)
         self.failing = set(failing)
         self.calls = []
+        # What each command saw: its environment and, for yay, its private
+        # config folder's contents.
+        self.environments = []
+        self.yay_config = None
 
     def which(self, name):
         return f"/usr/bin/{name}" if name in self.programs else None
@@ -226,6 +230,10 @@ class FakeRunner:
         from omarchy_import.system import CommandError
         argv = [str(part) for part in argv]
         self.calls.append((tuple(argv), sudo))
+        self.environments.append(env)
+        if argv[0] == "yay" and env and env.get("XDG_CONFIG_HOME"):
+            config = Path(env["XDG_CONFIG_HOME"])
+            self.yay_config = sorted(str(path.relative_to(config)) for path in config.rglob("*"))
         key = " ".join(argv)
         for prefix in self.failing:
             if key.startswith(prefix):
@@ -242,6 +250,10 @@ class FakeRunner:
 
     def sudo_ready(self):
         return True
+
+    def forget_sudo(self):
+        self.calls.append((("sudo", "-k"), False))
+        self.environments.append(None)
 
     def running_programs(self):
         return set(self.running)

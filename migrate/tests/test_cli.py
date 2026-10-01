@@ -57,10 +57,15 @@ class CliTests(CliCase):
         self.assertEqual(status, 0, output)
         self.assertIn(b"name = Ada", (self.home / ".config/git/config").read_bytes())
         commands = self.runner.commands()
-        self.assertIn("pacman -S --needed --noconfirm cowsay", commands)
-        self.assertIn("yay -S --needed --noconfirm figlet", commands)
+        self.assertIn("pacman -S --needed --noconfirm -- cowsay", commands)
+        self.assertIn("yay -S --needed --noconfirm -- figlet", commands)
         self.assertIn("omarchy-theme-set gruvbox", commands)
         self.assertIn("Log out and back in", output)
+        # sudo forgets the password after the packages and before the theme
+        # hooks the import brought can run.
+        forget = commands.index("sudo -k")
+        self.assertGreater(forget, commands.index("yay -S --needed --noconfirm -- figlet"))
+        self.assertLess(forget, commands.index("omarchy-theme-set gruvbox"))
 
     def test_mise_runs_only_when_its_config_came_over(self):
         self.runner.programs.add("mise")
@@ -106,10 +111,43 @@ class CliTests(CliCase):
                      runner=self.runner)
         self.assertIn("--cleanup", errors.getvalue())
 
+    def test_package_names_that_are_options_never_reach_an_installer(self):
+        # The probe from the security review: a desc file whose name is a yay
+        # option that runs another program.
+        fixtures.write(self.root / "var/lib/pacman/local/controlled-1/desc",
+                       b"%NAME%\n--makepkg=/tmp/controlled-demo-helper\n", fixtures.TRIAL_EDIT)
+        status, output = self.main("--yes", "--select", "packages")
+        self.assertEqual(status, 0, output)
+        self.assertFalse(any("--makepkg" in command for command in self.runner.commands()))
+        self.assertIn("yay -S --needed --noconfirm -- figlet", self.runner.commands())
+        self.assertIn("Left out 1 entry in the trial's package list", output)
+
+    def test_the_question_says_checked_items_come_along(self):
+        questions = []
+
+        def choose_many(ui, question, options, selected):
+            questions.append(question)
+            return list(selected)
+
+        with mock.patch.object(cli.UI, "choose_many", choose_many), \
+                mock.patch.object(cli.UI, "choose_one", lambda *arguments, **options: 0), \
+                mock.patch.object(cli.UI, "__init__", _interactive_ui):
+            self.main()
+        self.assertEqual(questions, ["What do you want to bring over?\n"
+                                     "Everything checked comes along. Press Enter to continue."])
+
     def test_refuses_to_run_as_root(self):
         with mock.patch("os.geteuid", return_value=0):
             status, _ = self.main("--yes")
         self.assertEqual(status, 2)
+
+
+def _interactive_ui(ui, interactive=True, use_gum=None, stream=None):
+    import sys
+    ui.stream = stream or sys.stdout
+    ui.interactive = True
+    ui.gum = False
+    ui.gum_path = None
 
 
 class LocateTests(unittest.TestCase):

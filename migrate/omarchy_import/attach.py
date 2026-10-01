@@ -67,6 +67,10 @@ class Session:
         return self
 
     def __exit__(self, *arguments):
+        self.finish()
+
+    def finish(self):
+        """Undo everything now; later calls do nothing more."""
         self.errors.extend(self.close())
 
     def _mountpoint(self, name):
@@ -121,7 +125,8 @@ class Session:
             return Path(root)
         target = self._mountpoint("mapped")
         mapping = f"u:{trial_uid}:{uid}:1 g:{trial_gid}:{gid}:1"
-        self.runner.run(["mount", "--bind", "-o", f"ro,X-mount.idmap={mapping}", root, target],
+        self.runner.run(["mount", "--bind", "-o",
+                         f"ro,nodev,nosuid,noexec,X-mount.idmap={mapping}", root, target],
                         sudo=True)
         self._undo.append(("umount", target))
         return target

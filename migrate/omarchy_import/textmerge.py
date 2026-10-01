@@ -17,6 +17,8 @@ import re
 import subprocess
 import tempfile
 
+from .system import find_tool, system_environment
+
 TEXT_LIMIT = 1024 * 1024
 # Shell histories and similar lists can grow large; they are still merged.
 LIST_LIMIT = 32 * 1024 * 1024
@@ -150,8 +152,12 @@ def _lines(data):
 
 
 def git_available():
+    git = find_tool("git")
+    if git is None:
+        return False
     try:
-        subprocess.run(["git", "--version"], capture_output=True, check=True)
+        subprocess.run([git, "--version"], capture_output=True, check=True,
+                       env=system_environment())
     except (OSError, subprocess.CalledProcessError):
         return False
     return True
@@ -164,7 +170,8 @@ def merge3(base, ours, theirs):
     kept and the result is not clean; every other change from theirs (this
     computer's newer default) still applies.
     """
-    if not (is_text(base) and is_text(ours) and is_text(theirs)):
+    git = find_tool("git")
+    if git is None or not (is_text(base) and is_text(ours) and is_text(theirs)):
         return None, False
     with tempfile.TemporaryDirectory(prefix="try-omarchy-merge-") as scratch:
         paths = []
@@ -173,16 +180,16 @@ def merge3(base, ours, theirs):
             with open(path, "wb") as output:
                 output.write(data)
             paths.append(path)
-        environment = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "LC_ALL": "C",
-                       "HOME": scratch, "GIT_CONFIG_NOSYSTEM": "1"}
+        environment = system_environment({"LC_ALL": "C", "HOME": scratch,
+                                          "GIT_CONFIG_NOSYSTEM": "1"})
         try:
-            clean = subprocess.run(["git", "merge-file", "-p", "-q", *paths],
+            clean = subprocess.run([git, "merge-file", "-p", "-q", *paths],
                                    capture_output=True, env=environment, timeout=60)
             if clean.returncode == 0:
                 return clean.stdout, True
             if clean.returncode < 0 or clean.returncode > 127:
                 return None, False
-            favoured = subprocess.run(["git", "merge-file", "-p", "-q", "--ours", *paths],
+            favoured = subprocess.run([git, "merge-file", "-p", "-q", "--ours", *paths],
                                       capture_output=True, env=environment, timeout=60)
         except (OSError, subprocess.TimeoutExpired):
             return None, False

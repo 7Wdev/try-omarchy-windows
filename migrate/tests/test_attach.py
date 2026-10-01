@@ -58,7 +58,7 @@ class SessionTests(unittest.TestCase):
         mapped = session.map_owner("/root", 1000 if os.getuid() != 1000 else 1001, 1000)
         self.assertNotEqual(mapped, Path("/root"))
         command = self.runner.commands()[-1]
-        self.assertIn("X-mount.idmap=u:", command)
+        self.assertIn("-o ro,nodev,nosuid,noexec,X-mount.idmap=u:", command)
         self.assertIn(f":{os.getuid()}:1 g:", command)
         session.close()
 

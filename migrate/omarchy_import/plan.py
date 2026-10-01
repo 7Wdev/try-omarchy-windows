@@ -253,7 +253,7 @@ class TrialDefaults:
     """
 
     def __init__(self, skel, baseline_ns):
-        self.skel = Path(skel)
+        self.skel = safefs.Source(skel)
         self.baseline_ns = baseline_ns
 
     @staticmethod
@@ -266,17 +266,17 @@ class TrialDefaults:
 
     def is_default(self, relative, entry, data=None, read=None):
         """data is the trial file's content if already read; read() reads it on demand."""
-        metadata = _lstat(self.skel / relative)
+        metadata = self.skel.lstat(relative)
         if metadata is not None:
             skel_kind = _entry_kind(metadata)
             if entry.kind == "symlink" and skel_kind == "symlink":
-                if os.readlink(self.skel / relative) == entry.target:
+                if self.skel.readlink(relative) == entry.target:
                     return True
             elif entry.kind == "file" and skel_kind == "file":
                 if metadata.st_size == entry.size or relative in HYPR_BLOCK_FILES:
                     if data is None and read is not None and entry.size <= textmerge.TEXT_LIMIT * 64:
                         data = read()
-                    skel_data = safefs.source_read(self.skel / relative, textmerge.TEXT_LIMIT * 64)
+                    skel_data = self.skel.read(relative, textmerge.TEXT_LIMIT * 64)
                     if skel_data is not None and data is not None and \
                             self.normalize(relative, skel_data) == self.normalize(relative, data):
                         return True
@@ -292,6 +292,7 @@ class Planner:
         self.resolution = resolution
         self.can_merge = textmerge.git_available()
         self.defaults = TrialDefaults(context.trial_skel, context.trial_baseline_ns)
+        self.trial_skel = self.defaults.skel
         # Keyring items of browsers being imported win over this computer's.
         self.keyring_apps = set()
 
@@ -560,11 +561,7 @@ class Planner:
         return self._conflict(action, "you already changed this on this computer")
 
     def _trial_skel_content(self, relative):
-        path = self.context.trial_skel / relative
-        metadata = _lstat(path)
-        if metadata is None or _entry_kind(metadata) != "file" or metadata.st_size > textmerge.TEXT_LIMIT:
-            return None
-        data = safefs.source_read(path, textmerge.TEXT_LIMIT)
+        data = self.trial_skel.read(relative, textmerge.TEXT_LIMIT)
         data = self._normalize(relative, data)
         if data is not None and textmerge.is_text(data):
             data = self.context.rewriter.text(data)
@@ -712,7 +709,7 @@ class Planner:
                     group_kind in (FILES, BROWSER)
                     or (self.context.trial_baseline_ns is not None
                         and action.entry.changed_ns > self.context.trial_baseline_ns
-                        and _lstat(self.context.trial_skel / action.relative) is None))
+                        and self.trial_skel.lstat(action.relative) is None))
                 if not user_made:
                     action.action = "default"
                     action.reason = ""

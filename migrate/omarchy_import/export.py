@@ -286,9 +286,10 @@ def run(args, ui):
                         continue
                     written += copied
                     included += 1
-                    skel = trial.skel / entry.relative
-                    if os.path.lexists(skel) and not os.path.isdir(skel):
-                        out.copy(f"trial-root/etc/skel/{entry.relative}", skel)
+                    skel = defaults.skel.lstat(entry.relative)
+                    if skel is not None and not stat.S_ISDIR(skel.st_mode):
+                        out.copy(f"trial-root/etc/skel/{entry.relative}",
+                                 trial.skel / entry.relative)
             _write_state(out, home, home_prefix, trial, chosen)
             out.data("export.json", json.dumps({
                 "kind": "try-omarchy-export", "schemaVersion": 2,
@@ -333,6 +334,8 @@ def _read(path):
 
 
 def _skel_config_names(skel):
+    if skel is None:
+        return set()
     try:
         return {entry.name for entry in os.scandir(Path(skel) / ".config")}
     except OSError:
@@ -350,7 +353,6 @@ def _write_parents(out, home, prefix, relative):
 
 
 def _write_system(out, trial, account, chosen, packages_added):
-    root = trial.root
     passwd_line = f"{account.name}:x:{account.uid}:{account.gid}::{account.home}:/bin/bash\n"
     out.data("trial-root/etc/passwd", passwd_line.encode())
     groups = "".join(f"{group}:x:0:{account.name}\n" for group in account.groups)
@@ -361,8 +363,9 @@ def _write_system(out, trial, account, chosen, packages_added):
             out.directory(f"trial-root/etc/skel/.config/{name}")
     for relative in ("usr/share/try-omarchy/build-spec.json",
                      "usr/share/try-omarchy/packages.lock.txt", "usr/share/omarchy/version"):
-        if (root / relative).is_file():
-            out.copy(f"trial-root/{relative}", root / relative)
+        path = trial.path(relative)
+        if path is not None and path.is_file():
+            out.copy(f"trial-root/{relative}", path)
     if "packages" in chosen:
         for name in packages_added:
             out.data(f"trial-root/var/lib/pacman/local/{name}-0-0/desc",

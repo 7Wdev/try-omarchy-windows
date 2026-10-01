@@ -49,19 +49,71 @@ class PackagePlanTests(unittest.TestCase):
         self.assertTrue(packages.install_aur(runner, ["figlet"], True).ok)
         self.assertTrue(packages.install_flatpaks(runner, [("com.spotify.Client", "user")],
                                                   True).ok)
-        self.assertEqual(runner.calls[0], (("pacman", "-S", "--needed", "--noconfirm", "cowsay"),
-                                           True))
-        self.assertEqual(runner.calls[1], (("yay", "-S", "--needed", "--noconfirm", "figlet"),
-                                           False))
-        self.assertIn("--user", runner.calls[2][0])
+        self.assertEqual(runner.calls[0], (("pacman", "-S", "--needed", "--noconfirm", "--",
+                                            "cowsay"), True))
+        self.assertEqual(runner.calls[1], (("yay", "-S", "--needed", "--noconfirm", "--",
+                                            "figlet"), False))
+        self.assertEqual(runner.calls[2][0], ("flatpak", "install", "--noninteractive", "-y",
+                                              "--user", "--", "flathub", "com.spotify.Client"))
+        # yay runs without the yay, makepkg and git settings in the home
+        # folder, which the import may just have brought.
+        self.assertEqual(runner.yay_config, ["pacman", "pacman/makepkg.conf"])
+        self.assertEqual(runner.environments[1]["GIT_CONFIG_GLOBAL"], "/dev/null")
+        self.assertFalse(Path(runner.environments[1]["XDG_CONFIG_HOME"]).exists())
 
     def test_failures_are_reported_not_raised(self):
         runner = self.runner()
         runner.failing.update({"pacman -S", "yay -S", "flatpak install"})
         self.assertFalse(packages.install_repo(runner, ["cowsay"]).ok)
         self.assertFalse(packages.install_aur(runner, ["figlet"], True).ok)
-        self.assertIn("com.x", packages.install_flatpaks(runner, [("com.x", "system")], True).detail)
+        self.assertIn("com.example.App", packages.install_flatpaks(
+            runner, [("com.example.App", "system")], True).detail)
         self.assertFalse(packages.install_aur(runner, ["figlet"], False).ok)
+
+    def test_malformed_package_metadata_is_left_out(self):
+        fixtures.write(self.root / "var/lib/pacman/local/controlled-1/desc",
+                       b"%NAME%\n--makepkg=/tmp/controlled-demo-helper\n", fixtures.TRIAL_EDIT)
+        fixtures.write(self.root / "var/lib/pacman/local/spaced-1/desc",
+                       b"%NAME%\nfoo bar\n", fixtures.TRIAL_EDIT)
+        fixtures.write(self.home / ".local/share/flatpak/app/--user/current/x", b"",
+                       fixtures.TRIAL_EDIT)
+        plan = packages.plan_packages(Trial(self.root), self.runner())
+        self.assertEqual(plan.aur, ["figlet"])
+        self.assertEqual(plan.invalid, 2)
+        self.assertEqual(plan.flatpaks, [("com.spotify.Client", "user")])
+
+    def test_installers_refuse_names_that_are_not_package_names(self):
+        bad = ["--makepkg=/tmp/controlled-demo-helper", "-Syu", "/tmp/helper", "foo bar",
+               "foo\nbar", "foo\x1b]0;title\x07"]
+        for name in bad:
+            runner = self.runner()
+            for step in (packages.install_repo(runner, ["cowsay", name]),
+                         packages.install_aur(runner, [name, "figlet"], True),
+                         packages.install_flatpaks(runner, [("com.spotify.Client", "user"),
+                                                            (name, "user")], True)):
+                self.assertFalse(step.ok)
+                self.assertNotIn(name, step.detail)
+            self.assertEqual(runner.calls, [], name)
+        runner = self.runner()
+        self.assertFalse(packages.install_flatpaks(runner, [("--user", "system")], True).ok)
+        self.assertEqual(runner.calls, [])
+
+    def test_theme_names_that_are_not_theme_names_are_not_set(self):
+        runner = self.runner()
+        runner.programs.add("omarchy-theme-set")
+        for theme in ("--help", "../../etc", "a b"):
+            self.assertFalse(packages.set_theme(runner, theme).ok)
+        self.assertEqual(runner.calls, [])
+        self.assertTrue(packages.set_theme(runner, "tokyo-night").ok)
+        self.assertEqual(runner.commands(), ["omarchy-theme-set tokyo-night"])
+
+    def test_background_outside_the_home_and_omarchy_is_ignored(self):
+        home = self.base / "home"
+        fixtures.write(home / "Pictures/wall.png", b"png", fixtures.HOME_SETUP)
+        for target in ("/etc/passwd", "/home/omarchy/../../etc/passwd",
+                       "/home/omarchy/Pictures/../Pictures/wall.png", "Pictures/wall.png",
+                       f"{home}/Pictures/wall.png"):
+            self.assertIsNone(packages.background_path(target, "/home/omarchy", home), target)
 
     def test_background_follows_the_theme_or_the_imported_file(self):
         home = self.base / "home"
