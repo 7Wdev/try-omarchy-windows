@@ -1,0 +1,66 @@
+From 28b4f94700cbe2dd702a217628653b8e21904cb3 Mon Sep 17 00:00:00 2001
+From: Tyler South <tsouth2@gmail.com>
+Date: Thu, 1 Oct 2026 18:21:14 -0400
+Subject: [PATCH] Update the guest to Omarchy 4.0.4 without its kernel switch
+
+---
+ guest/scripts/materialize-omarchy.sh | 14 +++++++++++++-
+ guest/spec.json                      | 10 +++++-----
+ 2 files changed, 18 insertions(+), 6 deletions(-)
+
+diff --git a/guest/scripts/materialize-omarchy.sh b/guest/scripts/materialize-omarchy.sh
+index c81f893..e20ae3f 100755
+--- a/guest/scripts/materialize-omarchy.sh
++++ b/guest/scripts/materialize-omarchy.sh
+@@ -122,11 +122,23 @@ rm -rf "$omarchy_root"
+ mkdir -p "$omarchy_root/bin" "$omarchy_root/themes"
+ 
+ # Match the upstream package's runtime layout. Every copied byte comes from the
+-# pinned Basecamp repository; the web-only profile is applied later in /etc/skel.
++# pinned Basecamp repository, except the one migration replaced below; the
++# web-only profile is applied later in /etc/skel.
+ for tree in config default install migrations shell applications; do
+   copy_tree "$source_dir/$tree" "$omarchy_root/$tree"
+ done
+ 
++# Omarchy 4.0.4 moves bare-metal installs to its own kernel and adds it to the
++# Limine boot menu. This guest has no bootloader: the Windows launcher boots the
++# kernel it supplies, with matching modules, and the guest's linux package stays
++# held. Left alone, the migration would download a kernel that can never boot
++# here, then fail on every update and login. It completes without changes instead.
++kernel_migration="$omarchy_root/migrations/1789325478.sh"
++[[ -f $kernel_migration ]] || fail "Omarchy's kernel migration moved; review it before skipping: $kernel_migration"
++cat >"$kernel_migration" <<'MIGRATION'
++echo "Keep the kernel the Try Omarchy launcher supplies; this guest has no bootloader"
++MIGRATION
++
+ while IFS= read -r theme; do
+   [[ -n $theme ]] || continue
+   copy_tree "$source_dir/themes/$theme" "$omarchy_root/themes/$theme"
+diff --git a/guest/spec.json b/guest/spec.json
+index 015c78d..1e44e42 100644
+--- a/guest/spec.json
++++ b/guest/spec.json
+@@ -23,14 +23,14 @@
+   },
+   "upstream": {
+     "repository": "https://github.com/omacom/omarchy",
+-    "commit": "0534987009061cbe2dacdde4ad564092ab698d12",
+-    "tree": "139193701d7ddc948c12dfa2d15de070546ee520",
+-    "treeSha256": "21d4d4edec113126aaa65d04adb7d5a422f4b18d685c1e2e08fa5c51b621fa60",
+-    "version": "4.0.3",
++    "commit": "c668141e9c42b13c80c9ca4ea108e11708c5e8a5",
++    "tree": "1d48adc1ba8636fd9362f7b9bf8819f3ac3258a4",
++    "treeSha256": "c7ae35645b64a205a3ac7af094b17ea0f406a710eb00185470a76f3ae8367952",
++    "version": "4.0.4",
+     "versionFile": "4.0.0.alpha",
+     "channel": "quattro",
+     "license": "MIT",
+-    "packageRelease": 7,
++    "packageRelease": 1,
+     "integrationDepends": [
+       "fcitx5",
+       "fcitx5-gtk",
+-- 
+2.56.0
+
