@@ -278,7 +278,7 @@ func runTray(cfg trayLaunchConfig, ready chan<- uintptr, done chan<- struct{}) {
 		appendItem(mfString, trayCommandSettings, "Settings...")
 		appendItem(mfString, trayCommandCameraStatus, "Camera status...")
 		appendItem(mfString, trayCommandDevices, "USB devices...")
-		appendItem(mfString, trayCommandTransfers, "File transfers…")
+		appendItem(mfString, trayCommandTransfers, "File transfers...")
 		appendItem(mfString, trayCommandDiagnose, "Create diagnostics...")
 		reclaimFlags := uintptr(mfString)
 		if !reclaimSupported.Load() {
