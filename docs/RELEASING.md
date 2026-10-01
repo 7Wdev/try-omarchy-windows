@@ -40,7 +40,12 @@ artifact for verification. Use it after changing the OIDC or signing configurati
 
 ## Prepare the guest
 
-1. Add the new version section to `CHANGELOG.md` and push it to `master`.
+1. Add the technical changes to `CHANGELOG.md` and write the public announcement
+   in `.github/release-notes/TAG.md`. Review its exact title, prose and links
+   before publishing. Tyler requires clean, polished release notes in every
+   project; a raw bullet-point changelog is not a release announcement. The
+   release workflow rejects missing or empty announcements instead of falling
+   back to the changelog. Push both files to `master`.
 2. Run the `Release` workflow with phase `prepare` and the new release tag.
 3. The workflow applies the locked guest patches, runs the guest contract tests,
    rebuilds the image, builds the Try Omarchy importer (`try-omarchy-import.pyz`

@@ -1,6 +1,8 @@
-# Try Omarchy Windows continuation - September 29, 2026
+# Try Omarchy Windows continuation - September 30, 2026
 
-The current normal release is [v0.6.2](https://github.com/omacom/try-omarchy-windows/releases/tag/v0.6.2), published and Latest on September 29. New installs default to your own account. The quick-start account now accepts only SSH keys; existing quick-start guests receive that restriction on their first boot after updating. Accounts you created yourself keep password login. Setup also checks space for the unpacked guest before downloading. See the [changelog](../CHANGELOG.md#v062---2026-09-29) and [publish run](https://github.com/omacom/try-omarchy-windows/actions/runs/36624010076).
+The current normal release is [v0.7.0](https://github.com/omacom/try-omarchy-windows/releases/tag/v0.7.0), published and Latest on September 30 (October 1 UTC). Settings > Recovery > Install Omarchy now guides installation next to Windows and importing the trial. The launcher checks BitLocker without PowerShell, and the import command uses `https://tryomarchy.com/import`. Branding, USB selection persistence and guest time-zone synchronization also ship. See the [signed candidate and public release record](evidence/V070-SIGNED-CANDIDATE-2026-09-30.md) and [publish run](https://github.com/omacom/try-omarchy-windows/actions/runs/36801309267).
+
+[v0.6.2](https://github.com/omacom/try-omarchy-windows/releases/tag/v0.6.2) shipped on September 29. New installs default to your own account. The quick-start account now accepts only SSH keys; existing quick-start guests receive that restriction on their first boot after updating. Accounts you created yourself keep password login. Setup also checks space for the unpacked guest before downloading. See the [changelog](../CHANGELOG.md#v062---2026-09-29) and [publish run](https://github.com/omacom/try-omarchy-windows/actions/runs/36624010076).
 
 [v0.6.1](https://github.com/omacom/try-omarchy-windows/releases/tag/v0.6.1) added a setting that sends Alt+Tab to Windows, stopped guest services restarting after Modern Standby, kept a monitor scale set in `monitors.lua` across reloads and refreshed guest packages; see the [v0.6.1 candidate and release record](evidence/V061-SIGNED-CANDIDATE-2026-09-29.md). Its acceptance included a public update from an installed v0.6.0 launcher. [v0.6.0](evidence/V060-SIGNED-CANDIDATE-2026-09-27.md) added drops into apps and 1Password unlock with Windows Hello.
 
@@ -71,22 +73,20 @@ account, temporary sudo rules, SSH key and firewall rule were removed, and SSH
 was stopped without enabling it. See the [physical acceptance record](
 evidence/MIGRATION-LAPTOP-2026-09-30.md).
 
-Release checks:
+#242 and #243 are merged and ship in v0.7.0. The signed candidate passed
+native UI, Defender, physical guest upgrade, forced rollback, reboot, poweroff,
+second launch and a fresh Windows trial. The walkthrough also opened while
+Omarchy was running and shut it down through its own button. The owner accepted
+the untested fresh native USB install, partition resizing and imported test
+account desktop login, preserving the existing Linux installation.
 
-- Before publishing, scan and validate the exact signed launcher. The native
-  BitLocker probe needs no elevation or helper process; that alone is not an
-  antivirus or SmartScreen acceptance result.
-- Build and check the combined release candidate, including guest upgrade and
-  the public importer assets. The owner chose to preserve the existing Linux
-  installation, so a fresh ISO install and disk resizing remain untested.
-
-The displayed curl command is not available from v0.6.2: that release has no
-importer assets. A release that includes the importer must publish both files
-before this command can be accepted through the public Latest URL. The guest
-candidate workflow is a CI build, not a release.
+The public release contains both importer assets. The short import URL resolves
+to the authenticated v0.7.0 bootstrap and its `--version` check passes. Public
+update acceptance and temporary Windows test cleanup are recorded in the
+[v0.7.0 release record](evidence/V070-SIGNED-CANDIDATE-2026-09-30.md).
 
 Bridge handoff: #233 and #234 merge cleanly into their stacked bases, but the
 bridge control ID 2127 collides with master's USB selection. Reserve 2130 for
-#243's Install Omarchy button. After #242, the bridge patch must follow export
-patch 0112 and use compatibility revision 45 or later. No bridge branch was
+#243's Install Omarchy button. After the v0.7.0 lock refresh, the bridge patch must follow
+patch 0113 and use compatibility revision 45 or later. No bridge branch was
 changed during this review.

@@ -19,8 +19,6 @@ class ReleaseNotesTests(unittest.TestCase):
                 sys.executable,
                 str(SCRIPT),
                 tag,
-                "--changelog",
-                str(root / "CHANGELOG.md"),
                 "--notes-dir",
                 str(root / "release-notes"),
             ],
@@ -45,7 +43,7 @@ class ReleaseNotesTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stdout, "Short release notes.\n")
 
-    def test_falls_back_to_changelog_section(self) -> None:
+    def test_missing_announcement_rejects_changelog_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             (root / "release-notes").mkdir()
@@ -59,8 +57,9 @@ class ReleaseNotesTests(unittest.TestCase):
 
             result = self.run_notes(root, "v1.2.3-preview")
 
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(result.stdout, "Release changes.\n")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("Missing reviewed release notes", result.stderr)
+            self.assertEqual(result.stdout, "")
 
 
 if __name__ == "__main__":
