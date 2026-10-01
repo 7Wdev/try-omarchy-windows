@@ -246,7 +246,7 @@ curl -fsSL https://tryomarchy.com/import | bash
 It reads the trial straight off the Windows drive and brings over your
 settings, themes, apps, files and projects, and if you pick them, your
 browser profile and sign-ins. BitLocker and Fast Startup have to be off, and
-Omarchy shut down, before installing. **Settings > Backup and recovery >
+Omarchy shut down, before installing. **Settings > Recovery >
 Install Omarchy...** checks these, helps turn them off and shows the steps. The
 [migration guide](MIGRATION.md) has the details.
 

@@ -202,6 +202,7 @@ func main() {
 		*recoveryAction = "uninstall"
 	}
 	maintenance := *backupPath != "" || *restorePath != "" || *recoveryAction != ""
+	installWalkthrough := *recoveryAction == "install-omarchy"
 	if *recoveryAction != "" && (*recoveryAction != "backup" && *recoveryAction != "restore" && *recoveryAction != "reset" && *recoveryAction != "uninstall" && *recoveryAction != "move" && *recoveryAction != "move-cleanup" && *recoveryAction != "snapshots" && *recoveryAction != "portable-create" && *recoveryAction != "install-omarchy" || *backupPath != "" || *restorePath != "") {
 		fatal("Choose one recovery action: backup, restore, snapshots, portable-create, reset, move, uninstall, or install-omarchy.")
 	}
@@ -293,11 +294,11 @@ func main() {
 	// Direct starts bind before the first-run location prompt. The menu has its
 	// own guard above. Settings, diagnostics, and update helpers remain usable
 	// while the VM owns the lifecycle port.
-	if !*openSettings && !*diagnostics && !*applyLauncherUpdateFlag && !*applyLauncherRollbackFlag {
+	if !*openSettings && !*diagnostics && !*applyLauncherUpdateFlag && !*applyLauncherRollbackFlag && !installWalkthrough {
 		runLifecycleListener()
 	}
 	if !cfg.portable {
-		resolved, moveErr := prepareMovedLocation(cfg.dir, !*openSettings && !*diagnostics && !*applyLauncherUpdateFlag && !*applyLauncherRollbackFlag)
+		resolved, moveErr := prepareMovedLocation(cfg.dir, !*openSettings && !*diagnostics && !*applyLauncherUpdateFlag && !*applyLauncherRollbackFlag && !installWalkthrough)
 		if moveErr != nil {
 			fatal("Try Omarchy cannot finish resolving an installation move:\n\n%v", moveErr)
 		}
@@ -351,7 +352,9 @@ func main() {
 			return
 		}
 	}
-	if !*openSettings && !*diagnostics && !*applyLauncherUpdateFlag && !*applyLauncherRollbackFlag {
+	// The install walkthrough can inspect a running guest and ask its owner to
+	// shut down. It must not take over lifecycle or interrupted-update recovery.
+	if !*openSettings && !*diagnostics && !*applyLauncherUpdateFlag && !*applyLauncherRollbackFlag && !installWalkthrough {
 		if err := recoverCheckpointRollback(cfg.dir); err != nil {
 			fatal("Cannot finish snapshot recovery: %v", err)
 		}

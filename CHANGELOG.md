@@ -3,7 +3,7 @@
 ## v0.7.0 - 2026-09-30
 
 - Install Omarchy next to Windows and bring your trial setup along. Open
-  Settings > Backup and recovery > Install Omarchy for a short checklist,
+  Settings > Recovery > Install Omarchy for a short checklist,
   buttons for Windows settings and Disk Management, and the import command.
   BitLocker status is checked through Windows without PowerShell or elevation.
 - Import settings, files and app data from the Windows trial into your Linux
