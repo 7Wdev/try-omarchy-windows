@@ -111,6 +111,12 @@ and an unowned copy made pacman refuse the next `linux-headers` upgrade, which
 failed the whole Update > Omarchy after a kernel bump. The archive already left
 out `build/` for the same reason.
 
+Patch 0117 keeps catch-up from putting the quick-start SSH rule back after the
+user removed it. Catch-up records adding the rule to an older disk, but disks
+created since revision 42 get the rule with the account and had no record, so
+the next revision would have added it again. Catch-up now skips the step on any
+disk that already ran it at revision 42 or later.
+
 The second command needs Docker and currently takes about ten minutes. Release
 CI also boots the resulting factory image with `scripts/release/smoke-guest.py`
 before it uploads anything.

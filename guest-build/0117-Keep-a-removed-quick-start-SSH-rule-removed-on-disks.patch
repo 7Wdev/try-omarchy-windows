@@ -1,0 +1,66 @@
+From 1576b5b74a279efa29ee8944be6e4566846a549b Mon Sep 17 00:00:00 2001
+From: Tyler South <tsouth2@gmail.com>
+Date: Thu, 1 Oct 2026 19:22:26 -0400
+Subject: [PATCH] Keep a removed quick-start SSH rule removed on disks created
+ with it
+
+---
+ .../usr/local/lib/try-omarchy/catch-up              |  8 ++++++--
+ guest/tests/test_overlay_scripts.py                 | 13 +++++++++++++
+ 2 files changed, 19 insertions(+), 2 deletions(-)
+
+diff --git a/guest/factory-overlay/usr/local/lib/try-omarchy/catch-up b/guest/factory-overlay/usr/local/lib/try-omarchy/catch-up
+index 25ecb2e..90f211f 100755
+--- a/guest/factory-overlay/usr/local/lib/try-omarchy/catch-up
++++ b/guest/factory-overlay/usr/local/lib/try-omarchy/catch-up
+@@ -28,7 +28,8 @@ sshd_config_dir=${TRY_OMARCHY_SSHD_CONFIG_DIR:-/etc/ssh/sshd_config.d}
+ 
+ revision=$(cut -d: -f1 "$revision_file" 2>/dev/null || echo 0)
+ marker="$state_dir/catch-up-revision"
+-[[ "$(cat "$marker" 2>/dev/null || true)" != "$revision" ]] || exit 0
++previous_revision=$(cat "$marker" 2>/dev/null || true)
++[[ "$previous_revision" != "$revision" ]] || exit 0
+ mkdir -p "$state_dir"
+ 
+ strip_profile_block() {
+@@ -165,9 +166,12 @@ load_pinch_rules() {
+ }
+ 
+ secure_quick_start_ssh() {
+-  # Disks created before this revision let SSH accept the public quick-start
++  # Disks created before revision 42 let SSH accept the public quick-start
+   # password. Add the key-only rule once; a later removal is the user's choice.
++  # A disk that already ran catch-up at 42 or later either got the rule then
++  # or created its quick-start account with it, and has no record to show it.
+   local record=$state_dir/quick-start-sshd
++  [[ ! $previous_revision =~ ^[0-9]+$ ]] || (( previous_revision < 42 )) || return 0
+   [[ "$(cat "$state_dir/provision-mode" 2>/dev/null || true)" == instant-trial ]] || return 0
+   [[ -f $quick_start_sshd && ! -e $record ]] || return 0
+   install -Dm644 "$quick_start_sshd" "$sshd_config_dir/90-try-omarchy-quick-start.conf"
+diff --git a/guest/tests/test_overlay_scripts.py b/guest/tests/test_overlay_scripts.py
+index 6cf9bdb..a82ddd5 100644
+--- a/guest/tests/test_overlay_scripts.py
++++ b/guest/tests/test_overlay_scripts.py
+@@ -601,6 +601,19 @@ class CatchUpTests(OverlayCase):
+         self.assertEqual(self.run_catch_up().returncode, 0)
+         self.assertFalse(dropin.exists())
+ 
++    def test_quick_start_disk_created_with_the_rule_keeps_its_removal(self) -> None:
++        # Revision 42 and later create the quick-start account with the rule,
++        # so no record exists when the user removes it.
++        dropin = self.root / "sshd_config.d/90-try-omarchy-quick-start.conf"
++        self.state.mkdir(parents=True)
++        (self.state / "provision-mode").write_text("instant-trial\n")
++        (self.state / "catch-up-revision").write_text("42\n")
++        self.version.write_text("45:7.2.8-arch1\n")
++        result = self.run_catch_up()
++        self.assertEqual(result.returncode, 0, result.stderr)
++        self.assertFalse(dropin.exists())
++        self.assertEqual((self.state / "catch-up-revision").read_text().strip(), "45")
++
+     def test_own_account_disk_keeps_its_ssh_settings(self) -> None:
+         self.assertEqual(self.run_catch_up().returncode, 0)
+         self.assertFalse((self.root / "sshd_config.d").exists())
+-- 
+2.56.0
+
