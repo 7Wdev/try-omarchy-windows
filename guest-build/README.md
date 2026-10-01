@@ -105,6 +105,12 @@ migration with a step that only prints a message. The rest of the release is
 installer and hardware files the guest does not use. The runtime package becomes
 `4.0.4-1`, so Update > Omarchy brings existing guests to it.
 
+Patch 0116 stops the launcher's initramfs from copying `vdso/` into
+`/usr/lib/modules/<version>` on the disk. `linux-headers` owns that directory,
+and an unowned copy made pacman refuse the next `linux-headers` upgrade, which
+failed the whole Update > Omarchy after a kernel bump. The archive already left
+out `build/` for the same reason.
+
 The second command needs Docker and currently takes about ten minutes. Release
 CI also boots the resulting factory image with `scripts/release/smoke-guest.py`
 before it uploads anything.
