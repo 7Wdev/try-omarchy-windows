@@ -118,6 +118,7 @@ type setupPromptResult struct {
 type progressUI struct {
 	status        atomic.Value // string
 	cancelMessage atomic.Value // string
+	cancelStatus  atomic.Value // string
 	account       atomic.Value // string
 	cur           atomic.Int64
 	total         atomic.Int64
@@ -151,6 +152,13 @@ func getUI() *progressUI {
 func uiDone() {
 	if uiSingleton != nil {
 		uiSingleton.finish()
+	}
+}
+
+// uiStatus updates the splash's status line if there is one.
+func uiStatus(format string, a ...any) {
+	if uiSingleton != nil {
+		uiSingleton.setStatus(format, a...)
 	}
 }
 
@@ -218,7 +226,11 @@ func (ui *progressUI) confirmCancel(hCancel uintptr) bool {
 		return true
 	}
 	requestSetupCancel()
-	ui.setStatus("Cancelling and cleaning up...")
+	status := "Cancelling and cleaning up..."
+	if custom, ok := ui.cancelStatus.Load().(string); ok {
+		status = custom
+	}
+	ui.setStatus("%s", status)
 	ui.setProgress(0, 0)
 	procEnableWindow.Call(hCancel, 0)
 	t, _ := syscall.UTF16PtrFromString("CANCELLING...")

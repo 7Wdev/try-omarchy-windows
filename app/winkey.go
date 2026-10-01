@@ -295,11 +295,15 @@ func runTitleEnforcer(dir string, fullscreen bool, fullscreenDisplay string) {
 			enumTitlePid = 0
 			qemuHwnd.Store(0)
 		}
+		wait := time.Second
+		if curtainPolling() {
+			wait = 250 * time.Millisecond
+		}
 		select {
 		case <-qemuWindowChanged:
 			// Let a burst of window events settle, then look once.
 			time.Sleep(30 * time.Millisecond)
-		case <-time.After(time.Second):
+		case <-time.After(wait):
 		}
 	}
 

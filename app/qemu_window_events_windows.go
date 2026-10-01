@@ -20,6 +20,8 @@ import (
 //   - Shown, moved or resized. These wake the title enforcer, so a new window
 //     is placed right away instead of up to a second later, and a resize QEMU
 //     makes while the guest boots or shuts down is undone before it lingers.
+//     While Omarchy first boots, a window is made invisible as it is created,
+//     before SDL shows it (boot_curtain_windows.go).
 //   - The start and end of a move or resize the user makes with the mouse or
 //     the window menu. Those, and maximizing, are the only placements the
 //     enforcer remembers.
@@ -35,6 +37,7 @@ var (
 const (
 	eventSystemMoveSizeStart  = 0x000A
 	eventSystemMoveSizeEnd    = 0x000B
+	eventObjectCreate         = 0x8000
 	eventObjectShow           = 0x8002
 	eventObjectLocationChange = 0x800B
 	eventObjectNameChange     = 0x800C
@@ -48,6 +51,8 @@ func qemuWindowEvent(_, event, hwnd, idObject, _, _, _ uintptr) uintptr {
 		return 0
 	}
 	switch event {
+	case eventObjectCreate, eventObjectShow:
+		concealForCurtain(hwnd)
 	case eventObjectNameChange:
 		restoreDisplayTitle(hwnd)
 	case eventSystemMoveSizeStart:
@@ -102,7 +107,7 @@ func installQemuWindowHooks() {
 	callback := syscall.NewCallback(qemuWindowEvent)
 	for _, events := range [][2]uintptr{
 		{eventSystemMoveSizeStart, eventSystemMoveSizeEnd},
-		{eventObjectShow, eventObjectShow},
+		{eventObjectCreate, eventObjectShow},
 		{eventObjectLocationChange, eventObjectNameChange},
 	} {
 		hook, _, _ := procSetWinEventHook.Call(events[0], events[1], 0, callback, 0, 0,
