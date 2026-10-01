@@ -15,11 +15,12 @@ const maxQMPMessage = 2 << 20
 // Feature commands use their own connection, separate from the supervisor's
 // event stream. Only one command is outstanding on this connection at a time.
 type qmpClient struct {
-	conn   net.Conn
-	lines  *bufio.Scanner
-	gate   chan struct{}
-	nextID uint64
-	broken bool
+	conn    net.Conn
+	lines   *bufio.Scanner
+	gate    chan struct{}
+	nextID  uint64
+	broken  bool
+	onEvent func(string)
 }
 
 type qmpCommandError struct {
@@ -168,6 +169,9 @@ func (c *qmpClient) Call(ctx context.Context, command string, arguments any, res
 			return readErr
 		}
 		if message.Event != "" {
+			if c.onEvent != nil {
+				c.onEvent(message.Event)
+			}
 			continue
 		}
 		var responseID string

@@ -67,8 +67,9 @@ listed above.
 True LAN bridging (#166) and embedded Windows app windows (#160) remain separate
 work. The guest watchdog change in `v0.6.1` addresses service restarts during a
 host suspension, but does not establish that #216's XWayland authorization
-failure is resolved. Reporter confirmation and a physical Modern Standby S0
-check remain outstanding.
+failure is resolved. [Windows sleep handling](WINDOWS-SLEEP.md) describes how
+the launcher pauses Omarchy before Windows sleeps, including Modern Standby.
+Reporter confirmation and a physical Modern Standby S0 check remain outstanding.
 
 Merged PRs [#235](https://github.com/omacom/try-omarchy-windows/pull/235),
 [#236](https://github.com/omacom/try-omarchy-windows/pull/236) and

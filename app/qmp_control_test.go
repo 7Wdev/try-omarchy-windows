@@ -53,7 +53,7 @@ func TestQemuControlArgumentsUsePrivateSockets(t *testing.T) {
 			t.Fatalf("guest-accessible control interface: %s", value)
 		}
 	}
-	if count != 3 {
-		t.Fatalf("expected three private control channels, got %d", count)
+	if count != len(platformQMPControlRoles()) {
+		t.Fatalf("expected %d private control channels, got %d", len(platformQMPControlRoles()), count)
 	}
 }

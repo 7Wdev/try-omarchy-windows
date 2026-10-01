@@ -23,3 +23,7 @@ func isQMPControlSocket(path string) bool {
 }
 
 func qmpConnectionRefused(err error) bool { return errors.Is(err, syscall.ECONNREFUSED) }
+
+func platformQMPControlRoles() []int {
+	return []int{qmpToolsPort, qmpFwdPort, qmpSupPort}
+}

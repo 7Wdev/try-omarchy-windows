@@ -188,6 +188,8 @@ func startTray(cfg *config) func() {
 func runTray(cfg trayLaunchConfig, ready chan<- uintptr, done chan<- struct{}) {
 	runtime.LockOSThread()
 	defer close(done)
+	power := newGuestPowerState()
+	defer power.close()
 
 	hInst, _, _ := procGetModuleHandleW.Call(0)
 	className, _ := syscall.UTF16PtrFromString("TryOmarchyTray")
@@ -195,6 +197,7 @@ func runTray(cfg trayLaunchConfig, ready chan<- uintptr, done chan<- struct{}) {
 	taskbarCreated, _, _ := procRegisterWindowMessage.Call(uintptr(unsafe.Pointer(taskbarName)))
 
 	var hwnd uintptr
+	unregisterPower := func() {}
 	var nid notifyIconData
 	var aboutOpen atomic.Bool
 	var settingsOpen, diagnosticsOpen, devicesOpen atomic.Bool
@@ -390,22 +393,13 @@ func runTray(cfg trayLaunchConfig, ready chan<- uintptr, done chan<- struct{}) {
 			}
 			return 0
 		case wmPowerbroadcast:
-			if wParam == pbtApmSuspend {
-				pauseGuest("host sleep")
-			}
-			if wParam == pbtApmResumeAutomatic || wParam == pbtApmResumeSuspend {
-				resumeGuest()
-				logf("windows resumed from sleep")
-				select {
-				case hostResumed <- struct{}{}:
-				default:
-				}
-			}
+			power.handle(wParam)
 			return 1
 		case trayStopMessage:
 			procDestroyWindow.Call(window)
 			return 0
 		case wmDestroy:
+			unregisterPower()
 			trayWindow.CompareAndSwap(window, 0)
 			procShellNotifyIconW.Call(nimDelete, uintptr(unsafe.Pointer(&nid)))
 			procPostQuitMessage.Call(0)
@@ -437,6 +431,11 @@ func runTray(cfg trayLaunchConfig, ready chan<- uintptr, done chan<- struct{}) {
 		ready <- 0
 		return
 	}
+	unregisterPower, err = registerPowerNotifications(hwnd)
+	if err != nil {
+		logf("power: %v; ordinary sleep broadcasts remain available", err)
+	}
+	defer unregisterPower()
 	nid.size = uint32(unsafe.Sizeof(nid))
 	nid.id = trayIconID
 	nid.flags = nifMessage | nifIcon | nifTip | nifShowTip
