@@ -34,7 +34,7 @@ from .plan import TrialDefaults, scan
 from .selection import SelectionError, option_rows, resolve_selection
 from .trial import BACKGROUND_LINK, THEME_NAME, Trial, TrialError
 from .system import running_programs
-from .ui import UI, Cancelled, human_size, plain_label
+from .ui import UI, Cancelled, by_count, human_size, plain_label
 
 SPOOL_IN_MEMORY = 16 * 1024 * 1024
 
@@ -305,7 +305,8 @@ def run(args, ui):
             partial.unlink()
         raise
     ui.say()
-    ui.say(f"Exported {included} files ({human_size(written)} before compression) to {final}")
+    ui.say(by_count(included, "Exported 1 file", "Exported {n} files")
+           + f" ({human_size(written)} before compression) to {final}")
     ui.say("On the new install, extract it and run import.sh inside:")
     ui.say(f"  tar -xzf {final.name} && {name}/import.sh")
     return 0

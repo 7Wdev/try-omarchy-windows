@@ -2,7 +2,7 @@
 
 import json
 
-from .ui import human_size
+from .ui import by_count, human_size
 
 DESCRIPTIONS = {
     "create": "copy",
@@ -21,29 +21,43 @@ def plan_summary(plan):
     replaced = counts.get("replace", 0)
     merged = counts.get("merge", 0)
     if copies:
-        lines.append(f"{copies} new files and links will be copied")
+        lines.append(by_count(copies, "1 new file or link will be copied",
+                              "{n} new files and links will be copied"))
     if replaced:
-        lines.append(f"{replaced} of Omarchy's defaults will be replaced with your versions")
+        lines.append(by_count(replaced, "1 of Omarchy's defaults will be replaced with your version",
+                              "{n} of Omarchy's defaults will be replaced with your versions"))
     if merged:
-        lines.append(f"{merged} files will combine your changes with this computer's")
+        lines.append(by_count(merged, "1 file will combine your changes with this computer's",
+                              "{n} files will combine your changes with this computer's"))
     conflicts = plan.conflicts()
     if conflicts:
         if plan.resolution == "trial":
-            lines.append(f"{len(conflicts)} files you already changed on this computer will be "
-                         "replaced by the trial's (this computer's copies go to the backup)")
+            lines.append(by_count(
+                len(conflicts),
+                "1 file you already changed on this computer will be replaced by the trial's "
+                "(this computer's copy goes to the backup)",
+                "{n} files you already changed on this computer will be replaced by the trial's "
+                "(this computer's copies go to the backup)"))
         else:
-            lines.append(f"{len(conflicts)} files you already changed on this computer are kept; "
-                         "the trial's copies are saved next to them")
+            lines.append(by_count(
+                len(conflicts),
+                "1 file you already changed on this computer is kept; the trial's copy is saved "
+                "next to it",
+                "{n} files you already changed on this computer are kept; the trial's copies are "
+                "saved next to them"))
     already = counts.get("same", 0) + counts.get("imported", 0)
     if already:
-        lines.append(f"{already} are already the same here")
+        lines.append(by_count(already, "1 is already the same here", "{n} are already the same here"))
     unchanged = counts.get("default", 0)
     if unchanged:
-        lines.append(f"{unchanged} files are still Omarchy's defaults, so this computer's newer "
-                     "ones stay")
+        lines.append(by_count(
+            unchanged,
+            "1 file is still Omarchy's default, so this computer's newer one stays",
+            "{n} files are still Omarchy's defaults, so this computer's newer ones stay"))
     left = counts.get("skip", 0) + len(plan.skipped)
     if left:
-        lines.append(f"{left} Try-only, cache or unsafe items stay behind")
+        lines.append(by_count(left, "1 Try-only, cache or unsafe item stays behind",
+                              "{n} Try-only, cache or unsafe items stay behind"))
     if not (copies or replaced or merged or conflicts or counts.get("mkdir")
             or counts.get("replace-profile")):
         lines.append("Nothing new to bring over")
@@ -95,15 +109,16 @@ def result_summary(report, steps):
     skipped = [result for result in report.results if result.status == "skipped"]
     failed = report.failures()
     files = sum(1 for result in done if result.action not in ("mkdir", "replace-profile"))
-    lines.append(f"Imported {files} {'file' if files == 1 else 'files'} "
-                 f"({human_size(report.written_bytes)}).")
+    lines.append(by_count(files, "Imported 1 file", "Imported {n} files")
+                 + f" ({human_size(report.written_bytes)}).")
     if any(result.detail.startswith("backup in") or result.action == "replace-profile"
            for result in done):
         lines.append(f"Anything replaced was backed up to {report.backup_directory}")
     siblings = [result for result in done if result.detail.startswith("kept this computer's")]
     if siblings:
-        lines.append(f"{len(siblings)} files from the trial were saved next to your newer "
-                     "versions (look for 'from-try-omarchy' or '(from Try Omarchy)').")
+        lines.append(by_count(len(siblings), "1 file from the trial was saved next to your newer "
+                              "version", "{n} files from the trial were saved next to your newer "
+                              "versions") + " (look for 'from-try-omarchy' or '(from Try Omarchy)').")
     for result in skipped[:20]:
         lines.append(f"Skipped {result.relative}: {result.detail}")
     if len(skipped) > 20:
