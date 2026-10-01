@@ -151,6 +151,33 @@ class ApplyTests(ImportCase):
         self.assertIn(b"trial-secret",
                       self.read(".local/share/keyrings/Default_keyring.keyring"))
 
+    def test_nothing_comes_over_writable_for_everyone(self):
+        fixtures.write(self.trial_home / ".local/bin/shared-tool", b"#!/bin/sh\n",
+                       fixtures.TRIAL_EDIT, 0o777)
+        fixtures.write(self.trial_home / ".bash_profile", b"# mine\n", fixtures.TRIAL_EDIT, 0o666)
+        fixtures.write(self.trial_home / ".config/open/x", b"x\n", fixtures.TRIAL_EDIT)
+        os.chmod(self.trial_home / ".config/open", 0o777)
+        previous = os.umask(0o022)
+        try:
+            self.run_import(groups=("settings", "apps/.config/open"))
+        finally:
+            os.umask(previous)
+        self.assertEqual((self.home / ".local/bin/shared-tool").stat().st_mode & 0o777, 0o755)
+        self.assertEqual((self.home / ".bash_profile").stat().st_mode & 0o777, 0o644)
+        self.assertEqual((self.home / ".config/open").stat().st_mode & 0o777, 0o755)
+
+    def test_the_importers_own_folders_are_never_imported(self):
+        fixtures.write(self.trial_home / ".local/share/try-omarchy-import/backups/x/.bashrc",
+                       b"planted\n", fixtures.TRIAL_EDIT)
+        # The fixture links .local/share/omarchy like a real trial; Omarchy's
+        # own commands are never brought over either way.
+        plan = self.plan(groups=("settings",))
+        skipped = dict(plan.skipped)
+        self.assertIn(".local/share/try-omarchy-import", skipped)
+        self.assertIn(".local/share/omarchy", skipped)
+        self.assertFalse(any(group.startswith("apps/.local/share/try-omarchy")
+                             for group in self.inventory.groups))
+
     def test_rerun_changes_nothing(self):
         self.run_import(("settings", "files/Documents", "keys"))
         plan = self.plan(("settings", "files/Documents", "keys"))

@@ -266,6 +266,8 @@ def home_skel():
 def skel_config_names(*skels):
     names = set()
     for skel in skels:
+        if skel is None:
+            continue
         try:
             names.update(entry.name for entry in os.scandir(Path(skel) / ".config"))
         except OSError:
@@ -314,7 +316,8 @@ def run(args, ui, runner, stack, state):
         except SelectionError as error:
             raise Stop(str(error), 2) from None
     else:
-        picks = ui.choose_many("What do you want to bring over?",
+        picks = ui.choose_many("What do you want to bring over?\n"
+                               "Everything checked comes along. Press Enter to continue.",
                                [plain_label(row[1]) for row in rows], [row[2] for row in rows])
         chosen = {row[0] for row, pick in zip(rows, picks) if pick}
     group_ids = [row[0] for row in rows if row[0] in chosen and row[0] in inventory.groups]
@@ -370,9 +373,16 @@ def run(args, ui, runner, stack, state):
     applier = Applier(destination, progress=lambda done, total, action: ui.progress(
         done, total, action.relative))
     result = applier.apply(plan)
+    trial_background = trial.background() if "theme" in chosen else None
+    # Nothing more is read from the trial. Unmounting now still uses the
+    # password sudo cached at the start.
+    session.finish()
     steps = []
     if "packages" in chosen and not package_plan.empty():
         steps.extend(_install_packages(ui, runner, package_plan))
+    # What follows runs settings the import just brought (mise's config,
+    # Hyprland's, Omarchy's theme hooks), so sudo must ask again from here.
+    runner.forget_sudo()
     if _imported(result, ".config/mise/"):
         steps.append(packages.mise_install(runner, home))
     if _imported(result, ".config/hypr/"):
@@ -380,7 +390,8 @@ def run(args, ui, runner, stack, state):
     if "theme" in chosen:
         if theme != _current_theme(home):
             steps.append(packages.set_theme(runner, theme))
-        background = packages.background_path(trial.background(), account.home, home)
+        # After the theme switch, which puts the theme's backgrounds in place.
+        background = packages.background_path(trial_background, account.home, home)
         steps.append(packages.set_background(runner, background, home))
 
     summary = report.result_summary(result, steps)
@@ -429,6 +440,12 @@ def _notes(plan, account):
     notes = []
     if plan is None:
         return notes
+    if plan.invalid == 1:
+        notes.append("Left out 1 entry in the trial's package list that is not a valid package "
+                     "name.")
+    elif plan.invalid:
+        notes.append(f"Left out {plan.invalid} entries in the trial's package list that are not "
+                     "valid package names.")
     if plan.services:
         units = " ".join(plan.services)
         notes.append(f"These services were turned on in the trial: {units}. "

@@ -6,24 +6,41 @@ import shutil
 import subprocess
 import sys
 
+from .system import find_tool, system_environment
+
 
 class Cancelled(Exception):
     pass
 
 
+# Control characters, and the ones that reorder text, would let a file name
+# from the trial move the cursor, retitle the terminal or disguise itself.
+_CONTROLS = [*range(0x00, 0x20), *range(0x7f, 0xa0), 0x200e, 0x200f, *range(0x202a, 0x202f),
+             *range(0x2066, 0x206a)]
+_HIDE = {code: "\ufffd" for code in _CONTROLS if chr(code) not in "\n\t"}
+_HIDE_LINES = {code: "\ufffd" for code in _CONTROLS}
+
+
 def printable(text):
     """File names from disk may hold bytes that are not UTF-8 (surrogate
-    escapes); show them as replacement characters instead of crashing."""
-    return str(text).encode("utf-8", "surrogateescape").decode("utf-8", "replace")
+    escapes) or control characters; show them as replacement characters
+    instead of crashing or passing them to the terminal."""
+    return str(text).encode("utf-8", "surrogateescape").decode("utf-8", "replace").translate(_HIDE)
+
+
+def one_line(text):
+    """printable, and without line breaks or tabs either."""
+    return printable(text).translate(_HIDE_LINES)
 
 
 class UI:
     def __init__(self, interactive=True, use_gum=None, stream=None):
         self.stream = stream or sys.stdout
         self.interactive = interactive and sys.stdin.isatty() and self.stream.isatty()
+        self.gum_path = find_tool("gum")
         if use_gum is None:
-            use_gum = self.interactive and shutil.which("gum") is not None
-        self.gum = use_gum
+            use_gum = self.interactive
+        self.gum = use_gum and self.gum_path is not None
 
     # Output ---------------------------------------------------------------
 
@@ -32,7 +49,7 @@ class UI:
 
     def heading(self, text):
         if self.gum:
-            subprocess.run(["gum", "style", "--bold", "--foreground", "212", text])
+            self._gum(["style", "--bold", "--foreground", "212", text])
         else:
             self.say(text)
             self.say("=" * len(text))
@@ -40,7 +57,7 @@ class UI:
     def warn(self, text):
         text = printable(text)
         if self.gum:
-            subprocess.run(["gum", "style", "--foreground", "214", text])
+            self._gum(["style", "--foreground", "214", text])
         else:
             self.say(f"Warning: {text}")
 
@@ -61,10 +78,14 @@ class UI:
 
     def pager(self, text):
         text = printable(text)
-        if self.interactive and shutil.which("less"):
-            subprocess.run(["less", "-R", "-F", "-X"], input=text, text=True)
+        less = find_tool("less")
+        if self.interactive and less:
+            subprocess.run([less, "-F", "-X"], input=text, text=True, env=system_environment())
         else:
             self.say(text)
+
+    def _gum(self, arguments, **options):
+        return subprocess.run([self.gum_path, *arguments], env=system_environment(), **options)
 
     # Questions ------------------------------------------------------------
 
@@ -72,10 +93,10 @@ class UI:
         if not self.interactive:
             return default
         if self.gum:
-            argv = ["gum", "confirm", question]
+            argv = ["confirm", one_line(question)]
             if not default:
                 argv.append("--default=false")
-            result = subprocess.run(argv)
+            result = self._gum(argv)
             if result.returncode == 130:
                 raise Cancelled()
             return result.returncode == 0
@@ -87,10 +108,11 @@ class UI:
     def choose_one(self, question, options, default=0):
         if not self.interactive or len(options) == 1:
             return default
+        options = distinct_labels(options)
         if self.gum:
-            result = subprocess.run(["gum", "choose", "--header", question,
-                                     "--selected", options[default], "--", *options],
-                                    stdout=subprocess.PIPE, text=True)
+            result = self._gum(["choose", "--header", printable(question),
+                                "--selected", options[default], "--", *options],
+                               stdout=subprocess.PIPE, text=True)
             if result.returncode != 0:
                 raise Cancelled()
             chosen = result.stdout.rstrip("\n")
@@ -109,14 +131,14 @@ class UI:
         """Return a list of booleans, one per option."""
         if not self.interactive:
             return list(selected)
+        options = distinct_labels(options)
         if self.gum:
-            argv = ["gum", "choose", "--no-limit", "--header", question,
-                    "--height", str(min(len(options) + 2, 24))]
+            argv = ["choose", "--no-limit", "--header", printable(question),
+                    "--height", str(min(len(options) + 2 + question.count("\n"), 24))]
             picked = [option for option, on in zip(options, selected) if on]
             if picked:
                 argv += ["--selected", ",".join(picked)]
-            options = [printable(option) for option in options]
-            result = subprocess.run([*argv, "--", *options], stdout=subprocess.PIPE, text=True)
+            result = self._gum([*argv, "--", *options], stdout=subprocess.PIPE, text=True)
             if result.returncode != 0:
                 raise Cancelled()
             chosen = set(result.stdout.splitlines())
@@ -146,6 +168,16 @@ class UI:
 def plain_label(text):
     """gum's --selected splits on commas, so labels must not contain any."""
     return text.replace(",", "")
+
+
+def distinct_labels(options):
+    """Options as single lines without commas, numbered where two would read
+    the same, since gum answers with the text of what was picked."""
+    labels = [plain_label(one_line(option)) for option in options]
+    while len(set(labels)) != len(labels):
+        labels = [label if labels.count(label) == 1 else f"{label} ({index + 1})"
+                  for index, label in enumerate(labels)]
+    return labels
 
 
 def human_size(size):

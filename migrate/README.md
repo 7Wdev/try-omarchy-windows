@@ -7,7 +7,9 @@ instructions are in [docs/MIGRATION.md](../docs/MIGRATION.md).
 It only uses the Python standard library (Omarchy ships Python for uwsm, ufw
 and Flatpak), plus tools every Omarchy install has: util-linux (`lsblk`,
 `losetup`, `mount`), `dmsetup`, git (for three-way merges), gum (prompts) and
-sudo.
+sudo. Commands are only taken from the system folders (`/usr/bin`,
+`/usr/share/omarchy/bin` and the like) and run with a PATH of just those, so
+a script the import puts in `~/.local/bin` never runs in a tool's place.
 
 ## How it works
 
@@ -59,9 +61,19 @@ sudo.
    recognise its own work: it resumes after an interruption, never brings
    back a file the user deleted, never overwrites a later edit, and picks up
    files the user changed in the trial since the last import.
-6. **Finish.** Reinstall added packages (pacman, then yay for the AUR),
-   Flatpak apps and mise tools, switch to the trial's theme and background,
-   and report enabled services and group memberships the user may want.
+6. **Finish.** Unmount the trial, then reinstall added packages (pacman, then
+   yay for the AUR, without the home folder's yay, makepkg and git settings)
+   and Flatpak apps. Package and app names are only passed on when they are
+   valid names, after `--`. Then make sudo forget its cached password, since
+   what follows runs the imported settings: install mise tools, check the
+   Hyprland config, switch to the trial's theme and background. Last, report
+   enabled services and group memberships the user may want.
+
+Paths in the trial are looked up as the trial itself sees them: links are
+followed inside its root and never out of it (`Trial.path`), and its
+`/etc/skel` is read without following links at all (`safefs.Source`). The
+import is meant for the user's own trial. Settings it restores can run
+programs, so it does not make an untrusted trial safe.
 
 ## Code
 
@@ -77,6 +89,8 @@ sudo.
 | `safefs.py` | No-follow destination access |
 | `apply.py` | Backups, journal, applying a plan |
 | `packages.py` | Packages, Flatpak, mise, theme and background |
+| `names.py` | Which package, app, service, theme and account names are passed on |
+| `system.py` | Commands from the system folders only, sudo |
 | `ui.py`, `report.py` | Prompts and summaries |
 
 ## Test and build

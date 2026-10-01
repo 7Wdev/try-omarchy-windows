@@ -165,6 +165,7 @@ LOCAL_SHARE_SKIP = {
     "webkitgtk": "cache",
     "sddm": "login screen state",
     "try-omarchy": "Try Omarchy state",
+    "try-omarchy-import": "the importer's own backups",
 }
 
 LOCAL_STATE_OMARCHY_SETTINGS = {"toggles", "theme-backgrounds"}

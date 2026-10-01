@@ -117,6 +117,23 @@ imported, never brings back something you deleted, never overwrites
 something you changed after importing, and picks up anything you changed in
 the trial since. If an import is interrupted, run it again to finish it.
 
+### Import a trial you trust
+
+The import brings your settings over as they are, and settings can run
+programs: shell startup files, autostart entries, user services, mise tools,
+the Hyprland config and theme hooks all do. AUR packages are built from their
+own build scripts. Import a trial you set up yourself, not one someone else
+gave you.
+
+While it runs, the importer only uses the system's own commands, never a
+script with the same name that the import put in `~/.local/bin`. AUR packages
+are built without the yay, makepkg and git settings in your home folder. Before
+it installs your mise tools, checks the Hyprland config or switches the theme,
+sudo forgets your password, so if anything after that needs administrator
+rights, it asks again. Package, Flatpak, theme and service names from the
+trial are only used when they are valid names, and files the trial left
+writable for everyone come over with your usual permissions instead.
+
 ### Troubleshooting
 
 - **"Windows was not fully shut down"**: Fast Startup or hibernation is on.

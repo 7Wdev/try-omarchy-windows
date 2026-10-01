@@ -281,4 +281,4 @@ class Applier:
     def _set_directory_mode(self, relative, mode):
         with self.destination.directory(relative) as fd:
             if fd is not None:
-                os.fchmod(fd, (mode & 0o777) | 0o700)
+                os.fchmod(fd, self.destination.mode(mode) | 0o700)
