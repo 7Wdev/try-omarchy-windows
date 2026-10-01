@@ -1192,7 +1192,10 @@ var (
 func runLifecycleListener() {
 	l, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", lifecyclePort))
 	if err != nil {
-		fatal("Try Omarchy looks like it's already running (port %d is in use).", lifecyclePort)
+		if activateRunningInstance() {
+			os.Exit(0)
+		}
+		fatal("Try Omarchy is already running, or another program is using its port %d. Close it and try again.", lifecyclePort)
 	}
 	go func() {
 		for {

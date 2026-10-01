@@ -124,3 +124,21 @@ func TestDisplaySettingsValidateAndRestore(t *testing.T) {
 		t.Fatal("backup lost the second display's layout")
 	}
 }
+
+func TestRunningInstanceWindowsAreRecognised(t *testing.T) {
+	for _, c := range []struct {
+		class, title string
+		want         bool
+	}{
+		{"SDL_app", appTitle, true},
+		{"SDL_app", appTitle + " display 2", true},
+		{"SDL_app", "QEMU (" + appTitle + "-0) - Press Ctrl-Alt-G to exit grab", true},
+		{"TryOmarchySetup", appTitle, true},
+		{"SDL_app", "Some other SDL game", false},
+		{"Chrome_WidgetWin_1", appTitle + " - Chromium", false},
+	} {
+		if got := isRunningInstanceWindow(c.class, c.title); got != c.want {
+			t.Errorf("%q %q: %v", c.class, c.title, got)
+		}
+	}
+}
