@@ -93,11 +93,11 @@ below and use reports from this normal 0.x release to prioritize further work.
   pass from the earlier Intel/NVIDIA preview-runtime result. On that earlier
   configuration, OpenGL worked but Vulkan initialization failed. The Intel/
   NVIDIA PC is currently unavailable for Windows testing.
-- The current source uses the official Omarchy logo in its icon, names the
-  Windows app Try Omarchy, and identifies the publisher as Omacom. The
-  [brand source](https://omarchy.org/brand/) reserves Omarchy trademark rights;
-  brand presentation and the relationship stated on the site need a deliberate
-  review before making a 1.0 claim.
+- The app uses the official Omarchy logo in its icon, is named Try Omarchy and
+  identifies the publisher as Omacom. The repository lives in the Omacom
+  organization and omarchy.org links to it from its homepage, so the logo is
+  used by an Omacom project under the [brand terms](https://omarchy.org/brand/).
+  Releases stay Authenticode-signed by Brandon South.
 
 ## Brand and product experience pass
 
