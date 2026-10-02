@@ -198,14 +198,14 @@ func main() {
 	}
 	if *uninstall {
 		if *recoveryAction != "" && *recoveryAction != "uninstall" {
-			fatal(uiText("fatal.cli.recovery_action_short"))
+			fatal(uiTextWith("fatal.cli.recovery_action", map[string]string{"actions": "backup, restore, reset, uninstall"}))
 		}
 		*recoveryAction = "uninstall"
 	}
 	maintenance := *backupPath != "" || *restorePath != "" || *recoveryAction != ""
 	installWalkthrough := *recoveryAction == "install-omarchy"
 	if *recoveryAction != "" && (*recoveryAction != "backup" && *recoveryAction != "restore" && *recoveryAction != "reset" && *recoveryAction != "uninstall" && *recoveryAction != "move" && *recoveryAction != "move-cleanup" && *recoveryAction != "snapshots" && *recoveryAction != "portable-create" && *recoveryAction != "install-omarchy" || *backupPath != "" || *restorePath != "") {
-		fatal(uiText("fatal.cli.recovery_action"))
+		fatal(uiTextWith("fatal.cli.recovery_action", map[string]string{"actions": "backup, restore, snapshots, portable-create, reset, move, uninstall, install-omarchy"}))
 	}
 	if maintenance && (*backupPath != "" && *restorePath != "" || cfg.portable && !portableRecoveryAllowed(*recoveryAction, *backupPath, *restorePath) || cfg.fresh || *openSettings || *diagnostics || *enableWhp || *disableFastStartupFlag || *applyLauncherUpdateFlag || *applyLauncherRollbackFlag) {
 		fatal(uiText("fatal.cli.one_action"))
@@ -227,7 +227,7 @@ func main() {
 		return
 	}
 	if explicitFlags["recovery"] && *recoveryAction == "" {
-		fatal(uiText("fatal.cli.recovery_action_maintenance"))
+		fatal(uiTextWith("fatal.cli.recovery_action_maintenance", map[string]string{"actions": "backup, restore, reset"}))
 	}
 	if explicitFlags["backup"] && strings.TrimSpace(*backupPath) == "" || explicitFlags["restore"] && strings.TrimSpace(*restorePath) == "" {
 		fatal(uiText("fatal.cli.backup_filename"))
