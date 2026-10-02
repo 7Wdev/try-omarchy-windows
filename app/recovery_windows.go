@@ -13,7 +13,7 @@ import (
 
 func chooseBackupDestination() (string, bool, error) {
 	for {
-		name, ok, err := chooseRecoveryPath(0, "Save a new Omarchy backup", "Omarchy-"+time.Now().Format("2006-01-02-150405")+".zip", true, false)
+		name, ok, err := chooseRecoveryPath(0, uiText("recovery.backup.choose"), "Omarchy-"+time.Now().Format("2006-01-02-150405")+".zip", true, false)
 		if err != nil || !ok {
 			return "", ok, err
 		}
@@ -22,13 +22,13 @@ func chooseBackupDestination() (string, bool, error) {
 		} else if err != nil {
 			return "", false, err
 		}
-		infoBox("A file already exists there. Choose a new filename to keep both backups.")
+		infoBox(uiText("recovery.backup.exists"))
 	}
 }
 
 func beginRecoveryProgress(status string) {
 	ui := getUI()
-	ui.cancelMessage.Store("Cancel this operation?\n\nThe original installation and completed backups will be kept. Temporary files will be removed.")
+	ui.cancelMessage.Store(uiText("recovery.cancel"))
 	ui.setProgress(0, 0)
 	ui.setStatus("%s", status)
 }
@@ -37,7 +37,7 @@ func runRecoveryUI(dir, action string) error {
 	configureSetupCancellation(false)
 	switch action {
 	case "portable-create":
-		parent, ok, err := chooseRecoveryPath(0, "Choose where to create the portable copy", "", false, true)
+		parent, ok, err := chooseRecoveryPath(0, uiText("recovery.portable.choose"), "", false, true)
 		if err != nil || !ok {
 			return err
 		}
@@ -46,13 +46,13 @@ func runRecoveryUI(dir, action string) error {
 			return err
 		}
 		destination := filepath.Join(parent, "OmarchyPortable-"+time.Now().Format("20060102-150405"))
-		beginRecoveryProgress("Creating your portable copy...")
-		err = createPortableCopy(dir, destination, self, recoveryProgress("Copying"))
+		beginRecoveryProgress(uiText("recovery.portable.status"))
+		err = createPortableCopy(dir, destination, self, recoveryProgress(recoveryCopying))
 		uiDone()
 		if err != nil {
 			return err
 		}
-		infoBox("Portable copy created at:\n\n" + destination + "\n\nOpen Start Omarchy.cmd in that folder. Your original installation was kept.")
+		infoBox(uiTextWith("recovery.portable.done", map[string]string{"path": destination}))
 	case "snapshots":
 		return runCheckpointUI(dir)
 	case "move", "move-cleanup":
@@ -62,41 +62,41 @@ func runRecoveryUI(dir, action string) error {
 		if err != nil || !ok {
 			return err
 		}
-		beginRecoveryProgress("Creating your VM backup...")
+		beginRecoveryProgress(uiText("recovery.backup.status"))
 		defer uiDone()
-		if err = writeVMBackupProgress(dir, name, recoveryProgress("Backing up")); err != nil {
+		if err = writeVMBackupProgress(dir, name, recoveryProgress(recoveryBackingUp)); err != nil {
 			return err
 		}
 		uiDone()
-		infoBox("Backup saved to:\n\n" + name + "\n\nIt contains personal guest files and is not encrypted. Keep it private.")
+		infoBox(uiTextWith("recovery.backup.done", map[string]string{"path": name}))
 	case "restore":
-		source, ok, err := chooseRecoveryPath(0, "Choose a trusted Omarchy backup", "", false, false)
+		source, ok, err := chooseRecoveryPath(0, uiText("recovery.restore.choose_backup"), "", false, false)
 		if err != nil || !ok {
 			return err
 		}
-		parent, ok, err := chooseRecoveryPath(0, "Choose where to create the restored copy", "", false, true)
+		parent, ok, err := chooseRecoveryPath(0, uiText("recovery.restore.choose_folder"), "", false, true)
 		if err != nil || !ok {
 			return err
 		}
 		destination := filepath.Join(parent, "OmarchyRestored-"+time.Now().Format("2006-01-02-150405"))
-		if msgBox("Restore this backup into a new folder?\n\n"+destination+"\n\nYour current installation and shortcuts will stay unchanged. Only restore backups you trust.", mbYesNo|mbIconQuestion|mbDefbutton2) != idYes {
+		if msgBox(uiTextWith("recovery.restore.confirm", map[string]string{"path": destination}), mbYesNo|mbIconQuestion|mbDefbutton2) != idYes {
 			return nil
 		}
-		beginRecoveryProgress("Verifying and restoring your VM...")
+		beginRecoveryProgress(uiText("recovery.restore.status"))
 		defer uiDone()
-		if err = restoreVMBackupProgress(source, destination, recoveryProgress("Restoring")); err != nil {
+		if err = restoreVMBackupProgress(source, destination, recoveryProgress(recoveryRestoring)); err != nil {
 			return err
 		}
 		uiDone()
 		if err := createRestoredLaunchers(destination); err != nil {
-			infoBox("Your data was restored to:\n\n" + destination + "\n\nThe startup shortcuts could not be created: " + err.Error() + "\n\nYou can start this copy with -dir pointing to its folder.")
+			infoBox(uiTextWith("recovery.restore.done_no_shortcuts", map[string]string{"path": destination, "error": err.Error()}))
 		} else {
 			// The restored copy has its shortcuts; the first launch must not
 			// offer them again.
 			if err := recordShortcutOffer(destination); err != nil {
 				logf("could not record the shortcut offer for %s: %v", destination, err)
 			}
-			infoBox("Restored to:\n\n" + destination + "\n\nOpen Start Omarchy in that folder to use this copy, or Settings to review it first. Sign-in launch is off for the restored copy; enable it in Settings if wanted. Your original installation and shortcuts are unchanged.")
+			infoBox(uiTextWith("recovery.restore.done", map[string]string{"path": destination}))
 		}
 	case "reset":
 		return resetFromSettings(dir)
@@ -112,7 +112,7 @@ func runRecoveryUI(dir, action string) error {
 
 // Backup failure or cancellation must never fall through into reset.
 func confirmResetBackup(dir string) (bool, error) {
-	choice := msgBox("Start over with a clean Omarchy guest?\n\nThis resets the guest account, installed apps, and guest files. Windows shared folders and launcher settings are kept. The old disk will be retained for recovery.\n\nCreate a full backup first?\nYes: choose a backup. No: skip the full backup. Cancel: do nothing.", 3|mbIconQuestion|0x200)
+	choice := msgBox(uiText("recovery.reset.confirm_backup"), 3|mbIconQuestion|0x200)
 	if choice != idYes && choice != idNo {
 		return false, nil
 	}
@@ -121,12 +121,12 @@ func confirmResetBackup(dir string) (bool, error) {
 		if err != nil || !ok {
 			return false, err
 		}
-		beginRecoveryProgress("Backing up before reset...")
-		if err = writeVMBackupProgress(dir, name, recoveryProgress("Backing up")); err != nil {
+		beginRecoveryProgress(uiText("recovery.reset.backup_status"))
+		if err = writeVMBackupProgress(dir, name, recoveryProgress(recoveryBackingUp)); err != nil {
 			return false, err
 		}
 	}
-	if msgBox("Reset the active Omarchy guest now?\n\nThe old disk will remain in the VM folder until you remove it. The new guest needs first-run setup.", mbYesNo|mbIconQuestion|mbDefbutton2) != idYes {
+	if msgBox(uiText("recovery.reset.confirm"), mbYesNo|mbIconQuestion|mbDefbutton2) != idYes {
 		return false, nil
 	}
 	return !setupCancelled(), checkSetupCancelled()
@@ -153,20 +153,20 @@ func resetFromSettings(dir string) error {
 		return err
 	}
 	cfg := &config{dir: dir, guestDir: filepath.Join(dir, "guest"), vmDir: filepath.Join(dir, "vm"), disk: filepath.Join(dir, "vm", "disk.raw"), diskFormat: "raw", diskGiB: storage.DiskGiB}
-	beginRecoveryProgress("Preparing a clean Omarchy guest...")
+	beginRecoveryProgress(uiText("recovery.reset.status"))
 	old, err := resetStandardDisk(cfg, spec.Runtime.Storage.ExpandedSizeMiB)
 	if err != nil {
 		return err
 	}
 	uiDone()
-	infoBox("Omarchy is ready for a fresh start on its next launch.\n\nThe previous disk is kept at:\n" + old + "\n\nKeep it until you have checked the new guest. It continues to use Windows disk space.")
+	infoBox(uiTextWith("recovery.reset.done", map[string]string{"path": old}))
 	return nil
 }
 
 func reportRecoveryResult(err error) {
 	uiDone()
 	if err != nil && !errors.Is(err, errSetupCancelled) {
-		errorBox("Try Omarchy could not finish this operation.\n\n" + err.Error())
+		errorBox(uiTextWith("recovery.error", map[string]string{"error": err.Error()}))
 	}
 }
 
@@ -207,12 +207,36 @@ func createRestoredLaunchers(dir string) error {
 	return recordShortcutOffer(dir)
 }
 
-func recoveryProgress(action string) backupProgress {
+// recoveryStep names what a recovery progress line says it is doing.
+type recoveryStep int
+
+const (
+	recoveryBackingUp recoveryStep = iota
+	recoveryRestoring
+	recoveryCopying
+	recoveryMoving
+)
+
+func (s recoveryStep) status(file string) string {
+	values := map[string]string{"file": file}
+	switch s {
+	case recoveryRestoring:
+		return uiTextWith("recovery.progress.restoring", values)
+	case recoveryCopying:
+		return uiTextWith("recovery.progress.copying", values)
+	case recoveryMoving:
+		return uiTextWith("recovery.progress.moving", values)
+	default:
+		return uiTextWith("recovery.progress.backing_up", values)
+	}
+}
+
+func recoveryProgress(step recoveryStep) backupProgress {
 	last := ""
 	return func(current, total int64, name string) {
 		ui := getUI()
 		if name != last {
-			ui.setStatus("%s %s...", action, name)
+			ui.setStatus("%s", step.status(name))
 			last = name
 		}
 		ui.setProgress(current, total)

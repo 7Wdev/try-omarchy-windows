@@ -56,7 +56,14 @@ func runCheckpointUI(dir string) error {
 		if len(entries) > 0 {
 			procSendMessageW.Call(list, 0x186, 0, 0)
 		}
-		setText(status, fmt.Sprintf("%d snapshots. Restore a copy or roll back this installation.", len(entries)))
+		switch len(entries) {
+		case 0:
+			setText(status, uiText("snapshots.status.none"))
+		case 1:
+			setText(status, uiText("snapshots.status.one"))
+		default:
+			setText(status, uiTextWith("snapshots.status.many", map[string]string{"count": fmt.Sprint(len(entries))}))
+		}
 	}
 	selected := func() (vmCheckpoint, bool) {
 		index, _, _ := procSendMessageW.Call(list, 0x188, 0, 0)
@@ -71,7 +78,7 @@ func runCheckpointUI(dir string) error {
 		for _, button := range buttons {
 			procEnableWindow.Call(button, 0)
 		}
-		setText(closeButton, "Cancel operation")
+		setText(closeButton, uiText("snapshots.cancel_operation"))
 		setText(status, label)
 		go func() {
 			last := time.Time{}
@@ -102,10 +109,10 @@ func runCheckpointUI(dir string) error {
 			for _, button := range buttons {
 				procEnableWindow.Call(button, 1)
 			}
-			setText(closeButton, "Close")
+			setText(closeButton, uiText("snapshots.close"))
 			refresh()
 			if errors.Is(result.err, errSetupCancelled) {
-				setText(status, "Cancelled. Your current installation and completed snapshots were kept.")
+				setText(status, uiText("snapshots.cancelled"))
 			} else if result.err != nil {
 				errorBox(result.err.Error())
 			} else if result.message != "" {
@@ -132,18 +139,18 @@ func runCheckpointUI(dir string) error {
 				buffer := make([]uint16, 161)
 				procGetWindowTextW.Call(name, uintptr(unsafe.Pointer(&buffer[0])), uintptr(len(buffer)))
 				label := syscall.UTF16ToString(buffer)
-				start("Creating snapshot.", func(report backupProgress) outcome { _, err := store.Create(label, report); return outcome{err: err} })
+				start(uiText("snapshots.creating"), func(report backupProgress) outcome { _, err := store.Create(label, report); return outcome{err: err} })
 			case restoreID:
 				entry, ok := selected()
 				if !ok {
-					infoBox("Select a snapshot first.")
+					infoBox(uiText("snapshots.select_first"))
 					return 0
 				}
 				if entry.Problem != "" {
 					errorBox(entry.Problem)
 					return 0
 				}
-				parent, ok, err := chooseRecoveryPath(hwnd, "Choose where to restore the snapshot", "", false, true)
+				parent, ok, err := chooseRecoveryPath(hwnd, uiText("snapshots.restore.choose"), "", false, true)
 				if err != nil {
 					errorBox(err.Error())
 					return 0
@@ -152,32 +159,29 @@ func runCheckpointUI(dir string) error {
 					return 0
 				}
 				destination := filepath.Join(parent, "OmarchySnapshot-"+time.Now().Format("20060102-150405"))
-				start("Restoring snapshot.", func(report backupProgress) outcome {
+				start(uiText("snapshots.restoring"), func(report backupProgress) outcome {
 					if err := store.Restore(entry.ID, destination, report); err != nil {
 						return outcome{err: err}
 					}
-					message := "Snapshot restored to:\n\n" + destination
 					if err := createRestoredLaunchers(destination); err != nil {
-						message += "\n\nStartup shortcuts could not be created: " + err.Error()
-					} else {
-						message += "\n\nOpen Start Omarchy in that folder to use it."
+						return outcome{message: uiTextWith("snapshots.restore.done_no_shortcuts", map[string]string{"path": destination, "error": err.Error()})}
 					}
-					return outcome{message: message}
+					return outcome{message: uiTextWith("snapshots.restore.done", map[string]string{"path": destination})}
 				})
 			case rollbackID:
 				entry, ok := selected()
 				if !ok {
-					infoBox("Select a snapshot first.")
+					infoBox(uiText("snapshots.select_first"))
 					return 0
 				}
 				if entry.Problem != "" {
 					errorBox(entry.Problem)
 					return 0
 				}
-				if msgBox("Roll back to snapshot \""+entry.Name+"\"?\n\nThis replaces the active guest and settings. Your current state will be retained in a recovery folder.", mbYesNo|mbIconQuestion|mbDefbutton2) != idYes {
+				if msgBox(uiTextWith("snapshots.rollback.confirm", map[string]string{"name": entry.Name}), mbYesNo|mbIconQuestion|mbDefbutton2) != idYes {
 					return 0
 				}
-				start("Rolling back snapshot.", func(report backupProgress) outcome {
+				start(uiText("snapshots.rolling_back"), func(report backupProgress) outcome {
 					retained, err := store.Rollback(entry.ID, report)
 					if err != nil {
 						return outcome{err: err}
@@ -186,28 +190,27 @@ func runCheckpointUI(dir string) error {
 					if disk, err := inspectInstallationDisk(retained); err == nil && disk.Format == "qcow2" {
 						recoveryFolder = filepath.Dir(retained)
 					}
-					message := "Snapshot restored. Open Try Omarchy normally to use it.\n\nYour previous state is retained at:\n\n" + recoveryFolder
 					if err := createRollbackRecoveryLaunchers(retained, dir); err != nil {
-						message += "\n\nCould not create recovery shortcuts: " + err.Error()
+						return outcome{message: uiTextWith("snapshots.rollback.done_no_shortcuts", map[string]string{"path": recoveryFolder, "error": err.Error()})}
 					}
-					return outcome{message: message}
+					return outcome{message: uiTextWith("snapshots.rollback.done", map[string]string{"path": recoveryFolder})}
 				})
 			case deleteID:
 				entry, ok := selected()
 				if !ok {
-					infoBox("Select a snapshot first.")
+					infoBox(uiText("snapshots.select_first"))
 					return 0
 				}
-				if msgBox("Delete snapshot \""+entry.Name+"\"?\n\nYour current installation will be kept.", mbYesNo|mbIconQuestion|mbDefbutton2) != idYes {
+				if msgBox(uiTextWith("snapshots.delete.confirm", map[string]string{"name": entry.Name}), mbYesNo|mbIconQuestion|mbDefbutton2) != idYes {
 					return 0
 				}
-				start("Deleting snapshot.", func(backupProgress) outcome { return outcome{err: store.Delete(entry.ID)} })
+				start(uiText("snapshots.deleting"), func(backupProgress) outcome { return outcome{err: store.Delete(entry.ID)} })
 			}
 			return 0
 		case wmClose:
 			if busy {
 				requestSetupCancel()
-				setText(status, "Cancelling the operation...")
+				setText(status, uiText("snapshots.cancelling"))
 				return 0
 			}
 			procDestroyWindow.Call(h)
@@ -233,7 +236,34 @@ func runCheckpointUI(dir string) error {
 	if atom, _, err := procRegisterClassExW.Call(uintptr(unsafe.Pointer(&wc))); atom == 0 {
 		return fmt.Errorf("cannot create Snapshots window: %v", err)
 	}
-	const width, height = 640, 376
+	// Size controls from their text so longer translations fit. The original
+	// English layout is the minimum.
+	font, _, _ := procGetStockObject.Call(defaultGuiFont)
+	textWidth := func(text string) int32 { w, _ := measureText(0, font, text, 0); return w }
+	buttonWidth := func(minimum int32, labels ...string) int32 {
+		for _, label := range labels {
+			minimum = max(minimum, textWidth(label)+24)
+		}
+		return minimum
+	}
+	intro := uiText("snapshots.intro")
+	nameLabel := uiText("snapshots.name")
+	nameLabelWidth := max(int32(120), textWidth(nameLabel)+4)
+	createWidth := buttonWidth(140, uiText("snapshots.create"))
+	restoreWidth := buttonWidth(152, uiText("snapshots.restore"))
+	rollbackWidth := buttonWidth(130, uiText("snapshots.rollback"))
+	deleteWidth := buttonWidth(130, uiText("snapshots.delete"))
+	closeWidth := buttonWidth(140, uiText("snapshots.close"), uiText("snapshots.cancel_operation"))
+	width := max(int32(640), 16+restoreWidth+10+rollbackWidth+10+deleteWidth+36+closeWidth+16,
+		16+nameLabelWidth+4+200+14+createWidth+16)
+	inner := width - 32
+	_, introHeight := measureText(0, font, intro, inner)
+	introHeight = max(int32(34), introHeight)
+	listY := 12 + introHeight + 6
+	rowY := listY + 188
+	buttonY := rowY + 42
+	statusY := buttonY + 42
+	height := statusY + 52
 	rect := [4]int32{0, 0, width, height}
 	style := uintptr(wsCaption | wsSysmenu)
 	procAdjustWindowRectEx.Call(uintptr(unsafe.Pointer(&rect[0])), style, 0, 0)
@@ -244,13 +274,12 @@ func runCheckpointUI(dir string) error {
 	if y < work[1] {
 		y = work[1]
 	}
-	title, _ := syscall.UTF16PtrFromString("Try Omarchy snapshots")
+	title, _ := syscall.UTF16PtrFromString(uiText("snapshots.title"))
 	var createErr error
 	hwnd, _, createErr = procCreateWindowExW.Call(0, uintptr(unsafe.Pointer(className)), uintptr(unsafe.Pointer(title)), style|wsVisible, uintptr(x), uintptr(y), uintptr(w), uintptr(h), 0, 0, hInst, 0)
 	if hwnd == 0 {
 		return fmt.Errorf("cannot open Snapshots: %v", createErr)
 	}
-	font, _, _ := procGetStockObject.Call(defaultGuiFont)
 	var controlErr error
 	control := func(class, label string, x, y, w, h int32, style, id uintptr) uintptr {
 		c, _ := syscall.UTF16PtrFromString(class)
@@ -262,17 +291,20 @@ func runCheckpointUI(dir string) error {
 		procSendMessageW.Call(handle, wmSetfont, font, 1)
 		return handle
 	}
-	control("STATIC", "Close Omarchy before taking or restoring snapshots. Rollback retains your current state in a recovery folder.", 16, 12, 608, 34, ssNoprefix, 0)
-	list = control("LISTBOX", "", 16, 52, 608, 178, wsBorder|wsVscroll|wsTabstop|1, listID)
-	control("STATIC", "Snapshot name", 16, 244, 120, 24, ssNoprefix, 0)
-	name = control("EDIT", "Before changes", 140, 240, 330, 26, wsBorder|wsTabstop|esAutohscroll, nameID)
+	control("STATIC", intro, 16, 12, inner, introHeight, ssNoprefix, 0)
+	list = control("LISTBOX", "", 16, listY, inner, 178, wsBorder|wsVscroll|wsTabstop|1, listID)
+	control("STATIC", nameLabel, 16, rowY+4, nameLabelWidth, 24, ssNoprefix, 0)
+	createX := width - 16 - createWidth
+	nameX := 16 + nameLabelWidth + 4
+	name = control("EDIT", uiText("snapshots.default_name"), nameX, rowY, createX-14-nameX, 26, wsBorder|wsTabstop|esAutohscroll, nameID)
 	procSendMessageW.Call(name, 0xC5, 160, 0) // EM_SETLIMITTEXT
-	create := control("BUTTON", "Create snapshot", 484, 240, 140, 26, wsTabstop, createID)
-	restore := control("BUTTON", "Restore as copy...", 16, 282, 152, 28, wsTabstop, restoreID)
-	rollback := control("BUTTON", "Roll back...", 178, 282, 130, 28, wsTabstop, rollbackID)
-	remove := control("BUTTON", "Delete...", 318, 282, 130, 28, wsTabstop, deleteID)
-	closeButton = control("BUTTON", "Close", 484, 282, 140, 28, wsTabstop, closeID)
-	status = control("STATIC", "", 16, 324, 608, 40, ssNoprefix, 0)
+	create := control("BUTTON", uiText("snapshots.create"), createX, rowY, createWidth, 26, wsTabstop, createID)
+	restore := control("BUTTON", uiText("snapshots.restore"), 16, buttonY, restoreWidth, 28, wsTabstop, restoreID)
+	rollbackX := 16 + restoreWidth + 10
+	rollback := control("BUTTON", uiText("snapshots.rollback"), rollbackX, buttonY, rollbackWidth, 28, wsTabstop, rollbackID)
+	remove := control("BUTTON", uiText("snapshots.delete"), rollbackX+rollbackWidth+10, buttonY, deleteWidth, 28, wsTabstop, deleteID)
+	closeButton = control("BUTTON", uiText("snapshots.close"), width-16-closeWidth, buttonY, closeWidth, 28, wsTabstop, closeID)
+	status = control("STATIC", "", 16, statusY, inner, 40, ssNoprefix, 0)
 	if controlErr != nil {
 		procDestroyWindow.Call(hwnd)
 		return controlErr

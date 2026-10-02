@@ -2,7 +2,7 @@
 
 [Issue #127](https://github.com/omacom/try-omarchy-windows/issues/127) tracks translation of the Windows launcher's own interface. The Linux guest already receives the Windows locale, keyboard layout, and time zone; that does not translate the launcher or Omarchy's own menus. The [Try Omarchy website](https://tryomarchy.com/) and its guides are separate translation work.
 
-The launcher ships English, Simplified Chinese (`zh-Hans`) and Korean (`ko`). `app/ui-locales/en.json` is the source catalog. These come from it today: About and launcher updates, the first-launch questions, the setup window's buttons, every page of Settings with its messages, and the Help text. Other dialogs (recovery, backup, move, uninstall, transfers, USB, LAN forwarding), the tray menu, the setup window's progress text and most error messages are still English in the code. A missing translation falls back to English, and the launcher selects from Windows' preferred **UI languages**, which can differ from its regional-format setting.
+The launcher ships English, Simplified Chinese (`zh-Hans`) and Korean (`ko`). `app/ui-locales/en.json` is the source catalog. These come from it today: About and launcher updates, the first-launch questions and storage location, the setup window's buttons, every page of Settings with its messages, the Help text, the tray menu, and the backup, restore, snapshot, portable copy, reset, move and uninstall dialogs. File transfers, USB devices, LAN forwarding, camera status, the setup window's progress text and most error details are still English in the code. A missing translation falls back to English, and the launcher selects from Windows' preferred **UI languages**, which can differ from its regional-format setting.
 
 ## How the work is split
 

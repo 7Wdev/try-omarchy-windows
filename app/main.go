@@ -383,11 +383,11 @@ func main() {
 	if maintenance {
 		var err error
 		if *backupPath != "" {
-			beginRecoveryProgress("Creating VM backup. This may take a while...")
-			err = writeVMBackupProgress(cfg.dir, *backupPath, recoveryProgress("Backing up"))
+			beginRecoveryProgress(uiText("recovery.backup.status"))
+			err = writeVMBackupProgress(cfg.dir, *backupPath, recoveryProgress(recoveryBackingUp))
 		} else {
-			beginRecoveryProgress("Verifying and restoring VM backup...")
-			err = restoreVMBackupProgress(*restorePath, cfg.dir, recoveryProgress("Restoring"))
+			beginRecoveryProgress(uiText("recovery.restore.status"))
+			err = restoreVMBackupProgress(*restorePath, cfg.dir, recoveryProgress(recoveryRestoring))
 		}
 		uiDone()
 		if errors.Is(err, errSetupCancelled) {

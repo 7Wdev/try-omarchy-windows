@@ -127,7 +127,7 @@ func runUninstall(dir string) error {
 		}
 		f.Close()
 	}
-	choice := msgBox("Remove Try Omarchy from this PC?\n\nThis deletes the Omarchy virtual disk and everything inside it, the downloaded image and runtime, settings, and the launcher in:\n\n"+dir+"\n\nShortcuts and the Apps & features entry are removed. Windows shared folders and the original download are kept.\n\nCreate a full backup first?\nYes: choose a backup. No: skip the backup. Cancel: keep everything.", mbYesNoCancel|mbIconQuestion|mbDefbutton2)
+	choice := msgBox(uiTextWith("uninstall.confirm_backup", map[string]string{"path": dir}), mbYesNoCancel|mbIconQuestion|mbDefbutton2)
 	if choice != idYes && choice != idNo {
 		return nil
 	}
@@ -136,14 +136,14 @@ func runUninstall(dir string) error {
 		if err != nil || !ok {
 			return err
 		}
-		beginRecoveryProgress("Backing up before removal...")
-		err = writeVMBackupProgress(dir, name, recoveryProgress("Backing up"))
+		beginRecoveryProgress(uiText("uninstall.backup_status"))
+		err = writeVMBackupProgress(dir, name, recoveryProgress(recoveryBackingUp))
 		uiDone()
 		if err != nil {
 			return err
 		}
 	}
-	if msgBox("Remove Try Omarchy and delete "+dir+" now?", mbYesNo|mbIconQuestion|mbDefbutton2) != idYes {
+	if msgBox(uiTextWith("uninstall.confirm", map[string]string{"path": dir}), mbYesNo|mbIconQuestion|mbDefbutton2) != idYes {
 		return nil
 	}
 	if err := ensureLANFirewall(&config{dir: dir}); err != nil {
@@ -187,7 +187,7 @@ func runUninstall(dir string) error {
 	if err := removeAllWithRetry(dir); err != nil {
 		return err
 	}
-	infoBox("Try Omarchy was removed.")
+	infoBox(uiText("uninstall.done"))
 	return nil
 }
 
@@ -203,10 +203,10 @@ func finishUninstall(dir string, waitPID int) int {
 	}
 	code := 0
 	if err != nil {
-		errorBox("Try Omarchy could not delete its folder:\n\n" + dir + "\n\n" + err.Error() + "\n\nDelete it by hand to finish removing Try Omarchy.")
+		errorBox(uiTextWith("uninstall.error.delete", map[string]string{"path": dir, "error": err.Error()}))
 		code = 1
 	} else {
-		infoBox("Try Omarchy was removed.")
+		infoBox(uiText("uninstall.done"))
 	}
 	// Started after the message box closes, so the helper file is no longer
 	// in use by the time cmd deletes it.
