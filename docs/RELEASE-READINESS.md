@@ -1,32 +1,28 @@
-# Release readiness review - September 29, 2026
+# Release readiness review - October 1, 2026
 
 ## Current decision
 
 The current normal version is
-[`v0.6.2`](https://github.com/omacom/try-omarchy-windows/releases/tag/v0.6.2),
-published as Latest on September 29. New installs default to your own account,
-and the quick-start account accepts only SSH keys. Existing quick-start guests
-receive that restriction on their first boot after updating; accounts you
-created yourself keep password login. Setup checks space for the unpacked guest
-before downloading. The
-[publish run](https://github.com/omacom/try-omarchy-windows/actions/runs/36624010076)
-passed signing and public asset verification. See the
-[changelog](../CHANGELOG.md#v062---2026-09-29) for the security fix and setup changes.
+[`v0.8.0`](https://github.com/omacom/try-omarchy-windows/releases/tag/v0.8.0),
+published as Latest on October 1. Omarchy's window now appears once the desktop
+is drawn, Omarchy pauses while Windows sleeps, the launcher is available in
+Korean, and the guest moves to Omarchy 4.0.4 without its kernel switch. Before
+publishing, disks from `v0.3.0`, `v0.4.0`, `v0.6.2` and `v0.7.1` were upgraded
+with `scripts/release/smoke-guest-upgrade.py`, including Update > Omarchy, a
+reboot, the older image and back. On the AMD laptop the signed candidate
+updated a lived-in `v0.7.1` install, ran Update > Omarchy, rebooted, powered
+off, relaunched and recovered from a forced rollback. See the
+[changelog](../CHANGELOG.md#v080---2026-10-01).
 
-The preceding release,
-[`v0.6.1`](https://github.com/omacom/try-omarchy-windows/releases/tag/v0.6.1),
-was published on September 29 with a setting that gives Alt+Tab back to
-Windows, the fix for services restarting after Modern Standby, monitor scale
-kept across reloads and refreshed guest packages. Its
-[candidate and release record](evidence/V061-SIGNED-CANDIDATE-2026-09-29.md)
-covers the signed candidate, rollback, upgrade, fresh install and a public
-update from an installed v0.6.0 launcher.
-[`v0.6.0`](https://github.com/omacom/try-omarchy-windows/releases/tag/v0.6.0)
-added drops into apps, 1Password unlock with Windows Hello, live port-forward
-changes and package catch-up on September 27; see its
-[record](evidence/V060-SIGNED-CANDIDATE-2026-09-27.md).
+`v0.7.0` and `v0.7.1` (September 30 and October 1) added the importer that
+moves a trial into a real Omarchy install, then hardened it after a security
+review. `v0.6.0` to `v0.6.2` (September 27 to 29) added drops into apps,
+1Password unlock with Windows Hello, live port forwards, package catch-up,
+the Alt+Tab setting and key-only SSH for the quick-start account; see the
+[v0.6.1 record](evidence/V061-SIGNED-CANDIDATE-2026-09-29.md) and
+[v0.6.0 record](evidence/V060-SIGNED-CANDIDATE-2026-09-27.md).
 [`v0.5.0`](https://github.com/omacom/try-omarchy-windows/releases/tag/v0.5.0)
-added opt-in Windows Hello sudo the day before; see its
+added opt-in Windows Hello sudo on September 26; see its
 [record](evidence/V050-SIGNED-CANDIDATE-2026-09-26.md).
 [`v0.4.0`](https://github.com/omacom/try-omarchy-windows/releases/tag/v0.4.0)
 shipped earlier the same day with default pinch and Ctrl+Alt+End; see its
@@ -42,9 +38,7 @@ public `SHA256SUMS` digest is
 passed on the AMD Windows 11 laptop, including public update, GPU desktop,
 live audio, reboot persistence, clean second launch, and interrupted-update
 rollback. Two physical audio endpoints per direction and hotplug remain
-untested. True LAN bridging and embedded Windows app
-windows remain feature work; they do not hold back normal 0.x releases. Broader
-user reports continue to guide hardware fixes.
+untested. Broader user reports continue to guide hardware fixes.
 
 ### Previous releases
 
@@ -183,15 +177,20 @@ Feature parity is tracked in [MAC-PARITY.md](MAC-PARITY.md). `v0.3.0` ships
 live audio switching with r20c. The previous `v0.2.0` release shipped in-guest
 host Settings, battery mirroring, measured live RAM reclamation, the approved-app
 launch bridge, and fullscreen monitor choice. Windows Hello sudo shipped as an
-opt-in feature in `v0.5.0`; password fallback remains available. True LAN bridging is still candidate work in
-[LAN bridge #166](https://github.com/omacom/try-omarchy-windows/issues/166).
-NAT and existing port forwarding remain the default. The current user base of
-thousands with relatively few reports is
+opt-in feature in `v0.5.0`; password fallback remains available. True LAN
+bridging ([#166](https://github.com/omacom/try-omarchy-windows/issues/166)) is
+closed for now: a TAP bridge passed in VMs but needs physical Ethernet and two
+hand-installed drivers, so NAT and port forwarding remain the only network mode.
+The current user base of thousands with relatively few reports is
 positive evidence about the everyday path; broad hardware and Windows 10
 acceptance are not 1.0 gates. Automatic pinch shipped in `v0.4.0`; its
-acceptance limits are in [PINCH-ZOOM.md](PINCH-ZOOM.md). ARM64 and interface translation are open requests
-([#131](https://github.com/omacom/try-omarchy-windows/issues/131),
-[#127](https://github.com/omacom/try-omarchy-windows/issues/127)); neither can be
-claimed as supported. Prioritize any gap that prevents a normal supported PC
+acceptance limits are in [PINCH-ZOOM.md](PINCH-ZOOM.md). Windows on ARM
+([#131](https://github.com/omacom/try-omarchy-windows/issues/131)) is closed until
+there is demand and someone to test it, so it cannot be claimed as supported.
+Interface translation ([#127](https://github.com/omacom/try-omarchy-windows/issues/127))
+covers all of Settings in Korean and the setup screens and Settings section
+titles in Simplified Chinese; the tray, recovery dialogs and status text are
+still English only.
+Prioritize any gap that prevents a normal supported PC
 from installing, using, updating, or removing the app over feature parity for
 its own sake.
