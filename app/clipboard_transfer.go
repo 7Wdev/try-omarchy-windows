@@ -51,7 +51,7 @@ func (b *clipBridge) receiveClipboardTransfer(conn net.Conn, line string) {
 		return
 	}
 	defer b.transfers.Cancel(ticket.ID)
-	progress := b.progress("Receiving files from Omarchy")
+	progress := b.progress(uiText("transfer.receiving_from_omarchy"))
 	defer progress.finish()
 	conn.SetDeadline(time.Now().Add(2 * time.Hour))
 	stopCancel := context.AfterFunc(progress.ctx, func() { b.transfers.Cancel(ticket.ID); conn.SetDeadline(time.Now()) })

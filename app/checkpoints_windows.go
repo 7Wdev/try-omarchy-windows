@@ -42,7 +42,7 @@ func runCheckpointUI(dir string) error {
 		entries, err = store.List()
 		procSendMessageW.Call(list, 0x184, 0, 0) // LB_RESETCONTENT
 		if err != nil {
-			setText(status, err.Error())
+			setText(status, uiTextWith("snapshots.error.list", map[string]string{"error": err.Error()}))
 			return
 		}
 		for _, entry := range entries {
@@ -147,12 +147,12 @@ func runCheckpointUI(dir string) error {
 					return 0
 				}
 				if entry.Problem != "" {
-					errorBox(entry.Problem)
+					errorBox(uiTextWith("snapshots.error.damaged", map[string]string{"error": entry.Problem}))
 					return 0
 				}
 				parent, ok, err := chooseRecoveryPath(hwnd, uiText("snapshots.restore.choose"), "", false, true)
 				if err != nil {
-					errorBox(err.Error())
+					errorBox(uiTextWith("picker.error", map[string]string{"error": err.Error()}))
 					return 0
 				}
 				if !ok {
@@ -175,7 +175,7 @@ func runCheckpointUI(dir string) error {
 					return 0
 				}
 				if entry.Problem != "" {
-					errorBox(entry.Problem)
+					errorBox(uiTextWith("snapshots.error.damaged", map[string]string{"error": entry.Problem}))
 					return 0
 				}
 				if msgBox(uiTextWith("snapshots.rollback.confirm", map[string]string{"name": entry.Name}), mbYesNo|mbIconQuestion|mbDefbutton2) != idYes {
@@ -240,12 +240,7 @@ func runCheckpointUI(dir string) error {
 	// English layout is the minimum.
 	font, _, _ := procGetStockObject.Call(defaultGuiFont)
 	textWidth := func(text string) int32 { w, _ := measureText(0, font, text, 0); return w }
-	buttonWidth := func(minimum int32, labels ...string) int32 {
-		for _, label := range labels {
-			minimum = max(minimum, textWidth(label)+24)
-		}
-		return minimum
-	}
+	buttonWidth := func(minimum int32, labels ...string) int32 { return buttonWidthFor(font, minimum, labels...) }
 	intro := uiText("snapshots.intro")
 	nameLabel := uiText("snapshots.name")
 	nameLabelWidth := max(int32(120), textWidth(nameLabel)+4)

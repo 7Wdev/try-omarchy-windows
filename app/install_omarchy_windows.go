@@ -209,25 +209,25 @@ func runInstallOmarchyUI(dir string) error {
 		r := assessInstallReadiness(dir, windowsInstallProbes())
 		r.ShutdownRequested = shutdownRequested
 		body, buttons := installPage(r)
-		choice, err := chooseInstallAction("Install Omarchy on this PC", body, buttons)
+		choice, err := chooseInstallAction(uiText("install.title"), body, buttons)
 		if err != nil || choice == 0 {
 			return err
 		}
 		switch buttons[choice-1].action {
 		case installShutDown:
 			if err := requestOmarchyShutdown(dir); err != nil {
-				errorBox("Omarchy did not respond. Shut it down from its menu instead.\n\n" + err.Error())
+				errorBox(uiTextWith("install.error.shutdown", map[string]string{"error": err.Error()}))
 			} else {
 				shutdownRequested = true
 			}
 		case installFastStartup:
 			code, err := runElevated("-disable-fast-startup")
 			if err != nil {
-				errorBox("Fast Startup could not be turned off:\n\n" + err.Error())
+				errorBox(uiTextWith("install.error.fast_startup", map[string]string{"error": err.Error()}))
 			} else if code == errorCancelled {
 				// The user declined the Windows prompt; show the list again.
 			} else if code != 0 {
-				errorBox("Fast Startup could not be turned off. Turn it off in Control Panel > Power Options > Choose what the power buttons do.")
+				errorBox(uiText("install.error.fast_startup_manual"))
 			}
 		case installBitLocker:
 			openBitLockerSettings()
@@ -236,7 +236,7 @@ func runInstallOmarchyUI(dir string) error {
 			return nil
 		case installDiskManagement:
 			if err := shellOpen(system32("diskmgmt.msc")); err != nil {
-				errorBox(err.Error())
+				errorBox(uiTextWith("install.error.disk_management", map[string]string{"error": err.Error()}))
 			}
 		case installGuide:
 			openWindowsURL(dualBootGuideURL)

@@ -37,3 +37,13 @@ func measureText(hwnd, font uintptr, text string, width int32) (int32, int32) {
 	procDrawTextW.Call(dc, uintptr(unsafe.Pointer(value)), ^uintptr(0), uintptr(unsafe.Pointer(&rect)), flags)
 	return rect[2] - rect[0], rect[3] - rect[1]
 }
+
+// buttonWidthFor returns a width that fits every label in font, never less
+// than minimum, the width the English layout was designed with.
+func buttonWidthFor(font uintptr, minimum int32, labels ...string) int32 {
+	for _, label := range labels {
+		w, _ := measureText(0, font, label, 0)
+		minimum = max(minimum, w+24)
+	}
+	return minimum
+}

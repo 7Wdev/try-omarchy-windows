@@ -282,14 +282,14 @@ func (s *fileTransferService) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		w.Header().Set("ETag", `"`+offer.SHA256+`"`)
 		reader := &transferDownloadReader{ReadSeeker: io.NewSectionReader(file, 0, offer.ArchiveBytes), progress: func(n int64) {
 			s.mu.Lock()
-			job.status = fileTransferStatus{State: "transferring", Bytes: n, Total: offer.ArchiveBytes, Phase: "Sending files"}
+			job.status = fileTransferStatus{State: "transferring", Bytes: n, Total: offer.ArchiveBytes, Phase: uiText("transfer.phase.sending")}
 			s.mu.Unlock()
 		}}
 		http.ServeContent(w, r, "files.zip", time.Time{}, reader)
 		s.mu.Lock()
 		if r.Method == "GET" && r.Header.Get("Range") == "" && reader.bytes == offer.ArchiveBytes {
 			job.status.State = "sent"
-			job.status.Phase = "Files sent"
+			job.status.Phase = uiText("transfer.phase.sent")
 		} else if job.activeDownloads == 1 {
 			job.status.State = "ready"
 		}
@@ -325,7 +325,7 @@ func (s *fileTransferService) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	job.attempts++
-	job.status = fileTransferStatus{State: "transferring", Total: offer.ArchiveBytes, Phase: "Receiving files"}
+	job.status = fileTransferStatus{State: "transferring", Total: offer.ArchiveBytes, Phase: uiText("transfer.phase.receiving")}
 	s.mu.Unlock()
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Hour)
 	defer cancel()
@@ -358,15 +358,15 @@ func (s *fileTransferService) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	s.mu.Lock()
 	if err == nil {
 		job.status.State = "completed"
-		job.status.Phase = "Files received"
+		job.status.Phase = uiText("transfer.phase.received")
 	} else {
 		job.status.State = "failed"
-		job.status.Phase = "Transfer did not finish"
+		job.status.Phase = uiText("transfer.phase.failed")
 		if errors.Is(err, context.Canceled) {
-			job.status.Phase = "Transfer cancelled"
+			job.status.Phase = uiText("transfer.phase.cancelled")
 		}
 		if errors.Is(err, errInsufficientDiskSpace) {
-			job.status.Phase = "Not enough space at the destination"
+			job.status.Phase = uiText("transfer.phase.no_space")
 		}
 	}
 	job.expires = s.now().Add(transferTicketLifetime)

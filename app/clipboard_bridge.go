@@ -182,7 +182,7 @@ func (b *clipBridge) sendCurrentHost(conn net.Conn) {
 	var ok bool
 	if b.transferEnabled && b.getPaths != nil {
 		if paths, files := b.getPaths(); files {
-			progress := b.progress("Preparing files for Omarchy")
+			progress := b.progress(uiText("transfer.preparing_to_omarchy"))
 			ticket, err := b.transfers.Offer(progress.ctx, paths, progress.report)
 			if err != nil {
 				progress.finish()

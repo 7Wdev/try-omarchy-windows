@@ -11,8 +11,24 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
+
+// progressPhases records the translated phase labels that progress callbacks
+// receive in place of a file name. A status line shows a phase on its own
+// instead of as "Backing up {file}...".
+var progressPhases sync.Map
+
+func progressPhase(text string) string {
+	progressPhases.Store(text, struct{}{})
+	return text
+}
+
+func isProgressPhase(name string) bool {
+	_, ok := progressPhases.Load(name)
+	return ok
+}
 
 const backupManifestName = "backup.json"
 const backupMaxFiles = 10000
@@ -104,7 +120,7 @@ func writeVMArchive(dir, destination string, report backupProgress, checkpoint b
 		return err
 	}
 	if inventory.Format == "qcow2" && report != nil {
-		report(0, inventory.VirtualBytes, "Preparing portable disk")
+		report(0, inventory.VirtualBytes, progressPhase(uiText("progress.preparing_portable_disk")))
 	}
 	diskPath, cleanup, err := materializeInstallationDisk(dir, filepath.Dir(destination), inventory)
 	if err != nil {

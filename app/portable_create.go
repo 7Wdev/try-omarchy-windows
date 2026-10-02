@@ -99,7 +99,7 @@ func makeRestoredDiskPortable(data, tool string, report backupProgress) error {
 	}
 	overlay := filepath.Join(data, "vm", "disk.qcow2")
 	if report != nil {
-		report(0, info.Size(), "Creating compact portable disk")
+		report(0, info.Size(), progressPhase(uiText("progress.creating_portable_disk")))
 	}
 	cmd := exec.CommandContext(setupContext(), tool, "convert", "-f", "raw", "-O", "qcow2", raw, overlay)
 	configureDiskTool(cmd)

@@ -136,13 +136,13 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 	brand.contentTop = 136
 	guard, err := lockMoveStore(hostMoveStore())
 	if err != nil {
-		errorBox(err.Error())
+		errorBox(uiTextWith("settings.error.open", map[string]string{"error": err.Error()}))
 		return false
 	}
 	defer guard.Close()
 	if !portable {
 		if err := checkMovedSettings(dataDir); err != nil {
-			errorBox(err.Error())
+			errorBox(uiTextWith("settings.error.open", map[string]string{"error": err.Error()}))
 			return false
 		}
 	}
@@ -345,7 +345,7 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 	launchRecovery := func(action string) {
 		self, err := os.Executable()
 		if err != nil {
-			errorBox(err.Error())
+			errorBox(uiTextWith("tray.error.open_window", map[string]string{"error": err.Error()}))
 			return
 		}
 		args := []string{"-dir", dataDir, "-recovery", action}
@@ -422,7 +422,7 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 					}
 				}
 				if err != nil {
-					errorBox(err.Error())
+					errorBox(uiTextWith("tray.error.open_window", map[string]string{"error": err.Error()}))
 				}
 			case settingsUSBSelectionID:
 				self, e := os.Executable()
@@ -448,13 +448,13 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 			case settingsSaveID:
 				guard, err := lockMoveStore(hostMoveStore())
 				if err != nil {
-					errorBox(err.Error())
+					errorBox(uiTextWith("settings.error.save", map[string]string{"error": err.Error()}))
 					return 0
 				}
 				defer guard.Close()
 				if !portable {
 					if err := checkMovedSettings(dataDir); err != nil {
-						errorBox(err.Error())
+						errorBox(uiTextWith("settings.error.save", map[string]string{"error": err.Error()}))
 						return 0
 					}
 				}
@@ -604,7 +604,7 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 			case settingsLANAddID:
 				value, err := chooseLANForward(hwnd)
 				if err != nil {
-					errorBox(err.Error())
+					errorBox(uiTextWith("tray.error.open_window", map[string]string{"error": err.Error()}))
 					break
 				}
 				if value.Forward != "" {
@@ -616,7 +616,7 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 						}
 					}
 					if err != nil {
-						errorBox(err.Error())
+						errorBox(uiTextWith("lan.error.invalid", map[string]string{"error": err.Error()}))
 					} else {
 						setText(hFwd, strings.Join(lines, "\r\n"))
 						if value.Adapter != "" {

@@ -251,7 +251,7 @@ func main() {
 	}
 	if *firewallPlan != "" {
 		if err := applyEncodedLANFirewall(*firewallPlan); err != nil {
-			errorBox(err.Error())
+			errorBox(uiTextWith("lan.error.firewall", map[string]string{"error": err.Error()}))
 			os.Exit(1)
 		}
 		return
@@ -1337,23 +1337,23 @@ var reclaimSupported atomic.Bool
 
 func requestReclaimError() error {
 	if !reclaimSupported.Load() {
-		return fmt.Errorf("Reclaim is available for standard raw disks only.")
+		return errors.New(uiText("reclaim.error.unsupported"))
 	}
 	dir := reclaimDir.Load()
 	a := theAgent.Load()
 	if dir == nil || a == nil {
-		return fmt.Errorf("Omarchy is not ready. Wait for the desktop and try again.")
+		return errors.New(uiText("reclaim.error.not_ready"))
 	}
 	free, err := diskFreeBytes(*dir)
 	if err != nil {
-		return fmt.Errorf("Could not check free space: %w", err)
+		return uiError(uiTextWith("reclaim.error.free_space", map[string]string{"error": err.Error()}), err)
 	}
 	budget := reclaimBudgetMiB(free)
 	if budget == 0 {
-		return fmt.Errorf("Reclaim needs at least 4.25 GiB free on the Windows drive.")
+		return errors.New(uiText("reclaim.error.low_space"))
 	}
 	if !a.requestZeroFill(budget) {
-		return fmt.Errorf("Reclaim was not started. %s", a.reclaimStatus())
+		return errors.New(uiTextWith("reclaim.error.not_started", map[string]string{"status": a.reclaimStatus()}))
 	}
 	return nil
 }
@@ -1397,7 +1397,7 @@ func sendLifecycleCommand(command string) int {
 	defer c.Close()
 	c.SetDeadline(time.Now().Add(5 * time.Second))
 	if _, err := io.WriteString(c, command+"\n"); err != nil {
-		errorBox(err.Error())
+		errorBox(uiTextWith("control.error", map[string]string{"error": err.Error()}))
 		return 1
 	}
 	if command == "reclaim" {

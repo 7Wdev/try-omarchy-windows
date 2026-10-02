@@ -85,8 +85,8 @@ func startBootCurtain(cfg *config) {
 		return
 	}
 	ui := getUI()
-	ui.cancelMessage.Store("Stop starting Omarchy?\n\nOmarchy shuts down. Nothing in it is lost.")
-	ui.cancelStatus.Store("Shutting down Omarchy...")
+	ui.cancelMessage.Store(uiText("startup.cancel.confirm"))
+	ui.cancelStatus.Store(uiText("startup.cancel.status"))
 	curtainUp.Store(true)
 	logf("startup: the window appears once the desktop is drawn")
 }

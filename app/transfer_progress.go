@@ -25,7 +25,8 @@ func newTransferProgress(label string) *transferProgress {
 func (p *transferProgress) report(current, total int64, phase string) {
 	text := phase
 	if total > 0 {
-		text = fmt.Sprintf("%s: %.1f / %.1f MiB", phase, float64(current)/(1<<20), float64(total)/(1<<20))
+		text = uiTextWith("progress.amount", map[string]string{"label": phase,
+			"done": fmt.Sprintf("%.1f", float64(current)/(1<<20)), "total": fmt.Sprintf("%.1f", float64(total)/(1<<20))})
 	}
 	p.text.Store(text)
 }

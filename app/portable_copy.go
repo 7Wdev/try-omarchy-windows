@@ -151,7 +151,7 @@ func stageDirectPortableData(dir, data string, disk installationDisk, tool strin
 	}
 	portable := filepath.Join(data, "vm", "disk.qcow2")
 	if report != nil {
-		report(0, disk.VirtualBytes, "Creating and verifying compact portable disk")
+		report(0, disk.VirtualBytes, progressPhase(uiText("progress.verifying_portable_disk")))
 	}
 	for _, args := range [][]string{
 		{"convert", "-O", "qcow2", "-o", "cluster_size=65536", inputName, portable},

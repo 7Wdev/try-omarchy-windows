@@ -37,7 +37,7 @@ func fileDropListProc(hwnd, message, w, l, id, data uintptr) uintptr {
 				packed := uintptr(uint64(uint32(point[0])) | uint64(uint32(point[1]))<<32)
 				if dragging, _, _ := user32.NewProc("DragDetect").Call(hwnd, packed); dragging != 0 {
 					if err := dragHostFiles(parent, []string{state.paths[index]}); err != nil {
-						usbSetText(state.status, err.Error())
+						usbSetText(state.status, uiTextWith("drop.error.drag", map[string]string{"error": err.Error()}))
 					}
 				}
 				return 0
@@ -120,7 +120,7 @@ func fileDropWindowProc(hwnd, message, w, l uintptr) uintptr {
 			defer shell32.NewProc("DragFinish").Call(w)
 			count, _, _ := query.Call(w, 0xffffffff, 0, 0)
 			if count == 0 || count > 1000 {
-				usbSetText(state.status, "Choose up to 1000 files or folders.")
+				usbSetText(state.status, uiText("drop.limit"))
 				return 0
 			}
 			var paths []string
@@ -134,9 +134,9 @@ func fileDropWindowProc(hwnd, message, w, l uintptr) uintptr {
 				paths = append(paths, syscall.UTF16ToString(data))
 			}
 			if err := sendDroppedFiles(paths); err != nil {
-				usbSetText(state.status, err.Error())
+				usbSetText(state.status, uiTextWith("drop.error.send", map[string]string{"error": err.Error()}))
 			} else {
-				usbSetText(state.status, "Sending files to Omarchy...")
+				usbSetText(state.status, uiText("drop.sending"))
 			}
 			return 0
 		case wmCommand:
@@ -149,12 +149,12 @@ func fileDropWindowProc(hwnd, message, w, l uintptr) uintptr {
 					}
 				}
 			case 4602:
-				path, ok, err := chooseRecoveryPath(hwnd, "Choose a file to send to Omarchy", "", false, false)
+				path, ok, err := chooseRecoveryPath(hwnd, uiText("drop.choose_file"), "", false, false)
 				if err == nil && ok {
 					err = sendDroppedFiles([]string{path})
 				}
 				if err != nil {
-					usbSetText(state.status, err.Error())
+					usbSetText(state.status, uiTextWith("drop.error.send", map[string]string{"error": err.Error()}))
 				}
 			case 2:
 				procDestroyWindow.Call(hwnd)
@@ -202,7 +202,7 @@ func showFileDropWindow(paths []string) {
 	if !fileDropClassOK {
 		return
 	}
-	title, _ := syscall.UTF16PtrFromString("Files between Windows and Omarchy")
+	title, _ := syscall.UTF16PtrFromString(uiText("drop.title"))
 	hwnd, _, _ := procCreateWindowExW.Call(0, uintptr(unsafe.Pointer(class)), uintptr(unsafe.Pointer(title)), wsCaption|wsSysmenu, 100, 100, 580, 380, 0, 0, instance, 0)
 	if hwnd == 0 {
 		return
@@ -217,16 +217,20 @@ func showFileDropWindow(paths []string) {
 		procSendMessageW.Call(h, wmSetfont, font, 1)
 		return h
 	}
-	control("STATIC", "Drop files here to send them to Omarchy. Drag received files below into Explorer or another application.", 16, 12, 536, 44, 0, ssNoprefix)
+	control("STATIC", uiText("drop.intro"), 16, 12, 536, 44, 0, ssNoprefix)
 	state.list = control("LISTBOX", "", 16, 64, 536, 190, 4600, wsBorder|wsVscroll|wsTabstop)
 	for _, path := range paths {
 		text, _ := syscall.UTF16PtrFromString(filepath.Base(path))
 		procSendMessageW.Call(state.list, 0x180, 0, uintptr(unsafe.Pointer(text)))
 	}
-	state.status = control("STATIC", "Ready", 16, 264, 536, 30, 0, ssNoprefix)
-	control("BUTTON", "Choose a file...", 16, 302, 150, 28, 4602, wsTabstop)
-	control("BUTTON", "Open received folder", 176, 302, 190, 28, 4601, wsTabstop)
-	control("BUTTON", "Close", 452, 302, 100, 28, 2, wsTabstop)
+	state.status = control("STATIC", uiText("drop.ready"), 16, 264, 536, 30, 0, ssNoprefix)
+	chooseLabel, openLabel, closeLabel := uiText("drop.choose"), uiText("drop.open_received"), uiText("drop.close")
+	chooseWidth := int(buttonWidthFor(font, 150, chooseLabel))
+	openWidth := int(buttonWidthFor(font, 190, openLabel))
+	closeWidth := int(buttonWidthFor(font, 100, closeLabel))
+	control("BUTTON", chooseLabel, 16, 302, chooseWidth, 28, 4602, wsTabstop)
+	control("BUTTON", openLabel, 16+chooseWidth+10, 302, openWidth, 28, 4601, wsTabstop)
+	control("BUTTON", closeLabel, 552-closeWidth, 302, closeWidth, 28, 2, wsTabstop)
 	shell32.NewProc("DragAcceptFiles").Call(hwnd, 1)
 	comctl32.NewProc("SetWindowSubclass").Call(state.list, fileDropListCallback, 1, 0)
 	procShowWindow.Call(hwnd, swShow)

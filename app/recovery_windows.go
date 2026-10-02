@@ -236,7 +236,11 @@ func recoveryProgress(step recoveryStep) backupProgress {
 	return func(current, total int64, name string) {
 		ui := getUI()
 		if name != last {
-			ui.setStatus("%s", step.status(name))
+			if isProgressPhase(name) {
+				ui.setStatus("%s", name)
+			} else {
+				ui.setStatus("%s", step.status(name))
+			}
 			last = name
 		}
 		ui.setProgress(current, total)

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -147,40 +146,37 @@ type installButton struct {
 // steps once nothing is left.
 func installPage(r installReadiness) (string, []installButton) {
 	if r.Portable {
-		return "Omarchy can't read a portable copy's disk directly, so bring your setup over " +
-				"with an export: start Omarchy from this copy, run try-omarchy-export in a " +
-				"terminal, and follow the steps it prints.",
-			[]installButton{{"Open the guide", installExportGuide}, {"Close", installDone}}
+		return uiText("install.portable"),
+			[]installButton{{uiText("install.button.export_guide"), installExportGuide}, {uiText("install.button.close"), installDone}}
 	}
 	if r.DiskMissing {
-		return "Start Omarchy and set it up first, then come back here.",
-			[]installButton{{"Close", installDone}}
+		return uiText("install.disk_missing"),
+			[]installButton{{uiText("install.button.close"), installDone}}
 	}
 	var todo []string
 	var buttons []installButton
 	if r.Running && r.ShutdownRequested {
-		todo = append(todo, "Omarchy is shutting down.")
+		todo = append(todo, uiText("install.todo.shutting_down"))
 	} else if r.Running {
-		todo = append(todo, "Shut down Omarchy.")
-		buttons = append(buttons, installButton{"Shut down Omarchy", installShutDown})
+		todo = append(todo, uiText("install.todo.shut_down"))
+		buttons = append(buttons, installButton{uiText("install.button.shut_down"), installShutDown})
 	}
 	if r.FastStartup {
-		todo = append(todo, "Turn off Fast Startup, so Windows fully shuts down.")
-		buttons = append(buttons, installButton{"Turn off Fast Startup", installFastStartup})
+		todo = append(todo, uiText("install.todo.fast_startup"))
+		buttons = append(buttons, installButton{uiText("install.button.fast_startup"), installFastStartup})
 	}
 	switch r.BitLocker {
 	case bitLockerOn:
-		todo = append(todo, "Turn off BitLocker on "+r.BitLockerDrive+". Omarchy can't install next to "+
-			"an encrypted drive.")
-		buttons = append(buttons, installButton{"Open BitLocker settings", installBitLocker})
+		todo = append(todo, uiTextWith("install.todo.bitlocker", map[string]string{"drive": r.BitLockerDrive}))
+		buttons = append(buttons, installButton{uiText("install.button.bitlocker"), installBitLocker})
 	case bitLockerDecrypting:
-		todo = append(todo, "Wait for "+r.BitLockerDrive+" to finish decrypting.")
+		todo = append(todo, uiTextWith("install.todo.decrypting", map[string]string{"drive": r.BitLockerDrive}))
 	}
 	if len(todo) == 0 {
 		return installSteps(r)
 	}
-	body := "Before installing Omarchy next to Windows:\n\n• " + strings.Join(todo, "\n• ")
-	return body, append(buttons, installButton{"Check again", installRecheck}, installButton{"Close", installDone})
+	body := uiText("install.todo.intro") + "\n\n• " + strings.Join(todo, "\n• ")
+	return body, append(buttons, installButton{uiText("install.button.check"), installRecheck}, installButton{uiText("install.button.close"), installDone})
 }
 
 // installSteps is the last page: how to install and what to run afterwards.
@@ -189,27 +185,26 @@ func installSteps(r installReadiness) (string, []installButton) {
 	if drive == "" {
 		drive = "C:"
 	}
-	room := ""
+	shrink := uiTextWith("install.steps.shrink", map[string]string{"drive": drive})
 	if r.SystemFree >= 0 {
-		room = fmt.Sprintf(" It has %s free.", formatGiB(r.SystemFree))
+		shrink = uiTextWith("install.steps.shrink_free", map[string]string{"drive": drive, "free": formatGiB(r.SystemFree)})
 	}
-	intro := "Next, install Omarchy next to Windows.\n\n"
+	intro := uiText("install.steps.intro")
 	var buttons []installButton
 	if len(r.BitLockerUnchecked) > 0 {
-		intro = "Windows couldn't check encryption on " + strings.Join(r.BitLockerUnchecked, ", ") +
-			". Check BitLocker settings before installing.\n\n"
-		buttons = append(buttons, installButton{"Open BitLocker settings", installBitLocker})
+		intro = uiTextWith("install.steps.bitlocker_unchecked", map[string]string{"drives": strings.Join(r.BitLockerUnchecked, ", ")})
+		buttons = append(buttons, installButton{uiText("install.button.bitlocker"), installBitLocker})
 	}
-	body := intro +
-		"1. Shrink " + drive + " in Disk Management to make room." + room + "\n" +
-		"2. Install Omarchy from a USB stick into the free space. The install guide shows how.\n" +
-		"3. In the new Omarchy, open a terminal (Super+Enter) and run:\n\n" +
+	body := intro + "\n\n" +
+		"1. " + shrink + "\n" +
+		"2. " + uiText("install.steps.usb") + "\n" +
+		"3. " + uiText("install.steps.terminal") + "\n\n" +
 		importCommand + "\n\n" +
-		"Keep Try Omarchy installed until you've run it. Uninstalling it deletes the trial."
+		uiText("install.steps.keep")
 	return body, append(buttons,
-		installButton{"Open Disk Management", installDiskManagement},
-		installButton{"Open the install guide", installGuide},
-		installButton{"Done", installDone},
+		installButton{uiText("install.button.disk_management"), installDiskManagement},
+		installButton{uiText("install.button.install_guide"), installGuide},
+		installButton{uiText("install.button.done"), installDone},
 	)
 }
 

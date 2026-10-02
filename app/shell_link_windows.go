@@ -40,10 +40,10 @@ func writeShellLink(path, target, arguments, directory string) error {
 		return err
 	}
 	defer recoveryCOMCall(link, 2)
-	description := "Open Try Omarchy"
+	description := uiText("shortcut.open")
 	for _, arg := range strings.Fields(arguments) {
 		if arg == "-settings" {
-			description = "Configure Try Omarchy"
+			description = uiText("shortcut.settings")
 		}
 	}
 	for _, property := range []struct {

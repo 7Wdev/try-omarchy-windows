@@ -135,7 +135,7 @@ func serveCamera(conn net.Conn, source cameraFrameSource) error {
 		if frames != nil {
 			source.stop()
 			frames = nil
-			cameraState.Store("Camera idle. No capture is active.")
+			cameraState.Store(uiText("camera.idle"))
 		}
 	}
 	defer stop()
@@ -161,7 +161,7 @@ func serveCamera(conn net.Conn, source cameraFrameSource) error {
 					continue
 				}
 				frames = stream
-				cameraState.Store("Camera in use by an application inside Omarchy.")
+				cameraState.Store(uiText("camera.in_use"))
 				_ = connection.status(map[string]any{"status": "streaming", "name": "Windows Camera"})
 			case "stop":
 				stop()
@@ -196,5 +196,5 @@ func cameraStatusText() string {
 	if state := cameraState.Load(); state != nil {
 		return state.(string)
 	}
-	return "Camera idle. No capture is active."
+	return uiText("camera.idle")
 }

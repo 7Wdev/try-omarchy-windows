@@ -49,6 +49,18 @@ func uiText(key string) string {
 	return activeUI.text(key)
 }
 
+// uiError is an error whose text is a catalog message. It still wraps cause,
+// so errors.Is and errors.As see through it.
+func uiError(text string, cause error) error { return catalogError{text: text, cause: cause} }
+
+type catalogError struct {
+	text  string
+	cause error
+}
+
+func (e catalogError) Error() string { return e.text }
+func (e catalogError) Unwrap() error { return e.cause }
+
 func uiTextWith(key string, values map[string]string) string {
 	return uiPlaceholder.ReplaceAllStringFunc(uiText(key), func(placeholder string) string {
 		name := placeholder[1 : len(placeholder)-1]

@@ -83,7 +83,7 @@ func showTransferProgress(progress *transferProgress) {
 	}
 	// WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW keeps background transfers from
 	// taking focus. Closing dismisses progress; Cancel explicitly stops copying.
-	title, _ := syscall.UTF16PtrFromString("Copying files")
+	title, _ := syscall.UTF16PtrFromString(uiText("transfer.window.title"))
 	hwnd, _, _ := procCreateWindowExW.Call(0x08000080, uintptr(unsafe.Pointer(class)), uintptr(unsafe.Pointer(title)), wsCaption|wsSysmenu|wsVisible, 120, 120, 500, 150, 0, 0, instance, 0)
 	if hwnd == 0 {
 		return
@@ -99,7 +99,9 @@ func showTransferProgress(progress *transferProgress) {
 		return handle
 	}
 	state.status = control("STATIC", progress.text.Load().(string), 16, 12, 460, 44, 4500, ssNoprefix)
-	button := control("BUTTON", "Cancel", 366, 64, 100, 28, 2, wsTabstop)
+	cancelLabel := uiText("transfer.window.cancel")
+	cancelWidth := int(buttonWidthFor(font, 100, cancelLabel))
+	button := control("BUTTON", cancelLabel, 466-cancelWidth, 64, cancelWidth, 28, 2, wsTabstop)
 	if state.status == 0 || button == 0 {
 		progress.cancel()
 		procDestroyWindow.Call(hwnd)
