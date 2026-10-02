@@ -1,0 +1,74 @@
+From 3b7d493d06b8c217feafc3e6eb9b6d67aa3e4d4f Mon Sep 17 00:00:00 2001
+From: Tyler South <tsouth2@gmail.com>
+Date: Thu, 1 Oct 2026 23:40:22 -0400
+Subject: [PATCH 119/119] Stop asking to reboot for a kernel the guest never
+ boots
+
+---
+ guest/scripts/materialize-omarchy.sh | 9 +++++++++
+ guest/spec.json                      | 3 ++-
+ guest/tests/verify.py                | 7 +++++++
+ 3 files changed, 18 insertions(+), 1 deletion(-)
+
+diff --git a/guest/scripts/materialize-omarchy.sh b/guest/scripts/materialize-omarchy.sh
+index e20ae3f..4d2a2d8 100755
+--- a/guest/scripts/materialize-omarchy.sh
++++ b/guest/scripts/materialize-omarchy.sh
+@@ -160,6 +160,15 @@ while IFS= read -r command; do
+   ln -s "/usr/bin/$name" "$omarchy_root/bin/$name"
+ done < <(find "$source_dir/bin" -maxdepth 1 -type f | sort)
+ 
++# Omarchy asks to reboot after an update whenever no installed kernel package
++# matches the running kernel. Here the launcher supplies the kernel and the
++# guest's linux package stays held, so on any disk older than its launcher that
++# question came after every Update > Omarchy, and rebooting changed nothing.
++restart_check="$root/usr/bin/omarchy-update-restart"
++grep -qx 'kernel_updated=true' "$restart_check" ||
++  fail "Omarchy's kernel reboot check moved; review it before changing it: $restart_check"
++sed -i 's|^kernel_updated=true$|kernel_updated=false # Try Omarchy: the launcher supplies the kernel|' "$restart_check"
++
+ # Seed new users exactly like omarchy-settings does, but keep the packaged
+ # omarchy-nvim skeleton. The package seeds /etc/skel/.config/nvim, including
+ # lua/plugins/theme.lua as a relative symlink to the active theme's generated
+diff --git a/guest/spec.json b/guest/spec.json
+index 1e44e42..5f80e31 100644
+--- a/guest/spec.json
++++ b/guest/spec.json
+@@ -30,7 +30,7 @@
+     "versionFile": "4.0.0.alpha",
+     "channel": "quattro",
+     "license": "MIT",
+-    "packageRelease": 1,
++    "packageRelease": 2,
+     "integrationDepends": [
+       "fcitx5",
+       "fcitx5-gtk",
+@@ -176,6 +176,7 @@
+       "bin/omarchy-provision-owner",
+       "bin/omarchy-provision-user",
+       "bin/omarchy-theme-set",
++      "bin/omarchy-update-restart",
+       "config/foot/foot.ini",
+       "config/hypr/hyprland.lua",
+       "config/hypr/monitors.lua",
+diff --git a/guest/tests/verify.py b/guest/tests/verify.py
+index 7bcd2bd..bf7a24d 100755
+--- a/guest/tests/verify.py
++++ b/guest/tests/verify.py
+@@ -127,6 +127,13 @@ def main() -> None:
+     check("factory-overlay" in configure and "native-overlay" in configure, "rootfs receives only native factory overlays")
+     check("omarchy-provision-owner.service" in configure, "first boot uses upstream owner provisioning")
+     materialize = read(GUEST / "scripts/materialize-omarchy.sh")
++    check(
++        "grep -qx 'kernel_updated=true' \"$restart_check\" ||" in materialize
++        and "s|^kernel_updated=true$|kernel_updated=false # Try Omarchy: the launcher supplies the kernel|" in materialize
++        and materialize.index('restart_check="$root/usr/bin/omarchy-update-restart"')
++        > materialize.index('done < <(find "$source_dir/bin" -maxdepth 1 -type f | sort)'),
++        "updates do not ask to reboot for a kernel the guest never boots",
++    )
+     check(
+         'install_file 0644 "$source_dir/default/hypr/toggles/flags.lua" "$root/etc/skel/.local/state/omarchy/toggles/hypr/flags.lua"' in materialize
+         and 'copy_contents "$source_dir/default/hypr/toggles"' not in materialize,
+-- 
+2.56.0
+

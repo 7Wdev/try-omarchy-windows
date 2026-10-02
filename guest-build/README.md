@@ -117,6 +117,20 @@ created since revision 42 get the rule with the account and had no record, so
 the next revision would have added it again. Catch-up now skips the step on any
 disk that already ran it at revision 42 or later.
 
+Patch 0118 stops the first Update > Omarchy after a kernel change from printing
+"Installation aborted" twice. The launcher delivers its kernel's camera and
+battery modules, and when matching headers arrived DKMS refused to install an
+identical module. A `modules_to_force_install` entry for just those two modules
+lets DKMS replace them, keeping the delivered copy and putting it back when the
+headers are removed. Compatibility revision 45 delivers it to existing guests.
+
+Patch 0119 stops Update > Omarchy from asking to reboot for a new kernel on
+disks older than their launcher. Omarchy asks whenever no installed kernel
+package matches the running kernel, but here the launcher supplies the kernel
+and the guest's `linux` package stays held, so rebooting changed nothing. The
+build turns that one check off and fails if Omarchy moves it. The runtime
+package becomes `4.0.4-2` so existing guests get it.
+
 The second command needs Docker and currently takes about ten minutes. Release
 CI also boots the resulting factory image with `scripts/release/smoke-guest.py`
 before it uploads anything.

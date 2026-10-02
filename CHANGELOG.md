@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.8.1 - 2026-10-01
+
+- Update > Omarchy no longer prints "Installation aborted" for the camera and
+  battery modules when the guest's kernel headers catch up with the launcher's
+  kernel. DKMS now takes those modules over and puts the launcher's copies back
+  if the headers move on.
+- Update > Omarchy no longer asks to reboot for a new kernel on installs older
+  than their launcher. The launcher supplies the kernel, so that reboot never
+  changed anything.
+
 ## v0.8.0 - 2026-10-01
 
 - Omarchy's window stays invisible while Omarchy boots and fades in once the
