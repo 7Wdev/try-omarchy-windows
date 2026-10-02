@@ -13,14 +13,14 @@ import (
 
 func validateApprovedExecutable(path string) error {
 	if !filepath.IsAbs(path) || strings.HasPrefix(path, `\\`) || strings.HasPrefix(path, `//`) || filepath.Clean(path) != path || !strings.EqualFold(filepath.Ext(path), ".exe") {
-		return fmt.Errorf("choose a local Windows .exe file")
+		return uiError(uiText("error.apps.local_exe"), nil)
 	}
 	info, err := os.Lstat(path)
 	if err != nil {
 		return fmt.Errorf("Windows app is unavailable: %w", err)
 	}
 	if !info.Mode().IsRegular() {
-		return fmt.Errorf("Windows app must be an ordinary .exe file")
+		return uiError(uiText("error.apps.ordinary_exe"), nil)
 	}
 	return nil
 }
@@ -30,11 +30,11 @@ func approveWindowsExecutable(prefs *approvedAppPreferences, path string) error 
 		return err
 	}
 	if len(prefs.Apps) >= maximumApprovedApps {
-		return fmt.Errorf("you can approve up to %d Windows apps", maximumApprovedApps)
+		return uiError(uiTextWith("error.apps.limit", map[string]string{"count": fmt.Sprint(maximumApprovedApps)}), nil)
 	}
 	for _, app := range prefs.Apps {
 		if strings.EqualFold(app.Path, path) {
-			return fmt.Errorf("this Windows app is already approved")
+			return uiError(uiText("error.apps.duplicate"), nil)
 		}
 	}
 	id, err := newApprovedAppID()
@@ -44,7 +44,7 @@ func approveWindowsExecutable(prefs *approvedAppPreferences, path string) error 
 	name := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 	name = strings.TrimSpace(name)
 	if name == "" || len([]rune(name)) > 80 {
-		return fmt.Errorf("Windows app filename needs a name of up to 80 characters")
+		return uiError(uiText("error.apps.name_length"), nil)
 	}
 	updated := *prefs
 	updated.Apps = append(append([]approvedWindowsApp{}, prefs.Apps...), approvedWindowsApp{ID: id, Name: name, Path: path})

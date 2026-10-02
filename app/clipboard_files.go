@@ -46,7 +46,7 @@ func clipboardFileName(name string) bool {
 
 func inspectClipboardArchive(data []byte) (*zip.Reader, error) {
 	if len(data) == 0 || len(data) > maxClipboardArchiveBytes {
-		return nil, fmt.Errorf("file selection exceeds the 16 MiB clipboard limit; use the shared folder")
+		return nil, uiError(uiText("error.transfer.clipboard_limit"), nil)
 	}
 	return inspectFileArchive(bytes.NewReader(data), int64(len(data)), maxClipboardFileEntries, maxClipboardFileBytes)
 }
@@ -60,7 +60,7 @@ func inspectFileArchive(reader io.ReaderAt, archiveBytes int64, maxEntries int, 
 		return nil, err
 	}
 	if len(z.File) == 0 || len(z.File) > maxEntries {
-		return nil, fmt.Errorf("transfer supports 1 to %d entries", maxEntries)
+		return nil, uiError(uiTextWith("error.transfer.entry_limit", map[string]string{"count": fmt.Sprint(maxEntries)}), nil)
 	}
 	seen := map[string]bool{}
 	spelling := map[string]string{}
@@ -101,7 +101,7 @@ type clipboardArchiveBuffer struct{ bytes.Buffer }
 
 func (b *clipboardArchiveBuffer) Write(p []byte) (int, error) {
 	if len(p) > maxClipboardArchiveBytes-b.Len() {
-		return 0, fmt.Errorf("file selection exceeds the 16 MiB clipboard limit; use the shared folder")
+		return 0, uiError(uiText("error.transfer.clipboard_limit"), nil)
 	}
 	return b.Buffer.Write(p)
 }
@@ -152,14 +152,14 @@ func writeFilesArchive(ctx context.Context, output io.Writer, paths []string, li
 					return fmt.Errorf("too many clipboard entries")
 				}
 				if !clipboardFileName(name) {
-					return fmt.Errorf("file name cannot be transferred between Windows and Linux")
+					return uiError(uiText("error.transfer.file_name"), nil)
 				}
 				info, err := d.Info()
 				if err != nil {
 					return err
 				}
 				if info.Mode()&os.ModeSymlink != 0 || (!info.IsDir() && !info.Mode().IsRegular()) {
-					return fmt.Errorf("links and special files must be copied through the shared folder")
+					return uiError(uiText("error.transfer.special_files"), nil)
 				}
 				header := &zip.FileHeader{Name: name, Method: zip.Deflate}
 				if preserveMetadata {

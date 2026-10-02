@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"io"
 	"net"
 	"os"
@@ -29,7 +28,7 @@ func checkForwardBindings(forwards []portForward) error {
 			socket, err = net.Listen("tcp4", address)
 		}
 		if err != nil {
-			return fmt.Errorf("Windows cannot open %s %s. Close the application using this port, or update the forward in Settings. %w", strings.ToUpper(forward.proto), address, err)
+			return uiError(uiTextWith("error.forward.bind", map[string]string{"protocol": strings.ToUpper(forward.proto), "address": address, "error": err.Error()}), err)
 		}
 		opened = append(opened, socket)
 	}

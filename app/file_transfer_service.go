@@ -207,7 +207,7 @@ func (s *fileTransferService) AcceptReceive(offer fileTransferOffer, destination
 		return fileTransferTicket{}, err
 	}
 	if _, err := os.Lstat(destination); !os.IsNotExist(err) {
-		return fileTransferTicket{}, fmt.Errorf("choose a new destination folder")
+		return fileTransferTicket{}, uiError(uiText("error.transfer.new_destination"), nil)
 	}
 	job, err := s.register("upload", offer)
 	if err != nil {

@@ -52,7 +52,7 @@ func fileDropListProc(hwnd, message, w, l, id, data uintptr) uintptr {
 // file formats understood by Explorer. COPY is the only advertised operation.
 func withHostDropData(paths []string, use func(uintptr) error) error {
 	if len(paths) == 0 {
-		return fmt.Errorf("select a received file first")
+		return uiError(uiText("error.drop.select_first"), nil)
 	}
 	var parent uintptr
 	name, _ := syscall.UTF16PtrFromString(filepath.Dir(paths[0]))
@@ -71,7 +71,7 @@ func withHostDropData(paths []string, use func(uintptr) error) error {
 	}()
 	for _, path := range paths {
 		if filepath.Dir(path) != filepath.Dir(paths[0]) {
-			return fmt.Errorf("drag files from one received folder at a time")
+			return uiError(uiText("error.drop.one_folder"), nil)
 		}
 		var pidl uintptr
 		name, _ := syscall.UTF16PtrFromString(path)

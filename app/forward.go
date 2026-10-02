@@ -44,7 +44,7 @@ func parseForward(value string) (portForward, error) {
 		f.proto = strings.ToLower(parts[0])
 		address, err := netip.ParseAddr(parts[1])
 		if err != nil || !address.Is4() || !(address.IsGlobalUnicast() || address.IsLoopback() || address.IsUnspecified() || address.IsLinkLocalUnicast()) {
-			return f, fmt.Errorf("choose a Windows IPv4 address or 0.0.0.0 for LAN forwarding")
+			return f, uiError(uiText("error.forward.lan_address"), nil)
 		}
 		f.bind = address.String()
 		parts = parts[2:]
@@ -53,7 +53,7 @@ func parseForward(value string) (portForward, error) {
 		parts = parts[1:]
 	case 2:
 	default:
-		return f, fmt.Errorf("port forward %q must look like tcp:2222:22", value)
+		return f, uiError(uiTextWith("error.forward.syntax", map[string]string{"forward": fmt.Sprintf("%q", value)}), nil)
 	}
 	if f.proto != "tcp" && f.proto != "udp" {
 		return f, fmt.Errorf("port forward %q: protocol must be tcp or udp", value)
@@ -71,7 +71,7 @@ func parseForward(value string) (portForward, error) {
 func parsePort(s string) (int, error) {
 	n, err := strconv.Atoi(s)
 	if err != nil || n < 1 || n > 65535 {
-		return 0, fmt.Errorf("%q is not a port between 1 and 65535", s)
+		return 0, uiError(uiTextWith("error.forward.port_range", map[string]string{"port": fmt.Sprintf("%q", s)}), nil)
 	}
 	return n, nil
 }
@@ -99,11 +99,11 @@ func (l *forwardList) Set(value string) error {
 
 func (l *forwardList) add(f portForward) error {
 	if f.proto == "tcp" && f.hostPort >= qmpToolsPort && f.hostPort <= timeZoneBridgePort {
-		return fmt.Errorf("windows TCP port %d is reserved by Try Omarchy; choose a port outside %d-%d", f.hostPort, qmpToolsPort, timeZoneBridgePort)
+		return uiError(uiTextWith("error.forward.reserved", map[string]string{"port": fmt.Sprint(f.hostPort), "first": fmt.Sprint(qmpToolsPort), "last": fmt.Sprint(timeZoneBridgePort)}), nil)
 	}
 	for _, existing := range *l {
 		if existing.proto == f.proto && existing.hostPort == f.hostPort && (existing.address() == f.address() || existing.address() == "0.0.0.0" || f.address() == "0.0.0.0") {
-			return fmt.Errorf("windows port %d is already forwarded for %s", f.hostPort, f.proto)
+			return uiError(uiTextWith("error.forward.duplicate", map[string]string{"port": fmt.Sprint(f.hostPort), "protocol": f.proto}), nil)
 		}
 	}
 	*l = append(*l, f)
@@ -183,7 +183,7 @@ func defaultPublicKey(home string) string {
 func resolveSSHPreset(forwards *forwardList, sshPort int, keyPath, home string, rejectUnusedKey bool) (publicKey string, err error) {
 	if sshPort != 0 {
 		if sshPort < 1 || sshPort > 65535 {
-			return "", fmt.Errorf("-ssh needs a Windows port between 1 and 65535")
+			return "", uiError(uiText("error.forward.ssh_port"), nil)
 		}
 		if err := forwards.add(portForward{proto: "tcp", hostPort: sshPort, guestPort: 22}); err != nil {
 			return "", err
@@ -191,7 +191,7 @@ func resolveSSHPreset(forwards *forwardList, sshPort int, keyPath, home string, 
 	}
 	if !sshRequested(*forwards) {
 		if keyPath != "" && rejectUnusedKey {
-			return "", fmt.Errorf("-ssh-key only makes sense with -ssh or a -forward to Omarchy port 22")
+			return "", uiError(uiText("error.forward.ssh_key"), nil)
 		}
 		return "", nil
 	}

@@ -90,7 +90,7 @@ func prepareFileTransfer(ctx context.Context, sources []string, cache string, li
 		}
 		relative, err := filepath.Rel(absolute, cache)
 		if err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-			return offer, "", fmt.Errorf("transfer storage must be outside the selected folders")
+			return offer, "", uiError(uiText("error.transfer.storage_outside"), nil)
 		}
 	}
 	available, err := diskFreeBytes(cache)
@@ -177,7 +177,7 @@ func receiveFileTransfer(ctx context.Context, input io.Reader, offer fileTransfe
 		return err
 	}
 	if _, err := os.Lstat(destination); !os.IsNotExist(err) {
-		return fmt.Errorf("choose a new folder for these files")
+		return uiError(uiText("error.transfer.new_folder"), nil)
 	}
 	parent := filepath.Dir(destination)
 	if err := requireDiskSpace(parent, offer.ArchiveBytes+offer.FileBytes+diskSpaceReserve); err != nil {

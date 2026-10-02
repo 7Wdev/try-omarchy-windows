@@ -123,7 +123,7 @@ func runUninstall(dir string) error {
 	if disk := filepath.Join(dir, "vm", "disk.raw"); fileExists(disk) {
 		f, err := openBackupDisk(disk)
 		if err != nil {
-			return fmt.Errorf("close Try Omarchy before removing it: %w", err)
+			return uiError(uiTextWith("error.uninstall.close_first", map[string]string{"error": err.Error()}), err)
 		}
 		f.Close()
 	}

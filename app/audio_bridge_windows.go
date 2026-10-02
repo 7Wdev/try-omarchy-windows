@@ -273,7 +273,7 @@ func serveAudioBridge(conn net.Conn, dataDir, qemu string, microphoneDisabledAtB
 func runAudioBridge(dataDir, qemu string, microphoneDisabledAtBoot bool) {
 	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", audioBridgePort))
 	if err != nil {
-		fatal("Try Omarchy audio port %d is in use.", audioBridgePort)
+		fatal(uiTextWith("fatal.port.audio", map[string]string{"port": fmt.Sprint(audioBridgePort)}))
 	}
 	logf("audio: bridge listening on %d", audioBridgePort)
 	go func() {

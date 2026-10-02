@@ -28,7 +28,7 @@ func growPortableDiskWithTool(disk installationDisk, bytes int64, tool string, p
 	}
 	source, err := openBackupDisk(disk.Path)
 	if err != nil {
-		return fmt.Errorf("close Omarchy before changing its disk capacity: %w", err)
+		return uiError(uiTextWith("error.disk.close_first", map[string]string{"error": err.Error()}), err)
 	}
 	defer source.Close()
 	if err := cleanupPortableGrowth(filepath.Dir(disk.Path)); err != nil {

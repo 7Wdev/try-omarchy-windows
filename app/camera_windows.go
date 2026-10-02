@@ -29,7 +29,7 @@ func runCameraBridge(preferences desktopPreferences) {
 	}
 	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", cameraPort))
 	if err != nil {
-		fatal("Try Omarchy camera port %d is in use.", cameraPort)
+		fatal(uiTextWith("fatal.port.camera", map[string]string{"port": fmt.Sprint(cameraPort)}))
 	}
 	logf("camera: bridge listening on %d", cameraPort)
 	go func() {

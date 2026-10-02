@@ -33,7 +33,7 @@ func createRecommendedSharedFolder(home string) (string, error) {
 		return "", fmt.Errorf("checking %s: %w", path, err)
 	}
 	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-		return "", fmt.Errorf("%s already exists and is not a regular folder", path)
+		return "", uiError(uiTextWith("error.share.exists", map[string]string{"path": path}), nil)
 	}
 	return path, nil
 }

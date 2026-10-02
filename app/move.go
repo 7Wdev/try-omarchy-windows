@@ -397,7 +397,7 @@ func (s moveStore) prepare(source, destination string, report backupProgress) (*
 		return nil, err
 	}
 	if pathsOverlap(source, destination) || pathsOverlap(s.dir, source) || pathsOverlap(s.dir, destination) {
-		return nil, fmt.Errorf("choose a separate destination outside the installation and host-state folders")
+		return nil, uiError(uiText("error.move.destination"), nil)
 	}
 	if err := validateMovePath(source); err != nil {
 		return nil, err
@@ -411,19 +411,19 @@ func (s moveStore) prepare(source, destination string, report backupProgress) (*
 	}
 	ownsDefault := (hasDefault && pathsEqual(selectedDefault, source)) || (!hasDefault && pathsEqual(source, s.defaultDir))
 	if pathsEqual(destination, s.defaultDir) && !ownsDefault {
-		return nil, fmt.Errorf("another installation owns the default location; choose a different folder")
+		return nil, uiError(uiText("error.move.default_taken"), nil)
 	}
 	if err := s.checkDestination(destination); err != nil {
 		return nil, err
 	}
 	for _, name := range []string{updateStateFilename, payloadUpdateStateFilename} {
 		if _, err := os.Lstat(filepath.Join(source, name)); !os.IsNotExist(err) {
-			return nil, fmt.Errorf("finish the pending update before moving")
+			return nil, uiError(uiText("error.move.pending_update"), nil)
 		}
 	}
 	disk, err := openBackupDisk(filepath.Join(source, "vm", "disk.raw"))
 	if err != nil {
-		return nil, fmt.Errorf("close Omarchy before moving: %w", err)
+		return nil, uiError(uiTextWith("error.move.close_first", map[string]string{"error": err.Error()}), err)
 	}
 	defer disk.Close()
 	files, required, err := inventoryMove(source, disk, report)
@@ -707,14 +707,14 @@ func (s moveStore) cleanup(dir string) error {
 	}
 	m := state.Retained
 	if m == nil || !pathsEqual(m.Destination, dir) || !m.Booted {
-		return fmt.Errorf("start the moved Omarchy successfully before removing its original copy")
+		return uiError(uiText("error.move.start_first"), nil)
 	}
 	if state.Pending != nil {
 		return errors.New("finish the pending move first")
 	}
 	disk, err := openMoveCleanupDisk(filepath.Join(m.Source, "vm", "disk.raw"))
 	if err != nil && !(m.Phase == "cleaning" && os.IsNotExist(err)) {
-		return fmt.Errorf("close the original Omarchy before cleanup: %w", err)
+		return uiError(uiTextWith("error.move.close_original", map[string]string{"error": err.Error()}), err)
 	}
 	if disk != nil {
 		defer disk.Close()

@@ -29,13 +29,13 @@ func createPortableCopyUsingTool(dir, destination, launcher, tool string, report
 		return err
 	}
 	if pathsOverlap(dir, destination) {
-		return fmt.Errorf("choose a portable destination outside this installation")
+		return uiError(uiText("error.portable.destination"), nil)
 	}
 	if err := validateMovePath(destination); err != nil {
 		return err
 	}
 	if _, err := os.Lstat(destination); !os.IsNotExist(err) {
-		return fmt.Errorf("choose a new folder for the portable copy")
+		return uiError(uiText("error.portable.new_folder"), nil)
 	}
 	sums, err := parseVerifiedSums(defaultSums, defaultSumsSHA256)
 	if err != nil {
@@ -46,10 +46,10 @@ func createPortableCopyUsingTool(dir, destination, launcher, tool string, report
 		return err
 	}
 	if !ready {
-		return fmt.Errorf("update this installation with the current launcher before creating a portable copy")
+		return uiError(uiText("error.portable.update_first"), nil)
 	}
 	if !runtimeReceiptMatches(filepath.Join(dir, "runtime"), defaultReleaseURL, defaultSumsSHA256, sums[runtimeZip]) {
-		return fmt.Errorf("install the matching bundled runtime before creating a portable copy")
+		return uiError(uiText("error.portable.runtime"), nil)
 	}
 	stage, err := os.MkdirTemp(filepath.Dir(destination), ".try-omarchy-portable-")
 	if err != nil {

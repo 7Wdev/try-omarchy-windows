@@ -106,13 +106,13 @@ func writeVMArchive(dir, destination string, report backupProgress, checkpoint b
 	rel, err := filepath.Rel(root, parent)
 	if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		if !checkpoint || filepath.Base(destination) != "vm.zip" || filepath.Dir(rel) != "checkpoints" || !strings.HasPrefix(filepath.Base(rel), ".pending-") || !validCheckpointID(strings.TrimPrefix(filepath.Base(rel), ".pending-")) {
-			return fmt.Errorf("save the backup outside the Try Omarchy data folder")
+			return uiError(uiText("error.backup.outside_data"), nil)
 		}
 	}
 
 	for _, name := range []string{payloadUpdateStateFilename, updateStateFilename} {
 		if _, err := os.Lstat(filepath.Join(dir, name)); !os.IsNotExist(err) {
-			return fmt.Errorf("finish the pending update before backing up")
+			return uiError(uiText("error.backup.pending_update"), nil)
 		}
 	}
 	inventory, err := inspectInstallationDisk(dir)
@@ -129,7 +129,7 @@ func writeVMArchive(dir, destination string, report backupProgress, checkpoint b
 	defer cleanup()
 	disk, err := openBackupDisk(diskPath)
 	if err != nil {
-		return fmt.Errorf("close Try Omarchy before backing up: %w", err)
+		return uiError(uiTextWith("error.backup.close_first", map[string]string{"error": err.Error()}), err)
 	}
 	defer disk.Close()
 	var entries []backupEntry
@@ -189,7 +189,7 @@ func writeVMArchive(dir, destination string, report backupProgress, checkpoint b
 		return err
 	}
 	if _, err := os.Lstat(destination); !os.IsNotExist(err) {
-		return fmt.Errorf("choose a new backup filename")
+		return uiError(uiText("error.backup.new_filename"), nil)
 	}
 	f, err := os.CreateTemp(filepath.Dir(destination), ".try-omarchy-backup-*")
 	if err != nil {
@@ -325,7 +325,7 @@ func restoreVMBackup(source, destination string) error {
 
 func restoreVMBackupProgress(source, destination string, report backupProgress) error {
 	if _, err := os.Lstat(destination); !os.IsNotExist(err) {
-		return fmt.Errorf("restore requires a new data folder; the existing folder was not changed")
+		return uiError(uiText("error.restore.new_folder"), nil)
 	}
 	z, err := zip.OpenReader(source)
 	if err != nil {
@@ -337,7 +337,7 @@ func restoreVMBackupProgress(source, destination string, report backupProgress) 
 
 func restoreVMBackupReader(z *zip.Reader, destination string, report backupProgress) error {
 	if _, err := os.Lstat(destination); !os.IsNotExist(err) {
-		return fmt.Errorf("restore requires a new data folder; the existing folder was not changed")
+		return uiError(uiText("error.restore.new_folder"), nil)
 	}
 	manifest, files, err := readVMBackupReader(z)
 	if err != nil {

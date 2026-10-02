@@ -56,7 +56,7 @@ func parseUSBHostDevices(text string) ([]usbDevice, error) {
 		result = append(result, d)
 	}
 	if strings.TrimSpace(text) != "" && len(result) == 0 {
-		return nil, fmt.Errorf("the runtime could not list USB devices: %s", strings.TrimSpace(text))
+		return nil, uiError(uiTextWith("error.usb.list", map[string]string{"error": strings.TrimSpace(text)}), nil)
 	}
 	return result, nil
 }
@@ -132,13 +132,13 @@ func (b usbBroker) Attach(ctx context.Context, selected usbDevice) error {
 	for _, current := range devices {
 		if current.ID == selected.identity() && current.Address == selected.Address {
 			if current.Claimed {
-				return fmt.Errorf("this USB device is already attached")
+				return uiError(uiText("error.usb.attached"), nil)
 			}
 			found = true
 		}
 	}
 	if !found {
-		return fmt.Errorf("the USB device changed or was unplugged; refresh and select it again")
+		return uiError(uiText("error.usb.changed"), nil)
 	}
 	var properties []usbQOMEntry
 	if err := b.qmp.Call(ctx, "device-list-properties", map[string]any{"typename": "usb-host"}, &properties); err != nil {
@@ -151,7 +151,7 @@ func (b usbBroker) Attach(ctx context.Context, selected usbDevice) error {
 		}
 	}
 	if !supported {
-		return fmt.Errorf("update the runtime to use verified USB attachment")
+		return uiError(uiText("error.usb.runtime"), nil)
 	}
 	objects, err := b.objects(ctx)
 	if err != nil {
@@ -167,11 +167,11 @@ func (b usbBroker) Attach(ctx context.Context, selected usbDevice) error {
 		}
 	}
 	if !controller {
-		return fmt.Errorf("restart Omarchy to enable USB device attachment")
+		return uiError(uiText("error.usb.restart"), nil)
 	}
 	arguments := map[string]any{"driver": "usb-host", "id": selected.identity(), "bus": usbControllerID + ".0", "hostbus": selected.Bus, "hostaddr": selected.Address, "hostport": selected.Port, "vendorid": selected.Vendor, "productid": selected.Product, "auto-reconnect": false}
 	if err := b.qmp.Call(ctx, "device_add", arguments, nil); err != nil {
-		return fmt.Errorf("Windows could not release this device to Omarchy. Close applications using it and check its USB driver. %w", err)
+		return uiError(uiTextWith("error.usb.release", map[string]string{"error": err.Error()}), err)
 	}
 	return nil
 }

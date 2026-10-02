@@ -106,10 +106,10 @@ func ensureLANFirewall(cfg *config) error {
 		return err
 	}
 	if code == errorCancelled {
-		return fmt.Errorf("Windows permission is needed for the selected LAN forwards")
+		return uiError(uiText("error.lan.permission"), nil)
 	}
 	if code != 0 {
-		return fmt.Errorf("Windows could not configure LAN forwarding (error %d)", code)
+		return uiError(uiTextWith("error.lan.firewall", map[string]string{"code": fmt.Sprint(code)}), nil)
 	}
 	return executeLANFirewall(plan, false)
 }

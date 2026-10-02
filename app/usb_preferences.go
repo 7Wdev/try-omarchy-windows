@@ -29,7 +29,7 @@ type usbPreferences struct {
 
 func (p usbPreferences) validate() error {
 	if p.Enabled && p.Device == nil {
-		return fmt.Errorf("choose a USB device before enabling attachment")
+		return uiError(uiText("error.usb.choose"), nil)
 	}
 	if d := p.Device; d != nil {
 		if err := (usbDevice{Bus: d.Bus, Address: 1, Port: d.Port, Vendor: d.Vendor, Product: d.Product}).validate(); err != nil {
@@ -82,7 +82,7 @@ func (b usbBroker) AttachSaved(ctx context.Context, p usbPreferences) error {
 			return b.Attach(ctx, d)
 		}
 	}
-	return fmt.Errorf("saved USB device %s is not connected at its selected port", p.Device.Name)
+	return uiError(uiTextWith("error.usb.saved_missing", map[string]string{"device": p.Device.Name}), nil)
 }
 
 func loadUSBPreferences(dir string) (usbPreferences, error) {

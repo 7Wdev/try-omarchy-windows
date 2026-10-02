@@ -379,13 +379,13 @@ func (s *mfCameraSource) open() error {
 	}
 	if s.activate == nil {
 		mfRelease(&attributes)
-		return errors.New("The selected camera is disconnected. Reconnect it or choose another camera in Try Omarchy Settings.")
+		return uiError(uiText("error.camera.disconnected"), nil)
 	}
 
 	var source unsafe.Pointer
 	if hr := mfCall(s.activate, 33, uintptr(unsafe.Pointer(&guidIMFMediaSource)), uintptr(unsafe.Pointer(&source))); hr < 0 { // IMFActivate::ActivateObject
 		mfRelease(&attributes)
-		return fmt.Errorf("The camera could not be opened. Close other camera apps and check Windows camera privacy settings (0x%08x)", uint32(hr))
+		return uiError(uiTextWith("error.camera.open", map[string]string{"code": fmt.Sprintf("%08x", uint32(hr))}), nil)
 	}
 
 	var callbackAttrs unsafe.Pointer

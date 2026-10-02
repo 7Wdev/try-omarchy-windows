@@ -10,11 +10,11 @@ import (
 // survives a process interruption between the two publication renames.
 func resetStandardDisk(cfg *config, expandedMiB int64) (string, error) {
 	if cfg.portable {
-		return "", fmt.Errorf("reset with recovery is only supported for standard installs")
+		return "", uiError(uiText("error.reset.standard_only"), nil)
 	}
 	for _, name := range []string{payloadUpdateStateFilename, updateStateFilename} {
 		if _, err := os.Lstat(filepath.Join(cfg.dir, name)); !os.IsNotExist(err) {
-			return "", fmt.Errorf("finish the pending update before resetting")
+			return "", uiError(uiText("error.reset.pending_update"), nil)
 		}
 	}
 	if info, err := os.Lstat(cfg.disk); os.IsNotExist(err) {
@@ -28,7 +28,7 @@ func resetStandardDisk(cfg *config, expandedMiB int64) (string, error) {
 	}
 	lock, err := openBackupDisk(cfg.disk)
 	if err != nil {
-		return "", fmt.Errorf("close Omarchy before resetting: %w", err)
+		return "", uiError(uiTextWith("error.reset.close_first", map[string]string{"error": err.Error()}), err)
 	}
 	defer lock.Close()
 	stage, err := os.MkdirTemp(cfg.vmDir, ".reset-staging-*")
