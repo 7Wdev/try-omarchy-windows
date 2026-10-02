@@ -632,5 +632,6 @@
   "error.usb.choose": "choose a USB device before enabling attachment",
   "error.usb.saved_missing": "saved USB device {device} is not connected at its selected port",
   "error.hello.passkeys": "this Windows version cannot list passkeys; remove it in Settings > Accounts > Passkeys",
-  "error.hello.none": "no Windows Hello authenticator"
+  "error.hello.none": "no Windows Hello authenticator",
+  "setup.keys.compact": "Super+Space: menu. Super+K: all keybindings."
 }

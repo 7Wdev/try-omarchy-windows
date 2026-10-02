@@ -1,15 +1,18 @@
 package main
 
 import (
+	"encoding/json"
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
 	"testing/fstest"
+	"unicode"
 )
 
 func TestEmbeddedLauncherMessages(t *testing.T) {
@@ -126,7 +129,13 @@ func TestLauncherTranslationCoverage(t *testing.T) {
 			}
 		}
 	})
+	// TRY_OMARCHY_UI_LANGUAGE=ko lists one language as JSON lines, ready to
+	// paste into ui-locales/ko.json and translate.
+	only := os.Getenv("TRY_OMARCHY_UI_LANGUAGE")
 	for _, language := range languages {
+		if only != "" && language != only {
+			continue
+		}
 		var missing []string
 		for _, key := range keys {
 			if catalogs[language][key] == "" {
@@ -135,9 +144,90 @@ func TestLauncherTranslationCoverage(t *testing.T) {
 		}
 		t.Logf("%s: %d of %d messages translated", language, len(keys)-len(missing), len(keys))
 		for _, key := range missing {
-			t.Logf("  %s: %q", key, catalogs["en"][key])
+			name, _ := json.Marshal(key)
+			value, _ := json.Marshal(catalogs["en"][key])
+			t.Logf("  %s: %s,", name, value)
 		}
 	}
+}
+
+// TestLauncherTextComesFromTheCatalog keeps English out of the code: text
+// passed to a dialog, status line, menu or control must come from uiText or
+// uiTextWith, so every language can translate it.
+func TestLauncherTextComesFromTheCatalog(t *testing.T) {
+	sinks := map[string]bool{
+		"msgBox": true, "errorBox": true, "infoBox": true, "fatal": true,
+		"chooseAction": true, "chooseActionWithTextHeight": true, "chooseInstallAction": true,
+		"chooseRecoveryPath": true, "chooseWindowsPath": true, "browseForFolder": true,
+		"setText": true, "usbSetText": true, "appendItem": true, "setStatus": true, "uiStatus": true,
+		"notificationText": true, "control": true, "mk": true, "button": true, "add": true,
+		"addHeader": true, "note": true, "check": true, "section": true,
+	}
+	stores := map[string]bool{"cancelMessage": true, "cancelStatus": true, "cameraState": true, "status": true}
+	// Window classes, key names and format verbs are not words to translate.
+	allowed := map[string]bool{
+		"": true, "%s": true, "STATIC": true, "BUTTON": true, "EDIT": true, "LISTBOX": true,
+		"COMBOBOX": true, "msctls_trackbar32": true, "WINDOWS  ·  ": true, "Omarchy-": true, ".zip": true,
+		"SUPER+SPACE": true, "SUPER+K": true, "SUPER+RETURN": true, "SUPER+W": true,
+	}
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fset := token.NewFileSet()
+	for _, name := range files {
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(fset, name, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ast.Inspect(file, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			switch function := call.Fun.(type) {
+			case *ast.Ident:
+				if !sinks[function.Name] {
+					return true
+				}
+			case *ast.SelectorExpr:
+				receiver, ok := function.X.(*ast.SelectorExpr)
+				if function.Sel.Name != "Store" || !ok || !stores[receiver.Sel.Name] {
+					return true
+				}
+			default:
+				return true
+			}
+			for _, argument := range call.Args {
+				for _, literal := range textLiterals(argument) {
+					value, _ := strconv.Unquote(literal.Value)
+					if !allowed[value] && strings.IndexFunc(value, unicode.IsLetter) >= 0 {
+						t.Errorf("%s: %q is shown to users; move it to ui-locales/en.json", fset.Position(literal.Pos()), value)
+					}
+				}
+			}
+			return true
+		})
+	}
+}
+
+// textLiterals returns the string literals that become part of an
+// argument's text, without looking inside calls such as uiText.
+func textLiterals(expression ast.Expr) []*ast.BasicLit {
+	switch e := expression.(type) {
+	case *ast.BasicLit:
+		if e.Kind == token.STRING {
+			return []*ast.BasicLit{e}
+		}
+	case *ast.BinaryExpr:
+		return append(textLiterals(e.X), textLiterals(e.Y)...)
+	case *ast.ParenExpr:
+		return textLiterals(e.X)
+	}
+	return nil
 }
 
 // TestLauncherMessageKeysMatchTheCatalog reads the launcher's source: every

@@ -619,7 +619,7 @@ func (ui *progressUI) run() {
 			positions := []int32{title, body, first, second}
 			procSetWindowPos.Call(h, 0, 32, uintptr(positions[i]), 0, 0, swpNoSize|0x0004|0x0010)
 		}
-		setText(hSuperInfo, "Super+Space: menu. Super+K: all keybindings.")
+		setText(hSuperInfo, uiText("setup.keys.compact"))
 		if short {
 			procSetWindowPos.Call(hHead, 0, 96, 10, 0, 0, swpNoSize|0x0004|0x0010)
 			procSetWindowPos.Call(hTag, 0, 98, 40, 0, 0, swpNoSize|0x0004|0x0010)
