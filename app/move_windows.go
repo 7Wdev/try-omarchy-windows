@@ -213,19 +213,19 @@ func runMoveUI(dir string, cleanup bool) error {
 			return fmt.Errorf("close Omarchy before cleanup: %w", err)
 		}
 		defer disk.Close()
-		if msgBox("Remove the retained original installation?\n\n"+m.Source+"\n\nThe moved installation at "+m.Destination+" will be kept. Files changed in the original since the move will stop cleanup.", mbYesNo|mbIconQuestion|mbDefbutton2) != idYes {
+		if msgBox(uiTextWith("move.cleanup.confirm", map[string]string{"original": m.Source, "moved": m.Destination}), mbYesNo|mbIconQuestion|mbDefbutton2) != idYes {
 			return nil
 		}
-		beginRecoveryProgress("Checking and removing the retained original...")
+		beginRecoveryProgress(uiText("move.cleanup.status"))
 		defer uiDone()
 		getUI().finishOnly.Store(true)
 		if err := s.cleanup(dir); err != nil {
 			return err
 		}
-		infoBox("The retained original was removed. Your moved installation is ready to use.")
+		infoBox(uiText("move.cleanup.done"))
 		return nil
 	}
-	parent, ok := browseForFolder(0, "Choose a drive or parent folder for the moved TryOmarchy folder")
+	parent, ok := browseForFolder(0, uiText("move.choose"))
 	if !ok {
 		return nil
 	}
@@ -236,16 +236,16 @@ func runMoveUI(dir string, cleanup bool) error {
 	if err := validateStandardDataDrive(destination); err != nil {
 		return err
 	}
-	if msgBox("Move this installation?\n\nFrom: "+dir+"\nTo: "+destination+"\n\nClose Omarchy first. Saved settings and files will be copied and verified. The original will be kept until you start the moved copy and choose Remove previous location in Settings.", mbYesNo|mbIconQuestion|mbDefbutton2) != idYes {
+	if msgBox(uiTextWith("move.confirm", map[string]string{"from": dir, "to": destination}), mbYesNo|mbIconQuestion|mbDefbutton2) != idYes {
 		return nil
 	}
 	// The retained stable launcher must understand move redirects too.
 	if _, err := stableLauncherPath(dir); err != nil {
 		return err
 	}
-	beginRecoveryProgress("Checking the installation and required space...")
+	beginRecoveryProgress(uiText("move.status.checking"))
 	defer uiDone()
-	m, err := s.prepare(dir, destination, recoveryProgress("Moving"))
+	m, err := s.prepare(dir, destination, recoveryProgress(recoveryMoving))
 	if err != nil {
 		// Copy cancellation can safely discard staging immediately. A verified
 		// move is instead recovered forward on the next normal launch.
@@ -257,12 +257,12 @@ func runMoveUI(dir string, cleanup bool) error {
 		return err
 	}
 	getUI().finishOnly.Store(true)
-	getUI().setStatus("Finishing the installation move...")
+	getUI().setStatus("%s", uiText("move.status.finishing"))
 	if err := s.recover(activateMovedInstallation); err != nil {
 		return fmt.Errorf("the verified copy is safe; open Try Omarchy again to finish switching locations: %w", err)
 	}
 	uiDone()
-	infoBox("Try Omarchy moved to:\n\n" + m.Destination + "\n\nStart it normally to check your files. After a successful boot, Settings can remove the retained original at:\n" + m.Source)
+	infoBox(uiTextWith("move.done", map[string]string{"moved": m.Destination, "original": m.Source}))
 	return nil
 }
 

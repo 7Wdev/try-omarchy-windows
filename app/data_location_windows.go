@@ -101,10 +101,9 @@ func validateStandardDataDrive(path string) error {
 // its files together in a TryOmarchy child directory.
 func chooseFirstRunDataDirectory(defaultDir string) (string, bool, error) {
 	for {
-		answer, err := chooseAction("Choose where to keep Omarchy",
-			"Choose where Try Omarchy stores its virtual machine, graphics runtime, and downloads.\n\n"+
-				"Default location:\n"+defaultDir+"\n\nChoose a local NTFS or ReFS drive with room for your files.",
-			"Use default location", "Choose another drive or folder", "Cancel",
+		answer, err := chooseAction(uiText("location.title"),
+			uiTextWith("location.body", map[string]string{"path": defaultDir}),
+			uiText("location.use_default"), uiText("location.choose_other"), uiText("location.cancel"),
 		)
 		if err != nil {
 			return "", false, err
@@ -114,43 +113,43 @@ func chooseFirstRunDataDirectory(defaultDir string) (string, bool, error) {
 			return "", false, nil
 		case 1:
 			if err := validateStandardDataDrive(defaultDir); err != nil {
-				errorBox("Try Omarchy cannot use the default location.\n\n" + err.Error() + "\n\nChoose another local drive or folder.")
+				errorBox(uiTextWith("location.error.default", map[string]string{"error": err.Error()}))
 				continue
 			}
 			return defaultDir, true, nil
 		case 2:
-			parent, ok := browseForFolder(0, "Choose a local drive or parent folder. Try Omarchy will create a TryOmarchy folder inside it.")
+			parent, ok := browseForFolder(0, uiText("location.browse"))
 			if !ok {
 				continue
 			}
 			selected, err := dataDirectoryForSelection(parent)
 			if err != nil {
-				errorBox("Try Omarchy cannot use that location.\n\n" + err.Error())
+				errorBox(uiTextWith("location.error.unusable", map[string]string{"error": err.Error()}))
 				continue
 			}
 			if err := validateStandardDataDrive(selected); err != nil {
-				errorBox("Try Omarchy cannot use that location.\n\n" + err.Error())
+				errorBox(uiTextWith("location.error.unusable", map[string]string{"error": err.Error()}))
 				continue
 			}
 			selectable, err := standardDataDirectorySelectable(selected)
 			if err != nil {
-				errorBox("Try Omarchy cannot inspect that location.\n\n" + err.Error())
+				errorBox(uiTextWith("location.error.inspect", map[string]string{"error": err.Error()}))
 				continue
 			}
 			if !selectable {
-				errorBox("That TryOmarchy folder is not empty and is not a complete Try Omarchy installation. Choose another parent folder or an empty TryOmarchy folder.")
+				errorBox(uiText("location.error.not_empty"))
 				continue
 			}
 			if err := ensureDataDirectoryWritable(selected); err != nil {
-				errorBox("Try Omarchy cannot write to that location.\n\n" + err.Error())
+				errorBox(uiTextWith("location.error.write", map[string]string{"error": err.Error()}))
 				continue
 			}
 			available, err := diskFreeBytes(selected)
 			if err != nil {
-				errorBox("Try Omarchy cannot check the free space at that location.\n\n" + err.Error())
+				errorBox(uiTextWith("location.error.free_space", map[string]string{"error": err.Error()}))
 				continue
 			}
-			if msgBox(fmt.Sprintf("Store Try Omarchy here?\n\n%s\n\nAvailable space: %s", selected, formatGiB(available)), mbYesNo|mbIconQuestion) != idYes {
+			if msgBox(uiTextWith("location.confirm", map[string]string{"path": selected, "space": formatGiB(available)}), mbYesNo|mbIconQuestion) != idYes {
 				continue
 			}
 			return selected, true, nil
