@@ -123,7 +123,7 @@ func recoverCheckpointRollback(dir string) error {
 				}
 				lock, err := openBackupDisk(path)
 				if err != nil {
-					return fmt.Errorf("close Omarchy before snapshot recovery: %w", err)
+					return uiError(uiTextWith("error.snapshots.close_recovery", map[string]string{"error": err.Error()}), err)
 				}
 				lock.Close()
 			}
@@ -216,7 +216,7 @@ func (s checkpointStore) rollbackUsingTool(id, tool string, report backupProgres
 	}
 	for _, name := range []string{payloadUpdateStateFilename, updateStateFilename} {
 		if _, err := os.Lstat(filepath.Join(s.installation, name)); !os.IsNotExist(err) {
-			return "", fmt.Errorf("finish the pending update before rolling back")
+			return "", uiError(uiText("error.snapshots.pending_update"), nil)
 		}
 	}
 	inventory, err := inspectInstallationDisk(s.installation)
@@ -225,7 +225,7 @@ func (s checkpointStore) rollbackUsingTool(id, tool string, report backupProgres
 	}
 	lock, err := openBackupDisk(inventory.Path)
 	if err != nil {
-		return "", fmt.Errorf("close Omarchy before rolling back: %w", err)
+		return "", uiError(uiTextWith("error.snapshots.close_rollback", map[string]string{"error": err.Error()}), err)
 	}
 	defer lock.Close()
 	// Use a private temporary directory, then a journal identity independent

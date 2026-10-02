@@ -225,7 +225,7 @@ func approveHelloRequest(request helloRequest) helloResponse {
 		default:
 			var available int32
 			if hr, _, _ := procWebAuthNAvailable.Call(uintptr(unsafe.Pointer(&available))); hr != 0 || available == 0 {
-				err = errors.New("no Windows Hello authenticator")
+				err = uiError(uiText("error.hello.none"), nil)
 			} else if request.Operation == "enroll" {
 				response.AuthenticatorData, err = createHelloCredential(owner, request)
 			} else {
@@ -327,7 +327,7 @@ func deleteHelloCredential(request helloRequest) error {
 		return err
 	}
 	if procWebAuthNCredentialList.Find() != nil || procWebAuthNDeleteCredential.Find() != nil {
-		return errors.New("this Windows version cannot list passkeys; remove it in Settings > Accounts > Passkeys")
+		return uiError(uiText("error.hello.passkeys"), nil)
 	}
 	options := webauthnGetCredentialsOptions{Version: 1, RPID: wideString(helloRelyingPartyID)}
 	var list *webauthnCredentialDetailsList

@@ -11,7 +11,7 @@ import (
 func runHelloBridge() {
 	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", helloBridgePort))
 	if err != nil {
-		fatal("Try Omarchy authentication port %d is in use.", helloBridgePort)
+		fatal(uiTextWith("fatal.port.authentication", map[string]string{"port": fmt.Sprint(helloBridgePort)}))
 	}
 	logf("Windows Hello: guest port listening on %d", helloBridgePort)
 	var active atomic.Bool

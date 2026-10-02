@@ -135,7 +135,7 @@ func planGuestResources(profile string, host hostResources, gpu bool, cpus, memo
 			reserve := max(4096, host.TotalMiB/8)
 			available := min(host.TotalMiB, host.AvailableMiB) - reserve
 			if available < minimumGuestMemoryMiB && !(explicitMemory && memory != 0) {
-				return guestResources{}, fmt.Errorf("not enough available RAM for Maximum performance while keeping %d MiB of Windows headroom; close some Windows apps or choose Balanced", reserve)
+				return guestResources{}, uiError(uiTextWith("error.resources.maximum", map[string]string{"headroom": fmt.Sprint(reserve)}), nil)
 			}
 			plan.MemoryMiB = max(minimumGuestMemoryMiB, min(maximumGuestMemoryMiB, available/256*256))
 		}
@@ -153,7 +153,7 @@ func planGuestResources(profile string, host hostResources, gpu bool, cpus, memo
 		return guestResources{}, fmt.Errorf("guest RAM must be between 1024 and 65536 MiB")
 	}
 	if host.TotalMiB > 0 && plan.MemoryMiB > host.TotalMiB-hostMemReserveMiB {
-		return guestResources{}, fmt.Errorf("guest RAM must leave at least %d MiB of physical memory for Windows", hostMemReserveMiB)
+		return guestResources{}, uiError(uiTextWith("error.resources.headroom", map[string]string{"headroom": fmt.Sprint(hostMemReserveMiB)}), nil)
 	}
 	return plan, nil
 }

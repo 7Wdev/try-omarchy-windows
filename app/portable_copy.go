@@ -13,7 +13,7 @@ import (
 func stagePortableData(dir, data, tool string, report backupProgress) error {
 	for _, name := range []string{payloadUpdateStateFilename, updateStateFilename} {
 		if _, err := os.Lstat(filepath.Join(dir, name)); !os.IsNotExist(err) {
-			return fmt.Errorf("finish the pending update before creating a portable copy")
+			return uiError(uiText("error.portable.pending_update"), nil)
 		}
 	}
 	disk, err := inspectInstallationDisk(dir)
@@ -26,7 +26,7 @@ func stagePortableData(dir, data, tool string, report backupProgress) error {
 func stageDirectPortableData(dir, data string, disk installationDisk, tool string, report backupProgress) error {
 	source, err := openBackupDisk(disk.Path)
 	if err != nil {
-		return fmt.Errorf("close Omarchy before creating a portable copy: %w", err)
+		return uiError(uiTextWith("error.portable.close_first", map[string]string{"error": err.Error()}), err)
 	}
 	defer source.Close()
 	verifyBacking := func() error {

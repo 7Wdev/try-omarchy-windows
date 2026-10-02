@@ -144,7 +144,7 @@ func (s checkpointStore) Create(name string, report backupProgress) (vmCheckpoin
 	var entry vmCheckpoint
 	name = strings.TrimSpace(name)
 	if !validCheckpointName(name) {
-		return entry, fmt.Errorf("give the snapshot a name of 1 to 80 characters")
+		return entry, uiError(uiText("error.snapshots.name_length"), nil)
 	}
 	root, err := s.open(true)
 	if err != nil {
@@ -164,7 +164,7 @@ func (s checkpointStore) Create(name string, report backupProgress) (vmCheckpoin
 		return entry, err
 	}
 	if len(entries) >= 1000 {
-		return entry, fmt.Errorf("remove an old snapshot before creating another")
+		return entry, uiError(uiText("error.snapshots.limit"), nil)
 	}
 	var token [16]byte
 	if _, err := rand.Read(token[:]); err != nil {
@@ -260,7 +260,7 @@ func (s checkpointStore) Restore(id, destination string, report backupProgress) 
 		return err
 	}
 	if pathsOverlap(sourcePath, destination) {
-		return fmt.Errorf("restore the snapshot into a new folder outside this installation")
+		return uiError(uiText("error.snapshots.restore_folder"), nil)
 	}
 	return s.restoreVerified(id, destination, report)
 }

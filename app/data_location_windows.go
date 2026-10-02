@@ -29,7 +29,7 @@ func supportedLocalDriveType(driveType uintptr) bool {
 
 func dataLocationVolumeRoot(path string) (string, error) {
 	if strings.HasPrefix(filepath.VolumeName(path), `\\`) {
-		return "", fmt.Errorf("network paths are not supported")
+		return "", uiError(uiText("error.location.network"), nil)
 	}
 	existing, err := existingDiskPath(path)
 	if err != nil {
@@ -84,14 +84,14 @@ func dataLocationSupportsSparseFiles(path string) (bool, error) {
 
 func validateStandardDataDrive(path string) error {
 	if !dataLocationIsLocal(path) {
-		return fmt.Errorf("choose a folder on a local Windows drive; network and unavailable drives are not supported")
+		return uiError(uiText("error.location.local_drive"), nil)
 	}
 	supported, err := dataLocationSupportsSparseFiles(path)
 	if err != nil {
 		return fmt.Errorf("checking filesystem support: %w", err)
 	}
 	if !supported {
-		return fmt.Errorf("choose an NTFS or ReFS drive; standard installs require sparse-file support")
+		return uiError(uiText("error.location.filesystem"), nil)
 	}
 	return nil
 }

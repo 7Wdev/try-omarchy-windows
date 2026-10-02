@@ -134,7 +134,7 @@ func confirmResetBackup(dir string) (bool, error) {
 
 func resetFromSettings(dir string) error {
 	if !completeInstallExists(dir, "disk.raw") {
-		return fmt.Errorf("there is no complete standard installation to reset")
+		return uiError(uiText("error.reset.no_install"), nil)
 	}
 	proceed, err := confirmResetBackup(dir)
 	if err != nil || !proceed {

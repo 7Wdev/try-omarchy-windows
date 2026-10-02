@@ -161,7 +161,7 @@ func restartWindows() {
 	cmd := exec.Command(system32("shutdown.exe"), "/r", "/t", "3")
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: createNoWindow}
 	if err := cmd.Start(); err != nil {
-		fatal("Windows could not schedule the restart: %v", err)
+		fatal(uiTextWith("fatal.whp.restart", map[string]string{"error": err.Error()}))
 	}
 	os.Exit(0)
 }
@@ -175,7 +175,7 @@ func ensureWHP(cfg *config) {
 	// enable, a reboot, and firmware advice (VT-x/SVM) that does not exist on
 	// ARM. Tell the truth instead and stop here.
 	if reason := hostArchUnsupportedReason(); reason != "" {
-		fatal("%s", reason)
+		fatal(reason)
 	}
 	if whpPresent() {
 		return
@@ -189,7 +189,7 @@ func ensureWHP(cfg *config) {
 		uptimeMs, _, _ := procGetTickCount64.Call()
 		bootTime := time.Now().Add(-time.Duration(uptimeMs) * time.Millisecond)
 		if st.ModTime().Before(bootTime) {
-			fatal("Windows' virtualization is switched on, but your PC's hardware virtualization looks disabled.\n\nEnable it in your PC's BIOS/UEFI settings (usually called Intel VT-x, AMD-V, or SVM), then start Try Omarchy again.")
+			fatal(uiText("fatal.whp.firmware"))
 		}
 		if msgBox(uiText("setup.whp.restart_pending"), mbYesNo|mbIconQuestion) == idYes {
 			restartWindows()
@@ -205,16 +205,16 @@ func ensureWHP(cfg *config) {
 	ui.setStatus("%s", uiText("status.enabling_whp"))
 	code, err := runElevated("-enable-whp")
 	if err != nil {
-		fatal("Couldn't switch on Windows' virtualization: %v", err)
+		fatal(uiTextWith("fatal.whp.enable", map[string]string{"error": err.Error()}))
 	}
 	if code == errorCancelled {
-		fatal("Try Omarchy can't run without Windows' virtualization. Start it again when you're ready to allow it.")
+		fatal(uiText("fatal.whp.declined"))
 	}
 	if code != 0 && code != dismRebootRequired {
-		fatal("Windows couldn't enable its virtualization feature (error %d).\n\nYou can enable it manually: Windows Features > Windows Hypervisor Platform.", code)
+		fatal(uiTextWith("fatal.whp.failed", map[string]string{"code": fmt.Sprint(code)}))
 	}
 	if err := os.WriteFile(marker, []byte(time.Now().Format(time.RFC3339)+"\n"), 0o644); err != nil {
-		fatal("Try Omarchy enabled Windows' virtualization but could not record that setup needs a restart: %v", err)
+		fatal(uiTextWith("fatal.whp.record", map[string]string{"error": err.Error()}))
 	}
 	logf("WHP enable requested (dism exit %d)", code)
 	if code == 0 && whpPresent() {

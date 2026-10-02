@@ -104,7 +104,7 @@ func prepareMovedLocation(dir string, recover bool) (string, error) {
 	}
 	if state.Pending != nil {
 		if !recover {
-			return "", fmt.Errorf("an installation move needs recovery; close Settings and open Try Omarchy normally")
+			return "", uiError(uiText("error.move.needs_recovery"), nil)
 		}
 		if err := s.recover(activateMovedInstallation); err != nil {
 			return "", err
@@ -125,14 +125,14 @@ func checkMovedSettings(dir string) error {
 		return err
 	}
 	if state.Pending != nil {
-		return fmt.Errorf("finish the installation move before saving settings")
+		return uiError(uiText("error.move.finish_before_save"), nil)
 	}
 	resolved, err := resolveMovedDirectory(state, dir)
 	if err != nil {
 		return err
 	}
 	if !pathsEqual(resolved, dir) {
-		return fmt.Errorf("this installation moved to %s; reopen Settings there", resolved)
+		return uiError(uiTextWith("error.move.reopen_settings", map[string]string{"path": resolved}), nil)
 	}
 	return nil
 }
@@ -194,7 +194,7 @@ func runMoveUI(dir string, cleanup bool) error {
 	if cleanup {
 		m := state.Retained
 		if m == nil || !pathsEqual(m.Destination, dir) || !m.Booted {
-			return fmt.Errorf("start the moved Omarchy successfully before removing its original copy")
+			return uiError(uiText("error.move.start_first"), nil)
 		}
 		self, err := os.Executable()
 		if err != nil {
@@ -210,7 +210,7 @@ func runMoveUI(dir string, cleanup bool) error {
 		// An orphaned QEMU must not be using either disk while cleanup runs.
 		disk, err := openBackupDisk(filepath.Join(dir, "vm", "disk.raw"))
 		if err != nil {
-			return fmt.Errorf("close Omarchy before cleanup: %w", err)
+			return uiError(uiTextWith("error.move.close_cleanup", map[string]string{"error": err.Error()}), err)
 		}
 		defer disk.Close()
 		if msgBox(uiTextWith("move.cleanup.confirm", map[string]string{"original": m.Source, "moved": m.Destination}), mbYesNo|mbIconQuestion|mbDefbutton2) != idYes {
@@ -316,7 +316,7 @@ func rejectMoveStreams(path string) error {
 	defer syscall.FindClose(syscall.Handle(h))
 	for {
 		if name := syscall.UTF16ToString(data.Name[:]); name != "::$DATA" {
-			return fmt.Errorf("%s has an additional Windows data stream; move it separately before moving this installation", path)
+			return uiError(uiTextWith("error.move.data_stream", map[string]string{"path": path}), nil)
 		}
 		r, _, e := next.Call(h, uintptr(unsafe.Pointer(&data)))
 		if r == 0 {
@@ -340,10 +340,10 @@ func forgetMovedInstallation(dir string) error {
 		return err
 	}
 	if state.Pending != nil {
-		return fmt.Errorf("finish the installation move before uninstalling")
+		return uiError(uiText("error.move.finish_before_uninstall"), nil)
 	}
 	if state.Retained != nil && pathsEqual(state.Retained.Destination, dir) {
-		return fmt.Errorf("remove the previous location from Settings before uninstalling the moved installation")
+		return uiError(uiText("error.move.cleanup_before_uninstall"), nil)
 	}
 	for source, target := range state.Redirects {
 		if pathsEqual(target, dir) {

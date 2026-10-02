@@ -186,7 +186,7 @@ func serveCamera(conn net.Conn, source cameraFrameSource) error {
 type disabledCameraSource struct{}
 
 func (disabledCameraSource) start() (<-chan []byte, error) {
-	return nil, fmt.Errorf("Camera access is off in Try Omarchy Settings. Enable it and restart Omarchy.")
+	return nil, uiError(uiText("error.camera.off"), nil)
 }
 func (disabledCameraSource) stop() {}
 

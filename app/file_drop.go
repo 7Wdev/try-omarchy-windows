@@ -57,7 +57,7 @@ func sendDroppedFiles(paths []string) error {
 func sendDroppedFilesAt(paths []string, point []int, cursor [2]int32) error {
 	b := desktopClipboard.Load()
 	if b == nil {
-		return fmt.Errorf("Omarchy is still starting")
+		return uiError(uiText("error.drop.starting"), nil)
 	}
 	dropped := droppedFiles{paths: append([]string(nil), paths...), cursor: cursor}
 	if (len(point) == 2 || len(point) == 4) && point[0] >= 0 && point[1] >= 0 {

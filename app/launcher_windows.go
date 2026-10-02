@@ -234,7 +234,7 @@ func chooseProvisionMode(cfg *config, newInstall bool) {
 	if cfg.instant {
 		getUI().setInstantMode(true)
 		if err := writeProvisionMode(cfg.dir, provisionModeInstant); err != nil {
-			fatal("Could not save the quick-start choice: %v", err)
+			fatal(uiTextWith("fatal.save_quick_start", map[string]string{"error": err.Error()}))
 		}
 		return
 	}
@@ -258,7 +258,7 @@ func chooseProvisionMode(cfg *config, newInstall bool) {
 	}
 	getUI().setInstantMode(cfg.instant)
 	if err := writeProvisionMode(cfg.dir, mode); err != nil {
-		fatal("Could not save the first-boot choice: %v", err)
+		fatal(uiTextWith("fatal.save_first_boot", map[string]string{"error": err.Error()}))
 	}
 }
 

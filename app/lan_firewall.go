@@ -104,7 +104,7 @@ func (p lanFirewallPlan) validate() error {
 		return err
 	}
 	if len(p.Rules) > 64 {
-		return fmt.Errorf("use at most 64 LAN forwards")
+		return uiError(uiText("error.lan.limit"), nil)
 	}
 	if len(p.Rules) > 0 && !filepath.IsAbs(p.Program) {
 		return fmt.Errorf("firewall program must be an absolute path")

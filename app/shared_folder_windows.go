@@ -43,14 +43,14 @@ func configureRecommendedSharedFolder(cfg *config, s *settings, settingsFile, ho
 func validateWindowsSharedFolder(path, dataDir, home string) (string, error) {
 	path = strings.TrimSpace(path)
 	if path == "" || !filepath.IsAbs(path) {
-		return "", fmt.Errorf("the shared folder must be an absolute path")
+		return "", uiError(uiText("error.share.absolute"), nil)
 	}
 	if strings.ContainsAny(path, "\x00\r\n") {
-		return "", fmt.Errorf("the shared folder path contains an unsupported character")
+		return "", uiError(uiText("error.share.character"), nil)
 	}
 	volume := filepath.VolumeName(path)
 	if strings.HasPrefix(volume, `\\`) || strings.HasPrefix(path, `\\?\`) || strings.HasPrefix(path, `\\.\`) {
-		return "", fmt.Errorf("network and device paths cannot be shared")
+		return "", uiError(uiText("error.share.network"), nil)
 	}
 	clean, err := filepath.Abs(path)
 	if err != nil {
@@ -61,7 +61,7 @@ func validateWindowsSharedFolder(path, dataDir, home string) (string, error) {
 		return "", fmt.Errorf("the shared folder is unavailable: %w", err)
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
-		return "", fmt.Errorf("the shared folder cannot be a symbolic link or junction")
+		return "", uiError(uiText("error.share.link"), nil)
 	}
 	pathPtr, err := syscall.UTF16PtrFromString(clean)
 	if err != nil {
@@ -69,10 +69,10 @@ func validateWindowsSharedFolder(path, dataDir, home string) (string, error) {
 	}
 	attributes, _, _ := procGetFileAttributesW.Call(uintptr(unsafe.Pointer(pathPtr)))
 	if uint32(attributes)&fileAttributeReparsePoint != 0 {
-		return "", fmt.Errorf("the shared folder cannot be a symbolic link or junction")
+		return "", uiError(uiText("error.share.link"), nil)
 	}
 	if !info.IsDir() {
-		return "", fmt.Errorf("the shared path is not a folder")
+		return "", uiError(uiText("error.share.not_folder"), nil)
 	}
 	canonical, err := filepath.EvalSymlinks(clean)
 	if err != nil {
@@ -83,10 +83,10 @@ func validateWindowsSharedFolder(path, dataDir, home string) (string, error) {
 		return "", fmt.Errorf("resolving the shared folder: %w", err)
 	}
 	if filepath.Dir(canonical) == canonical {
-		return "", fmt.Errorf("choose a folder instead of sharing an entire drive")
+		return "", uiError(uiText("error.share.drive"), nil)
 	}
 	if pathWithinWindows(home, canonical) {
-		return "", fmt.Errorf("choose one folder inside your Windows home instead of sharing the home folder or one of its parents")
+		return "", uiError(uiText("error.share.home"), nil)
 	}
 	for _, protected := range []string{
 		os.Getenv("SystemRoot"), os.Getenv("ProgramFiles"), os.Getenv("ProgramFiles(x86)"),
@@ -94,11 +94,11 @@ func validateWindowsSharedFolder(path, dataDir, home string) (string, error) {
 		filepath.Join(home, "AppData"),
 	} {
 		if protected != "" && pathWithinWindows(canonical, protected) {
-			return "", fmt.Errorf("Windows system and shared profile folders cannot be shared")
+			return "", uiError(uiText("error.share.system"), nil)
 		}
 	}
 	if dataDir != "" && pathsOverlapWindows(canonical, dataDir) {
-		return "", fmt.Errorf("the shared folder and Try Omarchy data directory cannot contain each other")
+		return "", uiError(uiText("error.share.overlap"), nil)
 	}
 	return canonical, nil
 }

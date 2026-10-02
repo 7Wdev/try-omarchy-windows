@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"sort"
 	"strings"
 )
@@ -41,7 +40,7 @@ func resolveForwardAdapters(forwards []portForward, bindings map[string]string, 
 				}
 			}
 			if !found {
-				return nil, fmt.Errorf("the network adapter for %s is unavailable; remove or update this forward in Settings, then select an available adapter with Add LAN", forward.String())
+				return nil, uiError(uiTextWith("error.lan.adapter_missing", map[string]string{"forward": forward.String()}), nil)
 			}
 			forward.bind = address
 		}
