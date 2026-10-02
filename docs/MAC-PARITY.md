@@ -1,6 +1,7 @@
 # Windows and Mac feature review
 
-Reviewed September 21 and refreshed September 30, 2026 against Mac source commit
+Reviewed September 21 and refreshed September 30, 2026 (Windows status updated
+October 1 for `v0.8.0`) against Mac source commit
 [`e1a0dbe9820a8f7554ac3b930c2f13e1f41b25a1`](https://github.com/omacom/try-omarchy/tree/e1a0dbe9820a8f7554ac3b930c2f13e1f41b25a1).
 This is an implementation and acceptance tracker, not a claim that every feature
 is shipped or hardware-tested. The release gates in
@@ -53,19 +54,21 @@ are separate from its published `v0.4.1` release. Equivalent behavior is tracked
 | Trackpad pinch | [r18 bridge](PINCH-ZOOM.md), virtual touchpad and guest rules for new and existing guests ([#184](https://github.com/omacom/try-omarchy-windows/pull/184)); on by default for guest images that declare the device; synthetic and AMD-laptop physical Chromium pinch/scroll tests pass | Shipped in `v0.4.0`; Firefox and broader host/DPI/fullscreen acceptance |
 | Windows Hello sudo | Opt-in since `v0.5.0`: launcher WebAuthn bridge, guest broker and a single PAM rule; one Hello prompt per sudo with password fallback ([design](WINDOWS-HELLO.md), [laptop run](evidence/HELLO-SUDO-LAPTOP-2026-09-26.md)) | Other Hello hardware (fingerprint, face) and Windows 10 |
 | 1Password host authentication | Opt-in since `v0.6.0`: 1Password's system authentication unlock asks for Windows Hello through a polkit agent scoped to the installed 1Password process ([#176](https://github.com/omacom/try-omarchy-windows/issues/176)); canceling falls back to the guest password | 1Password still asks for its account password after it restarts |
-| Bridged networking | NAT and explicit port forwarding exist | [True LAN bridge #166](https://github.com/omacom/try-omarchy-windows/issues/166), with supported adapter, privilege and firewall handling |
+| Bridged networking | NAT and explicit port forwarding exist | Closed for now ([#166](https://github.com/omacom/try-omarchy-windows/issues/166)): a TAP bridge passed in VMs but needs physical Ethernet and two hand-installed drivers |
 | Host battery | Shipped in `v0.2.0`; the AMD laptop's 99% charging state appeared as BAT0/ADP0 and in UPower | Desktop/no-battery transition remains to be observed on a suitable host |
 | Guest RAM reclamation | Shipped with r19 in `v0.2.0`; three physical touch/free cycles returned about 797 MiB after the third 768 MiB allocation | Follow up on concrete memory reports |
-| Keyboard and language | Windows keyboard layout and display language are read at launch. A candidate live time-zone channel preserves manual guest choices and offers Follow Windows Time Zone | Live following and the personal setup host-zone default require the new guest payload; public `v0.6.2` still reads the zone only at launch; physical ANSI/ISO/JIS geometry and broader input-method acceptance remain open |
+| Keyboard and language | Windows keyboard layout and display language are read at launch. Since `v0.7.0` the guest follows Windows time-zone changes while running, keeps a zone you set yourself, and offers Follow Windows Time Zone | Physical ANSI/ISO/JIS geometry and broader input-method acceptance remain open |
 
-Public `v0.6.2` is the current Windows release. Windows Hello sudo shipped in
+Public `v0.8.0` is the current Windows release; it pauses Omarchy while Windows
+sleeps and opens the window once the desktop is drawn. Windows Hello sudo shipped in
 `v0.5.0`; process-scoped 1Password unlock and direct application drops shipped in
 `v0.6.0`. Live audio switching shipped in `v0.3.0`, and pinch is enabled by
 default since `v0.4.0`. These are shipped features with the hardware limits
 listed above.
 
-True LAN bridging (#166) and embedded Windows app windows (#160) remain separate
-work. The guest watchdog change in `v0.6.1` addresses service restarts during a
+True LAN bridging (#166) and embedded Windows app windows (#160) are closed for
+now; NAT with port forwarding and the approved-app launch bridge cover those
+workflows. The guest watchdog change in `v0.6.1` addresses service restarts during a
 host suspension, but does not establish that #216's XWayland authorization
 failure is resolved. [Windows sleep handling](WINDOWS-SLEEP.md) describes how
 the launcher pauses Omarchy before Windows sleeps, including Modern Standby.
@@ -99,19 +102,17 @@ mixed-monitor DPI, screen-reader user acceptance or broad physical coverage.
    Shipped in `v0.5.0`. The Mac's separate, process-scoped 1Password unlock
    ([#176](https://github.com/omacom/try-omarchy-windows/issues/176)) followed
    in `v0.6.0` without changing general guest PAM policy.
-3. **Offer a real LAN mode (#166).** Keep NAT and explicit forwards as the
-   default. Start with a signed TAP adapter and a reversible wired-Ethernet
-   bridge that has its own stable guest MAC. Verify host connectivity, guest
-   DHCP/LAN reachability, restart, adapter loss and cleanup on a disposable
-   wired setup. Only offer Wi-Fi bridging after an actual Wi-Fi proof.
-4. **Finish host-app and file workflows (#160, #174).** The approved-app launch
-   bridge already works. Window embedding needs capture, input, focus,
-   accessibility, scaling and lifecycle behavior, and can ship once it is
-   reliable in normal use. Direct drops shipped in `v0.6.0` through a guest
-   drag source under the pointer.
+3. **Real LAN mode (#166), parked.** A signed TAP adapter with a wired-Ethernet
+   bridge and its own stable guest MAC passed in VMs. It needs physical
+   Ethernet, two hand-installed drivers, Secure Boot and Windows 10 checks
+   before it could ship, so NAT and explicit forwards stay the only mode. The
+   closed pull requests #229 to #234 keep the work if it comes back.
+4. **Host-app and file workflows (#160, #174).** The approved-app launch
+   bridge works and direct drops shipped in `v0.6.0`. Embedding Windows app
+   windows in the guest would be new work with its own issue.
 5. **Polish input, language and graphics.** Use specific reports and available
    machines to address keyboard geometry/IME, shipped automatic pinch, and
-   the Intel/NVIDIA Vulkan issue (#173).
+   Intel or NVIDIA Vulkan reports (#173 is closed until a fresh report).
    Keep the existing CPU/OpenGL fallback.
 
 Public `v0.2.0` already covers the former battery, unused-RAM, fullscreen and
