@@ -209,7 +209,7 @@ func (ui *progressUI) chooseSharedFolder() bool {
 
 func (ui *progressUI) confirmCancel(hCancel uintptr) bool {
 	if ui.finishOnly.Load() {
-		infoBox("Try Omarchy is finishing this operation. Please wait for it to complete.")
+		infoBox(uiText("status.finishing"))
 		return false
 	}
 	if ui.canceling.Load() {
@@ -564,20 +564,35 @@ func (ui *progressUI) run() {
 	}
 	hHead = mk(uiText("brand.name"), 120, 30, width-152, 34, 0, 0)
 	hTag = mk("WINDOWS  ·  "+currentVersion, 122, 67, width-154, 22, 0, 0)
-	hText = mk("Preparing...", 32, 148, width-64, 44, 0, 0)
+	hText = mk(uiText("status.preparing"), 32, 148, width-64, 44, 0, 0)
 	// Starter keybindings on screen during the boot wait (the #1 field
 	// complaint: an hour lost guessing tiling WM keys once the VM appears and
 	// this window closes). Binds verified against Omarchy v4.0.1 defaults.
 	hAccountInfo = mk("", 40, 230, width-80, 22, 0, 0)
-	hSuperInfo = mk("On Linux, the Windows key is called SUPER", 40, 256, width-80, 22, 0, 0)
+	hSuperInfo = mk(uiText("setup.keys.super"), 40, 256, width-80, 22, 0, 0)
+	// Two key columns; each label column widens for its longer translation and
+	// pushes the second column right, keeping the English layout as the minimum.
+	menuLabel, terminalLabel := uiText("setup.keys.menu"), uiText("setup.keys.terminal")
+	keysLabel, closeLabel := uiText("setup.keys.all"), uiText("setup.keys.close")
+	labelWidth := func(minimum int32, labels ...string) int32 {
+		for _, label := range labels {
+			w, _ := measureText(hwnd, brand.font, label, 0)
+			minimum = max(minimum, w+4)
+		}
+		return minimum
+	}
+	firstLabelWidth := labelWidth(90, menuLabel, terminalLabel)
+	secondKeyX := max(int32(280), 164+firstLabelWidth+16)
+	secondLabelX := secondKeyX + 88
+	secondLabelWidth := min(labelWidth(112, keysLabel, closeLabel), width-40-secondLabelX)
 	hKeySpace = mk("SUPER+SPACE", 40, 286, 118, 20, 0, 0)
-	hLabelMenu = mk("Menu", 164, 286, 90, 20, 0, 0)
-	hKeyK = mk("SUPER+K", 280, 286, 86, 20, 0, 0)
-	hLabelKeys = mk("All keybindings", 368, 286, 112, 20, 0, 0)
+	hLabelMenu = mk(menuLabel, 164, 286, firstLabelWidth, 20, 0, 0)
+	hKeyK = mk("SUPER+K", secondKeyX, 286, 86, 20, 0, 0)
+	hLabelKeys = mk(keysLabel, secondLabelX, 286, secondLabelWidth, 20, 0, 0)
 	hKeyReturn = mk("SUPER+RETURN", 40, 310, 118, 20, 0, 0)
-	hLabelTerminal = mk("Terminal", 164, 310, 90, 20, 0, 0)
-	hKeyW = mk("SUPER+W", 280, 310, 86, 20, 0, 0)
-	hLabelClose = mk("Close window", 368, 310, 100, 20, 0, 0)
+	hLabelTerminal = mk(terminalLabel, 164, 310, firstLabelWidth, 20, 0, 0)
+	hKeyW = mk("SUPER+W", secondKeyX, 310, 86, 20, 0, 0)
+	hLabelClose = mk(closeLabel, secondLabelX, 310, secondLabelWidth, 20, 0, 0)
 	hCancel = button(uiText("setup.cancel"), 32, height-50, 100, 36, wsTabstop, cancelControlID)
 	hPromptTitle = mk("", 40, 168, width-80, 24, 0, 0)
 	hPromptBody = mk("", 32, 200, width-64, 44, 0, 0)

@@ -17,9 +17,9 @@ const (
 
 func provisionAccountHint(instant bool) string {
 	if instant {
-		return "Quick-start account: " + trialUsername + "    Password: " + trialPassword
+		return uiTextWith("setup.hint.quick", map[string]string{"username": trialUsername, "password": trialPassword})
 	}
-	return "Use the username and password you choose inside Omarchy"
+	return uiText("setup.hint.own")
 }
 
 func readProvisionMode(dir string) (string, bool) {

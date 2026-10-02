@@ -109,7 +109,7 @@ func finishSetupCancellation(cfg *config, err error) bool {
 	if !setupCancelled() && !errors.Is(err, errSetupCancelled) {
 		return false
 	}
-	getUI().setStatus("Cancelling and cleaning up...")
+	getUI().setStatus("%s", uiText("status.cancelling"))
 	logf("setup cancelled by user")
 	if logFile != nil {
 		logFile.Close()
@@ -117,7 +117,7 @@ func finishSetupCancellation(cfg *config, err error) bool {
 	}
 	executable, _ := os.Executable()
 	if cleanupErr := cleanupCancelledSetup(cfg.dir, executable, cancelRemovesAll.Load()); cleanupErr != nil {
-		errorBox(fmt.Sprintf("Setup was cancelled, but some temporary files could not be removed:\n\n%v\n\nOmarchy data folder: %s\n\nKeep this folder. Close Try Omarchy and try again.", cleanupErr, cfg.dir))
+		errorBox(uiTextWith("setup.cancel.cleanup_failed", map[string]string{"error": cleanupErr.Error(), "path": cfg.dir}))
 	}
 	uiDone()
 	return true
@@ -279,7 +279,7 @@ func main() {
 			fatal("Cannot open the launcher: %v", err)
 		}
 		if guard == 0 {
-			infoBox("The Try Omarchy launcher is already open. Use its Launch Omarchy button to continue.")
+			infoBox(uiText("setup.already_open"))
 			return
 		}
 		releaseMenu = func() {
@@ -346,7 +346,7 @@ func main() {
 		}
 		if *applyLauncherUpdateFlag || *applyLauncherRollbackFlag {
 			if err := applyLauncherUpdate(cfg.dir, *updateWaitPID, *updateRestartArgs, *applyLauncherRollbackFlag); err != nil {
-				errorBox("Try Omarchy could not finish applying its update.\n\n" + err.Error())
+				errorBox(uiTextWith("update.error.apply", map[string]string{"error": err.Error()}))
 				os.Exit(1)
 			}
 			return
@@ -394,16 +394,16 @@ func main() {
 			return
 		}
 		if err != nil {
-			errorBox("Try Omarchy could not finish the backup or restore.\n\n" + err.Error())
+			errorBox(uiTextWith("recovery.error", map[string]string{"error": err.Error()}))
 			os.Exit(1)
 		}
 		if *backupPath != "" {
-			infoBox("Backup saved to:\n\n" + *backupPath + "\n\nIt contains your guest files and settings. Keep it private. Shared Windows folders are not included.")
+			infoBox(uiTextWith("recovery.backup.done", map[string]string{"path": *backupPath}))
 		} else {
 			if err := createRestoredLaunchers(cfg.dir); err != nil {
-				infoBox("Backup restored to:\n\n" + cfg.dir + "\n\nStartup shortcuts could not be created: " + err.Error() + "\n\nStart Try Omarchy with -dir pointing to this folder. Your original installation was not changed.")
+				infoBox(uiTextWith("recovery.restore.done_no_shortcuts", map[string]string{"path": cfg.dir, "error": err.Error()}))
 			} else {
-				infoBox("Backup restored to:\n\n" + cfg.dir + "\n\nOpen Start Omarchy in that folder to use this copy. Sign-in launch is off for the restored copy; enable it in Settings if wanted. Your original installation and shortcuts were not changed.")
+				infoBox(uiTextWith("recovery.restore.done", map[string]string{"path": cfg.dir}))
 			}
 		}
 		return
@@ -414,10 +414,10 @@ func main() {
 	if *diagnostics {
 		bundle, err := writeDiagnostics(cfg.dir, launcherFacts(cfg))
 		if err != nil {
-			errorBox("Try Omarchy could not write the diagnostics bundle.\n\n" + err.Error())
+			errorBox(uiTextWith("diagnostics.error", map[string]string{"error": err.Error()}))
 			os.Exit(1)
 		}
-		infoBox("Diagnostics written to:\n\n" + bundle + "\n\nIt contains redacted settings, recent logs, and machine facts, but no disk images or home-folder files. Review it before attaching it to an issue because logs can still contain local details.")
+		infoBox(uiTextWith("diagnostics.done", map[string]string{"path": bundle}))
 		return
 	}
 
@@ -582,7 +582,7 @@ func main() {
 	// The splash IS the launch experience: it appears here and stays on screen
 	// through every phase until the Omarchy window itself is visible (the
 	// title enforcer closes it). Setup must never look like nothing happened.
-	getUI().setStatus("Starting Try Omarchy...")
+	getUI().setStatus("%s", uiText("status.starting_launcher"))
 	if err := configureRecommendedSharedFolder(cfg, &userSettings, settingsFile, home, explicitFlags["share"]); err != nil {
 		if finishSetupCancellation(cfg, err) {
 			return
@@ -599,7 +599,7 @@ func main() {
 				fatal("Cannot share %s: %v", cfg.share, shareErr)
 			}
 			logf("shared folder disabled for this launch: %v", shareErr)
-			infoBox("The saved shared folder is unavailable and will not be shared this time. Omarchy will still start.\n\n" + shareErr.Error() + "\n\nChoose another folder from Settings.")
+			infoBox(uiTextWith("share.unavailable", map[string]string{"error": shareErr.Error()}))
 			cfg.share = ""
 		} else {
 			cfg.share = validated
@@ -723,7 +723,7 @@ func main() {
 	}
 	if cfg.share != "" && !cfg.supportsSharing {
 		logf("shared folder disabled for this launch: selected QEMU has no virtio-9p")
-		infoBox("The shared folder cannot be attached with the available graphics engine. Omarchy will start without it this time.\n\nTry again when the WINQ-EMU runtime is available.")
+		infoBox(uiText("share.unsupported_runtime"))
 		cfg.share = ""
 	}
 
@@ -777,7 +777,7 @@ func main() {
 		return
 	}
 	profile := effectiveResourceProfile(resourcePrefs.Profile, cfg.cpuOverride, cfg.memOverrideMiB)
-	getUI().setStatus("Measuring available resources...")
+	getUI().setStatus("%s", uiText("status.measuring_resources"))
 	host := measureHostResources(profile == resourceMaximum)
 	allocation, err := planGuestResources(profile, host, cfg.useGpu, cfg.cpuOverride, cfg.memOverrideMiB,
 		explicitFlags["cpus"], explicitFlags["memory"])
@@ -787,7 +787,7 @@ func main() {
 	cfg.cpus, cfg.memMiB, cfg.hostTotalMiB = allocation.CPUs, allocation.MemoryMiB, host.TotalMiB
 	logf("resources: profile=%s, %d of %d logical processors, %d MiB guest RAM; Windows available=%d MiB, CPU sample known=%t busy=%.1f%%",
 		profile, cfg.cpus, host.LogicalCPUs, cfg.memMiB, host.AvailableMiB, host.CPUKnown, host.CPUBusy*100)
-	getUI().setStatus("Starting Omarchy...")
+	getUI().setStatus("%s", uiText("status.starting_omarchy"))
 	stopTray := startTray(cfg)
 	defer stopTray()
 
@@ -1365,13 +1365,13 @@ func compactAfterShutdown(cfg *config) {
 	if a == nil || !a.compactPending() || cfg.diskFormat != "raw" {
 		return
 	}
-	getUI().setStatus("Reclaiming disk space...")
+	getUI().setStatus("%s", uiText("status.reclaiming"))
 	logf("compact: scanning %s", cfg.disk)
 	before, beforeErr := platformAllocatedFileBytes(cfg.disk)
 	reclaimed, err := compactDisk(cfg.disk, nil)
 	if err != nil {
 		logf("compact: %v", err)
-		infoBox("Omarchy shut down, but disk space could not be reclaimed. Your files remain intact.\n\n" + err.Error())
+		infoBox(uiTextWith("reclaim.error", map[string]string{"error": err.Error()}))
 		return
 	}
 	logf("compact: %s of zero blocks turned back into holes", formatGiB(reclaimed))
@@ -1381,9 +1381,9 @@ func compactAfterShutdown(cfg *config) {
 		if saved < 0 {
 			saved = 0
 		}
-		infoBox("Omarchy shut down. Its disk now uses " + formatGiB(saved) + " less space on Windows.")
+		infoBox(uiTextWith("reclaim.done", map[string]string{"space": formatGiB(saved)}))
 	} else {
-		infoBox("Omarchy shut down and disk compaction finished. Windows could not report the change in allocated space.")
+		infoBox(uiText("reclaim.done_unknown"))
 	}
 }
 
@@ -1391,7 +1391,7 @@ func compactAfterShutdown(cfg *config) {
 func sendLifecycleCommand(command string) int {
 	c, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", lifecyclePort), 3*time.Second)
 	if err != nil {
-		errorBox("Try Omarchy is not running.")
+		errorBox(uiText("control.not_running"))
 		return 1
 	}
 	defer c.Close()
@@ -1403,7 +1403,7 @@ func sendLifecycleCommand(command string) int {
 	if command == "reclaim" {
 		reply, err := bufio.NewReader(io.LimitReader(c, 4096)).ReadString('\n')
 		if err != nil {
-			errorBox("The running launcher did not confirm reclaim. It may need an update.")
+			errorBox(uiText("control.reclaim_unconfirmed"))
 			return 1
 		}
 		if !strings.HasPrefix(reply, "ok: ") {

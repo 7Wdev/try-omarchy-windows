@@ -198,12 +198,12 @@ func curtainTick(primary uintptr) {
 	}
 	// Cancel puts its own status up.
 	if !setupCancelled() {
-		status := "Starting Omarchy..."
+		status := uiText("status.starting_omarchy")
 		switch {
 		case !times.boot.IsZero() && now.Sub(times.boot) >= curtainSlowNotice:
-			status = "Omarchy is taking longer than usual to start..."
+			status = uiText("status.slow_start")
 		case times.checkPaint():
-			status = "Starting the desktop..."
+			status = uiText("status.starting_desktop")
 		}
 		if status != curtainStatus {
 			curtainStatus = status

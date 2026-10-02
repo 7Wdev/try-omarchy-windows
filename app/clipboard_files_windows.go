@@ -79,7 +79,7 @@ func clipboardGetFiles() (clipItem, bool) {
 	data, err := packClipboardFiles(paths)
 	if err != nil {
 		logf("clipboard files: %v", err)
-		infoBox("These files could not be copied to Omarchy.\n\n" + err.Error())
+		infoBox(uiTextWith("tray.transfer.failed", map[string]string{"error": err.Error()}))
 		return clipItem{}, false
 	}
 	return clipItem{Kind: clipFiles, Data: data}, true
@@ -93,7 +93,7 @@ func clipboardSetFiles(item clipItem) bool {
 	paths, err := unpackClipboardFiles(item.Data, cache)
 	if err != nil {
 		logf("clipboard files: %v", err)
-		infoBox("These files could not be copied from Omarchy.\n\n" + err.Error())
+		infoBox(uiTextWith("transfer.from_omarchy_failed", map[string]string{"error": err.Error()}))
 		return false
 	}
 	keep := false
