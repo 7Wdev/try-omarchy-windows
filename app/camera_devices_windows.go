@@ -78,7 +78,7 @@ func listCameraDevices() ([]cameraDevice, error) {
 			mfRelease(&object)
 			if id != "" {
 				if name == "" {
-					name = "Windows camera"
+					name = uiText("camera.unnamed")
 				}
 				out = append(out, cameraDevice{id, name})
 			}

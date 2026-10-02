@@ -164,7 +164,7 @@ func uiStatus(format string, a ...any) {
 
 func newProgressUI() *progressUI {
 	ui := &progressUI{ready: make(chan struct{}), prompts: make(chan setupPromptRequest)}
-	ui.status.Store("Preparing...")
+	ui.status.Store(uiText("status.preparing"))
 	ui.account.Store("")
 	go ui.run()
 	<-ui.ready
@@ -215,7 +215,7 @@ func (ui *progressUI) confirmCancel(hCancel uintptr) bool {
 	if ui.canceling.Load() {
 		return true
 	}
-	message := "Cancel Try Omarchy setup?\n\nUnfinished setup files will be removed. An existing working installation will be kept."
+	message := uiText("setup.cancel.confirm")
 	if custom, ok := ui.cancelMessage.Load().(string); ok {
 		message = custom
 	}
@@ -226,14 +226,14 @@ func (ui *progressUI) confirmCancel(hCancel uintptr) bool {
 		return true
 	}
 	requestSetupCancel()
-	status := "Cancelling and cleaning up..."
+	status := uiText("status.cancelling")
 	if custom, ok := ui.cancelStatus.Load().(string); ok {
 		status = custom
 	}
 	ui.setStatus("%s", status)
 	ui.setProgress(0, 0)
 	procEnableWindow.Call(hCancel, 0)
-	t, _ := syscall.UTF16PtrFromString("CANCELLING...")
+	t, _ := syscall.UTF16PtrFromString(uiText("setup.cancelling_button"))
 	procSendMessageW.Call(hCancel, wmSettext, 0, uintptr(unsafe.Pointer(t)))
 	return true
 }
@@ -593,12 +593,14 @@ func (ui *progressUI) run() {
 	hLabelTerminal = mk(terminalLabel, 164, 310, firstLabelWidth, 20, 0, 0)
 	hKeyW = mk("SUPER+W", secondKeyX, 310, 86, 20, 0, 0)
 	hLabelClose = mk(closeLabel, secondLabelX, 310, secondLabelWidth, 20, 0, 0)
-	hCancel = button(uiText("setup.cancel"), 32, height-50, 100, 36, wsTabstop, cancelControlID)
+	cancelWidth := buttonWidthFor(brand.font, 100, uiText("setup.cancel"), uiText("setup.cancelling_button"))
+	hCancel = button(uiText("setup.cancel"), 32, height-50, cancelWidth, 36, wsTabstop, cancelControlID)
 	hPromptTitle = mk("", 40, 168, width-80, 24, 0, 0)
 	hPromptBody = mk("", 32, 200, width-64, 44, 0, 0)
 	hPromptOption1 = button("", 32, 254, width-64, 28, bsAutocheckbox|wsGroup|wsTabstop, promptOption1ID)
 	hPromptOption2 = button("", 32, 294, width-64, 28, bsAutocheckbox|wsTabstop, promptOption2ID)
-	hPromptContinue = button(uiText("setup.continue"), width-186, height-50, 154, 36, bsDefpushbutton|wsTabstop, promptContinueID)
+	continueWidth := buttonWidthFor(brand.font, 154, uiText("setup.continue"))
+	hPromptContinue = button(uiText("setup.continue"), width-32-continueWidth, height-50, continueWidth, 36, bsDefpushbutton|wsTabstop, promptContinueID)
 	brand.primary = hPromptContinue
 	setPromptVisible(false)
 

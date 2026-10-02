@@ -132,7 +132,7 @@ func (s checkpointStore) List() ([]vmCheckpoint, error) {
 		} // Staging is never advertised as complete.
 		entry, err := readCheckpoint(root, file.Name())
 		if err != nil {
-			entry = vmCheckpoint{ID: file.Name(), Name: "Damaged snapshot", Problem: err.Error()}
+			entry = vmCheckpoint{ID: file.Name(), Name: uiText("snapshots.damaged"), Problem: err.Error()}
 		}
 		entries = append(entries, entry)
 	}

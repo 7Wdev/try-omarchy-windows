@@ -19,7 +19,7 @@ func availableLANAdapters() ([]lanAdapter, error) {
 		}
 		return result[i].Name < result[j].Name
 	})
-	result = append(result, lanAdapter{Name: "All adapters", Address: "0.0.0.0"})
+	result = append(result, lanAdapter{Name: uiText("lan.all_adapters"), Address: "0.0.0.0"})
 	return result, nil
 }
 

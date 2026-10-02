@@ -39,7 +39,7 @@ func lanDialogWindowProc(hwnd, message, w, l uintptr) uintptr {
 			protocol, _, _ := procSendMessageW.Call(state.protocol, 0x147, 0, 0)
 			index, _, _ := procSendMessageW.Call(state.address, 0x147, 0, 0)
 			if index >= uintptr(len(state.adapters)) {
-				errorBox("Choose a Windows network adapter.")
+				errorBox(uiText("lan.choose_adapter"))
 				return 0
 			}
 			name := "tcp"
@@ -49,7 +49,7 @@ func lanDialogWindowProc(hwnd, message, w, l uintptr) uintptr {
 			value := fmt.Sprintf("%s:%s:%s:%s", name, state.adapters[index].Address, read(state.host), read(state.guest))
 			var check forwardList
 			if err := check.Set(value); err != nil {
-				errorBox(err.Error())
+				errorBox(uiTextWith("lan.error.invalid", map[string]string{"error": err.Error()}))
 				return 0
 			}
 			state.result = lanForwardChoice{value, state.adapters[index].Identity}
@@ -96,7 +96,7 @@ func chooseLANForward(parent uintptr) (lanForwardChoice, error) {
 		}
 		lanDialogRegistered = true
 	}
-	title, _ := syscall.UTF16PtrFromString("Add LAN forward")
+	title, _ := syscall.UTF16PtrFromString(uiText("lan.title"))
 	style := uintptr(wsCaption | wsSysmenu)
 	rect := [4]int32{0, 0, 430, 230}
 	procAdjustWindowRectEx.Call(uintptr(unsafe.Pointer(&rect[0])), style, 0, 0)
@@ -120,16 +120,16 @@ func chooseLANForward(parent uintptr) (lanForwardChoice, error) {
 		procSendMessageW.Call(h, wmSetfont, font, 1)
 		return h
 	}
-	control("STATIC", "Windows network adapter", 16, 16, 380, 22, ssNoprefix, 0)
+	control("STATIC", uiText("lan.adapter"), 16, 16, 398, 22, ssNoprefix, 0)
 	state.address = control("COMBOBOX", "", 16, 40, 398, 180, wsTabstop|wsVscroll|3, 4201)
 	for _, adapter := range adapters {
 		label, _ := syscall.UTF16PtrFromString(adapter.Name + " (" + adapter.Address + ")")
 		procSendMessageW.Call(state.address, 0x143, 0, uintptr(unsafe.Pointer(label)))
 	}
 	procSendMessageW.Call(state.address, 0x14e, 0, 0)
-	control("STATIC", "Protocol", 16, 84, 90, 22, ssNoprefix, 0)
-	control("STATIC", "Windows port", 126, 84, 125, 22, ssNoprefix, 0)
-	control("STATIC", "Omarchy port", 276, 84, 125, 22, ssNoprefix, 0)
+	control("STATIC", uiText("lan.protocol"), 16, 84, 106, 22, ssNoprefix, 0)
+	control("STATIC", uiText("lan.windows_port"), 126, 84, 146, 22, ssNoprefix, 0)
+	control("STATIC", uiText("lan.omarchy_port"), 276, 84, 138, 22, ssNoprefix, 0)
 	state.protocol = control("COMBOBOX", "", 16, 108, 90, 120, wsTabstop|3, 4202)
 	for _, value := range []string{"TCP", "UDP"} {
 		text, _ := syscall.UTF16PtrFromString(value)
@@ -138,9 +138,12 @@ func chooseLANForward(parent uintptr) (lanForwardChoice, error) {
 	procSendMessageW.Call(state.protocol, 0x14e, 0, 0)
 	state.host = control("EDIT", "8080", 126, 108, 120, 26, wsTabstop|wsBorder|esAutohscroll, 4203)
 	state.guest = control("EDIT", "80", 276, 108, 138, 26, wsTabstop|wsBorder|esAutohscroll, 4204)
-	control("STATIC", "Devices on this network can reach the forwarded service.", 16, 148, 398, 28, ssNoprefix, 0)
-	control("BUTTON", "Add", 234, 188, 84, 26, wsTabstop|bsDefpushbutton, 1)
-	control("BUTTON", "Cancel", 330, 188, 84, 26, wsTabstop, 2)
+	control("STATIC", uiText("lan.note"), 16, 148, 398, 28, ssNoprefix, 0)
+	addLabel, cancelLabel := uiText("lan.add"), uiText("lan.cancel")
+	cancelWidth := int(buttonWidthFor(font, 84, cancelLabel))
+	addWidth := int(buttonWidthFor(font, 84, addLabel))
+	control("BUTTON", addLabel, 414-cancelWidth-12-addWidth, 188, addWidth, 26, wsTabstop|bsDefpushbutton, 1)
+	control("BUTTON", cancelLabel, 414-cancelWidth, 188, cancelWidth, 26, wsTabstop, 2)
 	if controlErr != nil {
 		procDestroyWindow.Call(state.window)
 		return lanForwardChoice{}, controlErr

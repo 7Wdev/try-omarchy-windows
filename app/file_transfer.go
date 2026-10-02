@@ -119,7 +119,7 @@ func prepareFileTransfer(ctx context.Context, sources []string, cache string, li
 	err = writeFilesArchive(ctx, &transferWriter{ctx: ctx, writer: file, remaining: budget, limitError: budgetError}, sources, limits, true, func(n int64) {
 		copied += n
 		if report != nil {
-			report(copied, 0, "Preparing files")
+			report(copied, 0, uiText("transfer.phase.preparing"))
 		}
 	})
 	if err != nil {
@@ -198,7 +198,7 @@ func receiveFileTransfer(ctx context.Context, input io.Reader, offer fileTransfe
 	n, err := io.Copy(io.MultiWriter(archive, h), &transferReader{ctx: ctx, reader: io.LimitReader(input, offer.ArchiveBytes+1), progress: func(n int64) {
 		received += n
 		if report != nil {
-			report(received, offer.ArchiveBytes, "Receiving files")
+			report(received, offer.ArchiveBytes, uiText("transfer.phase.receiving"))
 		}
 	}})
 	if err != nil {
@@ -254,7 +254,7 @@ func receiveFileTransfer(ctx context.Context, input io.Reader, offer fileTransfe
 		count, copyErr := io.Copy(output, &transferReader{ctx: ctx, reader: io.LimitReader(source, int64(entry.UncompressedSize64)+1), progress: func(n int64) {
 			written += n
 			if report != nil {
-				report(written, total, "Placing files")
+				report(written, total, uiText("transfer.phase.placing"))
 			}
 		}})
 		source.Close()

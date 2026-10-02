@@ -114,7 +114,7 @@ func (b usbBroker) Devices(ctx context.Context) ([]usbDevice, error) {
 		}
 		if !found {
 			d.Connected = false
-			d.Name = fmt.Sprintf("USB %04x:%04x (disconnected)", d.Vendor, d.Product)
+			d.Name = uiTextWith("usb.name.disconnected", map[string]string{"id": fmt.Sprintf("%04x:%04x", d.Vendor, d.Product)})
 			devices = append(devices, d)
 		}
 	}

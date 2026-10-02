@@ -41,7 +41,7 @@ func chooseRecoveryPath(owner uintptr, title, filename string, save, folder bool
 }
 
 func chooseExecutablePath(owner uintptr) (string, bool, error) {
-	return chooseWindowsPath(owner, "Choose a Windows app to make available in Omarchy", "", false, false, true)
+	return chooseWindowsPath(owner, uiText("picker.choose_app"), "", false, false, true)
 }
 
 func chooseWindowsPath(owner uintptr, title, filename string, save, folder, executable bool) (string, bool, error) {
@@ -95,9 +95,9 @@ func chooseWindowsPath(owner uintptr, title, filename string, save, folder, exec
 		}
 	}
 	if !folder {
-		filterLabel, filterPattern, extension := "Omarchy backups (*.zip)", "*.zip", "zip"
+		filterLabel, filterPattern, extension := uiText("picker.filter.backups"), "*.zip", "zip"
 		if executable {
-			filterLabel, filterPattern, extension = "Windows apps (*.exe)", "*.exe", "exe"
+			filterLabel, filterPattern, extension = uiText("picker.filter.apps"), "*.exe", "exe"
 		}
 		label, _ := syscall.UTF16PtrFromString(filterLabel)
 		pattern, _ := syscall.UTF16PtrFromString(filterPattern)
