@@ -177,11 +177,12 @@ func finishLauncherShortcutChoice(paths []string, target, dir string, startMenu,
 	if globalErr != nil {
 		var owned shortcutOwnedError
 		if errors.As(globalErr, &owned) {
-			return fmt.Sprintf("Your %s already has a Try Omarchy shortcut for another installation, so it was left as it is.\n\n"+
-				"To start this installation, open Start Omarchy in:\n%s", owned.place(), dir), nil
+			if owned.desktop {
+				return uiTextWith("shortcuts.taken.desktop", map[string]string{"path": dir}), nil
+			}
+			return uiTextWith("shortcuts.taken.start_menu", map[string]string{"path": dir}), nil
 		}
-		return fmt.Sprintf("Windows could not create the shortcut (%v). Your existing shortcuts were not changed.\n\n"+
-			"To start this installation, open Start Omarchy in:\n%s", globalErr, dir), nil
+		return uiTextWith("shortcuts.failed", map[string]string{"error": globalErr.Error(), "path": dir}), nil
 	}
 	return "", nil
 }
@@ -303,13 +304,13 @@ func offerLauncherShortcuts(dir string) {
 	paths, err := launcherShortcutPaths()
 	if err != nil {
 		logf("shortcut paths: %v", err)
-		errorBox("Try Omarchy is ready, but Windows could not find the shortcut locations.\n\n" + err.Error())
+		errorBox(uiTextWith("shortcuts.error.locations", map[string]string{"error": err.Error()}))
 		return
 	}
 	message, err := finishLauncherShortcutChoice(paths, target, installDir, startMenu, desktop, prefs.StartAutomatically)
 	if err != nil {
 		logf("shortcuts: %v", err)
-		errorBox("Try Omarchy is ready, but Windows could not finish creating shortcuts. Open TryOmarchy.exe in this installation's folder.\n\n" + err.Error())
+		errorBox(uiTextWith("shortcuts.error.create", map[string]string{"error": err.Error()}))
 	} else if message != "" {
 		logf("shortcuts: using folder launchers")
 		infoBox(message)

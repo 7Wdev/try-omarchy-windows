@@ -85,7 +85,7 @@ func runCloseGuard() {
 			}
 			cancel()
 			if err != nil {
-				errorBox("Omarchy did not acknowledge the shutdown request. Check its window before retrying.\n\n" + err.Error())
+				errorBox(uiTextWith("shutdown.unacknowledged", map[string]string{"error": err.Error()}))
 			}
 
 			// The guest shuts down; the supervisor reaps/exits as usual.
