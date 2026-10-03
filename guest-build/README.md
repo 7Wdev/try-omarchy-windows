@@ -285,3 +285,8 @@ active; the visible route controls guest volume. It preserves mute and restores
 the previous transport channel volumes on orderly shutdown unless the owner
 changed them. Compatibility revision 46 delivers the bridge to existing disks.
 See [audio behavior](../docs/AUDIO-DEVICES.md) for the signal path and checks.
+
+Patch 0126 allows Media Player to use Mesa software rendering when the launcher
+boots with CPU rendering. GPU mode retains mpv defaults, and explicit command-line
+options take precedence. Compatibility revision 49 delivers the wrapper to existing
+guest disks.
