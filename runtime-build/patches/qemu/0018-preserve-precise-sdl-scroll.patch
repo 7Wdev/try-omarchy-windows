@@ -289,16 +289,18 @@ index 9ad68f44cc..aedeca0edb 100644
  ##
  # @InputMultiTouchType:
 diff --git a/ui/input.c b/ui/input.c
-index 147e69c1c3..3603e6210e 100644
+index 147e69c1c3..bdd625ea96 100644
 --- a/ui/input.c
 +++ b/ui/input.c
-@@ -122,6 +122,21 @@ qemu_input_find_handler(uint32_t mask, QemuConsole *con)
+@@ -122,6 +122,23 @@ qemu_input_find_handler(uint32_t mask, QemuConsole *con)
      return NULL;
  }
  
 +bool qemu_input_has_wheel(QemuConsole *con)
 +{
-+    return qemu_input_find_handler(INPUT_EVENT_MASK_WHEEL, con) != NULL;
++    QemuInputHandlerState *s = qemu_input_find_handler(INPUT_EVENT_MASK_BTN, con);
++
++    return s && (s->handler->mask & INPUT_EVENT_MASK_WHEEL);
 +}
 +
 +static uint32_t qemu_input_event_mask(InputEvent *evt)
@@ -314,7 +316,7 @@ index 147e69c1c3..3603e6210e 100644
  void qmp_input_send_event(const char *device,
                            bool has_head, int64_t head,
                            InputEventList *events, Error **errp)
-@@ -150,7 +165,7 @@ void qmp_input_send_event(const char *device,
+@@ -150,7 +167,7 @@ void qmp_input_send_event(const char *device,
      for (e = events; e != NULL; e = e->next) {
          InputEvent *event = e->value;
  
@@ -323,7 +325,7 @@ index 147e69c1c3..3603e6210e 100644
              error_setg(errp, "Input handler not found for "
                               "event type %s",
                              InputEventKind_str(event->type));
-@@ -310,7 +325,7 @@ void qemu_input_event_send_impl(QemuConsole *src, InputEvent *evt)
+@@ -310,7 +327,7 @@ void qemu_input_event_send_impl(QemuConsole *src, InputEvent *evt)
      qemu_input_event_trace(src, evt);
  
      /* send event */
