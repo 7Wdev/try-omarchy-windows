@@ -1,17 +1,17 @@
-From abe9749f8fedf7bbb490e2e9c9fd1989d4b2acbc Mon Sep 17 00:00:00 2001
+From 8232023eb34367a06318e4f40ce59008300f5983 Mon Sep 17 00:00:00 2001
 From: Tyler South <tsouth2@gmail.com>
 Date: Sat, 3 Oct 2026 07:53:54 -0400
 Subject: [PATCH] Keep the guest audio transport at unity volume
 
 ---
- .../local/bin/omarchy-windows-audio-bridge    | 126 +++++++++++++--
+ .../local/bin/omarchy-windows-audio-bridge    | 147 +++++++++++++--
  guest/scripts/finalize-rootfs.sh              |   2 +-
- guest/tests/test_windows_audio_bridge.py      | 147 ++++++++++++++++++
+ guest/tests/test_windows_audio_bridge.py      | 174 ++++++++++++++++++
  guest/tests/verify.py                         |   2 +-
- 4 files changed, 264 insertions(+), 13 deletions(-)
+ 4 files changed, 311 insertions(+), 14 deletions(-)
 
 diff --git a/guest/factory-overlay/usr/local/bin/omarchy-windows-audio-bridge b/guest/factory-overlay/usr/local/bin/omarchy-windows-audio-bridge
-index 55e9833..bc636d9 100755
+index 55e9833..198f7b9 100755
 --- a/guest/factory-overlay/usr/local/bin/omarchy-windows-audio-bridge
 +++ b/guest/factory-overlay/usr/local/bin/omarchy-windows-audio-bridge
 @@ -8,6 +8,7 @@ import json
@@ -52,17 +52,20 @@ index 55e9833..bc636d9 100755
      if check and result.returncode != 0:
          detail = result.stderr.strip() or f"status {result.returncode}"
          raise RuntimeError(f"pactl {' '.join(arguments[:2])}: {detail}")
-@@ -94,12 +100,98 @@ class PipeWireMirror:
+@@ -94,12 +100,117 @@ class PipeWireMirror:
          }
          self.last_health_check = 0.0
          self.pending: dict[str, tuple[str | None, float]] = {}
+-
+-    def close(self) -> None:
 +        self.transport_volume: tuple[str, list[int]] | None = None
 +        self.transport_name: str | None = None
 +        self.transport_owned = False
 +        self.transport_pending = False
 +        self.rebuild_volume: list[int] | None = None
- 
--    def close(self) -> None:
++        self.retry_volume: list[int] | None = None
++        self.transport_applied = False
++
 +    def _unload_modules(self) -> None:
          for module_id in reversed(self.module_ids):
              run_pactl("unload-module", module_id, check=False)
@@ -70,13 +73,15 @@ index 55e9833..bc636d9 100755
  
 +    def close(self) -> None:
 +        self._observe_transport_volume()
-+        restore = self.transport_volume if self.transport_owned else None
++        restore = self.transport_volume if self.transport_owned and self.transport_applied else None
 +        self._unload_modules()
 +        self.transport_volume = None
 +        self.transport_name = None
 +        self.transport_owned = False
 +        self.transport_pending = False
 +        self.rebuild_volume = None
++        self.retry_volume = None
++        self.transport_applied = False
 +        if restore is not None:
 +            name, volumes = restore
 +            try:
@@ -85,14 +90,15 @@ index 55e9833..bc636d9 100755
 +                pass
 +
 +    def _observe_transport_volume(self) -> None:
-+        if self.transport_volume is None or self.transport_pending:
++        if self.transport_volume is None or (self.transport_pending and self.retry_volume is None):
 +            return
 +        try:
 +            name, original = self.transport_volume
 +            sink = next((sink for sink in self._sink_details() if sink.get("name") == name), None)
 +            if sink is not None:
 +                current = self._channel_volumes(sink)
-+                if current != [65536] * len(original):
++                expected = self.retry_volume if self.transport_pending else [65536] * len(original)
++                if current != expected:
 +                    self.transport_owned = False
 +                self.rebuild_volume = current
 +        except (RuntimeError, ValueError, TypeError, KeyError):
@@ -122,7 +128,9 @@ index 55e9833..bc636d9 100755
 +        self.transport_pending = True
 +        try:
 +            sink = next((sink for sink in self._sink_details() if sink.get("name") == name), None)
-+            properties = sink.get("properties") if sink is not None else None
++            if sink is None:
++                return
++            properties = sink.get("properties")
 +            if not isinstance(properties, dict) or properties.get("alsa.card_name") != "VirtIO SoundCard":
 +                self.transport_pending = False
 +                return
@@ -141,18 +149,30 @@ index 55e9833..bc636d9 100755
 +                return
 +        name, _ = self.transport_volume
 +        try:
++            sink = next((sink for sink in self._sink_details() if sink.get("name") == name), None)
++            if sink is None:
++                return
++            current = self._channel_volumes(sink)
++            if self.retry_volume is not None and current != self.retry_volume:
++                # A change after a failed write belongs to the owner. Do not
++                # replace it when retrying initialization or during cleanup.
++                self.transport_owned = False
++                self.rebuild_volume = current
++            self.retry_volume = current
 +            if self.transport_owned:
 +                run_pactl("set-sink-volume", name, "100%")
 +            elif self.rebuild_volume is not None:
 +                run_pactl("set-sink-volume", name, *map(str, self.rebuild_volume))
++            self.transport_applied = self.transport_applied or self.transport_owned
 +            self.transport_pending = False
-+        except RuntimeError:
++            self.retry_volume = None
++        except (RuntimeError, ValueError, TypeError, KeyError):
 +            log("Could not set QEMU audio transport volume; will retry")
 +
      def apply(self, message: dict[str, Any]) -> None:
          # A catalog echo can arrive between two quick picker changes. Capture
          # the second local change before applying the echo to either direction.
-@@ -131,11 +223,13 @@ class PipeWireMirror:
+@@ -131,11 +242,13 @@ class PipeWireMirror:
                      selected = requested
              self._set_selected(direction, selected)
              self.last_sent[direction] = selected
@@ -166,7 +186,7 @@ index 55e9833..bc636d9 100755
              loaded = loaded_module_ids()
              if self.module_ids and not set(self.module_ids).issubset(loaded):
                  self.inventory = None
-@@ -197,7 +291,8 @@ class PipeWireMirror:
+@@ -197,7 +310,8 @@ class PipeWireMirror:
          outputs: list[dict[str, str]],
          inputs: list[dict[str, str]],
      ) -> None:
@@ -176,7 +196,7 @@ index 55e9833..bc636d9 100755
          sinks = [name for name in short_names("sinks") if not name.startswith(PREFIX)]
          sources = [
              name
-@@ -209,6 +304,14 @@ class PipeWireMirror:
+@@ -209,6 +323,14 @@ class PipeWireMirror:
          transport_sink = next((name for name in sinks if name.startswith("alsa_output.")), sinks[0])
          transport_source = next((name for name in sources if name.startswith("alsa_input.")), sources[0]) if sources else None
  
@@ -191,7 +211,7 @@ index 55e9833..bc636d9 100755
          output_records = [{"deviceUID": None, "name": "Windows System Default"}, *outputs]
          input_records = [{"deviceUID": None, "name": "Windows System Default"}, *inputs] if inputs else []
          self.output_uids = {}
-@@ -266,6 +369,7 @@ def open_port() -> int:
+@@ -266,6 +388,7 @@ def open_port() -> int:
  
  
  def main() -> int:
@@ -213,7 +233,7 @@ index 3da1033..18179df 100755
  
  # Fail the build if DKMS or networking modules were not packaged for this kernel.
 diff --git a/guest/tests/test_windows_audio_bridge.py b/guest/tests/test_windows_audio_bridge.py
-index 99c8faf..363b738 100644
+index 99c8faf..b751359 100644
 --- a/guest/tests/test_windows_audio_bridge.py
 +++ b/guest/tests/test_windows_audio_bridge.py
 @@ -4,6 +4,8 @@
@@ -225,7 +245,7 @@ index 99c8faf..363b738 100644
  from importlib.machinery import SourceFileLoader
  from pathlib import Path
  import unittest
-@@ -22,6 +24,31 @@ bridge = importlib.util.module_from_spec(SPEC)
+@@ -22,6 +24,32 @@ bridge = importlib.util.module_from_spec(SPEC)
  SPEC.loader.exec_module(bridge)
  
  
@@ -242,6 +262,7 @@ index 99c8faf..363b738 100644
 +        mirror.module_ids = ["100"]
 +        mirror.transport_volume = ("virtio", [26214, 32768])
 +        mirror.transport_owned = True
++        mirror.transport_applied = True
 +        sink = {"name": "virtio", "volume": {"left": {"value": 65536}, "right": {"value": 65536}}}
 +        def command(arguments, **kwargs):
 +            if arguments[1] == "unload-module":
@@ -257,13 +278,14 @@ index 99c8faf..363b738 100644
  class PactlStub:
      """Small pactl model that records the graph built by PipeWireMirror."""
  
-@@ -32,11 +59,31 @@ class PactlStub:
+@@ -32,11 +60,34 @@ class PactlStub:
          self.calls: list[tuple[tuple[str, ...], bool]] = []
          self.next_module_id = 100
          self.loaded_modules: set[str] = set()
 +        self.volumes = [26214, 26214]
 +        self.card_name = "VirtIO SoundCard"
 +        self.details_error = False
++        self.missing_details = False
 +        self.reset_on_load = False
 +        self.fail_volume_once = False
 +        self.fail_load_once = False
@@ -275,6 +297,8 @@ index 99c8faf..363b738 100644
 +        if arguments == ("--format=json", "list", "sinks"):
 +            if self.details_error:
 +                raise RuntimeError("PipeWire unavailable")
++            if self.missing_details:
++                return "[]"
 +            return json.dumps([{
 +                "name": self.transport_sink,
 +                "properties": {"alsa.card_name": self.card_name},
@@ -289,7 +313,7 @@ index 99c8faf..363b738 100644
          if arguments == ("list", "short", "sinks"):
              return f"10\t{self.transport_sink}\tmodule-alsa-card.c\ts16le 2ch 48000Hz\tRUNNING\n"
          if arguments == ("list", "short", "sources"):
-@@ -44,6 +91,11 @@ class PactlStub:
+@@ -44,6 +95,11 @@ class PactlStub:
          if arguments == ("list", "short", "modules"):
              return "\n".join(f"{module_id}\tmodule" for module_id in self.loaded_modules)
          if arguments and arguments[0] == "load-module":
@@ -301,7 +325,7 @@ index 99c8faf..363b738 100644
              module_id = str(self.next_module_id)
              self.next_module_id += 1
              self.loaded_modules.add(module_id)
-@@ -158,6 +210,101 @@ class PipeWireMirrorTests(unittest.TestCase):
+@@ -158,6 +214,124 @@ class PipeWireMirrorTests(unittest.TestCase):
          self.addCleanup(mirror.close)
          return mirror, pactl, sent
  
@@ -399,6 +423,29 @@ index 99c8faf..363b738 100644
 +        self.assertEqual(pactl.volumes, [65536, 65536])
 +        mirror.close()
 +        self.assertEqual(pactl.volumes, [22222, 33333])
++
++    def test_pending_initialization_preserves_manual_gain_on_retry_and_close(self) -> None:
++        for action in ("retry", "close"):
++            with self.subTest(action=action):
++                mirror, pactl, _ = self.make_mirror()
++                pactl.fail_volume_once = True
++                mirror.apply(catalog_message())
++                pactl.volumes = [12345, 23456]
++                if action == "retry":
++                    mirror.poll_selection()
++                mirror.close()
++                self.assertEqual(pactl.volumes, [12345, 23456])
++
++    def test_missing_sink_details_remain_retryable(self) -> None:
++        mirror, pactl, _ = self.make_mirror()
++        pactl.missing_details = True
++        mirror.apply(catalog_message())
++        self.assertEqual(pactl.volumes, [26214, 26214])
++        pactl.missing_details = False
++        mirror.poll_selection()
++        self.assertEqual(pactl.volumes, [65536, 65536])
++        mirror.close()
++        self.assertEqual(pactl.volumes, [26214, 26214])
 +
      def test_outputs_are_playable_remaps_of_the_qemu_transport(self) -> None:
          """A chooser sink must carry audio, not merely update the host route."""
