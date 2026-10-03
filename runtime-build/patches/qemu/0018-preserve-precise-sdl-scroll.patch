@@ -5,10 +5,10 @@ Carry fractional SDL detents to Linux in 120 units per notch, with legacy
 wheel events at whole boundaries. Route wheel axes separately from X/Y so
 PS/2 and USB handlers retain the discrete button path. Pinch stays separate.
 
-diff --git i/hw/input/virtio-input-hid.c w/hw/input/virtio-input-hid.c
+diff --git a/hw/input/virtio-input-hid.c b/hw/input/virtio-input-hid.c
 index 00d064acce..f835cde169 100644
---- i/hw/input/virtio-input-hid.c
-+++ w/hw/input/virtio-input-hid.c
+--- a/hw/input/virtio-input-hid.c
++++ b/hw/input/virtio-input-hid.c
 @@ -37,6 +37,8 @@ static const unsigned short keymap_button[INPUT_BUTTON__MAX] = {
  static const unsigned short axismap_rel[INPUT_AXIS__MAX] = {
      [INPUT_AXIS_X]                   = REL_X,
@@ -167,10 +167,10 @@ index 00d064acce..f835cde169 100644
          },
      },{
          .select    = VIRTIO_INPUT_CFG_ABS_INFO,
-diff --git i/include/hw/virtio/virtio-input.h w/include/hw/virtio/virtio-input.h
+diff --git a/include/hw/virtio/virtio-input.h b/include/hw/virtio/virtio-input.h
 index a382d9f135..05e7d14718 100644
---- i/include/hw/virtio/virtio-input.h
-+++ w/include/hw/virtio/virtio-input.h
+--- a/include/hw/virtio/virtio-input.h
++++ b/include/hw/virtio/virtio-input.h
 @@ -90,6 +90,8 @@ struct VirtIOInputHID {
      const QemuInputHandler            *handler;
      QemuInputHandlerState             *hs;
@@ -180,10 +180,10 @@ index a382d9f135..05e7d14718 100644
  };
  
  struct VirtIOInputHost {
-diff --git i/include/ui/input.h w/include/ui/input.h
+diff --git a/include/ui/input.h b/include/ui/input.h
 index 8f9aac562e..6983ec6b35 100644
---- i/include/ui/input.h
-+++ w/include/ui/input.h
+--- a/include/ui/input.h
++++ b/include/ui/input.h
 @@ -9,6 +9,8 @@
  #define INPUT_EVENT_MASK_REL   (1<<INPUT_EVENT_KIND_REL)
  #define INPUT_EVENT_MASK_ABS   (1<<INPUT_EVENT_KIND_ABS)
@@ -201,11 +201,11 @@ index 8f9aac562e..6983ec6b35 100644
  int qemu_input_scale_axis(int value,
                            int min_in, int max_in,
                            int min_out, int max_out);
-diff --git i/include/ui/sdl2-scroll.h w/include/ui/sdl2-scroll.h
+diff --git a/include/ui/sdl2-scroll.h b/include/ui/sdl2-scroll.h
 new file mode 100644
 index 0000000000..b5a7a0a3d4
 --- /dev/null
-+++ w/include/ui/sdl2-scroll.h
++++ b/include/ui/sdl2-scroll.h
 @@ -0,0 +1,37 @@
 +/* SDL wheel conversion, independent of SDL for testing.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -244,10 +244,10 @@ index 0000000000..b5a7a0a3d4
 +}
 +
 +#endif
-diff --git i/include/ui/sdl2.h w/include/ui/sdl2.h
+diff --git a/include/ui/sdl2.h b/include/ui/sdl2.h
 index 1076dd2314..9201d31961 100644
---- i/include/ui/sdl2.h
-+++ w/include/ui/sdl2.h
+--- a/include/ui/sdl2.h
++++ b/include/ui/sdl2.h
 @@ -22,6 +22,7 @@
  #endif
  
@@ -264,11 +264,11 @@ index 1076dd2314..9201d31961 100644
      bool has_dmabuf;
  #ifdef CONFIG_OPENGL
      QemuGLShader *gls;
-diff --git i/qapi/ui.json w/qapi/ui.json
-index 9ad68f44cc..27d2b8c6cc 100644
---- i/qapi/ui.json
-+++ w/qapi/ui.json
-@@ -1068,12 +1068,16 @@
+diff --git a/qapi/ui.json b/qapi/ui.json
+index 9ad68f44cc..aedeca0edb 100644
+--- a/qapi/ui.json
++++ b/qapi/ui.json
+@@ -1068,12 +1068,17 @@
  ##
  # @InputAxis:
  #
@@ -277,7 +277,8 @@ index 9ad68f44cc..27d2b8c6cc 100644
 +#
 +# @wheel: vertical wheel movement in 120 units per detent (downstream)
 +#
-+# @hwheel: horizontal wheel movement in 120 units per detent (downstream)
++# @hwheel: horizontal wheel movement in 120 units per detent
++#     (downstream)
  #
  # Since: 2.0
  ##
@@ -287,10 +288,10 @@ index 9ad68f44cc..27d2b8c6cc 100644
  
  ##
  # @InputMultiTouchType:
-diff --git i/ui/input.c w/ui/input.c
+diff --git a/ui/input.c b/ui/input.c
 index 147e69c1c3..3603e6210e 100644
---- i/ui/input.c
-+++ w/ui/input.c
+--- a/ui/input.c
++++ b/ui/input.c
 @@ -122,6 +122,21 @@ qemu_input_find_handler(uint32_t mask, QemuConsole *con)
      return NULL;
  }
@@ -331,10 +332,10 @@ index 147e69c1c3..3603e6210e 100644
      if (!s) {
          return;
      }
-diff --git i/ui/sdl2.c w/ui/sdl2.c
+diff --git a/ui/sdl2.c b/ui/sdl2.c
 index 20e6c91979..4fee363446 100644
---- i/ui/sdl2.c
-+++ w/ui/sdl2.c
+--- a/ui/sdl2.c
++++ b/ui/sdl2.c
 @@ -160,6 +160,7 @@ void sdl2_window_destroy(struct sdl2_console *scon)
          return;
      }

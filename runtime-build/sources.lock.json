@@ -80,7 +80,7 @@
       },
       {
         "file": "patches/qemu/0018-preserve-precise-sdl-scroll.patch",
-        "sha256": "84105ef58cf6bf4278b763890d11ccf86698cbcf6e8efc724a0c1266df184cb1"
+        "sha256": "0044597cc539603e3a3336d44544b0bb1e3f5b1275409cc576bd9297b021fd6a"
       }
     ]
   },
