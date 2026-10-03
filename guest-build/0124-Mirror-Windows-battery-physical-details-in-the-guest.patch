@@ -1,0 +1,993 @@
+From 49554b8a2d98a67b0165cc93fbc4389678e242db Mon Sep 17 00:00:00 2001
+From: Tyler South <tsouth2@gmail.com>
+Date: Sat, 3 Oct 2026 08:30:38 -0400
+Subject: [PATCH] Mirror Windows battery physical details in the guest
+
+---
+ .../usr/local/lib/try-omarchy/agent           |   6 +
+ .../usr/local/lib/try-omarchy/battery-apply   |  74 ++++-
+ .../usr/local/lib/try-omarchy/catch-up        |   5 +
+ .../local/lib/try-omarchy/update-battery-dkms |  32 ++
+ .../Makefile                                  |   0
+ .../dkms.conf                                 |   2 +-
+ .../try-omarchy-battery.c                     | 124 +++++++-
+ guest/scripts/finalize-rootfs.sh              |   8 +-
+ guest/tests/native-module/tob_parse_harness.c | 147 +++++++++
+ guest/tests/test_battery_details.py           | 281 ++++++++++++++++++
+ guest/tests/test_guest_qol.py                 |   2 +-
+ guest/tests/test_overlay_scripts.py           |   3 +-
+ guest/tests/verify.py                         |   2 +-
+ 13 files changed, 665 insertions(+), 21 deletions(-)
+ create mode 100755 guest/factory-overlay/usr/local/lib/try-omarchy/update-battery-dkms
+ rename guest/factory-overlay/usr/src/{try-omarchy-battery-1.0.0 => try-omarchy-battery-1.1.0}/Makefile (100%)
+ rename guest/factory-overlay/usr/src/{try-omarchy-battery-1.0.0 => try-omarchy-battery-1.1.0}/dkms.conf (94%)
+ rename guest/factory-overlay/usr/src/{try-omarchy-battery-1.0.0 => try-omarchy-battery-1.1.0}/try-omarchy-battery.c (69%)
+ create mode 100644 guest/tests/native-module/tob_parse_harness.c
+ create mode 100644 guest/tests/test_battery_details.py
+
+diff --git a/guest/factory-overlay/usr/local/lib/try-omarchy/agent b/guest/factory-overlay/usr/local/lib/try-omarchy/agent
+index 00b6a0a..3d897fa 100755
+--- a/guest/factory-overlay/usr/local/lib/try-omarchy/agent
++++ b/guest/factory-overlay/usr/local/lib/try-omarchy/agent
+@@ -67,6 +67,10 @@ handle() {
+         printf '%s\n' "${line#apps }" | runuser -u omarchy -- "$app_sync" || echo 'could not sync approved Windows apps' >&2
+       fi
+       ;;
++    battery-details\ *)
++      printf '%s\n' "${line#battery-details }" | /usr/local/lib/try-omarchy/battery-apply --details ||
++        echo 'could not apply host battery details' >&2
++      ;;
+     battery\ *)
+       printf '%s\n' "${line#battery }" | /usr/local/lib/try-omarchy/battery-apply ||
+         echo 'could not apply host battery state' >&2
+@@ -96,6 +100,8 @@ if [[ ${1:-} == --handle ]]; then
+   exit 0
+ fi
+ 
++# A restarted agent may reconnect to an older launcher with no details message.
++/usr/local/lib/try-omarchy/battery-apply --offline || true
+ while :; do
+   exec 3<>"/dev/tcp/$host/$port" 2>/dev/null || { sleep 10; continue; }
+   printf 'hello %s\n' "$version" >&3
+diff --git a/guest/factory-overlay/usr/local/lib/try-omarchy/battery-apply b/guest/factory-overlay/usr/local/lib/try-omarchy/battery-apply
+index 72a1e1a..7e3d8c3 100755
+--- a/guest/factory-overlay/usr/local/lib/try-omarchy/battery-apply
++++ b/guest/factory-overlay/usr/local/lib/try-omarchy/battery-apply
+@@ -7,10 +7,43 @@ from pathlib import Path
+ import sys
+ 
+ STATE = Path(os.environ.get("TRY_OMARCHY_BATTERY_STATE_FILE", "/sys/devices/platform/try-omarchy-battery/state"))
++DETAILS = Path(os.environ.get("TRY_OMARCHY_BATTERY_DETAILS_FILE", "/run/try-omarchy/battery-details.json"))
+ CACHE = Path(os.environ.get("TRY_OMARCHY_BATTERY_CACHE_FILE", "/run/try-omarchy/battery.json"))
+ STATES = {"charging", "discharging", "full", "not-charging", "unknown"}
+ KEYS = {"type", "present", "percentage", "state", "acConnected", "timeToEmptySeconds", "timeToFullSeconds"}
+ 
++NUMBERS = {"energyFullDesignMicroWh": "energy_full_design", "energyFullMicroWh": "energy_full", "cycleCount": "cycle_count"}
++TEXT = {"manufacturer": "manufacturer", "modelName": "model_name", "chemistry": "chemistry"}
++
++
++def decode_details(raw: bytes) -> dict:
++    if len(raw) > 4096:
++        raise ValueError("battery details are too large")
++    value = json.loads(raw)
++    if not isinstance(value, dict) or not set(value) <= NUMBERS.keys() | TEXT.keys():
++        raise ValueError("invalid battery details")
++    for key, number in value.items():
++        if key in NUMBERS:
++            if type(number) is not int or not 1 <= number <= 2147483647:
++                raise ValueError("invalid physical reading")
++        elif not isinstance(number, str) or not number or len(number.encode()) > 127 or any(ord(c) < 32 or ord(c) == 127 for c in number):
++            raise ValueError("invalid battery text")
++    return value
++
++
++def load_details() -> dict:
++    try:
++        return decode_details(DETAILS.read_bytes())
++    except (OSError, ValueError):
++        return {}
++
++
++def save(path: Path, value: dict) -> None:
++    path.parent.mkdir(parents=True, exist_ok=True)
++    temporary = path.with_suffix(".part")
++    temporary.write_text(json.dumps(value, separators=(",", ":")))
++    temporary.replace(path)
++
+ 
+ def decode(raw: bytes) -> dict:
+     if len(raw) > 4096:
+@@ -35,20 +68,47 @@ def decode(raw: bytes) -> dict:
+     return value
+ 
+ 
+-def render(value: dict) -> str:
++def render(value: dict, details: dict | None = None) -> str:
+     ac = int(value["acConnected"])
+     if not value["present"]:
+         return f"present=0 ac={ac}\n"
++    fields = ""
++    for key, field in NUMBERS.items():
++        if key in (details or {}):
++            fields += f" {field}={details[key]}"
++    for key, field in TEXT.items():
++        if key in (details or {}):
++            fields += f" {field}={details[key].encode().hex()}"
+     empty = value["timeToEmptySeconds"]
+     full = value["timeToFullSeconds"]
+     return (f"present=1 status={value['state']} capacity={value['percentage']} ac={ac} "
+             f"time_to_empty={-1 if empty is None else empty} "
+-            f"time_to_full={-1 if full is None else full}\n")
++            f"time_to_full={-1 if full is None else full}{fields}\n")
++
++
++def write_state(value: dict, details: dict) -> None:
++    try:
++        STATE.write_text(render(value, details))
++    except OSError:
++        # A 1.0.0 module still loaded after an upgrade rejects detail fields.
++        # Keep charge and AC state flowing until the guest restarts.
++        if not details:
++            raise
++        STATE.write_text(render(value))
+ 
+ 
+ def main() -> int:
+     try:
++        if sys.argv[1:] == ["--details"]:
++            details = decode_details(sys.stdin.buffer.read(4097))
++            previous = decode(CACHE.read_bytes())
++            if not previous["present"]:
++                details = {}
++            save(DETAILS, details)
++            write_state(previous, details)
++            return 0
+         if sys.argv[1:] == ["--offline"]:
++            save(DETAILS, {})
+             try:
+                 previous = decode(CACHE.read_bytes())
+             except (OSError, ValueError):
+@@ -61,11 +121,11 @@ def main() -> int:
+         if sys.argv[1:]:
+             return 2
+         value = decode(sys.stdin.buffer.read(4097))
+-        STATE.write_text(render(value))
+-        CACHE.parent.mkdir(parents=True, exist_ok=True)
+-        temporary = CACHE.with_suffix(".part")
+-        temporary.write_text(json.dumps(value, separators=(",", ":")))
+-        temporary.replace(CACHE)
++        details = load_details() if value["present"] else {}
++        if not value["present"]:
++            save(DETAILS, {})
++        write_state(value, details)
++        save(CACHE, value)
+         return 0
+     except (OSError, ValueError, json.JSONDecodeError) as error:
+         print(f"battery snapshot rejected: {error}", file=sys.stderr)
+diff --git a/guest/factory-overlay/usr/local/lib/try-omarchy/catch-up b/guest/factory-overlay/usr/local/lib/try-omarchy/catch-up
+index 2d5c638..c3950f7 100755
+--- a/guest/factory-overlay/usr/local/lib/try-omarchy/catch-up
++++ b/guest/factory-overlay/usr/local/lib/try-omarchy/catch-up
+@@ -39,6 +39,11 @@ if [[ -x $qol_installer ]] && { [[ ! $previous_revision =~ ^[0-9]+$ ]] || (( pre
+   "$qol_installer" --homes "$homes"
+ fi
+ 
++battery_installer=${TRY_OMARCHY_BATTERY_INSTALLER:-/usr/local/lib/try-omarchy/update-battery-dkms}
++if [[ -x $battery_installer ]] && { [[ ! $previous_revision =~ ^[0-9]+$ ]] || (( previous_revision < 48 )); }; then
++  "$battery_installer"
++fi
++
+ strip_profile_block() {
+   # Drop our appended block so the remainder can be compared with Omarchy's own file.
+   sed '/^-- BEGIN OMARCHY QEMU PROFILE$/,/^-- END OMARCHY QEMU PROFILE$/d' "$1" | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}'
+diff --git a/guest/factory-overlay/usr/local/lib/try-omarchy/update-battery-dkms b/guest/factory-overlay/usr/local/lib/try-omarchy/update-battery-dkms
+new file mode 100755
+index 0000000..e038194
+--- /dev/null
++++ b/guest/factory-overlay/usr/local/lib/try-omarchy/update-battery-dkms
+@@ -0,0 +1,32 @@
++#!/bin/bash
++# The initramfs already delivered the new module for the running kernel.
++# Retire the old DKMS registration without losing that delivered copy.
++set -euo pipefail
++
++root=${TRY_OMARCHY_BATTERY_ROOT:-}
++kernel=$(uname -r)
++module=$(modinfo -n try_omarchy_battery)
++backup=$(mktemp -d)
++trap 'rm -rf "$backup"' EXIT
++cp -a "$module" "$backup/module"
++restore_module() {
++  install -d "$(dirname "$module")"
++  cp -a "$backup/module" "$module"
++  depmod -a
++}
++trap 'restore_module; rm -rf "$backup"' EXIT
++if [[ -d "$root"/var/lib/dkms/try-omarchy-battery/1.0.0 ]]; then
++  dkms remove -m try-omarchy-battery -v 1.0.0 --all
++fi
++# Old source must not be picked up again by the DKMS package hook.
++rm -rf -- "$root/usr/src/try-omarchy-battery-1.0.0"
++restore_module
++trap 'rm -rf "$backup"' EXIT
++if [[ ! -e "$root"/var/lib/dkms/try-omarchy-battery/1.1.0/source ]]; then
++  dkms add -m try-omarchy-battery -v 1.1.0
++fi
++# Headers can arrive later through Update > Omarchy. 0118's force-install
++# entry lets DKMS replace the delivered module when they do.
++if [[ -d "$root"/usr/lib/modules/$kernel/build ]]; then
++  dkms install -m try-omarchy-battery -v 1.1.0 -k "$kernel"
++fi
+diff --git a/guest/factory-overlay/usr/src/try-omarchy-battery-1.0.0/Makefile b/guest/factory-overlay/usr/src/try-omarchy-battery-1.1.0/Makefile
+similarity index 100%
+rename from guest/factory-overlay/usr/src/try-omarchy-battery-1.0.0/Makefile
+rename to guest/factory-overlay/usr/src/try-omarchy-battery-1.1.0/Makefile
+diff --git a/guest/factory-overlay/usr/src/try-omarchy-battery-1.0.0/dkms.conf b/guest/factory-overlay/usr/src/try-omarchy-battery-1.1.0/dkms.conf
+similarity index 94%
+rename from guest/factory-overlay/usr/src/try-omarchy-battery-1.0.0/dkms.conf
+rename to guest/factory-overlay/usr/src/try-omarchy-battery-1.1.0/dkms.conf
+index 59ee2fd..9107c14 100644
+--- a/guest/factory-overlay/usr/src/try-omarchy-battery-1.0.0/dkms.conf
++++ b/guest/factory-overlay/usr/src/try-omarchy-battery-1.1.0/dkms.conf
+@@ -1,5 +1,5 @@
+ PACKAGE_NAME="try-omarchy-battery"
+-PACKAGE_VERSION="1.0.0"
++PACKAGE_VERSION="1.1.0"
+ BUILT_MODULE_NAME[0]="try_omarchy_battery"
+ DEST_MODULE_LOCATION[0]="/updates/dkms"
+ AUTOINSTALL="yes"
+diff --git a/guest/factory-overlay/usr/src/try-omarchy-battery-1.0.0/try-omarchy-battery.c b/guest/factory-overlay/usr/src/try-omarchy-battery-1.1.0/try-omarchy-battery.c
+similarity index 69%
+rename from guest/factory-overlay/usr/src/try-omarchy-battery-1.0.0/try-omarchy-battery.c
+rename to guest/factory-overlay/usr/src/try-omarchy-battery-1.1.0/try-omarchy-battery.c
+index 39a1953..6ed3db5 100644
+--- a/guest/factory-overlay/usr/src/try-omarchy-battery-1.0.0/try-omarchy-battery.c
++++ b/guest/factory-overlay/usr/src/try-omarchy-battery-1.1.0/try-omarchy-battery.c
+@@ -18,6 +18,7 @@
+  * power_supply_unregister() waits for readers holding tob_state_lock.
+  */
+ 
++#include <linux/hex.h>
+ #include <linux/kernel.h>
+ #include <linux/module.h>
+ #include <linux/mutex.h>
+@@ -33,11 +34,20 @@ struct tob_state {
+ 	bool ac_online;
+ 	int time_to_empty;
+ 	int time_to_full;
++	int energy_full_design;
++	int energy_full;
++	int cycle_count;
++	char manufacturer[128];
++	char model_name[128];
++	char chemistry[128];
+ };
+ 
+ static struct platform_device *tob_pdev;
+ static struct power_supply *tob_ac;
+ static struct power_supply *tob_bat;
++/* String property pointers stay valid until power_supply_unregister drains readers. */
++static char tob_manufacturer[128];
++static char tob_model_name[128];
+ static DEFINE_MUTEX(tob_register_lock);	/* serializes writers + registration */
+ static DEFINE_MUTEX(tob_state_lock);	/* guards tob_state */
+ static struct tob_state tob_state = {
+@@ -47,6 +57,9 @@ static struct tob_state tob_state = {
+ 	.ac_online = true,
+ 	.time_to_empty = -1,
+ 	.time_to_full = -1,
++	.energy_full_design = -1,
++	.energy_full = -1,
++	.cycle_count = -1,
+ };
+ 
+ static const struct {
+@@ -76,6 +89,9 @@ static enum power_supply_property tob_bat_properties[] = {
+ 	POWER_SUPPLY_PROP_CAPACITY,
+ 	POWER_SUPPLY_PROP_TIME_TO_EMPTY_AVG,
+ 	POWER_SUPPLY_PROP_TIME_TO_FULL_AVG,
++	POWER_SUPPLY_PROP_ENERGY_FULL_DESIGN,
++	POWER_SUPPLY_PROP_ENERGY_FULL,
++	POWER_SUPPLY_PROP_CYCLE_COUNT,
+ 	POWER_SUPPLY_PROP_TECHNOLOGY,
+ 	POWER_SUPPLY_PROP_MANUFACTURER,
+ 	POWER_SUPPLY_PROP_MODEL_NAME,
+@@ -115,13 +131,41 @@ static int tob_bat_get_property(struct power_supply *psy,
+ 			val->intval = tob_state.time_to_full;
+ 		break;
+ 	case POWER_SUPPLY_PROP_TECHNOLOGY:
+-		val->intval = POWER_SUPPLY_TECHNOLOGY_LION;
++		val->intval = POWER_SUPPLY_TECHNOLOGY_UNKNOWN;
++		if (!strcmp(tob_state.chemistry, "LION") ||
++		    !strcmp(tob_state.chemistry, "Li-I"))
++			val->intval = POWER_SUPPLY_TECHNOLOGY_LION;
++		else if (!strcmp(tob_state.chemistry, "LIPO"))
++			val->intval = POWER_SUPPLY_TECHNOLOGY_LIPO;
++		else if (!strcmp(tob_state.chemistry, "NiMH"))
++			val->intval = POWER_SUPPLY_TECHNOLOGY_NiMH;
++		else if (!strcmp(tob_state.chemistry, "NiCd"))
++			val->intval = POWER_SUPPLY_TECHNOLOGY_NiCd;
++		break;
++	case POWER_SUPPLY_PROP_ENERGY_FULL_DESIGN:
++		val->intval = tob_state.energy_full_design;
++		if (val->intval < 0)
++			error = -ENODATA;
++		break;
++	case POWER_SUPPLY_PROP_ENERGY_FULL:
++		val->intval = tob_state.energy_full;
++		if (val->intval < 0)
++			error = -ENODATA;
++		break;
++	case POWER_SUPPLY_PROP_CYCLE_COUNT:
++		val->intval = tob_state.cycle_count;
++		if (val->intval < 0)
++			error = -ENODATA;
+ 		break;
+ 	case POWER_SUPPLY_PROP_MANUFACTURER:
+-		val->strval = "Windows host";
++		val->strval = tob_manufacturer;
++		if (!*val->strval)
++			error = -ENODATA;
+ 		break;
+ 	case POWER_SUPPLY_PROP_MODEL_NAME:
+-		val->strval = "Host Battery";
++		val->strval = tob_model_name;
++		if (!*val->strval)
++			error = -ENODATA;
+ 		break;
+ 	default:
+ 		error = -EINVAL;
+@@ -159,6 +203,29 @@ static const struct power_supply_desc tob_ac_desc = {
+ 	.get_property = tob_ac_get_property,
+ };
+ 
++/* Text travels as UTF-8 hex so spaces cannot split a snapshot token. */
++static int tob_parse_text(const char *value, char *target, size_t size)
++{
++	size_t length = strlen(value), i;
++
++	if (!length || length % 2 || length / 2 >= size)
++		return -EINVAL;
++	for (i = 0; i < length / 2; i++) {
++		int high = hex_to_bin(value[i * 2]);
++		int low = hex_to_bin(value[i * 2 + 1]);
++		int byte;
++
++		if (high < 0 || low < 0)
++			return -EINVAL;
++		byte = high * 16 + low;
++		if (byte < 32 || byte == 127)
++			return -EINVAL;
++		target[i] = byte;
++	}
++	target[length / 2] = '\0';
++	return 0;
++}
++
+ static int tob_parse(const char *buf, size_t count, struct tob_state *next)
+ {
+ 	bool saw_present = false, saw_ac = false;
+@@ -172,6 +239,12 @@ static int tob_parse(const char *buf, size_t count, struct tob_state *next)
+ 	next->ac_online = false;
+ 	next->time_to_empty = -1;
+ 	next->time_to_full = -1;
++	next->energy_full_design = -1;
++	next->energy_full = -1;
++	next->cycle_count = -1;
++	memset(next->manufacturer, 0, sizeof(next->manufacturer));
++	memset(next->model_name, 0, sizeof(next->model_name));
++	memset(next->chemistry, 0, sizeof(next->chemistry));
+ 
+ 	copy = kstrndup(buf, count, GFP_KERNEL);
+ 	if (!copy)
+@@ -209,6 +282,27 @@ static int tob_parse(const char *buf, size_t count, struct tob_state *next)
+ 			    next->capacity < 0 || next->capacity > 100)
+ 				goto out;
+ 			saw_capacity = true;
++		} else if (!strcmp(token, "energy_full_design")) {
++			if (kstrtoint(value, 10, &next->energy_full_design) ||
++				next->energy_full_design < -1 || next->energy_full_design == 0)
++				goto out;
++		} else if (!strcmp(token, "energy_full")) {
++			if (kstrtoint(value, 10, &next->energy_full) ||
++				next->energy_full < -1 || next->energy_full == 0)
++				goto out;
++		} else if (!strcmp(token, "cycle_count")) {
++			if (kstrtoint(value, 10, &next->cycle_count) ||
++				next->cycle_count < -1 || next->cycle_count == 0)
++				goto out;
++		} else if (!strcmp(token, "manufacturer")) {
++			if (tob_parse_text(value, next->manufacturer, sizeof(next->manufacturer)))
++				goto out;
++		} else if (!strcmp(token, "model_name")) {
++			if (tob_parse_text(value, next->model_name, sizeof(next->model_name)))
++				goto out;
++		} else if (!strcmp(token, "chemistry")) {
++			if (tob_parse_text(value, next->chemistry, sizeof(next->chemistry)))
++				goto out;
+ 		} else if (!strcmp(token, "time_to_empty")) {
+ 			if (kstrtoint(value, 10, &next->time_to_empty) ||
+ 			    next->time_to_empty < -1)
+@@ -253,7 +347,7 @@ static ssize_t state_store(struct device *dev, struct device_attribute *attr,
+ 			   const char *buf, size_t count)
+ {
+ 	struct tob_state next;
+-	bool ac_changed, bat_changed;
++	bool ac_changed, bat_changed, identity_changed;
+ 	int error;
+ 
+ 	error = tob_parse(buf, count, &next);
+@@ -263,11 +357,25 @@ static ssize_t state_store(struct device *dev, struct device_attribute *attr,
+ 	mutex_lock(&tob_register_lock);
+ 	mutex_lock(&tob_state_lock);
+ 	ac_changed = next.ac_online != tob_state.ac_online;
++	identity_changed = strcmp(next.manufacturer, tob_manufacturer) ||
++			   strcmp(next.model_name, tob_model_name);
+ 	bat_changed = next.present != tob_state.present ||
+ 		      next.status != tob_state.status ||
+ 		      next.capacity != tob_state.capacity ||
+ 		      next.time_to_empty != tob_state.time_to_empty ||
+-		      next.time_to_full != tob_state.time_to_full;
++		      next.time_to_full != tob_state.time_to_full ||
++		      next.energy_full_design != tob_state.energy_full_design ||
++		      next.energy_full != tob_state.energy_full ||
++		      next.cycle_count != tob_state.cycle_count ||
++		      strcmp(next.manufacturer, tob_state.manufacturer) ||
++		      strcmp(next.model_name, tob_state.model_name) ||
++		      strcmp(next.chemistry, tob_state.chemistry);
++	mutex_unlock(&tob_state_lock);
++	if (identity_changed && tob_bat) {
++		power_supply_unregister(tob_bat);
++		tob_bat = NULL;
++	}
++	mutex_lock(&tob_state_lock);
+ 	tob_state = next;
+ 	mutex_unlock(&tob_state_lock);
+ 
+@@ -276,6 +384,8 @@ static ssize_t state_store(struct device *dev, struct device_attribute *attr,
+ 		struct power_supply_config config = {};
+ 		struct power_supply *battery;
+ 
++		strscpy(tob_manufacturer, next.manufacturer, sizeof(tob_manufacturer));
++		strscpy(tob_model_name, next.model_name, sizeof(tob_model_name));
+ 		battery = power_supply_register(&tob_pdev->dev, &tob_bat_desc,
+ 						&config);
+ 		if (IS_ERR(battery)) {
+@@ -323,7 +433,7 @@ static int __init tob_init(void)
+ 		tob_ac = NULL;
+ 		goto remove_file;
+ 	}
+-	/* BAT0 appears on the first present=1 snapshot; a desktop Mac never
++	/* BAT0 appears on the first present=1 snapshot; a desktop PC never
+ 	 * creates it, so the guest bar has nothing to render. */
+ 	return 0;
+ 
+@@ -355,4 +465,4 @@ module_exit(tob_exit);
+ MODULE_AUTHOR("Try Omarchy");
+ MODULE_DESCRIPTION("Mirror the Windows host's battery as guest BAT0/ADP0");
+ MODULE_LICENSE("GPL");
+-MODULE_VERSION("1.0.0");
++MODULE_VERSION("1.1.0");
+diff --git a/guest/scripts/finalize-rootfs.sh b/guest/scripts/finalize-rootfs.sh
+index 89e1962..687b6f4 100755
+--- a/guest/scripts/finalize-rootfs.sh
++++ b/guest/scripts/finalize-rootfs.sh
+@@ -145,7 +145,7 @@ compat_paths=(
+   etc/modules-load.d/95-try-omarchy-battery.conf
+   etc/UPower/UPower.conf.d/90-try-omarchy.conf
+   etc/systemd/system/service.d/10-try-omarchy-watchdog.conf
+-  usr/src/try-omarchy-battery-1.0.0
++  usr/src/try-omarchy-battery-1.1.0
+   usr/share/dkms/modules_to_force_install/try-omarchy
+   etc/systemd/system/try-omarchy-catch-up.service
+   etc/systemd/system/multi-user.target.wants/try-omarchy-catch-up.service
+@@ -165,6 +165,7 @@ compat_paths=(
+   usr/local/bin/try-omarchy-export
+   usr/local/lib/try-omarchy/try-omarchy-import.pyz
+   usr/local/lib/try-omarchy/agent
++  usr/local/lib/try-omarchy/update-battery-dkms
+   usr/local/lib/try-omarchy/battery-apply
+   usr/local/lib/try-omarchy/apply-host-locale
+   usr/local/lib/try-omarchy/catch-up
+@@ -182,7 +183,7 @@ kernel_release=$(find /usr/lib/modules -mindepth 1 -maxdepth 1 -type d -printf '
+ # Build the virtual battery against the exact image kernel. The complete
+ # module tree is delivered by the normal external-kernel update path as well,
+ # so an existing disk gets BAT0 without a factory reset.
+-dkms install -m try-omarchy-battery -v 1.0.0 -k "$kernel_release"
++dkms install -m try-omarchy-battery -v 1.1.0 -k "$kernel_release"
+ depmod -a "$kernel_release"
+ modinfo -k "$kernel_release" try_omarchy_battery >/dev/null
+ tar -C / -cf /usr/share/try-omarchy/compat-overlay.tar "${compat_paths[@]}"
+@@ -220,7 +221,8 @@ tar -C / -cf /usr/share/try-omarchy/compat-overlay.tar "${compat_paths[@]}"
+ # delivered, so installing matching headers no longer prints install errors.
+ # Revision 46 keeps the guest audio transport at unity volume.
+ # Revision 47 brings guest quality-of-life fixes to matching defaults only.
+-compat_revision=47
++# Revision 48 delivers physical battery details and the updated DKMS source.
++compat_revision=48
+ printf '%s:%s\n' "$compat_revision" "$kernel_release" >/usr/share/try-omarchy/compat-version
+ 
+ # Fail the build if DKMS or networking modules were not packaged for this kernel.
+diff --git a/guest/tests/native-module/tob_parse_harness.c b/guest/tests/native-module/tob_parse_harness.c
+new file mode 100644
+index 0000000..891f845
+--- /dev/null
++++ b/guest/tests/native-module/tob_parse_harness.c
+@@ -0,0 +1,147 @@
++/*
++ * Userspace harness for the kernel module's tob_parse().
++ *
++ * The parser under test is NOT copied here. test_battery_details.py slices the
++ * struct, the status-token table and tob_parse() verbatim out of
++ * guest/factory-overlay/usr/src/try-omarchy-battery-1.1.0/try-omarchy-battery.c into
++ * tob_parse_extract.c, which this file compiles against the handful of kernel
++ * helpers the parser uses. A drift between the shipped module and the tested
++ * parser is therefore impossible.
++ *
++ * Reads one state line on stdin. Prints the parsed fields, or "ERR <errno>".
++ */
++
++#include <errno.h>
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++#define ARRAY_SIZE(array) (sizeof(array) / sizeof((array)[0]))
++#define GFP_KERNEL 0
++
++/* power_supply.h status values; only their distinctness matters here. */
++enum {
++	POWER_SUPPLY_STATUS_UNKNOWN = 0,
++	POWER_SUPPLY_STATUS_CHARGING,
++	POWER_SUPPLY_STATUS_DISCHARGING,
++	POWER_SUPPLY_STATUS_NOT_CHARGING,
++	POWER_SUPPLY_STATUS_FULL,
++};
++
++static char *kstrndup(const char *source, size_t max, int flags)
++{
++	(void)flags;
++	return strndup(source, max);
++}
++
++static void kfree(void *pointer)
++{
++	free(pointer);
++}
++
++/* lib/kstrtox.c: accepts y/Y/1, n/N/0, on/off; one trailing newline is fine. */
++static int kstrtobool(const char *text, bool *result)
++{
++	if (!text)
++		return -EINVAL;
++	switch (text[0]) {
++	case 'y':
++	case 'Y':
++	case '1':
++		*result = true;
++		break;
++	case 'n':
++	case 'N':
++	case '0':
++		*result = false;
++		break;
++	case 'o':
++	case 'O':
++		switch (text[1]) {
++		case 'n':
++		case 'N':
++			*result = true;
++			return 0;
++		case 'f':
++		case 'F':
++			*result = false;
++			return 0;
++		default:
++			return -EINVAL;
++		}
++	default:
++		return -EINVAL;
++	}
++	if (text[1] == '\0' || text[1] == '\n')
++		return 0;
++	return -EINVAL;
++}
++
++/* lib/kstrtox.c: no leading space, digits only, one trailing newline. */
++static int kstrtoint(const char *text, unsigned int base, int *result)
++{
++	const char *cursor = text;
++	long long value = 0;
++	bool negative = false;
++	bool digits = false;
++
++	if (base != 10 || !text)
++		return -EINVAL;
++	if (*cursor == '-') {
++		negative = true;
++		cursor++;
++	} else if (*cursor == '+') {
++		cursor++;
++	}
++	for (; *cursor >= '0' && *cursor <= '9'; cursor++) {
++		digits = true;
++		value = value * 10 + (*cursor - '0');
++		if (value > 4294967296LL)
++			return -ERANGE;
++	}
++	if (!digits)
++		return -EINVAL;
++	if (*cursor == '\n')
++		cursor++;
++	if (*cursor != '\0')
++		return -EINVAL;
++	if (negative)
++		value = -value;
++	if (value < -2147483648LL || value > 2147483647LL)
++		return -ERANGE;
++	*result = (int)value;
++	return 0;
++}
++
++static int hex_to_bin(char c)
++{
++    if (c >= '0' && c <= '9') return c - '0';
++    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
++    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
++    return -1;
++}
++
++#include "tob_parse_extract.c"
++
++int main(void)
++{
++	static char buffer[8192];
++	struct tob_state parsed;
++	size_t count = fread(buffer, 1, sizeof(buffer) - 1, stdin);
++	int error;
++
++	buffer[count] = '\0';
++	error = tob_parse(buffer, count, &parsed);
++	if (error) {
++		printf("ERR %d\n", -error);
++		return 0;
++	}
++	printf("OK present=%d status=%d capacity=%d ac=%d time_to_empty=%d time_to_full=%d energy_full_design=%d energy_full=%d cycle_count=%d manufacturer=%s model_name=%s chemistry=%s\n",
++           parsed.present, parsed.status, parsed.capacity, parsed.ac_online,
++           parsed.time_to_empty, parsed.time_to_full, parsed.energy_full_design,
++           parsed.energy_full, parsed.cycle_count, parsed.manufacturer,
++           parsed.model_name, parsed.chemistry);
++	return 0;
++}
+diff --git a/guest/tests/test_battery_details.py b/guest/tests/test_battery_details.py
+new file mode 100644
+index 0000000..1ee157b
+--- /dev/null
++++ b/guest/tests/test_battery_details.py
+@@ -0,0 +1,281 @@
++#!/usr/bin/env python3
++"""Drive the kernel module's real tob_parse() from userspace.
++
++tob_parse() and the Python agent's render() are two independently
++written halves of one wire contract, and nothing else in the suite executes
++anything under guest/factory-overlay/usr/src/. This test slices the parser verbatim out
++of the shipped module source, compiles it against small shims for the kernel
++helpers it uses, and feeds it the exact lines the agent emits.
++
++Nothing here is a copy of the parser: if the extraction markers stop matching,
++the test fails rather than silently testing stale code.
++"""
++
++from __future__ import annotations
++
++import importlib.util
++from importlib.machinery import SourceFileLoader
++import shutil
++import json
++import os
++import subprocess
++import tempfile
++import unittest
++from pathlib import Path
++
++
++GUEST = Path(__file__).resolve().parents[1]
++MODULE_SOURCE = GUEST / "factory-overlay/usr/src/try-omarchy-battery-1.1.0/try-omarchy-battery.c"
++HARNESS = GUEST / "tests/native-module/tob_parse_harness.c"
++BRIDGE_PATH = GUEST / "factory-overlay/usr/local/lib/try-omarchy/battery-apply"
++
++LOADER = SourceFileLoader("omarchy_native_battery_bridge", str(BRIDGE_PATH))
++SPEC = importlib.util.spec_from_loader(LOADER.name, LOADER)
++if SPEC is None or SPEC.loader is None:
++    raise RuntimeError(f"cannot import {BRIDGE_PATH}")
++bridge = importlib.util.module_from_spec(SPEC)
++SPEC.loader.exec_module(bridge)
++
++
++def _slice(source: str, start_marker: str, end_marker: str, *, search_back: str = "") -> str:
++    """Return the verbatim source block containing start_marker."""
++    anchor = source.index(start_marker)
++    start = source.rindex(search_back, 0, anchor) if search_back else anchor
++    end = source.index(end_marker, anchor) + len(end_marker)
++    return source[start:end]
++
++
++def extract_parser() -> str:
++    """Slice struct tob_state, the status table and tob_parse() verbatim."""
++    source = MODULE_SOURCE.read_text()
++    blocks = [
++        _slice(source, "struct tob_state {", "};"),
++        _slice(source, "} tob_status_tokens[] = {", "};", search_back="static const struct {"),
++        _slice(source, "static int tob_parse_text(", "\n}\n"),
++        _slice(source, "static int tob_parse(", "\n}\n"),
++    ]
++    for block in blocks:
++        if not block.strip():
++            raise RuntimeError("tob_parse extraction produced an empty block")
++    if "next->time_to_full" not in blocks[3]:
++        raise RuntimeError("tob_parse extraction did not capture the whole parser")
++    return "\n\n".join(blocks) + "\n"
++
++
++def module_status_tokens() -> list[str]:
++    """The status tokens the shipped module accepts, read from its table."""
++    table = _slice(
++        MODULE_SOURCE.read_text(),
++        "} tob_status_tokens[] = {",
++        "};",
++        search_back="static const struct {",
++    )
++    return [
++        line.split('"')[1]
++        for line in table.splitlines()
++        if line.lstrip().startswith("{ \"")
++    ]
++
++
++COMPILER = shutil.which("cc") or shutil.which("gcc") or shutil.which("clang")
++
++
++@unittest.skipIf(COMPILER is None, "no C compiler available to build the tob_parse harness")
++class TobParseTests(unittest.TestCase):
++    binary: Path
++    _directory: tempfile.TemporaryDirectory
++
++    @classmethod
++    def setUpClass(cls) -> None:
++        cls._directory = tempfile.TemporaryDirectory()
++        workspace = Path(cls._directory.name)
++        (workspace / "tob_parse_extract.c").write_text(extract_parser())
++        cls.binary = workspace / "tob_parse_harness"
++        subprocess.run(
++            [
++                COMPILER, "-std=gnu11", "-Wall", "-Wextra", "-Werror",
++                "-D_GNU_SOURCE", "-I", str(workspace),
++                str(HARNESS), "-o", str(cls.binary),
++            ],
++            check=True,
++        )
++
++    @classmethod
++    def tearDownClass(cls) -> None:
++        cls._directory.cleanup()
++
++    def parse(self, line: bytes) -> str:
++        completed = subprocess.run(
++            [str(self.binary)], input=line, stdout=subprocess.PIPE, check=True
++        )
++        return completed.stdout.decode().strip()
++
++    def assertRejected(self, line: bytes) -> None:
++        self.assertEqual(self.parse(line), "ERR 22", f"expected -EINVAL for {line!r}")
++
++
++    def test_bridge_to_module_and_legacy_reset(self):
++        state = bridge.decode(b'{"type":"state","present":true,"percentage":57,"state":"discharging","acConnected":false,"timeToEmptySeconds":8100,"timeToFullSeconds":null}')
++        details = bridge.decode_details(b'{"energyFullDesignMicroWh":60000000,"energyFullMicroWh":50000000,"cycleCount":213,"manufacturer":"ACME Corp","modelName":"Battery A","chemistry":"LION"}')
++        parsed = self.parse(bridge.render(state, details).encode())
++        for field in ("energy_full_design=60000000", "energy_full=50000000", "cycle_count=213", "manufacturer=ACME Corp", "model_name=Battery A", "chemistry=LION"):
++            self.assertIn(field, parsed)
++        legacy = self.parse(bridge.render(state).encode())
++        self.assertIn("energy_full=-1", legacy)
++        self.assertIn("cycle_count=-1", legacy)
++        self.assertIn("manufacturer= model_name= chemistry=", legacy)
++        self.assertIn("present=0", self.parse(b"present=0 ac=1\n"))
++
++    def test_invalid_module_details(self):
++        prefix = "present=1 status=full capacity=100 ac=1 "
++        for field in ("energy_full", "energy_full_design", "cycle_count"):
++            for value in ("0", "-2", "2147483648", "bad"):
++                self.assertRejected(f"{prefix}{field}={value}\n".encode())
++        for value in ("0", "zz", "00", "0a", "7f", "41" * 128):
++            self.assertRejected(f"{prefix}manufacturer={value}\n".encode())
++        self.assertRejected(f"{prefix}unrecognized=1\n".encode())
++
++    def test_bridge_validation(self):
++        for key in bridge.NUMBERS:
++            for value in (0, -1, True, "213", 1.5, 2147483648):
++                with self.subTest(key=key, value=value), self.assertRaises(ValueError):
++                    bridge.decode_details(json.dumps({key: value}).encode())
++        for value in ("", "a" * 128, "bad\nname", 1):
++            with self.assertRaises(ValueError):
++                bridge.decode_details(json.dumps({"manufacturer": value}).encode())
++
++class BatteryDetailsFlowTests(unittest.TestCase):
++    def test_details_survive_ticks_and_clear_on_absence_and_disconnect(self):
++        with tempfile.TemporaryDirectory() as directory:
++            base = Path(directory)
++            env = dict(os.environ, TRY_OMARCHY_BATTERY_STATE_FILE=str(base / "state"),
++                       TRY_OMARCHY_BATTERY_CACHE_FILE=str(base / "state.json"),
++                       TRY_OMARCHY_BATTERY_DETAILS_FILE=str(base / "details.json"))
++            state = {"type": "state", "present": True, "percentage": 57,
++                     "state": "discharging", "acConnected": False,
++                     "timeToEmptySeconds": 8100, "timeToFullSeconds": None}
++            def apply(value=None, *args):
++                result = subprocess.run([str(BRIDGE_PATH), *args], env=env,
++                                        input=json.dumps(value) if value is not None else "",
++                                        text=True, capture_output=True, timeout=5)
++                self.assertEqual(result.returncode, 0, result.stderr)
++                return (base / "state").read_text()
++            self.assertNotIn("energy_full", apply(state))
++            line = apply({"energyFullMicroWh": 50000000, "manufacturer": "ACME Corp"}, "--details")
++            self.assertIn("energy_full=50000000", line)
++            self.assertIn("manufacturer=41434d4520436f7270", line)
++            self.assertIn("energy_full=50000000", apply(dict(state, percentage=58)))
++            self.assertNotIn("energy_full", apply(None, "--offline"))
++            self.assertNotIn("energy_full", apply(state))
++            apply({"cycleCount": 213}, "--details")
++            absent = dict(state, present=False, percentage=None)
++            self.assertEqual(apply(absent), "present=0 ac=0\n")
++            self.assertNotIn("cycle_count", apply(state))
++            self.assertNotIn("energy_full", apply({}, "--details"))
++
++    def test_old_module_still_receives_state_without_details(self):
++        bridge = SourceFileLoader("battery_apply_old_module", str(BRIDGE_PATH)).load_module()
++        state = bridge.decode(json.dumps({
++            "type": "state", "present": True, "percentage": 57,
++            "state": "discharging", "acConnected": False,
++            "timeToEmptySeconds": None, "timeToFullSeconds": None}).encode())
++        writes = []
++
++        class OldModuleState:
++            def write_text(self, text):
++                # The 1.0.0 parser rejects fields it does not know.
++                if "energy_full" in text:
++                    raise OSError(22, "Invalid argument")
++                writes.append(text)
++
++        class BrokenState:
++            def write_text(self, text):
++                raise OSError(5, "Input/output error")
++
++        bridge.STATE = OldModuleState()
++        bridge.write_state(state, {"energyFullMicroWh": 50000000})
++        self.assertEqual(len(writes), 1)
++        self.assertIn("capacity=57", writes[0])
++        self.assertNotIn("energy_full", writes[0])
++        bridge.STATE = BrokenState()
++        with self.assertRaises(OSError):
++            bridge.write_state(state, {})
++
++    def test_compatibility_delivery_and_dkms_version(self):
++        overlay = GUEST / "factory-overlay"
++        finalize = (GUEST / "scripts/finalize-rootfs.sh").read_text()
++        self.assertIn("compat_revision=48", finalize)
++        self.assertIn("usr/src/try-omarchy-battery-1.1.0", finalize)
++        self.assertIn("usr/local/lib/try-omarchy/update-battery-dkms", finalize)
++        self.assertIn('PACKAGE_VERSION="1.1.0"', (MODULE_SOURCE.parent / "dkms.conf").read_text())
++        self.assertIn("try-omarchy-battery_version-override", (overlay / "usr/share/dkms/modules_to_force_install/try-omarchy").read_text())
++        catch_up = (overlay / "usr/local/lib/try-omarchy/catch-up").read_text()
++        self.assertIn("previous_revision < 48", catch_up)
++
++
++class BatteryDKMSUpgradeTests(unittest.TestCase):
++    def test_retires_old_source_and_preserves_delivered_module(self):
++        helper = GUEST / "factory-overlay/usr/local/lib/try-omarchy/update-battery-dkms"
++        for headers, fail_remove in ((False, False), (True, False), (True, True)):
++            with self.subTest(headers=headers, fail_remove=fail_remove), tempfile.TemporaryDirectory() as directory:
++                root = Path(directory)
++                tools = root / "bin"
++                tools.mkdir()
++                module = root / "usr/lib/modules/test/updates/dkms/try_omarchy_battery.ko"
++                module.parent.mkdir(parents=True)
++                module.write_text("launcher module")
++                old = root / "usr/src/try-omarchy-battery-1.0.0"
++                old.mkdir(parents=True)
++                (old / "dkms.conf").write_text("old source")
++                (root / "var/lib/dkms/try-omarchy-battery/1.0.0").mkdir(parents=True)
++                if headers:
++                    (root / "usr/lib/modules/test/build").mkdir()
++                calls = root / "calls"
++                def fake(name, body):
++                    file = tools / name
++                    file.write_text("#!/bin/bash\nset -e\n" + body + "\n")
++                    file.chmod(0o755)
++                fake("uname", "echo test")
++                fake("modinfo", f"echo '{module}'")
++                fake("depmod", f"echo depmod >>'{calls}'")
++                fake("dkms", f'echo "$*" >>"{calls}"\n'
++                     + f'if [[ $1 == remove ]]; then rm -f "{module}"; '
++                     + ("exit 1; " if fail_remove else "") + "fi")
++                result = subprocess.run([str(helper)], env=dict(os.environ, PATH=f"{tools}:" + os.environ["PATH"],
++                                        TRY_OMARCHY_BATTERY_ROOT=str(root)), capture_output=True, text=True)
++                self.assertEqual(result.returncode, int(fail_remove), result.stderr)
++                self.assertEqual(module.read_text(), "launcher module")
++                log = calls.read_text()
++                self.assertIn("remove -m try-omarchy-battery -v 1.0.0 --all", log)
++                self.assertEqual(old.exists(), fail_remove)
++                self.assertEqual("add -m try-omarchy-battery -v 1.1.0" in log, not fail_remove)
++                self.assertEqual("install -m try-omarchy-battery -v 1.1.0 -k test" in log, headers and not fail_remove)
++
++    def test_catchup_retries_failure_and_runs_once(self):
++        helper = GUEST / "factory-overlay/usr/local/lib/try-omarchy/catch-up"
++        with tempfile.TemporaryDirectory() as directory:
++            root = Path(directory)
++            state = root / "state"
++            state.mkdir()
++            marker = state / "catch-up-revision"
++            marker.write_text("47\n")
++            version = root / "version"
++            version.write_text("48:test\n")
++            installer = root / "installer"
++            installer.write_text("#!/bin/bash\nexit 1\n")
++            installer.chmod(0o755)
++            env = dict(os.environ, TRY_OMARCHY_STATE_DIR=str(state), TRY_OMARCHY_COMPAT_VERSION=str(version),
++                       TRY_OMARCHY_BATTERY_INSTALLER=str(installer), TRY_OMARCHY_HOMES=str(root / "homes"),
++                       TRY_OMARCHY_QOL_INSTALLER=str(root / "absent"))
++            result = subprocess.run([str(helper)], env=env, capture_output=True)
++            self.assertEqual(result.returncode, 1)
++            self.assertEqual(marker.read_text(), "47\n")
++            calls = root / "calls"
++            installer.write_text(f"#!/bin/bash\necho called >>'{calls}'\n")
++            for _ in range(2):
++                subprocess.run([str(helper)], env=env, check=True, capture_output=True)
++            self.assertEqual(calls.read_text(), "called\n")
++            self.assertEqual(marker.read_text(), "48\n")
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/guest/tests/test_guest_qol.py b/guest/tests/test_guest_qol.py
+index d6d7d39..8def808 100644
+--- a/guest/tests/test_guest_qol.py
++++ b/guest/tests/test_guest_qol.py
+@@ -215,7 +215,7 @@ class GuestQolTests(unittest.TestCase):
+     def test_compatibility_delivers_guarded_payload_once_per_revision(self):
+         finalize = (GUEST / "scripts/finalize-rootfs.sh").read_text()
+         paths = finalize.split("compat_paths=(", 1)[1].split(")", 1)[0]
+-        self.assertIn("compat_revision=47", finalize)
++        self.assertIn("compat_revision=48", finalize)
+         for path in ("usr/local/bin/omarchy-native-screensaver-text", "usr/local/lib/try-omarchy/install-guest-qol", "usr/share/try-omarchy/guest-qol", "usr/local/bin/omarchy-windows-audio-bridge"):
+             self.assertIn(path, paths)
+         self.assertNotIn("etc/fonts/conf.d/30-try-omarchy.conf", paths)
+diff --git a/guest/tests/test_overlay_scripts.py b/guest/tests/test_overlay_scripts.py
+index a82ddd5..3ff1ca9 100644
+--- a/guest/tests/test_overlay_scripts.py
++++ b/guest/tests/test_overlay_scripts.py
+@@ -509,7 +509,8 @@ class BatteryTests(OverlayCase):
+         state = self.root / "state"
+         cache = self.root / "battery.json"
+         env = dict(self.env, TRY_OMARCHY_BATTERY_STATE_FILE=str(state),
+-                   TRY_OMARCHY_BATTERY_CACHE_FILE=str(cache))
++                   TRY_OMARCHY_BATTERY_CACHE_FILE=str(cache),
++                   TRY_OMARCHY_BATTERY_DETAILS_FILE=str(self.root / "details.json"))
+         value = {"type": "state", "present": True, "percentage": 57,
+                  "state": "discharging", "acConnected": False,
+                  "timeToEmptySeconds": 8100, "timeToFullSeconds": None}
+diff --git a/guest/tests/verify.py b/guest/tests/verify.py
+index d884569..ada8219 100755
+--- a/guest/tests/verify.py
++++ b/guest/tests/verify.py
+@@ -324,7 +324,7 @@ def main() -> None:
+         "system services run without watchdogs, which fire after Windows sleeps",
+     )
+     check(
+-        "compat_revision=47" in finalize_rootfs
++        "compat_revision=48" in finalize_rootfs
+         and "usr/share/dkms/modules_to_force_install/try-omarchy" in compat_paths
+         and "usr/local/lib/try-omarchy/try-omarchy-import.pyz" in compat_paths
+         and "usr/local/bin/try-omarchy-timezone" in compat_paths
+-- 
+2.43.0
+

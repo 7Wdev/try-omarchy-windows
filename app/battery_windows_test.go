@@ -16,8 +16,16 @@ func TestWindowsBatterySnapshot(t *testing.T) {
 	if !strings.HasPrefix(line, "battery ") {
 		t.Fatalf("unexpected power message: %q", line)
 	}
+	stateLine, detailsLine, ok := strings.Cut(strings.TrimSuffix(line, "\n"), "\n")
+	if !ok || !strings.HasPrefix(detailsLine, "battery-details ") {
+		t.Fatalf("missing physical details message: %q", line)
+	}
+	var details batteryDetails
+	if err := json.Unmarshal([]byte(strings.TrimPrefix(detailsLine, "battery-details ")), &details); err != nil {
+		t.Fatal(err)
+	}
 	var snapshot batterySnapshot
-	if err := json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(line, "battery "))), &snapshot); err != nil {
+	if err := json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(stateLine, "battery "))), &snapshot); err != nil {
 		t.Fatal(err)
 	}
 	if snapshot.Type != "state" || snapshot.Present && (snapshot.Percentage == nil || *snapshot.Percentage < 0 || *snapshot.Percentage > 100) {
