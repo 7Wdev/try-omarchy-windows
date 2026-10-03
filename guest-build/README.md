@@ -32,6 +32,18 @@ passwordless theme/DNS actions and man-db in factory images were already covered
 The power display is informational; the current bridge opens Try Omarchy
 Settings and has no Windows power-settings action.
 
+Patch 0124 exposes the Windows battery's design and full-charge energy, cycle
+count, manufacturer, model and chemistry where its driver reports them. Energy
+uses microwatt-hours, matching Linux `energy_full_design` and `energy_full`.
+The state message is unchanged; older guests ignore the separate details message,
+and older launchers leave the new properties unavailable. Windows details are
+queried hourly, and failures or unknown values do not invent readings. Charge
+limits are not mirrored.
+Compatibility revision 48 delivers the bridge and battery DKMS source 1.1.0 to
+existing disks. Catch-up retires 1.0.0 while preserving the launcher-delivered
+module, registers the new source, and rebuilds when matching headers exist.
+The force-install entry from patch 0118 remains in place for later header updates.
+
 Patch 0091 adds a Windows audio endpoint mirror to the guest PipeWire picker.
 The bridge talks over a dedicated virtio serial port, and compatibility
 revision 33 delivers its user service to existing persistent disks. It needs

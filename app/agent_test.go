@@ -45,7 +45,9 @@ func TestGuestAgentSendsBatteryOnConnect(t *testing.T) {
 	}
 	defer l.Close()
 	a := newGuestAgent()
-	a.batteryLine = func() (string, error) { return "battery {\"type\":\"state\"}\n", nil }
+	a.batteryLine = func() (string, error) {
+		return "battery {\"type\":\"state\"}\n" + encodeBatteryDetailsLine(batteryDetails{Manufacturer: "ACME"}), nil
+	}
 	go a.accept(l)
 	c, err := net.Dial("tcp", l.Addr().String())
 	if err != nil {
@@ -60,6 +62,9 @@ func TestGuestAgentSendsBatteryOnConnect(t *testing.T) {
 	}
 	if line, err := r.ReadString('\n'); err != nil || line != "battery {\"type\":\"state\"}\n" {
 		t.Fatalf("battery message %q, %v", line, err)
+	}
+	if line, err := r.ReadString('\n'); err != nil || line != "battery-details {\"manufacturer\":\"ACME\"}\n" {
+		t.Fatalf("battery details message %q, %v", line, err)
 	}
 }
 
