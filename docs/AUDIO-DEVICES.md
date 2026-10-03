@@ -68,6 +68,95 @@ permission, idle release, and Windows boot checks. Public `v0.2.0` used r19 and
 startup-only choices. Two physical endpoints per direction and hotplug remain
 untested.
 
+## Sample rates
+
+The launcher reads each effective endpoint's shared-mode mix format from
+`PKEY_AudioEngine_DeviceFormat` and supplies `out.frequency` and `in.frequency`
+to QEMU's SDL backend at each VM start, including a guest reboot. Saved endpoint
+IDs first resolve to current SDL names. A missing selection or unreadable rate
+uses the Windows default for that direction, then 48000 Hz if lookup fails.
+Older runtimes that cannot select devices use default endpoint rates. Input
+frequency is omitted when microphone access is disabled. Reading endpoint
+properties opens no playback or recording stream; rate failures do not stop boot.
+
+The live-route runtime preserves its original callback format and QEMU's mixer
+buffers when reopening an endpoint. SDL/WASAPI converts to the new device format
+if a live selection, default change or hotplug changes its rate. Restart Omarchy
+to match that new rate directly. Changing QEMU's mixer format during a stream is
+not supported by the current control protocol. The same fixed-format reopen
+behavior exists in Mac's SDL route patch. Matching rates avoids one resampling
+stage; it does not increase volume or remove guest-side format conversion.
+
+## Volume and quiet playback
+
+Playback passes through these controls in order:
+
+```text
+guest app -> visible Windows route remap sink -> ALSA virtio transport sink
+          -> QEMU mixer -> SDL/WASAPI session -> Windows endpoint
+```
+
+Guest patch 0091 creates the remap sinks but leaves their underlying ALSA sink
+volume alone. The pinned WirePlumber 0.5.18 configuration has a
+[default sink gain of 0.064](https://github.com/PipeWire/wireplumber/blob/0.5.18/src/config/wireplumber.conf),
+which Pulse controls display as 40%. That leaves about 24 dB of attenuation when
+the visible route is at 100%, unless a saved transport volume overrides it.
+There is no explicit 40% or 50% volume command in the Windows guest patches.
+Omarchy uses a software ALSA mixer, so the transport volume remains a real gain.
+
+Patch 0120 keeps the identified `VirtIO SoundCard` transport at unity while the
+route remaps are active. It preserves transport mute, visible route volume,
+application volume and microphone gain. On orderly bridge shutdown, including
+SIGTERM, it restores the previous channel volumes only if the transport is still
+at unity; a manual change survives. A forced kill cannot run that cleanup. Errors
+leave routing working and log that transport volume could not be set.
+Compatibility revision 46 carries the fix to existing disks. Other ALSA devices,
+including passed-through USB audio, are not amplified by this fix.
+
+The pinned QEMU
+[virtio-sound frontend](https://github.com/cmspam/winq-emu-qemu/blob/2ce303cfbbc8b0e4a7a3c66e27a094a980426d73/hw/audio/virtio-snd.c)
+passes PCM bytes to `audio_be_write` and does not set a volume. Its SDL mixing
+backend starts with unity gain; the route patches add no attenuation. SDL/WASAPI
+opens a shared Windows audio session without overriding its volume. Windows can
+remember a lower per-app session volume, independently of the endpoint slider.
+The read-only `probe-audio-sessions.exe QEMU_PID` helper now reports both session
+and endpoint volume/mute when their APIs succeed. Missing fields mean the API
+was unavailable, not unity gain.
+
+Guest master, Windows per-app session, and Windows endpoint controls remain
+independent, as they are on Mac. Mirroring the guest's already applied gain into
+the host session would attenuate twice. Replacing guest gain would need reliable
+bidirectional ownership across remaps, apps, mute, restart and route changes;
+the current bridge only transports route selections. Changing the system endpoint
+volume would also affect other Windows applications. This change therefore does
+not synchronize the sliders or override Windows session preferences.
+
+This establishes and fixes a hidden transport gain in the source path, but does
+not prove that it was the reporter's saved state in
+[#277](https://github.com/omacom/try-omarchy-windows/issues/277). Confirm actual
+transport, route, application and host session levels on the affected laptop
+before treating that report as resolved.
+
+For physical acceptance:
+
+- Play and record through 44.1 kHz and 48 kHz endpoints. Check startup frequency
+  values in `vm/shell.log`, separate saved playback/capture choices, unavailable
+  selections and microphone-off behavior.
+- Switch both directions from host Settings and the guest picker while streaming,
+  including 44.1 to 48 kHz, defaults and unplug/replug. Check continuity and confirm
+  a restart selects the new rate directly.
+- On a fresh guest and an updated persistent disk, use `pactl --format=json list
+  sinks` and `pactl list sink-inputs` to check the visible route, virtio transport
+  and app gains. Set the visible route to 100% and verify transport unity. Check
+  that ordinary guest volume/mute controls still work and bridge shutdown restores
+  the prior transport gain without discarding manual changes.
+- Compare the same speech and music in Windows and Omarchy on the same endpoint,
+  with player normalization/enhancements accounted for and matching app levels.
+  Begin at a comfortable Windows volume, then compare 100% levels. Run the session
+  probe during playback to record QEMU session and endpoint gains, including the
+  Windows communications ducking setting. Listening and the affected laptop's
+  enhancement path cannot be established by cross-compilation or contract tests.
+
 ## Validation
 
 The [September 21 physical acceptance](evidence/AUDIO-PARITY-2026-09-21.md)

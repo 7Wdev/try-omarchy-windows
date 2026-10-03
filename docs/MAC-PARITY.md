@@ -178,3 +178,10 @@ shipped as an opt-in feature in `v0.5.0`. The
 allows an implementation to retain password authentication on unsupported hosts;
 the later approval and denial checks are recorded in the
 [Hello laptop report](evidence/HELLO-SUDO-LAPTOP-2026-09-26.md).
+
+The audio-rate candidate ports Mac commit `226ca68` startup rate matching to
+Windows shared-mode endpoint formats, with independent 48 kHz fallbacks. Live
+route changes keep the startup mixer format until restart. Guest patch 0120
+removes hidden virtio transport gain behind the route picker; volume controls
+remain independent. See [audio behavior and physical checks](AUDIO-DEVICES.md).
+These source changes have not been released or physically accepted.

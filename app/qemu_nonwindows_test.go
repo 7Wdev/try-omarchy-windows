@@ -18,6 +18,7 @@ const (
 type config struct {
 	desktop                     desktopPreferences
 	audioDevices                audioPreferences
+	audioRates                  audioSampleRates
 	dir, hostDir, payloadDir    string
 	winqEmu, share              string
 	fresh, fullscreen, noGpu    bool

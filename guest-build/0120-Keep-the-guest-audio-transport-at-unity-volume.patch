@@ -1,0 +1,468 @@
+From 8232023eb34367a06318e4f40ce59008300f5983 Mon Sep 17 00:00:00 2001
+From: Tyler South <tsouth2@gmail.com>
+Date: Sat, 3 Oct 2026 07:53:54 -0400
+Subject: [PATCH] Keep the guest audio transport at unity volume
+
+---
+ .../local/bin/omarchy-windows-audio-bridge    | 147 +++++++++++++--
+ guest/scripts/finalize-rootfs.sh              |   2 +-
+ guest/tests/test_windows_audio_bridge.py      | 174 ++++++++++++++++++
+ guest/tests/verify.py                         |   2 +-
+ 4 files changed, 311 insertions(+), 14 deletions(-)
+
+diff --git a/guest/factory-overlay/usr/local/bin/omarchy-windows-audio-bridge b/guest/factory-overlay/usr/local/bin/omarchy-windows-audio-bridge
+index 55e9833..198f7b9 100755
+--- a/guest/factory-overlay/usr/local/bin/omarchy-windows-audio-bridge
++++ b/guest/factory-overlay/usr/local/bin/omarchy-windows-audio-bridge
+@@ -8,6 +8,7 @@ import json
+ import os
+ from pathlib import Path
+ import select
++import signal
+ import subprocess
+ import sys
+ import time
+@@ -23,15 +24,20 @@ def log(message: str) -> None:
+ 
+ 
+ def run_pactl(*arguments: str, check: bool = True) -> str:
+-    result = subprocess.run(
+-        ["pactl", *arguments],
+-        stdin=subprocess.DEVNULL,
+-        stdout=subprocess.PIPE,
+-        stderr=subprocess.PIPE,
+-        text=True,
+-        timeout=10,
+-        check=False,
+-    )
++    try:
++        result = subprocess.run(
++            ["pactl", *arguments],
++            stdin=subprocess.DEVNULL,
++            stdout=subprocess.PIPE,
++            stderr=subprocess.PIPE,
++            text=True,
++            timeout=10,
++            check=False,
++        )
++    except (OSError, subprocess.TimeoutExpired) as error:
++        if check:
++            raise RuntimeError(f"pactl {' '.join(arguments[:2])}: {error}") from error
++        return ""
+     if check and result.returncode != 0:
+         detail = result.stderr.strip() or f"status {result.returncode}"
+         raise RuntimeError(f"pactl {' '.join(arguments[:2])}: {detail}")
+@@ -94,12 +100,117 @@ class PipeWireMirror:
+         }
+         self.last_health_check = 0.0
+         self.pending: dict[str, tuple[str | None, float]] = {}
+-
+-    def close(self) -> None:
++        self.transport_volume: tuple[str, list[int]] | None = None
++        self.transport_name: str | None = None
++        self.transport_owned = False
++        self.transport_pending = False
++        self.rebuild_volume: list[int] | None = None
++        self.retry_volume: list[int] | None = None
++        self.transport_applied = False
++
++    def _unload_modules(self) -> None:
+         for module_id in reversed(self.module_ids):
+             run_pactl("unload-module", module_id, check=False)
+         self.module_ids.clear()
+ 
++    def close(self) -> None:
++        self._observe_transport_volume()
++        restore = self.transport_volume if self.transport_owned and self.transport_applied else None
++        self._unload_modules()
++        self.transport_volume = None
++        self.transport_name = None
++        self.transport_owned = False
++        self.transport_pending = False
++        self.rebuild_volume = None
++        self.retry_volume = None
++        self.transport_applied = False
++        if restore is not None:
++            name, volumes = restore
++            try:
++                run_pactl("set-sink-volume", name, *map(str, volumes))
++            except RuntimeError:
++                pass
++
++    def _observe_transport_volume(self) -> None:
++        if self.transport_volume is None or (self.transport_pending and self.retry_volume is None):
++            return
++        try:
++            name, original = self.transport_volume
++            sink = next((sink for sink in self._sink_details() if sink.get("name") == name), None)
++            if sink is not None:
++                current = self._channel_volumes(sink)
++                expected = self.retry_volume if self.transport_pending else [65536] * len(original)
++                if current != expected:
++                    self.transport_owned = False
++                self.rebuild_volume = current
++        except (RuntimeError, ValueError, TypeError, KeyError):
++            # An unreadable current gain cannot authorize replacing it.
++            self.transport_owned = False
++            self.rebuild_volume = None
++
++    @staticmethod
++    def _sink_details() -> list[dict[str, Any]]:
++        sinks = json.loads(run_pactl("--format=json", "list", "sinks"))
++        if not isinstance(sinks, list) or any(not isinstance(sink, dict) for sink in sinks):
++            raise ValueError("invalid sink details")
++        return sinks
++
++    @staticmethod
++    def _channel_volumes(sink: dict[str, Any]) -> list[int]:
++        channels = sink.get("volume")
++        if not isinstance(channels, dict) or any(not isinstance(channel, dict) for channel in channels.values()):
++            raise ValueError("invalid sink volume")
++        volumes = [channel["value"] for channel in channels.values()]
++        if not volumes or any(type(value) is not int or not 0 <= value <= 0xffffffff for value in volumes):
++            raise ValueError("invalid sink channel volumes")
++        return volumes
++
++    def _prepare_transport_volume(self, name: str) -> None:
++        self.transport_name = name
++        self.transport_pending = True
++        try:
++            sink = next((sink for sink in self._sink_details() if sink.get("name") == name), None)
++            if sink is None:
++                return
++            properties = sink.get("properties")
++            if not isinstance(properties, dict) or properties.get("alsa.card_name") != "VirtIO SoundCard":
++                self.transport_pending = False
++                return
++            if self.transport_volume is None:
++                self.transport_volume = (name, self._channel_volumes(sink))
++                self.transport_owned = True
++        except (RuntimeError, ValueError, TypeError, KeyError):
++            log("Could not capture QEMU audio transport volume; will retry")
++
++    def _finish_transport_volume(self) -> None:
++        if not self.transport_pending or self.transport_name is None:
++            return
++        if self.transport_volume is None:
++            self._prepare_transport_volume(self.transport_name)
++            if self.transport_volume is None:
++                return
++        name, _ = self.transport_volume
++        try:
++            sink = next((sink for sink in self._sink_details() if sink.get("name") == name), None)
++            if sink is None:
++                return
++            current = self._channel_volumes(sink)
++            if self.retry_volume is not None and current != self.retry_volume:
++                # A change after a failed write belongs to the owner. Do not
++                # replace it when retrying initialization or during cleanup.
++                self.transport_owned = False
++                self.rebuild_volume = current
++            self.retry_volume = current
++            if self.transport_owned:
++                run_pactl("set-sink-volume", name, "100%")
++            elif self.rebuild_volume is not None:
++                run_pactl("set-sink-volume", name, *map(str, self.rebuild_volume))
++            self.transport_applied = self.transport_applied or self.transport_owned
++            self.transport_pending = False
++            self.retry_volume = None
++        except (RuntimeError, ValueError, TypeError, KeyError):
++            log("Could not set QEMU audio transport volume; will retry")
++
+     def apply(self, message: dict[str, Any]) -> None:
+         # A catalog echo can arrive between two quick picker changes. Capture
+         # the second local change before applying the echo to either direction.
+@@ -131,11 +242,13 @@ class PipeWireMirror:
+                     selected = requested
+             self._set_selected(direction, selected)
+             self.last_sent[direction] = selected
++        self._finish_transport_volume()
+ 
+     def poll_selection(self) -> None:
+         now = time.monotonic()
+         if now - self.last_health_check >= 2:
+             self.last_health_check = now
++            self._finish_transport_volume()
+             loaded = loaded_module_ids()
+             if self.module_ids and not set(self.module_ids).issubset(loaded):
+                 self.inventory = None
+@@ -197,7 +310,8 @@ class PipeWireMirror:
+         outputs: list[dict[str, str]],
+         inputs: list[dict[str, str]],
+     ) -> None:
+-        self.close()
++        self._observe_transport_volume()
++        self._unload_modules()
+         sinks = [name for name in short_names("sinks") if not name.startswith(PREFIX)]
+         sources = [
+             name
+@@ -209,6 +323,14 @@ class PipeWireMirror:
+         transport_sink = next((name for name in sinks if name.startswith("alsa_output.")), sinks[0])
+         transport_source = next((name for name in sources if name.startswith("alsa_input.")), sources[0]) if sources else None
+ 
++        if self.transport_name is not None and self.transport_name != transport_sink:
++            self.close()
++
++        # Capture before graph changes; set gain after remaps and selections.
++        # The visible remap owns guest volume. WirePlumber's transport default
++        # otherwise adds a second, hidden gain (normally 40%). Keep mute intact.
++        self._prepare_transport_volume(transport_sink)
++
+         output_records = [{"deviceUID": None, "name": "Windows System Default"}, *outputs]
+         input_records = [{"deviceUID": None, "name": "Windows System Default"}, *inputs] if inputs else []
+         self.output_uids = {}
+@@ -266,6 +388,7 @@ def open_port() -> int:
+ 
+ 
+ def main() -> int:
++    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+     descriptor = open_port()
+ 
+     def send(message: dict[str, Any]) -> None:
+diff --git a/guest/scripts/finalize-rootfs.sh b/guest/scripts/finalize-rootfs.sh
+index 3da1033..18179df 100755
+--- a/guest/scripts/finalize-rootfs.sh
++++ b/guest/scripts/finalize-rootfs.sh
+@@ -215,7 +215,7 @@ tar -C / -cf /usr/share/try-omarchy/compat-overlay.tar "${compat_paths[@]}"
+ # Revision 44 moves try-omarchy-export onto the Try Omarchy importer.
+ # Revision 45 lets DKMS take over the camera and battery modules the launcher
+ # delivered, so installing matching headers no longer prints install errors.
+-compat_revision=45
++compat_revision=46
+ printf '%s:%s\n' "$compat_revision" "$kernel_release" >/usr/share/try-omarchy/compat-version
+ 
+ # Fail the build if DKMS or networking modules were not packaged for this kernel.
+diff --git a/guest/tests/test_windows_audio_bridge.py b/guest/tests/test_windows_audio_bridge.py
+index 99c8faf..b751359 100644
+--- a/guest/tests/test_windows_audio_bridge.py
++++ b/guest/tests/test_windows_audio_bridge.py
+@@ -4,6 +4,8 @@
+ from __future__ import annotations
+ 
+ import importlib.util
++import json
++import subprocess
+ from importlib.machinery import SourceFileLoader
+ from pathlib import Path
+ import unittest
+@@ -22,6 +24,32 @@ bridge = importlib.util.module_from_spec(SPEC)
+ SPEC.loader.exec_module(bridge)
+ 
+ 
++class PactlFailureTests(unittest.TestCase):
++    def test_timeout_and_missing_program_are_reported_as_command_errors(self) -> None:
++        for error in (subprocess.TimeoutExpired("pactl", 10), FileNotFoundError("pactl")):
++            with self.subTest(error=type(error).__name__), mock.patch.object(bridge.subprocess, "run", side_effect=error):
++                with self.assertRaises(RuntimeError):
++                    bridge.run_pactl("--format=json", "list", "sinks")
++                self.assertEqual(bridge.run_pactl("unload-module", "100", check=False), "")
++
++    def test_unload_timeout_does_not_skip_transport_restoration(self) -> None:
++        mirror = bridge.PipeWireMirror(lambda _: None)
++        mirror.module_ids = ["100"]
++        mirror.transport_volume = ("virtio", [26214, 32768])
++        mirror.transport_owned = True
++        mirror.transport_applied = True
++        sink = {"name": "virtio", "volume": {"left": {"value": 65536}, "right": {"value": 65536}}}
++        def command(arguments, **kwargs):
++            if arguments[1] == "unload-module":
++                raise subprocess.TimeoutExpired(arguments, 10)
++            output = json.dumps([sink]) if arguments[1] == "--format=json" else ""
++            return subprocess.CompletedProcess(arguments, 0, output, "")
++        with mock.patch.object(bridge.subprocess, "run", side_effect=command) as run:
++            mirror.close()
++        self.assertEqual(run.call_args_list[-1].args[0], ["pactl", "set-sink-volume", "virtio", "26214", "32768"])
++        self.assertIsNone(mirror.transport_volume)
++
++
+ class PactlStub:
+     """Small pactl model that records the graph built by PipeWireMirror."""
+ 
+@@ -32,11 +60,34 @@ class PactlStub:
+         self.calls: list[tuple[tuple[str, ...], bool]] = []
+         self.next_module_id = 100
+         self.loaded_modules: set[str] = set()
++        self.volumes = [26214, 26214]
++        self.card_name = "VirtIO SoundCard"
++        self.details_error = False
++        self.missing_details = False
++        self.reset_on_load = False
++        self.fail_volume_once = False
++        self.fail_load_once = False
+         self.default_sink = self.transport_sink
+         self.default_source = self.transport_source
+ 
+     def __call__(self, *arguments: str, check: bool = True) -> str:
+         self.calls.append((arguments, check))
++        if arguments == ("--format=json", "list", "sinks"):
++            if self.details_error:
++                raise RuntimeError("PipeWire unavailable")
++            if self.missing_details:
++                return "[]"
++            return json.dumps([{
++                "name": self.transport_sink,
++                "properties": {"alsa.card_name": self.card_name},
++                "volume": {str(index): {"value": value} for index, value in enumerate(self.volumes)},
++            }])
++        if arguments[:2] == ("set-sink-volume", self.transport_sink):
++            if self.fail_volume_once:
++                self.fail_volume_once = False
++                raise RuntimeError("volume unavailable")
++            self.volumes = [65536] * len(self.volumes) if arguments[2] == "100%" else list(map(int, arguments[2:]))
++            return ""
+         if arguments == ("list", "short", "sinks"):
+             return f"10\t{self.transport_sink}\tmodule-alsa-card.c\ts16le 2ch 48000Hz\tRUNNING\n"
+         if arguments == ("list", "short", "sources"):
+@@ -44,6 +95,11 @@ class PactlStub:
+         if arguments == ("list", "short", "modules"):
+             return "\n".join(f"{module_id}\tmodule" for module_id in self.loaded_modules)
+         if arguments and arguments[0] == "load-module":
++            if self.fail_load_once:
++                self.fail_load_once = False
++                raise RuntimeError("module unavailable")
++            if self.reset_on_load:
++                self.volumes = [26214, 26214]
+             module_id = str(self.next_module_id)
+             self.next_module_id += 1
+             self.loaded_modules.add(module_id)
+@@ -158,6 +214,124 @@ class PipeWireMirrorTests(unittest.TestCase):
+         self.addCleanup(mirror.close)
+         return mirror, pactl, sent
+ 
++    def test_transport_gain_is_unity_and_restored_on_close(self) -> None:
++        mirror, pactl, _ = self.make_mirror()
++        pactl.volumes = [26214, 32768]
++        mirror.apply(catalog_message())
++        self.assertEqual(pactl.volumes, [65536, 65536])
++        self.assertEqual(pactl.matching_calls("set-sink-volume"), [("set-sink-volume", pactl.transport_sink, "100%")])
++        # An echo must not rewrite the visible route volume or either input.
++        mirror.apply(catalog_message())
++        self.assertEqual(len(pactl.matching_calls("set-sink-volume")), 1)
++        mirror.close()
++        self.assertEqual(pactl.volumes, [26214, 32768])
++
++    def test_transport_gain_keeps_manual_changes(self) -> None:
++        mirror, pactl, _ = self.make_mirror()
++        mirror.apply(catalog_message())
++        pactl.volumes = [12345, 23456]
++        mirror.close()
++        self.assertEqual(pactl.volumes, [12345, 23456])
++
++    def test_other_audio_devices_are_not_amplified(self) -> None:
++        mirror, pactl, _ = self.make_mirror()
++        pactl.card_name = "USB Audio"
++        mirror.apply(catalog_message())
++        self.assertEqual(pactl.volumes, [26214, 26214])
++        self.assertEqual(pactl.matching_calls("set-sink-volume"), [])
++
++    def test_transport_volume_failure_keeps_routes_working(self) -> None:
++        mirror, pactl, _ = self.make_mirror()
++        pactl.details_error = True
++        mirror.apply(catalog_message())
++        self.assertEqual(pactl.default_sink, bridge.endpoint_name("output", "studio-output"))
++        self.assertEqual(len(pactl.matching_calls("load-module")), 6)
++        mirror.close()
++
++    def test_graph_reset_is_normalized_after_default_selection(self) -> None:
++        mirror, pactl, _ = self.make_mirror()
++        pactl.volumes = [22222, 33333]
++        pactl.reset_on_load = True
++        mirror.apply(catalog_message())
++        self.assertEqual(pactl.volumes, [65536, 65536])
++        calls = [arguments for arguments, _ in pactl.calls]
++        self.assertGreater(calls.index(("set-sink-volume", pactl.transport_sink, "100%")),
++                           calls.index(("set-default-source", bridge.endpoint_name("input", "laptop-input"))))
++        mirror.close()
++        self.assertEqual(pactl.volumes, [22222, 33333])
++
++    def test_failed_normalization_retries_without_catalog_change(self) -> None:
++        mirror, pactl, _ = self.make_mirror()
++        pactl.fail_volume_once = True
++        mirror.apply(catalog_message())
++        self.assertEqual(pactl.volumes, [26214, 26214])
++        mirror.poll_selection()
++        self.assertEqual(pactl.volumes, [65536, 65536])
++        self.assertEqual(len(pactl.loaded_modules), 6)
++        mirror.close()
++        self.assertEqual(pactl.volumes, [26214, 26214])
++
++    def test_failed_capture_retries_without_catalog_change(self) -> None:
++        mirror, pactl, _ = self.make_mirror()
++        pactl.details_error = True
++        mirror.apply(catalog_message())
++        pactl.details_error = False
++        mirror.poll_selection()
++        self.assertEqual(pactl.volumes, [65536, 65536])
++
++    def test_manual_gain_survives_catalog_and_health_rebuild(self) -> None:
++        mirror, pactl, sent = self.make_mirror()
++        mirror.apply(catalog_message())
++        pactl.volumes = [12345, 23456]
++        pactl.reset_on_load = True
++        changed = catalog_message()
++        changed["outputs"][0]["name"] = "Renamed speakers"
++        mirror.apply(changed)
++        self.assertEqual(pactl.volumes, [12345, 23456])
++        pactl.loaded_modules.pop()
++        mirror.last_health_check = 0
++        mirror.poll_selection()
++        self.assertIn({"type": "get-catalog"}, sent)
++        mirror.apply(changed)
++        self.assertEqual(pactl.volumes, [12345, 23456])
++        mirror.close()
++        self.assertEqual(pactl.volumes, [12345, 23456])
++
++    def test_partial_graph_failure_retains_original_gain(self) -> None:
++        mirror, pactl, _ = self.make_mirror()
++        pactl.volumes = [22222, 33333]
++        pactl.fail_load_once = True
++        with self.assertRaises(RuntimeError):
++            mirror.apply(catalog_message())
++        pactl.reset_on_load = True
++        mirror.apply(catalog_message())
++        self.assertEqual(pactl.volumes, [65536, 65536])
++        mirror.close()
++        self.assertEqual(pactl.volumes, [22222, 33333])
++
++    def test_pending_initialization_preserves_manual_gain_on_retry_and_close(self) -> None:
++        for action in ("retry", "close"):
++            with self.subTest(action=action):
++                mirror, pactl, _ = self.make_mirror()
++                pactl.fail_volume_once = True
++                mirror.apply(catalog_message())
++                pactl.volumes = [12345, 23456]
++                if action == "retry":
++                    mirror.poll_selection()
++                mirror.close()
++                self.assertEqual(pactl.volumes, [12345, 23456])
++
++    def test_missing_sink_details_remain_retryable(self) -> None:
++        mirror, pactl, _ = self.make_mirror()
++        pactl.missing_details = True
++        mirror.apply(catalog_message())
++        self.assertEqual(pactl.volumes, [26214, 26214])
++        pactl.missing_details = False
++        mirror.poll_selection()
++        self.assertEqual(pactl.volumes, [65536, 65536])
++        mirror.close()
++        self.assertEqual(pactl.volumes, [26214, 26214])
++
+     def test_outputs_are_playable_remaps_of_the_qemu_transport(self) -> None:
+         """A chooser sink must carry audio, not merely update the host route."""
+         mirror, pactl, _ = self.make_mirror()
+diff --git a/guest/tests/verify.py b/guest/tests/verify.py
+index bf7a24d..02783e5 100755
+--- a/guest/tests/verify.py
++++ b/guest/tests/verify.py
+@@ -312,7 +312,7 @@ def main() -> None:
+         "system services run without watchdogs, which fire after Windows sleeps",
+     )
+     check(
+-        "compat_revision=45" in finalize_rootfs
++        "compat_revision=46" in finalize_rootfs
+         and "usr/share/dkms/modules_to_force_install/try-omarchy" in compat_paths
+         and "usr/local/lib/try-omarchy/try-omarchy-import.pyz" in compat_paths
+         and "usr/local/bin/try-omarchy-timezone" in compat_paths
+-- 
+2.43.0
+

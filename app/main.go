@@ -32,6 +32,7 @@ const appTitle = "Try Omarchy"
 type config struct {
 	desktop                     desktopPreferences
 	audioDevices                audioPreferences
+	audioRates                  audioSampleRates
 	dir, hostDir, payloadDir    string
 	winqEmu, share              string
 	fresh, fullscreen, noGpu    bool
@@ -917,8 +918,12 @@ func supervise(cfg *config, cmdline string) bool {
 		// Local forwards changed while running (forward_live.go) carry into a
 		// reboot instead of reverting to the launch list.
 		cfg.forwards = forwardsForBoot(cfg.launchForwards)
-		proc = exec.Command(cfg.qemu, buildQemuArgs(cfg, cmdline)...)
 		audioSelection := cfg.audio == "sdl" && audioRuntimeSupportsSelection(cfg.qemu)
+		if cfg.audio == "sdl" {
+			cfg.audioRates = launchAudioSampleRates(cfg.audioDevices, audioSelection, cfg.desktop.MicrophoneDisabled)
+			logf("SDL audio sample rates: output=%d Hz input=%d Hz", cfg.audioRates.Output, cfg.audioRates.Input)
+		}
+		proc = exec.Command(cfg.qemu, buildQemuArgs(cfg, cmdline)...)
 		if !audioSelection && (cfg.audioDevices.Output != "" || (!cfg.desktop.MicrophoneDisabled && cfg.audioDevices.Input != "")) {
 			logf("Selected audio devices require the updated SDL runtime; this attempt uses Windows defaults")
 		}

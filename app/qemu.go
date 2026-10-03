@@ -123,7 +123,7 @@ func buildQemuArgs(cfg *config, cmdline string) []string {
 		// stalls on virtio-snd control messages and the whole session hangs.
 		// cfg.audio is sdl normally, with dsound and none fallbacks when
 		// the host cannot initialize audio.
-		"-audiodev", audioBackendOptions(cfg.audio, cfg.desktop.MicrophoneDisabled),
+		"-audiodev", audioBackendOptions(cfg.audio, cfg.desktop.MicrophoneDisabled, cfg.audioRates),
 		"-device", "virtio-sound-pci,audiodev=snd",
 		"-D", filepath.Join(vm, "qemu.log"),
 		// In-guest reboot/poweroff wedges upstream WHPX (vCPUs never return
@@ -431,8 +431,14 @@ func preparePortableDisk(cfg *config, expandedBytes int64) error {
 
 // Disabling input keeps playback while preventing the host recording device
 // from being opened. QEMU exposes no recording stream to the guest.
-func audioBackendOptions(backend string, microphoneDisabled bool) string {
+func audioBackendOptions(backend string, microphoneDisabled bool, rates audioSampleRates) string {
 	options := backend + ",id=snd"
+	if backend == "sdl" {
+		options += fmt.Sprintf(",out.frequency=%d", audioSampleRateOrFallback(rates.Output))
+		if !microphoneDisabled {
+			options += fmt.Sprintf(",in.frequency=%d", audioSampleRateOrFallback(rates.Input))
+		}
+	}
 	if microphoneDisabled && backend != "none" {
 		options += ",in.voices=0"
 	}
