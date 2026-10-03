@@ -1,23 +1,23 @@
-From 0102460aa06671634613f8e0fe0d6758808db5c7 Mon Sep 17 00:00:00 2001
+From 1f9520413fde376b2554054ac1ba536554a81a20 Mon Sep 17 00:00:00 2001
 From: Tyler South <tsouth2@gmail.com>
 Date: Sat, 3 Oct 2026 08:30:38 -0400
 Subject: [PATCH] Mirror Windows battery physical details in the guest
 
 ---
  .../usr/local/lib/try-omarchy/agent           |   6 +
- .../usr/local/lib/try-omarchy/battery-apply   |  63 ++++-
+ .../usr/local/lib/try-omarchy/battery-apply   |  74 ++++-
  .../usr/local/lib/try-omarchy/catch-up        |   5 +
- .../local/lib/try-omarchy/update-battery-dkms |  32 +++
+ .../local/lib/try-omarchy/update-battery-dkms |  32 ++
  .../Makefile                                  |   0
  .../dkms.conf                                 |   2 +-
- .../try-omarchy-battery.c                     | 123 ++++++++-
+ .../try-omarchy-battery.c                     | 123 +++++++-
  guest/scripts/finalize-rootfs.sh              |   8 +-
- guest/tests/native-module/tob_parse_harness.c | 147 ++++++++++
- guest/tests/test_battery_details.py           | 253 ++++++++++++++++++
+ guest/tests/native-module/tob_parse_harness.c | 147 +++++++++
+ guest/tests/test_battery_details.py           | 281 ++++++++++++++++++
  guest/tests/test_guest_qol.py                 |   2 +-
  guest/tests/test_overlay_scripts.py           |   3 +-
  guest/tests/verify.py                         |   2 +-
- 13 files changed, 625 insertions(+), 21 deletions(-)
+ 13 files changed, 664 insertions(+), 21 deletions(-)
  create mode 100755 guest/factory-overlay/usr/local/lib/try-omarchy/update-battery-dkms
  rename guest/factory-overlay/usr/src/{try-omarchy-battery-1.0.0 => try-omarchy-battery-1.1.0}/Makefile (100%)
  rename guest/factory-overlay/usr/src/{try-omarchy-battery-1.0.0 => try-omarchy-battery-1.1.0}/dkms.conf (94%)
@@ -50,7 +50,7 @@ index 00b6a0a..3d897fa 100755
    exec 3<>"/dev/tcp/$host/$port" 2>/dev/null || { sleep 10; continue; }
    printf 'hello %s\n' "$version" >&3
 diff --git a/guest/factory-overlay/usr/local/lib/try-omarchy/battery-apply b/guest/factory-overlay/usr/local/lib/try-omarchy/battery-apply
-index 72a1e1a..b1bac18 100755
+index 72a1e1a..7e3d8c3 100755
 --- a/guest/factory-overlay/usr/local/lib/try-omarchy/battery-apply
 +++ b/guest/factory-overlay/usr/local/lib/try-omarchy/battery-apply
 @@ -7,10 +7,43 @@ from pathlib import Path
@@ -97,7 +97,7 @@ index 72a1e1a..b1bac18 100755
  
  def decode(raw: bytes) -> dict:
      if len(raw) > 4096:
-@@ -35,20 +68,36 @@ def decode(raw: bytes) -> dict:
+@@ -35,20 +68,47 @@ def decode(raw: bytes) -> dict:
      return value
  
  
@@ -119,6 +119,17 @@ index 72a1e1a..b1bac18 100755
              f"time_to_empty={-1 if empty is None else empty} "
 -            f"time_to_full={-1 if full is None else full}\n")
 +            f"time_to_full={-1 if full is None else full}{fields}\n")
++
++
++def write_state(value: dict, details: dict) -> None:
++    try:
++        STATE.write_text(render(value, details))
++    except OSError:
++        # A 1.0.0 module still loaded after an upgrade rejects detail fields.
++        # Keep charge and AC state flowing until the guest restarts.
++        if not details:
++            raise
++        STATE.write_text(render(value))
  
  
  def main() -> int:
@@ -129,14 +140,14 @@ index 72a1e1a..b1bac18 100755
 +            if not previous["present"]:
 +                details = {}
 +            save(DETAILS, details)
-+            STATE.write_text(render(previous, details))
++            write_state(previous, details)
 +            return 0
          if sys.argv[1:] == ["--offline"]:
 +            save(DETAILS, {})
              try:
                  previous = decode(CACHE.read_bytes())
              except (OSError, ValueError):
-@@ -61,11 +110,11 @@ def main() -> int:
+@@ -61,11 +121,11 @@ def main() -> int:
          if sys.argv[1:]:
              return 2
          value = decode(sys.stdin.buffer.read(4097))
@@ -148,7 +159,7 @@ index 72a1e1a..b1bac18 100755
 +        details = load_details() if value["present"] else {}
 +        if not value["present"]:
 +            save(DETAILS, {})
-+        STATE.write_text(render(value, details))
++        write_state(value, details)
 +        save(CACHE, value)
          return 0
      except (OSError, ValueError, json.JSONDecodeError) as error:
@@ -644,10 +655,10 @@ index 0000000..891f845
 +}
 diff --git a/guest/tests/test_battery_details.py b/guest/tests/test_battery_details.py
 new file mode 100644
-index 0000000..ebad1b3
+index 0000000..1ee157b
 --- /dev/null
 +++ b/guest/tests/test_battery_details.py
-@@ -0,0 +1,253 @@
+@@ -0,0 +1,281 @@
 +#!/usr/bin/env python3
 +"""Drive the kernel module's real tob_parse() from userspace.
 +
@@ -823,6 +834,34 @@ index 0000000..ebad1b3
 +            self.assertNotIn("cycle_count", apply(state))
 +            self.assertNotIn("energy_full", apply({}, "--details"))
 +
++    def test_old_module_still_receives_state_without_details(self):
++        bridge = SourceFileLoader("battery_apply_old_module", str(BRIDGE_PATH)).load_module()
++        state = bridge.decode(json.dumps({
++            "type": "state", "present": True, "percentage": 57,
++            "state": "discharging", "acConnected": False,
++            "timeToEmptySeconds": None, "timeToFullSeconds": None}).encode())
++        writes = []
++
++        class OldModuleState:
++            def write_text(self, text):
++                # The 1.0.0 parser rejects fields it does not know.
++                if "energy_full" in text:
++                    raise OSError(22, "Invalid argument")
++                writes.append(text)
++
++        class BrokenState:
++            def write_text(self, text):
++                raise OSError(5, "Input/output error")
++
++        bridge.STATE = OldModuleState()
++        bridge.write_state(state, {"energyFullMicroWh": 50000000})
++        self.assertEqual(len(writes), 1)
++        self.assertIn("capacity=57", writes[0])
++        self.assertNotIn("energy_full", writes[0])
++        bridge.STATE = BrokenState()
++        with self.assertRaises(OSError):
++            bridge.write_state(state, {})
++
 +    def test_compatibility_delivery_and_dkms_version(self):
 +        overlay = GUEST / "factory-overlay"
 +        finalize = (GUEST / "scripts/finalize-rootfs.sh").read_text()
@@ -942,5 +981,5 @@ index d884569..ada8219 100755
          and "usr/local/lib/try-omarchy/try-omarchy-import.pyz" in compat_paths
          and "usr/local/bin/try-omarchy-timezone" in compat_paths
 -- 
-2.56.0
+2.43.0
 
