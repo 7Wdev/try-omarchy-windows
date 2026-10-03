@@ -1,4 +1,4 @@
-From 1f9520413fde376b2554054ac1ba536554a81a20 Mon Sep 17 00:00:00 2001
+From 49554b8a2d98a67b0165cc93fbc4389678e242db Mon Sep 17 00:00:00 2001
 From: Tyler South <tsouth2@gmail.com>
 Date: Sat, 3 Oct 2026 08:30:38 -0400
 Subject: [PATCH] Mirror Windows battery physical details in the guest
@@ -10,14 +10,14 @@ Subject: [PATCH] Mirror Windows battery physical details in the guest
  .../local/lib/try-omarchy/update-battery-dkms |  32 ++
  .../Makefile                                  |   0
  .../dkms.conf                                 |   2 +-
- .../try-omarchy-battery.c                     | 123 +++++++-
+ .../try-omarchy-battery.c                     | 124 +++++++-
  guest/scripts/finalize-rootfs.sh              |   8 +-
  guest/tests/native-module/tob_parse_harness.c | 147 +++++++++
  guest/tests/test_battery_details.py           | 281 ++++++++++++++++++
  guest/tests/test_guest_qol.py                 |   2 +-
  guest/tests/test_overlay_scripts.py           |   3 +-
  guest/tests/verify.py                         |   2 +-
- 13 files changed, 664 insertions(+), 21 deletions(-)
+ 13 files changed, 665 insertions(+), 21 deletions(-)
  create mode 100755 guest/factory-overlay/usr/local/lib/try-omarchy/update-battery-dkms
  rename guest/factory-overlay/usr/src/{try-omarchy-battery-1.0.0 => try-omarchy-battery-1.1.0}/Makefile (100%)
  rename guest/factory-overlay/usr/src/{try-omarchy-battery-1.0.0 => try-omarchy-battery-1.1.0}/dkms.conf (94%)
@@ -240,10 +240,18 @@ diff --git a/guest/factory-overlay/usr/src/try-omarchy-battery-1.0.0/try-omarchy
 similarity index 69%
 rename from guest/factory-overlay/usr/src/try-omarchy-battery-1.0.0/try-omarchy-battery.c
 rename to guest/factory-overlay/usr/src/try-omarchy-battery-1.1.0/try-omarchy-battery.c
-index 39a1953..a34b6e4 100644
+index 39a1953..6ed3db5 100644
 --- a/guest/factory-overlay/usr/src/try-omarchy-battery-1.0.0/try-omarchy-battery.c
 +++ b/guest/factory-overlay/usr/src/try-omarchy-battery-1.1.0/try-omarchy-battery.c
-@@ -33,11 +33,20 @@ struct tob_state {
+@@ -18,6 +18,7 @@
+  * power_supply_unregister() waits for readers holding tob_state_lock.
+  */
+ 
++#include <linux/hex.h>
+ #include <linux/kernel.h>
+ #include <linux/module.h>
+ #include <linux/mutex.h>
+@@ -33,11 +34,20 @@ struct tob_state {
  	bool ac_online;
  	int time_to_empty;
  	int time_to_full;
@@ -264,7 +272,7 @@ index 39a1953..a34b6e4 100644
  static DEFINE_MUTEX(tob_register_lock);	/* serializes writers + registration */
  static DEFINE_MUTEX(tob_state_lock);	/* guards tob_state */
  static struct tob_state tob_state = {
-@@ -47,6 +56,9 @@ static struct tob_state tob_state = {
+@@ -47,6 +57,9 @@ static struct tob_state tob_state = {
  	.ac_online = true,
  	.time_to_empty = -1,
  	.time_to_full = -1,
@@ -274,7 +282,7 @@ index 39a1953..a34b6e4 100644
  };
  
  static const struct {
-@@ -76,6 +88,9 @@ static enum power_supply_property tob_bat_properties[] = {
+@@ -76,6 +89,9 @@ static enum power_supply_property tob_bat_properties[] = {
  	POWER_SUPPLY_PROP_CAPACITY,
  	POWER_SUPPLY_PROP_TIME_TO_EMPTY_AVG,
  	POWER_SUPPLY_PROP_TIME_TO_FULL_AVG,
@@ -284,7 +292,7 @@ index 39a1953..a34b6e4 100644
  	POWER_SUPPLY_PROP_TECHNOLOGY,
  	POWER_SUPPLY_PROP_MANUFACTURER,
  	POWER_SUPPLY_PROP_MODEL_NAME,
-@@ -115,13 +130,41 @@ static int tob_bat_get_property(struct power_supply *psy,
+@@ -115,13 +131,41 @@ static int tob_bat_get_property(struct power_supply *psy,
  			val->intval = tob_state.time_to_full;
  		break;
  	case POWER_SUPPLY_PROP_TECHNOLOGY:
@@ -329,7 +337,7 @@ index 39a1953..a34b6e4 100644
  		break;
  	default:
  		error = -EINVAL;
-@@ -159,6 +202,29 @@ static const struct power_supply_desc tob_ac_desc = {
+@@ -159,6 +203,29 @@ static const struct power_supply_desc tob_ac_desc = {
  	.get_property = tob_ac_get_property,
  };
  
@@ -359,7 +367,7 @@ index 39a1953..a34b6e4 100644
  static int tob_parse(const char *buf, size_t count, struct tob_state *next)
  {
  	bool saw_present = false, saw_ac = false;
-@@ -172,6 +238,12 @@ static int tob_parse(const char *buf, size_t count, struct tob_state *next)
+@@ -172,6 +239,12 @@ static int tob_parse(const char *buf, size_t count, struct tob_state *next)
  	next->ac_online = false;
  	next->time_to_empty = -1;
  	next->time_to_full = -1;
@@ -372,7 +380,7 @@ index 39a1953..a34b6e4 100644
  
  	copy = kstrndup(buf, count, GFP_KERNEL);
  	if (!copy)
-@@ -209,6 +281,27 @@ static int tob_parse(const char *buf, size_t count, struct tob_state *next)
+@@ -209,6 +282,27 @@ static int tob_parse(const char *buf, size_t count, struct tob_state *next)
  			    next->capacity < 0 || next->capacity > 100)
  				goto out;
  			saw_capacity = true;
@@ -400,7 +408,7 @@ index 39a1953..a34b6e4 100644
  		} else if (!strcmp(token, "time_to_empty")) {
  			if (kstrtoint(value, 10, &next->time_to_empty) ||
  			    next->time_to_empty < -1)
-@@ -253,7 +346,7 @@ static ssize_t state_store(struct device *dev, struct device_attribute *attr,
+@@ -253,7 +347,7 @@ static ssize_t state_store(struct device *dev, struct device_attribute *attr,
  			   const char *buf, size_t count)
  {
  	struct tob_state next;
@@ -409,7 +417,7 @@ index 39a1953..a34b6e4 100644
  	int error;
  
  	error = tob_parse(buf, count, &next);
-@@ -263,11 +356,25 @@ static ssize_t state_store(struct device *dev, struct device_attribute *attr,
+@@ -263,11 +357,25 @@ static ssize_t state_store(struct device *dev, struct device_attribute *attr,
  	mutex_lock(&tob_register_lock);
  	mutex_lock(&tob_state_lock);
  	ac_changed = next.ac_online != tob_state.ac_online;
@@ -436,7 +444,7 @@ index 39a1953..a34b6e4 100644
  	tob_state = next;
  	mutex_unlock(&tob_state_lock);
  
-@@ -276,6 +383,8 @@ static ssize_t state_store(struct device *dev, struct device_attribute *attr,
+@@ -276,6 +384,8 @@ static ssize_t state_store(struct device *dev, struct device_attribute *attr,
  		struct power_supply_config config = {};
  		struct power_supply *battery;
  
@@ -445,7 +453,7 @@ index 39a1953..a34b6e4 100644
  		battery = power_supply_register(&tob_pdev->dev, &tob_bat_desc,
  						&config);
  		if (IS_ERR(battery)) {
-@@ -323,7 +432,7 @@ static int __init tob_init(void)
+@@ -323,7 +433,7 @@ static int __init tob_init(void)
  		tob_ac = NULL;
  		goto remove_file;
  	}
@@ -454,7 +462,7 @@ index 39a1953..a34b6e4 100644
  	 * creates it, so the guest bar has nothing to render. */
  	return 0;
  
-@@ -355,4 +464,4 @@ module_exit(tob_exit);
+@@ -355,4 +465,4 @@ module_exit(tob_exit);
  MODULE_AUTHOR("Try Omarchy");
  MODULE_DESCRIPTION("Mirror the Windows host's battery as guest BAT0/ADP0");
  MODULE_LICENSE("GPL");
