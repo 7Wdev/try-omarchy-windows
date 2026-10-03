@@ -271,6 +271,5 @@ Patch 0120 removes hidden playback attenuation behind the Windows route picker.
 The bridge keeps the virtio ALSA transport at 100% while its remap sinks are
 active; the visible route controls guest volume. It preserves mute and restores
 the previous transport channel volumes on orderly shutdown unless the owner
-changed them. Revision 46 retains the audio transport delivery from #278.
-Compatibility revision 47 delivers the bridge to existing disks.
+changed them. Compatibility revision 46 delivers the bridge to existing disks.
 See [audio behavior](../docs/AUDIO-DEVICES.md) for the signal path and checks.
