@@ -1,7 +1,7 @@
-From 717c62ac49ceb0006a40370d2792560410de1eda Mon Sep 17 00:00:00 2001
+From 5742a622077568a9054e0f38b5f6010b14a99376 Mon Sep 17 00:00:00 2001
 From: Tyler South <tsouth2@gmail.com>
 Date: Sat, 3 Oct 2026 07:53:46 -0400
-Subject: [PATCH] Lock Chewing and refresh the guest package transaction
+Subject: [PATCH 3/3] Lock Chewing and refresh the guest package transaction
 
 ---
  guest/packages.lock.json | 44 +++++++++++++++++++++-------------------
