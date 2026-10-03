@@ -21,7 +21,8 @@ prefers Noto CJK TC fonts.
 
 Compatibility revision 46 delivers reviewed payloads and applies them only to
 matching default files. It keeps custom content, missing commands and symlinked
-configs, seeds only missing font/input profiles, and runs once per revision.
+configs, seeds only missing font/input profiles, and runs once for disks that have not reached revision 46.
+Patch 0122 locks Chewing and refreshes the resolved package transaction.
 Chromium flags in existing homes change only when identical to the upstream
 seed. Chewing and man-db are runtime dependencies, so existing disks receive
 missing packages with their next **Update > Omarchy**. Lock PAM seeding,

@@ -1,0 +1,177 @@
+From 717c62ac49ceb0006a40370d2792560410de1eda Mon Sep 17 00:00:00 2001
+From: Tyler South <tsouth2@gmail.com>
+Date: Sat, 3 Oct 2026 07:53:46 -0400
+Subject: [PATCH] Lock Chewing and refresh the guest package transaction
+
+---
+ guest/packages.lock.json | 44 +++++++++++++++++++++-------------------
+ 1 file changed, 23 insertions(+), 21 deletions(-)
+
+diff --git a/guest/packages.lock.json b/guest/packages.lock.json
+index 8257372..61c93ac 100644
+--- a/guest/packages.lock.json
++++ b/guest/packages.lock.json
+@@ -74,10 +74,11 @@
+     "fastfetch": "2.69.0-1",
+     "fcft": "3.3.3-1",
+     "fcitx5": "5.1.23-1",
++    "fcitx5-chewing": "5.1.13-1",
+     "fcitx5-gtk": "5.1.7-1",
+     "fcitx5-qt": "5.1.16-1",
+     "fd": "10.5.0-3",
+-    "ffmpeg": "2:9.0.2-1",
++    "ffmpeg": "2:9.0.2-2",
+     "fftw": "3.3.11-1",
+     "file": "5.48-1",
+     "filesystem": "2025.10.12-1",
+@@ -109,7 +110,7 @@
+     "glib-networking": "1:2.80.1-1",
+     "glib2": "2.88.3-1",
+     "glibc": "2.44+r50+g1848099f063e-1",
+-    "glslang": "1:1.4.357.0-1",
++    "glslang": "1:1.4.363.0-1",
+     "glu": "9.0.3-3",
+     "glycin": "2.1.5-2",
+     "glycin-gtk4": "2.1.5-2",
+@@ -162,7 +163,7 @@
+     "hyprcursor": "0.1.13-7",
+     "hyprgraphics": "0.5.1-4",
+     "hypridle": "0.1.8-2",
+-    "hyprland": "0.56.2-3",
++    "hyprland": "0.56.2-4",
+     "hyprland-guiutils": "0.2.2-4",
+     "hyprland-preview-share-picker": "0.2.1-1",
+     "hyprlang": "0.6.8-5",
+@@ -196,7 +197,7 @@
+     "l-smash": "2.14.5-4",
+     "lame": "4.0-1",
+     "lcms2": "2.19.1-1",
+-    "leancrypto": "1.9.0-1",
++    "leancrypto": "1.9.1-1",
+     "leptonica": "1.87.0-2",
+     "less": "1:710-1",
+     "libadwaita": "1:1.9.4-1",
+@@ -230,6 +231,7 @@
+     "libcdio": "2.4.0-1",
+     "libcdio-paranoia": "10.2+2.0.2-3",
+     "libcgif": "0.5.4-1",
++    "libchewing": "0.13.1-1",
+     "libcloudproviders": "0.4.1-1",
+     "libcolord": "1.4.8-1",
+     "libcue": "2.3.0-2",
+@@ -292,7 +294,7 @@
+     "libluv": "1.52.1-1",
+     "libmakepkg-dropins": "20-2",
+     "libmatio": "1.5.30-1",
+-    "libmd": "1.2.0-1",
++    "libmd": "1.3.0-1",
+     "libmm-glib": "1.24.2-1",
+     "libmnl": "1.0.5-2",
+     "libmodplug": "0.8.9.0-7",
+@@ -309,7 +311,7 @@
+     "libngtcp2": "1.25.0-1",
+     "libnice": "0.1.24-1",
+     "libnl": "3.12.0-1",
+-    "libnm": "1.58.1-1",
++    "libnm": "1.58.1-2",
+     "libnotify": "0.8.8-1",
+     "libnsbmp": "0.1.7-2",
+     "libnsgif": "1.0.0-2",
+@@ -325,7 +327,7 @@
+     "libpgm": "5.3.128-4",
+     "libpipeline": "1.5.8-1",
+     "libpipewire": "1:1.6.9-1",
+-    "libplacebo": "7.360.1-6",
++    "libplacebo": "7.360.1-7",
+     "libplist": "2.7.0-3",
+     "libpng": "1.6.59-1",
+     "libportal": "0.11.0-1",
+@@ -418,9 +420,9 @@
+     "libzip": "1.11.4-1",
+     "licenses": "20240728-1",
+     "lilv": "0.28.0-1",
+-    "linux": "7.2.8.arch1-1",
++    "linux": "7.2.8.arch1-2",
+     "linux-api-headers": "7.2-1",
+-    "linux-headers": "7.2.8.arch1-1",
++    "linux-headers": "7.2.8.arch1-2",
+     "llhttp": "9.3.1-1",
+     "llvm-libs": "23.1.1-1",
+     "lm_sensors": "1:3.6.2-1",
+@@ -436,11 +438,11 @@
+     "m4": "1.4.21-2",
+     "make": "4.4.1-3",
+     "man-db": "2.13.1-2",
+-    "md4c": "0.5.3-1",
++    "md4c": "0.6.0-2",
+     "mdadm": "4.6-2",
+-    "mesa": "1:26.2.3-2",
++    "mesa": "1:26.2.4-1",
+     "minizip": "1:1.3.2-3",
+-    "mkinitcpio": "42.1-1",
++    "mkinitcpio": "42.2-1",
+     "mkinitcpio-busybox": "1.36.1-1",
+     "mobile-broadband-provider-info": "20251101-1",
+     "mpdecimal": "4.0.1-3",
+@@ -455,7 +457,7 @@
+     "ncurses": "6.6-2",
+     "neovim": "0.12.5-1",
+     "nettle": "4.0-1",
+-    "networkmanager": "1.58.1-1",
++    "networkmanager": "1.58.1-2",
+     "nftables": "1:1.1.7-3",
+     "noto-fonts": "1:2026.10.01-1",
+     "noto-fonts-cjk": "20240730-1",
+@@ -474,7 +476,7 @@
+     "oniguruma": "6.9.10-1",
+     "openal": "1.25.2-2",
+     "opencore-amr": "0.1.6-2",
+-    "openexr": "3.5.1-1",
++    "openexr": "3.5.2-1",
+     "openh264": "2.6.0-2",
+     "openjpeg2": "2.5.4-1",
+     "openjph": "0.32.0-1",
+@@ -548,7 +550,7 @@
+     "seatd": "0.9.3-1",
+     "sed": "4.10-2",
+     "serd": "0.32.10-1",
+-    "shaderc": "2026.3-1",
++    "shaderc": "2026.4-1",
+     "shadow": "4.20.0.arch1-1",
+     "shared-mime-info": "2.5.1-2",
+     "slang": "2.3.3-4",
+@@ -561,7 +563,7 @@
+     "spandsp": "0.0.6-7",
+     "speex": "1.2.1-2",
+     "speexdsp": "1.2.1-2",
+-    "spirv-tools": "1:1.4.357.0-1",
++    "spirv-tools": "1:1.4.363.0-1",
+     "sqlite": "3.53.4-1",
+     "sratom": "0.6.22-1",
+     "srt": "1.5.7-1",
+@@ -610,10 +612,10 @@
+     "vid.stab": "1.1.2-1",
+     "vmaf": "3.2.1-1",
+     "volume_key": "0.3.12-12",
+-    "vulkan-icd-loader": "1.4.357.0-1",
+-    "vulkan-mesa-implicit-layers": "1:26.2.3-2",
+-    "vulkan-swrast": "1:26.2.3-2",
+-    "vulkan-virtio": "1:26.2.3-2",
++    "vulkan-icd-loader": "1.4.363.0-1",
++    "vulkan-mesa-implicit-layers": "1:26.2.4-1",
++    "vulkan-swrast": "1:26.2.4-1",
++    "vulkan-virtio": "1:26.2.4-1",
+     "wayland": "1.26.0-1",
+     "wayland-protocols": "1.49-1",
+     "webrtc-audio-processing-1": "1.3-5",
+@@ -668,6 +670,6 @@
+     "zram-generator": "1.2.1-1",
+     "zstd": "1.5.7-3"
+   },
+-  "requestedFileSha256": "e53bba7e09c010d9e4dbfdca9282b8912ac91637c22b68bceb7bb829e12c0160",
++  "requestedFileSha256": "268abc15c8e8eada07a632fbc034b7522c8790f820e8d0b14324a392ad001cc0",
+   "schemaVersion": 1
+ }
+-- 
+2.56.0
+
