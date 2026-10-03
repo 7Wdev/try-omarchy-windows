@@ -1,0 +1,135 @@
+From 74f1a04c6679e07377f9a53a252170a8a5b57a47 Mon Sep 17 00:00:00 2001
+From: Brandon South <btsouth@users.noreply.github.com>
+Date: Sat, 3 Oct 2026 11:18:18 -0400
+Subject: [PATCH] Allow Media Player software rendering in CPU mode
+
+---
+ guest/factory-overlay/usr/local/bin/mpv |  7 +++++
+ guest/scripts/finalize-rootfs.sh        |  4 ++-
+ guest/tests/test_battery_details.py     |  2 +-
+ guest/tests/test_guest_qol.py           |  2 +-
+ guest/tests/test_mpv_cpu.py             | 35 +++++++++++++++++++++++++
+ guest/tests/verify.py                   |  3 ++-
+ 6 files changed, 49 insertions(+), 4 deletions(-)
+ create mode 100755 guest/factory-overlay/usr/local/bin/mpv
+ create mode 100644 guest/tests/test_mpv_cpu.py
+
+diff --git a/guest/factory-overlay/usr/local/bin/mpv b/guest/factory-overlay/usr/local/bin/mpv
+new file mode 100755
+index 0000000..006a514
+--- /dev/null
++++ b/guest/factory-overlay/usr/local/bin/mpv
+@@ -0,0 +1,7 @@
++#!/bin/bash
++# CPU rendering uses Mesa software devices, which mpv rejects by default.
++# Put the default first so explicit command-line choices still take precedence.
++if [[ " $(</proc/cmdline) " == *" tryomarchy.render=cpu "* ]]; then
++  exec /usr/bin/mpv --gpu-sw=yes "$@"
++fi
++exec /usr/bin/mpv "$@"
+diff --git a/guest/scripts/finalize-rootfs.sh b/guest/scripts/finalize-rootfs.sh
+index 687b6f4..cda101a 100755
+--- a/guest/scripts/finalize-rootfs.sh
++++ b/guest/scripts/finalize-rootfs.sh
+@@ -73,6 +73,7 @@ version = subprocess.check_output(["pacman", "-Q", "try-omarchy-runtime"], text=
+ UPDATE_MANIFEST
+ 
+ compat_paths=(
++  usr/local/bin/mpv
+   usr/local/bin/omarchy-native-screensaver-text
+   usr/local/lib/try-omarchy/install-guest-qol
+   usr/share/try-omarchy/guest-qol
+@@ -222,7 +223,8 @@ tar -C / -cf /usr/share/try-omarchy/compat-overlay.tar "${compat_paths[@]}"
+ # Revision 46 keeps the guest audio transport at unity volume.
+ # Revision 47 brings guest quality-of-life fixes to matching defaults only.
+ # Revision 48 delivers physical battery details and the updated DKMS source.
+-compat_revision=48
++# Revision 49 allows Media Player software rendering in CPU mode.
++compat_revision=49
+ printf '%s:%s\n' "$compat_revision" "$kernel_release" >/usr/share/try-omarchy/compat-version
+ 
+ # Fail the build if DKMS or networking modules were not packaged for this kernel.
+diff --git a/guest/tests/test_battery_details.py b/guest/tests/test_battery_details.py
+index 1ee157b..e52a1e0 100644
+--- a/guest/tests/test_battery_details.py
++++ b/guest/tests/test_battery_details.py
+@@ -204,7 +204,7 @@ class BatteryDetailsFlowTests(unittest.TestCase):
+     def test_compatibility_delivery_and_dkms_version(self):
+         overlay = GUEST / "factory-overlay"
+         finalize = (GUEST / "scripts/finalize-rootfs.sh").read_text()
+-        self.assertIn("compat_revision=48", finalize)
++        self.assertIn("compat_revision=49", finalize)
+         self.assertIn("usr/src/try-omarchy-battery-1.1.0", finalize)
+         self.assertIn("usr/local/lib/try-omarchy/update-battery-dkms", finalize)
+         self.assertIn('PACKAGE_VERSION="1.1.0"', (MODULE_SOURCE.parent / "dkms.conf").read_text())
+diff --git a/guest/tests/test_guest_qol.py b/guest/tests/test_guest_qol.py
+index 8def808..2a5acab 100644
+--- a/guest/tests/test_guest_qol.py
++++ b/guest/tests/test_guest_qol.py
+@@ -215,7 +215,7 @@ class GuestQolTests(unittest.TestCase):
+     def test_compatibility_delivers_guarded_payload_once_per_revision(self):
+         finalize = (GUEST / "scripts/finalize-rootfs.sh").read_text()
+         paths = finalize.split("compat_paths=(", 1)[1].split(")", 1)[0]
+-        self.assertIn("compat_revision=48", finalize)
++        self.assertIn("compat_revision=49", finalize)
+         for path in ("usr/local/bin/omarchy-native-screensaver-text", "usr/local/lib/try-omarchy/install-guest-qol", "usr/share/try-omarchy/guest-qol", "usr/local/bin/omarchy-windows-audio-bridge"):
+             self.assertIn(path, paths)
+         self.assertNotIn("etc/fonts/conf.d/30-try-omarchy.conf", paths)
+diff --git a/guest/tests/test_mpv_cpu.py b/guest/tests/test_mpv_cpu.py
+new file mode 100644
+index 0000000..8d1d541
+--- /dev/null
++++ b/guest/tests/test_mpv_cpu.py
+@@ -0,0 +1,35 @@
++import json
++import os
++from pathlib import Path
++import subprocess
++import tempfile
++import unittest
++
++SCRIPT = Path(__file__).resolve().parents[1] / "factory-overlay/usr/local/bin/mpv"
++
++
++class MpvCpuTests(unittest.TestCase):
++    def invoke(self, cmdline, args):
++        with tempfile.TemporaryDirectory() as directory:
++            root = Path(directory)
++            (root / "cmdline").write_text(cmdline)
++            player = root / "player"
++            player.write_text("#!/usr/bin/python3\nimport json,sys\nprint(json.dumps(sys.argv[1:]))\nsys.exit(7)\n")
++            player.chmod(0o755)
++            wrapper = root / "mpv"
++            wrapper.write_text(SCRIPT.read_text().replace("/proc/cmdline", str(root / "cmdline")).replace("/usr/bin/mpv", str(player)))
++            result = subprocess.run(["bash", str(wrapper), *args], capture_output=True, text=True)
++            self.assertEqual(result.returncode, 7)
++            return json.loads(result.stdout)
++
++    def test_cpu_default_and_argument_preservation(self):
++        args = ["--player-operation-mode=pseudo-gui", "--", "clip with spaces;$.mp4"]
++        self.assertEqual(self.invoke("root=/dev/vda tryomarchy.render=cpu quiet\n", args), ["--gpu-sw=yes", *args])
++
++    def test_gpu_and_missing_mode_preserve_defaults(self):
++        for cmdline in ["tryomarchy.render=gpu", "tryomarchy.render=auto", "root=/dev/vda", "tryomarchy.render=cpu-extra", "othertryomarchy.render=cpu"]:
++            with self.subTest(cmdline=cmdline):
++                self.assertEqual(self.invoke(cmdline, ["video.mp4"]), ["video.mp4"])
++
++    def test_explicit_user_choice_remains_last(self):
++        self.assertEqual(self.invoke("tryomarchy.render=cpu", ["--gpu-sw=no", "clip.mp4"]), ["--gpu-sw=yes", "--gpu-sw=no", "clip.mp4"])
+diff --git a/guest/tests/verify.py b/guest/tests/verify.py
+index ada8219..b3fb72a 100755
+--- a/guest/tests/verify.py
++++ b/guest/tests/verify.py
+@@ -324,7 +324,8 @@ def main() -> None:
+         "system services run without watchdogs, which fire after Windows sleeps",
+     )
+     check(
+-        "compat_revision=48" in finalize_rootfs
++        "compat_revision=49" in finalize_rootfs
++        and "usr/local/bin/mpv" in compat_paths
+         and "usr/share/dkms/modules_to_force_install/try-omarchy" in compat_paths
+         and "usr/local/lib/try-omarchy/try-omarchy-import.pyz" in compat_paths
+         and "usr/local/bin/try-omarchy-timezone" in compat_paths
+-- 
+2.43.0
+
