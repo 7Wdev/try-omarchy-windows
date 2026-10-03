@@ -1,7 +1,7 @@
-From f675c5e73f5527ae57d868df223137c02f2ac6b1 Mon Sep 17 00:00:00 2001
+From 29020cdd7c54592019e35a055d8cdbbe482fa400 Mon Sep 17 00:00:00 2001
 From: Tyler South <tsouth2@gmail.com>
 Date: Sat, 3 Oct 2026 07:51:05 -0400
-Subject: [PATCH] Deliver guest defaults through compatibility revision 46
+Subject: [PATCH] Deliver guest defaults through compatibility revision 47
 
 ---
  .../usr/local/lib/try-omarchy/catch-up        |    7 +
@@ -19,7 +19,7 @@ Subject: [PATCH] Deliver guest defaults through compatibility revision 46
  .../shell_plugins_menu_Menu.qml_4.0.1         | 1420 ++++++++++++++++
  .../shell_plugins_panels_power_Panel.qml      |  539 +++++++
  ...shell_plugins_panels_power_Panel.qml_4.0.1 |  534 ++++++
- guest/scripts/finalize-rootfs.sh              |    6 +-
+ guest/scripts/finalize-rootfs.sh              |    7 +-
  .../4.0.1/shell/plugins/menu/Menu.qml         | 1420 ++++++++++++++++
  .../shell/plugins/panels/power/Panel.qml      |  531 ++++++
  .../guest-qol/bin/omarchy-powerprofiles-list  |   17 +
@@ -30,9 +30,9 @@ Subject: [PATCH] Deliver guest defaults through compatibility revision 46
  .../guest-qol/install/user/first-run/wifi.sh  |   30 +
  .../guest-qol/shell/plugins/menu/Menu.qml     | 1427 +++++++++++++++++
  .../shell/plugins/panels/power/Panel.qml      |  536 +++++++
- guest/tests/test_guest_qol.py                 |  271 ++++
+ guest/tests/test_guest_qol.py                 |  274 ++++
  guest/tests/verify.py                         |   20 +-
- 28 files changed, 8784 insertions(+), 5 deletions(-)
+ 28 files changed, 8788 insertions(+), 5 deletions(-)
  create mode 100755 guest/factory-overlay/usr/local/lib/try-omarchy/install-guest-qol
  create mode 100644 guest/factory-overlay/usr/share/try-omarchy/guest-qol/bin_omarchy-powerprofiles-list
  create mode 100644 guest/factory-overlay/usr/share/try-omarchy/guest-qol/bin_omarchy-powerprofiles-set
@@ -60,7 +60,7 @@ Subject: [PATCH] Deliver guest defaults through compatibility revision 46
  create mode 100644 guest/tests/test_guest_qol.py
 
 diff --git a/guest/factory-overlay/usr/local/lib/try-omarchy/catch-up b/guest/factory-overlay/usr/local/lib/try-omarchy/catch-up
-index 90f211f..dea0e1a 100755
+index 90f211f..2d5c638 100755
 --- a/guest/factory-overlay/usr/local/lib/try-omarchy/catch-up
 +++ b/guest/factory-overlay/usr/local/lib/try-omarchy/catch-up
 @@ -32,6 +32,13 @@ previous_revision=$(cat "$marker" 2>/dev/null || true)
@@ -70,7 +70,7 @@ index 90f211f..dea0e1a 100755
 +# Install reviewed system defaults and missing input-method profiles once per
 +# revision. The installer keeps customized files and linked directories intact.
 +qol_installer=${TRY_OMARCHY_QOL_INSTALLER:-/usr/local/lib/try-omarchy/install-guest-qol}
-+if [[ -x $qol_installer ]] && { [[ ! $previous_revision =~ ^[0-9]+$ ]] || (( previous_revision < 46 )); }; then
++if [[ -x $qol_installer ]] && { [[ ! $previous_revision =~ ^[0-9]+$ ]] || (( previous_revision < 47 )); }; then
 +  "$qol_installer" --homes "$homes"
 +fi
 +
@@ -4553,7 +4553,7 @@ index 0000000..48921d5
 +  }
 +}
 diff --git a/guest/scripts/finalize-rootfs.sh b/guest/scripts/finalize-rootfs.sh
-index 3da1033..12bafc7 100755
+index 18179df..89e1962 100755
 --- a/guest/scripts/finalize-rootfs.sh
 +++ b/guest/scripts/finalize-rootfs.sh
 @@ -73,6 +73,9 @@ version = subprocess.check_output(["pacman", "-Q", "try-omarchy-runtime"], text=
@@ -4566,13 +4566,14 @@ index 3da1033..12bafc7 100755
    usr/local/bin/try-omarchy-timezone
    usr/share/applications/try-omarchy-follow-timezone.desktop
    etc/systemd/system/try-omarchy-timezone.service
-@@ -215,7 +218,8 @@ tar -C / -cf /usr/share/try-omarchy/compat-overlay.tar "${compat_paths[@]}"
+@@ -215,7 +218,9 @@ tar -C / -cf /usr/share/try-omarchy/compat-overlay.tar "${compat_paths[@]}"
  # Revision 44 moves try-omarchy-export onto the Try Omarchy importer.
  # Revision 45 lets DKMS take over the camera and battery modules the launcher
  # delivered, so installing matching headers no longer prints install errors.
--compat_revision=45
-+# Revision 46 brings guest quality-of-life fixes to matching defaults only.
-+compat_revision=46
+-compat_revision=46
++# Revision 46 keeps the guest audio transport at unity volume.
++# Revision 47 brings guest quality-of-life fixes to matching defaults only.
++compat_revision=47
  printf '%s:%s\n' "$compat_revision" "$kernel_release" >/usr/share/try-omarchy/compat-version
  
  # Fail the build if DKMS or networking modules were not packaged for this kernel.
@@ -8732,10 +8733,10 @@ index 0000000..b1c34da
 +}
 diff --git a/guest/tests/test_guest_qol.py b/guest/tests/test_guest_qol.py
 new file mode 100644
-index 0000000..1cf7f35
+index 0000000..0dd74f4
 --- /dev/null
 +++ b/guest/tests/test_guest_qol.py
-@@ -0,0 +1,271 @@
+@@ -0,0 +1,274 @@
 +"""Exercise factory backports and preservation on persistent guest disks."""
 +import fcntl
 +import hashlib
@@ -8953,8 +8954,8 @@ index 0000000..1cf7f35
 +    def test_compatibility_delivers_guarded_payload_once_per_revision(self):
 +        finalize = (GUEST / "scripts/finalize-rootfs.sh").read_text()
 +        paths = finalize.split("compat_paths=(", 1)[1].split(")", 1)[0]
-+        self.assertIn("compat_revision=46", finalize)
-+        for path in ("usr/local/bin/omarchy-native-screensaver-text", "usr/local/lib/try-omarchy/install-guest-qol", "usr/share/try-omarchy/guest-qol"):
++        self.assertIn("compat_revision=47", finalize)
++        for path in ("usr/local/bin/omarchy-native-screensaver-text", "usr/local/lib/try-omarchy/install-guest-qol", "usr/share/try-omarchy/guest-qol", "usr/local/bin/omarchy-windows-audio-bridge"):
 +            self.assertIn(path, paths)
 +        self.assertNotIn("etc/fonts/conf.d/30-try-omarchy.conf", paths)
 +        self.assertNotIn("usr/bin/omarchy-screensaver", paths)
@@ -8963,7 +8964,10 @@ index 0000000..1cf7f35
 +        fake.write_text('#!/bin/bash\necho called >>"' + str(self.root / 'invocations') + '"\n')
 +        fake.chmod(0o755)
 +        version = self.root / "version"
-+        version.write_text("46:kernel\n")
++        version.write_text("47:kernel\n")
++        state = self.root / "state"
++        state.mkdir()
++        (state / "catch-up-revision").write_text("46\n")
 +        env = dict(self.env, TRY_OMARCHY_QOL_INSTALLER=str(fake), TRY_OMARCHY_COMPAT_VERSION=str(version),
 +                   TRY_OMARCHY_STATE_DIR=str(self.root / "state"), TRY_OMARCHY_HOMES=str(self.homes))
 +        for _ in range(2):
@@ -8977,9 +8981,9 @@ index 0000000..1cf7f35
 +        fake.chmod(0o755)
 +        state = self.root / "state"
 +        state.mkdir()
-+        (state / "catch-up-revision").write_text("46\n")
++        (state / "catch-up-revision").write_text("47\n")
 +        version = self.root / "version"
-+        version.write_text("47:kernel\n")
++        version.write_text("48:kernel\n")
 +        env = dict(self.env, TRY_OMARCHY_QOL_INSTALLER=str(fake), TRY_OMARCHY_COMPAT_VERSION=str(version),
 +                   TRY_OMARCHY_STATE_DIR=str(state), TRY_OMARCHY_HOMES=str(self.homes))
 +        subprocess.run([str(catchup)], env=env, check=True, capture_output=True)
@@ -9008,7 +9012,7 @@ index 0000000..1cf7f35
 +                installer.install(self.root, self.homes, PAYLOAD)
 +                self.assertEqual((self.root / hook["path"]).stat().st_ino, inode)
 diff --git a/guest/tests/verify.py b/guest/tests/verify.py
-index bf7a24d..4ff68f5 100755
+index 02783e5..d884569 100755
 --- a/guest/tests/verify.py
 +++ b/guest/tests/verify.py
 @@ -59,7 +59,7 @@ def main() -> None:
@@ -9061,8 +9065,8 @@ index bf7a24d..4ff68f5 100755
          "system services run without watchdogs, which fire after Windows sleeps",
      )
      check(
--        "compat_revision=45" in finalize_rootfs
-+        "compat_revision=46" in finalize_rootfs
+-        "compat_revision=46" in finalize_rootfs
++        "compat_revision=47" in finalize_rootfs
          and "usr/share/dkms/modules_to_force_install/try-omarchy" in compat_paths
          and "usr/local/lib/try-omarchy/try-omarchy-import.pyz" in compat_paths
          and "usr/local/bin/try-omarchy-timezone" in compat_paths

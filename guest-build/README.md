@@ -10,7 +10,7 @@ scripts/release/build-guest.sh --contract-only
 scripts/release/build-guest.sh --output /path/to/artifacts
 ```
 
-Patches 0120 and 0121 port the everyday guest fixes from Try Omarchy for Mac:
+Patches 0121 and 0122 port the everyday guest fixes from Try Omarchy for Mac:
 screensaver text fits the terminal and tracks its effect PID; low disk space
 messages distinguish the guest disk from the PC and point to **Settings >
 General > Storage > Disk capacity (GiB)**; first-run update notifications use
@@ -19,11 +19,12 @@ Linux power-profile tools. Chromium receives `--enable-wayland-ime`, new fcitx5
 profiles offer Chewing after the US keyboard, and Traditional Chinese text
 prefers Noto CJK TC fonts.
 
-Compatibility revision 46 delivers reviewed payloads and applies them only to
+Revision 46 retains the audio transport delivery from #278.
+Compatibility revision 47 delivers reviewed payloads and applies them only to
 matching default files. It keeps custom content, missing commands and symlinked
 configs, seeds only missing font/input profiles, and runs once for disks that
-have not reached revision 46.
-Patch 0122 locks Chewing and refreshes the resolved package transaction.
+have not reached revision 47.
+Patch 0123 locks Chewing and refreshes the resolved package transaction.
 Chromium flags in existing homes change only when identical to the upstream
 seed. Chewing and man-db are runtime dependencies, so existing disks receive
 missing packages with their next **Update > Omarchy**. Lock PAM seeding,
@@ -270,5 +271,6 @@ Patch 0120 removes hidden playback attenuation behind the Windows route picker.
 The bridge keeps the virtio ALSA transport at 100% while its remap sinks are
 active; the visible route controls guest volume. It preserves mute and restores
 the previous transport channel volumes on orderly shutdown unless the owner
-changed them. Compatibility revision 46 delivers the bridge to existing disks.
+changed them. Revision 46 retains the audio transport delivery from #278.
+Compatibility revision 47 delivers the bridge to existing disks.
 See [audio behavior](../docs/AUDIO-DEVICES.md) for the signal path and checks.
