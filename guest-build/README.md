@@ -10,6 +10,28 @@ scripts/release/build-guest.sh --contract-only
 scripts/release/build-guest.sh --output /path/to/artifacts
 ```
 
+Patches 0121 and 0122 port the everyday guest fixes from Try Omarchy for Mac:
+screensaver text fits the terminal and tracks its effect PID; low disk space
+messages distinguish the guest disk from the PC and point to **Settings >
+General > Storage > Disk capacity (GiB)**; first-run update notifications use
+normal priority; power profiles show **Managed by Windows** without calling
+Linux power-profile tools. Chromium receives `--enable-wayland-ime`, new fcitx5
+profiles offer Chewing after the US keyboard, and Traditional Chinese text
+prefers Noto CJK TC fonts.
+
+Revision 46 retains the audio transport delivery from #278.
+Compatibility revision 47 delivers reviewed payloads and applies them only to
+matching default files. It keeps custom content, missing commands and symlinked
+configs, seeds only missing font/input profiles, and runs once for disks that
+have not reached revision 47.
+Patch 0123 locks Chewing and refreshes the resolved package transaction.
+Chromium flags in existing homes change only when identical to the upstream
+seed. Chewing and man-db are runtime dependencies, so existing disks receive
+missing packages with their next **Update > Omarchy**. Lock PAM seeding,
+passwordless theme/DNS actions and man-db in factory images were already covered.
+The power display is informational; the current bridge opens Try Omarchy
+Settings and has no Windows power-settings action.
+
 Patch 0091 adds a Windows audio endpoint mirror to the guest PipeWire picker.
 The bridge talks over a dedicated virtio serial port, and compatibility
 revision 33 delivers its user service to existing persistent disks. It needs
