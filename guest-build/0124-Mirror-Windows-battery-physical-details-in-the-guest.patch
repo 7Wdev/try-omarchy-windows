@@ -1,10 +1,10 @@
-From 7568135f31d859c5b81341d9dccd5b5ac551448f Mon Sep 17 00:00:00 2001
+From 0102460aa06671634613f8e0fe0d6758808db5c7 Mon Sep 17 00:00:00 2001
 From: Tyler South <tsouth2@gmail.com>
 Date: Sat, 3 Oct 2026 08:30:38 -0400
 Subject: [PATCH] Mirror Windows battery physical details in the guest
 
 ---
- .../usr/local/lib/try-omarchy/agent           |   4 +
+ .../usr/local/lib/try-omarchy/agent           |   6 +
  .../usr/local/lib/try-omarchy/battery-apply   |  63 ++++-
  .../usr/local/lib/try-omarchy/catch-up        |   5 +
  .../local/lib/try-omarchy/update-battery-dkms |  32 +++
@@ -17,7 +17,7 @@ Subject: [PATCH] Mirror Windows battery physical details in the guest
  guest/tests/test_guest_qol.py                 |   2 +-
  guest/tests/test_overlay_scripts.py           |   3 +-
  guest/tests/verify.py                         |   2 +-
- 13 files changed, 623 insertions(+), 21 deletions(-)
+ 13 files changed, 625 insertions(+), 21 deletions(-)
  create mode 100755 guest/factory-overlay/usr/local/lib/try-omarchy/update-battery-dkms
  rename guest/factory-overlay/usr/src/{try-omarchy-battery-1.0.0 => try-omarchy-battery-1.1.0}/Makefile (100%)
  rename guest/factory-overlay/usr/src/{try-omarchy-battery-1.0.0 => try-omarchy-battery-1.1.0}/dkms.conf (94%)
@@ -26,7 +26,7 @@ Subject: [PATCH] Mirror Windows battery physical details in the guest
  create mode 100644 guest/tests/test_battery_details.py
 
 diff --git a/guest/factory-overlay/usr/local/lib/try-omarchy/agent b/guest/factory-overlay/usr/local/lib/try-omarchy/agent
-index 00b6a0a..b7cd4cc 100755
+index 00b6a0a..3d897fa 100755
 --- a/guest/factory-overlay/usr/local/lib/try-omarchy/agent
 +++ b/guest/factory-overlay/usr/local/lib/try-omarchy/agent
 @@ -67,6 +67,10 @@ handle() {
@@ -40,6 +40,15 @@ index 00b6a0a..b7cd4cc 100755
      battery\ *)
        printf '%s\n' "${line#battery }" | /usr/local/lib/try-omarchy/battery-apply ||
          echo 'could not apply host battery state' >&2
+@@ -96,6 +100,8 @@ if [[ ${1:-} == --handle ]]; then
+   exit 0
+ fi
+ 
++# A restarted agent may reconnect to an older launcher with no details message.
++/usr/local/lib/try-omarchy/battery-apply --offline || true
+ while :; do
+   exec 3<>"/dev/tcp/$host/$port" 2>/dev/null || { sleep 10; continue; }
+   printf 'hello %s\n' "$version" >&3
 diff --git a/guest/factory-overlay/usr/local/lib/try-omarchy/battery-apply b/guest/factory-overlay/usr/local/lib/try-omarchy/battery-apply
 index 72a1e1a..b1bac18 100755
 --- a/guest/factory-overlay/usr/local/lib/try-omarchy/battery-apply
