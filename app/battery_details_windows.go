@@ -80,13 +80,8 @@ func queryWindowsBatteryDetails() (batteryDetails, error) {
 		}
 		return syscall.UTF16ToString(buf[:returned/2]), nil
 	}
-	manufacturer, err := readName(6)
-	if err != nil {
-		return fail(err)
-	}
-	model, err := readName(4)
-	if err != nil {
-		return fail(err)
-	}
+	// Some batteries do not report names. Keep capacity and cycle count anyway.
+	manufacturer, _ := readName(6)
+	model, _ := readName(4)
 	return batteryDetailsFromWindows(info, manufacturer, model), nil
 }
