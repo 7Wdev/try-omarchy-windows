@@ -6,7 +6,7 @@ wheel events at whole boundaries. Route wheel axes separately from X/Y so
 PS/2 and USB handlers retain the discrete button path. Pinch stays separate.
 
 diff --git a/hw/input/virtio-input-hid.c b/hw/input/virtio-input-hid.c
-index 00d064acce..f835cde169 100644
+index 00d064acce..d62752be77 100644
 --- a/hw/input/virtio-input-hid.c
 +++ b/hw/input/virtio-input-hid.c
 @@ -37,6 +37,8 @@ static const unsigned short keymap_button[INPUT_BUTTON__MAX] = {
@@ -79,7 +79,7 @@ index 00d064acce..f835cde169 100644
          } else if (keymap_button[btn->button]) {
              event.type  = cpu_to_le16(EV_KEY);
              event.code  = cpu_to_le16(keymap_button[btn->button]);
-@@ -131,6 +160,32 @@ static void virtio_input_handle_event(DeviceState *dev, QemuConsole *src,
+@@ -131,6 +160,33 @@ static void virtio_input_handle_event(DeviceState *dev, QemuConsole *src,
          break;
      case INPUT_EVENT_KIND_REL:
          move = evt->u.rel.data;
@@ -89,13 +89,14 @@ index 00d064acce..f835cde169 100644
 +            int64_t *remainder = vertical ? &vhid->wheel_remainder :
 +                                           &vhid->hwheel_remainder;
 +            int code = vertical ? REL_WHEEL : REL_HWHEEL;
-+            int64_t total = *remainder + move->value;
++            int32_t value = move->value;
++            int64_t total = *remainder + value;
 +            int steps = total / 120;
 +
 +            event.type = cpu_to_le16(EV_REL);
 +            if (virtio_input_has_rel(vinput, axismap_rel[move->axis])) {
 +                event.code = cpu_to_le16(axismap_rel[move->axis]);
-+                event.value = cpu_to_le32(move->value);
++                event.value = cpu_to_le32(value);
 +                virtio_input_send(vinput, &event);
 +            }
 +            *remainder = total % 120;
@@ -112,7 +113,7 @@ index 00d064acce..f835cde169 100644
          event.type  = cpu_to_le16(EV_REL);
          event.code  = cpu_to_le16(axismap_rel[move->axis]);
          event.value = cpu_to_le32(move->value);
-@@ -202,6 +257,8 @@ static void virtio_input_hid_change_active(VirtIOInput *vinput)
+@@ -202,6 +258,8 @@ static void virtio_input_hid_change_active(VirtIOInput *vinput)
      if (vinput->active) {
          qemu_input_handler_activate(vhid->hs);
      } else {
@@ -121,7 +122,7 @@ index 00d064acce..f835cde169 100644
          qemu_input_handler_deactivate(vhid->hs);
      }
  }
-@@ -321,7 +378,8 @@ static const TypeInfo virtio_keyboard_info = {
+@@ -321,7 +379,8 @@ static const TypeInfo virtio_keyboard_info = {
  
  static const QemuInputHandler virtio_mouse_handler = {
      .name  = VIRTIO_ID_NAME_MOUSE,
@@ -131,7 +132,7 @@ index 00d064acce..f835cde169 100644
      .event = virtio_input_handle_event,
      .sync  = virtio_input_handle_sync,
  };
-@@ -345,8 +403,10 @@ static struct virtio_input_config virtio_mouse_config[] = {
+@@ -345,8 +404,10 @@ static struct virtio_input_config virtio_mouse_config[] = {
          .subsel    = EV_REL,
          .size      = 2,
          .u.bitmap  = {
@@ -144,7 +145,7 @@ index 00d064acce..f835cde169 100644
          },
      },
      { /* end of list */ },
-@@ -375,7 +435,8 @@ static const TypeInfo virtio_mouse_info = {
+@@ -375,7 +436,8 @@ static const TypeInfo virtio_mouse_info = {
  
  static const QemuInputHandler virtio_tablet_handler = {
      .name  = VIRTIO_ID_NAME_TABLET,
@@ -154,7 +155,7 @@ index 00d064acce..f835cde169 100644
      .event = virtio_input_handle_event,
      .sync  = virtio_input_handle_sync,
  };
-@@ -406,8 +467,10 @@ static struct virtio_input_config virtio_tablet_config[] = {
+@@ -406,8 +468,10 @@ static struct virtio_input_config virtio_tablet_config[] = {
          .subsel    = EV_REL,
          .size      = 2,
          .u.bitmap  = {

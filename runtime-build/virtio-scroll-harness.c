@@ -17,7 +17,7 @@ typedef struct { uint8_t size; union { uint8_t bitmap[128]; } u; } virtio_input_
 typedef struct { virtio_input_config *rel; } VirtIOInput;
 typedef struct { int64_t wheel_remainder, hwheel_remainder; } VirtIOInputHID;
 typedef struct { int button; bool down; } InputBtnEvent;
-typedef struct { int axis, value; } InputMoveEvent;
+typedef struct { int axis; int64_t value; } InputMoveEvent;
 typedef struct { int type; union {
     struct { InputBtnEvent *data; } btn;
     struct { InputMoveEvent *data; } rel;
@@ -93,6 +93,10 @@ int main(void)
         check(0,REL_WHEEL_HI_RES,INT_MAX); check(1,REL_WHEEL,total/120);
         assert(hid.wheel_remainder==total%120);
     }
+    /* QAPI values use int64, but the guest wheel payload is signed 32-bit. */
+    hid.wheel_remainder=0; move.value=INT64_MAX;
+    handle(&device,&hid,&precise); assert(count==1); check(0,REL_WHEEL_HI_RES,-1);
+    hid.wheel_remainder=0;
     /* A device without hires bits sends only legacy events, at boundaries. */
     config.u.bitmap[1]=1; hid.wheel_remainder=0;
     move.value=30; handle(&device,&hid,&precise); assert(count==0 && hid.wheel_remainder==30);
