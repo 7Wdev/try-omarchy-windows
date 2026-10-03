@@ -23,12 +23,14 @@ type audioEndpoints struct {
 }
 
 type audioEndpointInfo struct {
-	ID   string
-	Name string
+	ID         string
+	Name       string
+	SampleRate int
 }
 
 type mmDeviceList struct {
-	Output, Input []audioEndpointInfo
+	Output, Input                       []audioEndpointInfo
+	DefaultOutputRate, DefaultInputRate int
 }
 
 func (p audioEndpoints) validate() error {

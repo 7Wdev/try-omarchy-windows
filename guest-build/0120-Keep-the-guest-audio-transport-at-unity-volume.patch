@@ -1,0 +1,205 @@
+From 132411bf9c6667332018dd2533b97029ba1e0eff Mon Sep 17 00:00:00 2001
+From: Tyler South <tsouth2@gmail.com>
+Date: Sat, 3 Oct 2026 07:53:54 -0400
+Subject: [PATCH] Keep the guest audio transport at unity volume
+
+---
+ .../local/bin/omarchy-windows-audio-bridge    | 48 ++++++++++++++++++
+ guest/scripts/finalize-rootfs.sh              |  2 +-
+ guest/tests/test_windows_audio_bridge.py      | 49 +++++++++++++++++++
+ guest/tests/verify.py                         |  2 +-
+ 4 files changed, 99 insertions(+), 2 deletions(-)
+
+diff --git a/guest/factory-overlay/usr/local/bin/omarchy-windows-audio-bridge b/guest/factory-overlay/usr/local/bin/omarchy-windows-audio-bridge
+index 55e9833..52d6016 100755
+--- a/guest/factory-overlay/usr/local/bin/omarchy-windows-audio-bridge
++++ b/guest/factory-overlay/usr/local/bin/omarchy-windows-audio-bridge
+@@ -8,6 +8,7 @@ import json
+ import os
+ from pathlib import Path
+ import select
++import signal
+ import subprocess
+ import sys
+ import time
+@@ -94,11 +95,53 @@ class PipeWireMirror:
+         }
+         self.last_health_check = 0.0
+         self.pending: dict[str, tuple[str | None, float]] = {}
++        self.transport_volume: tuple[str, list[int]] | None = None
+ 
+     def close(self) -> None:
+         for module_id in reversed(self.module_ids):
+             run_pactl("unload-module", module_id, check=False)
+         self.module_ids.clear()
++        if self.transport_volume is not None:
++            name, volumes = self.transport_volume
++            self.transport_volume = None
++            try:
++                # Preserve a transport volume the owner changed while running.
++                sink = next((sink for sink in self._sink_details() if sink.get("name") == name), None)
++                if sink is not None and self._channel_volumes(sink) == [65536] * len(volumes):
++                    run_pactl("set-sink-volume", name, *map(str, volumes))
++            except (RuntimeError, ValueError, TypeError, KeyError):
++                pass
++
++    @staticmethod
++    def _sink_details() -> list[dict[str, Any]]:
++        sinks = json.loads(run_pactl("--format=json", "list", "sinks"))
++        if not isinstance(sinks, list) or any(not isinstance(sink, dict) for sink in sinks):
++            raise ValueError("invalid sink details")
++        return sinks
++
++    @staticmethod
++    def _channel_volumes(sink: dict[str, Any]) -> list[int]:
++        channels = sink.get("volume")
++        if not isinstance(channels, dict) or any(not isinstance(channel, dict) for channel in channels.values()):
++            raise ValueError("invalid sink volume")
++        volumes = [channel["value"] for channel in channels.values()]
++        if not volumes or any(type(value) is not int or not 0 <= value <= 0xffffffff for value in volumes):
++            raise ValueError("invalid sink channel volumes")
++        return volumes
++
++    def _prepare_transport_volume(self, name: str) -> None:
++        try:
++            sink = next((sink for sink in self._sink_details() if sink.get("name") == name), None)
++            # Only the virtio transport belongs to this bridge, never a USB sink.
++            properties = sink.get("properties") if sink is not None else None
++            if not isinstance(properties, dict) or properties.get("alsa.card_name") != "VirtIO SoundCard":
++                return
++            volumes = self._channel_volumes(sink)
++            run_pactl("set-sink-volume", name, "100%")
++            self.transport_volume = (name, volumes)
++        except (RuntimeError, ValueError, TypeError, KeyError):
++            log("Could not set QEMU audio transport volume")
++
+ 
+     def apply(self, message: dict[str, Any]) -> None:
+         # A catalog echo can arrive between two quick picker changes. Capture
+@@ -209,6 +252,10 @@ class PipeWireMirror:
+         transport_sink = next((name for name in sinks if name.startswith("alsa_output.")), sinks[0])
+         transport_source = next((name for name in sources if name.startswith("alsa_input.")), sources[0]) if sources else None
+ 
++        # The visible remap owns guest volume. WirePlumber's transport default
++        # otherwise adds a second, hidden gain (normally 40%). Keep mute intact.
++        self._prepare_transport_volume(transport_sink)
++
+         output_records = [{"deviceUID": None, "name": "Windows System Default"}, *outputs]
+         input_records = [{"deviceUID": None, "name": "Windows System Default"}, *inputs] if inputs else []
+         self.output_uids = {}
+@@ -266,6 +313,7 @@ def open_port() -> int:
+ 
+ 
+ def main() -> int:
++    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+     descriptor = open_port()
+ 
+     def send(message: dict[str, Any]) -> None:
+diff --git a/guest/scripts/finalize-rootfs.sh b/guest/scripts/finalize-rootfs.sh
+index 3da1033..18179df 100755
+--- a/guest/scripts/finalize-rootfs.sh
++++ b/guest/scripts/finalize-rootfs.sh
+@@ -215,7 +215,7 @@ tar -C / -cf /usr/share/try-omarchy/compat-overlay.tar "${compat_paths[@]}"
+ # Revision 44 moves try-omarchy-export onto the Try Omarchy importer.
+ # Revision 45 lets DKMS take over the camera and battery modules the launcher
+ # delivered, so installing matching headers no longer prints install errors.
+-compat_revision=45
++compat_revision=46
+ printf '%s:%s\n' "$compat_revision" "$kernel_release" >/usr/share/try-omarchy/compat-version
+ 
+ # Fail the build if DKMS or networking modules were not packaged for this kernel.
+diff --git a/guest/tests/test_windows_audio_bridge.py b/guest/tests/test_windows_audio_bridge.py
+index 99c8faf..7786d58 100644
+--- a/guest/tests/test_windows_audio_bridge.py
++++ b/guest/tests/test_windows_audio_bridge.py
+@@ -4,6 +4,7 @@
+ from __future__ import annotations
+ 
+ import importlib.util
++import json
+ from importlib.machinery import SourceFileLoader
+ from pathlib import Path
+ import unittest
+@@ -32,11 +33,25 @@ class PactlStub:
+         self.calls: list[tuple[tuple[str, ...], bool]] = []
+         self.next_module_id = 100
+         self.loaded_modules: set[str] = set()
++        self.volumes = [26214, 26214]
++        self.card_name = "VirtIO SoundCard"
++        self.details_error = False
+         self.default_sink = self.transport_sink
+         self.default_source = self.transport_source
+ 
+     def __call__(self, *arguments: str, check: bool = True) -> str:
+         self.calls.append((arguments, check))
++        if arguments == ("--format=json", "list", "sinks"):
++            if self.details_error:
++                raise RuntimeError("PipeWire unavailable")
++            return json.dumps([{
++                "name": self.transport_sink,
++                "properties": {"alsa.card_name": self.card_name},
++                "volume": {str(index): {"value": value} for index, value in enumerate(self.volumes)},
++            }])
++        if arguments[:2] == ("set-sink-volume", self.transport_sink):
++            self.volumes = [65536] * len(self.volumes) if arguments[2] == "100%" else list(map(int, arguments[2:]))
++            return ""
+         if arguments == ("list", "short", "sinks"):
+             return f"10\t{self.transport_sink}\tmodule-alsa-card.c\ts16le 2ch 48000Hz\tRUNNING\n"
+         if arguments == ("list", "short", "sources"):
+@@ -158,6 +173,40 @@ class PipeWireMirrorTests(unittest.TestCase):
+         self.addCleanup(mirror.close)
+         return mirror, pactl, sent
+ 
++    def test_transport_gain_is_unity_and_restored_on_close(self) -> None:
++        mirror, pactl, _ = self.make_mirror()
++        pactl.volumes = [26214, 32768]
++        mirror.apply(catalog_message())
++        self.assertEqual(pactl.volumes, [65536, 65536])
++        self.assertEqual(pactl.matching_calls("set-sink-volume"), [("set-sink-volume", pactl.transport_sink, "100%")])
++        # An echo must not rewrite the visible route volume or either input.
++        mirror.apply(catalog_message())
++        self.assertEqual(len(pactl.matching_calls("set-sink-volume")), 1)
++        mirror.close()
++        self.assertEqual(pactl.volumes, [26214, 32768])
++
++    def test_transport_gain_keeps_manual_changes(self) -> None:
++        mirror, pactl, _ = self.make_mirror()
++        mirror.apply(catalog_message())
++        pactl.volumes = [12345, 23456]
++        mirror.close()
++        self.assertEqual(pactl.volumes, [12345, 23456])
++
++    def test_other_audio_devices_are_not_amplified(self) -> None:
++        mirror, pactl, _ = self.make_mirror()
++        pactl.card_name = "USB Audio"
++        mirror.apply(catalog_message())
++        self.assertEqual(pactl.volumes, [26214, 26214])
++        self.assertEqual(pactl.matching_calls("set-sink-volume"), [])
++
++    def test_transport_volume_failure_keeps_routes_working(self) -> None:
++        mirror, pactl, _ = self.make_mirror()
++        pactl.details_error = True
++        mirror.apply(catalog_message())
++        self.assertEqual(pactl.default_sink, bridge.endpoint_name("output", "studio-output"))
++        self.assertEqual(len(pactl.matching_calls("load-module")), 6)
++        mirror.close()
++
+     def test_outputs_are_playable_remaps_of_the_qemu_transport(self) -> None:
+         """A chooser sink must carry audio, not merely update the host route."""
+         mirror, pactl, _ = self.make_mirror()
+diff --git a/guest/tests/verify.py b/guest/tests/verify.py
+index bf7a24d..02783e5 100755
+--- a/guest/tests/verify.py
++++ b/guest/tests/verify.py
+@@ -312,7 +312,7 @@ def main() -> None:
+         "system services run without watchdogs, which fire after Windows sleeps",
+     )
+     check(
+-        "compat_revision=45" in finalize_rootfs
++        "compat_revision=46" in finalize_rootfs
+         and "usr/share/dkms/modules_to_force_install/try-omarchy" in compat_paths
+         and "usr/local/lib/try-omarchy/try-omarchy-import.pyz" in compat_paths
+         and "usr/local/bin/try-omarchy-timezone" in compat_paths
+-- 
+2.56.0
+

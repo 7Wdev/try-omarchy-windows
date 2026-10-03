@@ -9,6 +9,8 @@
 #include <initguid.h>
 #include <mmdeviceapi.h>
 #include <audiopolicy.h>
+#include <audioclient.h>
+#include <endpointvolume.h>
 #include <functiondiscoverykeys_devpkey.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -81,6 +83,26 @@ int main(int argc, char **argv)
                                    state == AudioSessionStateActive ? "active" :
                                    state == AudioSessionStateInactive ? "inactive" : "expired");
                             print_name(name.vt == VT_LPWSTR ? name.pwszVal : NULL);
+                            ISimpleAudioVolume *volume = NULL;
+                            IAudioEndpointVolume *endpoint_volume = NULL;
+                            float level;
+                            BOOL muted;
+                            if (SUCCEEDED(IAudioSessionControl_QueryInterface(control,
+                                    &IID_ISimpleAudioVolume, (void **)&volume))) {
+                                if (SUCCEEDED(ISimpleAudioVolume_GetMasterVolume(volume, &level)))
+                                    printf(" session-volume=%.3f", (double)level);
+                                if (SUCCEEDED(ISimpleAudioVolume_GetMute(volume, &muted)))
+                                    printf(" session-mute=%d", (int)muted);
+                                ISimpleAudioVolume_Release(volume);
+                            }
+                            if (SUCCEEDED(IMMDevice_Activate(device, &IID_IAudioEndpointVolume,
+                                    CLSCTX_ALL, NULL, (void **)&endpoint_volume))) {
+                                if (SUCCEEDED(IAudioEndpointVolume_GetMasterVolumeLevelScalar(endpoint_volume, &level)))
+                                    printf(" endpoint-volume=%.3f", (double)level);
+                                if (SUCCEEDED(IAudioEndpointVolume_GetMute(endpoint_volume, &muted)))
+                                    printf(" endpoint-mute=%d", (int)muted);
+                                IAudioEndpointVolume_Release(endpoint_volume);
+                            }
                             putchar('\n');
                             found++;
                         }

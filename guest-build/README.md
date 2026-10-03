@@ -244,3 +244,10 @@ is now stashed across the replacement. Compatibility revision 22 adds the link
 to the compat overlay for existing disks and has `catch-up` recreate it for
 users who have a packaged Neovim config but no theme link, without replacing a
 file they wrote themselves.
+
+Patch 0120 removes hidden playback attenuation behind the Windows route picker.
+The bridge keeps the virtio ALSA transport at 100% while its remap sinks are
+active; the visible route controls guest volume. It preserves mute and restores
+the previous transport channel volumes on orderly shutdown unless the owner
+changed them. Compatibility revision 46 delivers the bridge to existing disks.
+See [audio behavior](../docs/AUDIO-DEVICES.md) for the signal path and checks.

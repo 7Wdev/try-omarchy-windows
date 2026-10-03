@@ -45,12 +45,15 @@ func TestDesktopPreferencesRejectCorruption(t *testing.T) {
 	}
 }
 func TestMicrophoneOffKeepsPlayback(t *testing.T) {
-	for _, backend := range []string{"sdl", "dsound"} {
-		if got := audioBackendOptions(backend, true); got != backend+",id=snd,in.voices=0" {
+	for backend, want := range map[string]string{
+		"sdl":    "sdl,id=snd,out.frequency=48000,in.voices=0",
+		"dsound": "dsound,id=snd,in.voices=0",
+	} {
+		if got := audioBackendOptions(backend, true, audioSampleRates{}); got != want {
 			t.Fatal(got)
 		}
 	}
-	if got := audioBackendOptions("sdl", false); got != "sdl,id=snd" {
+	if got := audioBackendOptions("sdl", false, audioSampleRates{}); got != "sdl,id=snd,out.frequency=48000,in.frequency=48000" {
 		t.Fatal(got)
 	}
 }

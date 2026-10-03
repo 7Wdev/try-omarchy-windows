@@ -25,6 +25,7 @@ var (
 const (
 	mmDeviceEnumeratorCLSID = "{BCDE0395-E52F-467C-8E3D-C4579291692E}"
 	mmDeviceEnumeratorIID   = "{A95664D2-9614-4F35-A746-DE8DB63617E6}"
+	pkeyAudioDeviceFormat   = "{F19F064D-082C-4E27-BC73-6882A1BB8E4C}"
 	pkeyDeviceFriendlyName  = "{A45C254E-DF1C-4EFD-8020-67D146A850E0},14"
 )
 
@@ -136,6 +137,19 @@ func enumerateMMAudioEndpoints() (mmDeviceList, error) {
 	var pid uint32
 	fmt.Sscanf(pkeyDeviceFriendlyName[39:], "%d", &pid)
 	pkeyValue := mmPropertyKey{FormatID: pkey, ID: pid}
+	for direction := 0; direction < 2; direction++ {
+		// SDL WASAPI uses eConsole (0), independently for render and capture.
+		var defaultDevice uintptr
+		if int32(mmVCall(enumerator, 4, uintptr(direction), 0, uintptr(unsafe.Pointer(&defaultDevice)), 0)) >= 0 && defaultDevice != 0 {
+			rate := mmAudioSampleRate(defaultDevice)
+			if direction == 0 {
+				list.DefaultOutputRate = rate
+			} else {
+				list.DefaultInputRate = rate
+			}
+			mmVCall(defaultDevice, 2, 0, 0, 0, 0)
+		}
+	}
 	for direction, out := range []*[]audioEndpointInfo{&list.Output, &list.Input} {
 		var collection uintptr
 		// IMMDeviceEnumerator::EnumAudioEndpoints(eRender=0, eCapture=1, DEVICE_STATE_ACTIVE=1)
@@ -165,7 +179,7 @@ func enumerateMMAudioEndpoints() (mmDeviceList, error) {
 					return list, nameErr
 				}
 				if id != "" {
-					*out = append(*out, audioEndpointInfo{ID: id, Name: name})
+					*out = append(*out, audioEndpointInfo{ID: id, Name: name, SampleRate: mmAudioSampleRate(device)})
 				}
 			}
 			mmVCall(device, 2, 0, 0, 0, 0)
@@ -198,4 +212,30 @@ func mmFriendlyName(device uintptr, pkey *mmPropertyKey) (string, error) {
 		return "", fmt.Errorf("audio endpoint name is empty")
 	}
 	return text, nil
+}
+
+// Read the shared-mode format without activating a client or opening a stream.
+// Failure only leaves the rate unknown; endpoint selection must keep working.
+func mmAudioSampleRate(device uintptr) int {
+	formatID, err := mmGUID(pkeyAudioDeviceFormat)
+	if err != nil {
+		return 0
+	}
+	key := mmPropertyKey{FormatID: formatID, ID: 0}
+	var store uintptr
+	if int32(mmVCall(device, 4, 0, uintptr(unsafe.Pointer(&store)), 0, 0)) < 0 || store == 0 {
+		return 0
+	}
+	defer mmVCall(store, 2, 0, 0, 0, 0)
+	var value mmPropVariant
+	if int32(mmVCall(store, 5, uintptr(unsafe.Pointer(&key)), uintptr(unsafe.Pointer(&value)), 0, 0)) < 0 {
+		return 0
+	}
+	defer procMMPropVariantClear.Call(uintptr(unsafe.Pointer(&value)))
+	// VT_BLOB: cbSize is the first DWORD of the union, pBlobData the next pointer.
+	if value.Type != 65 || uint32(value.Value) < 18 || value.Extra == 0 {
+		return 0
+	}
+	format := unsafe.Slice((*byte)(unsafe.Pointer(value.Extra)), 18)
+	return audioSampleRateFromWaveFormat(format)
 }
