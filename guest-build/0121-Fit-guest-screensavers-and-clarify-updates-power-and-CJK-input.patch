@@ -222,7 +222,7 @@ index 0000000..ba25dad
 + notify_update() {
 +-  omarchy-notification-send -u critical -g  "Update System" "Click to update the system." \
 ++  omarchy-notification-send -u normal -g  "Update packages and finish setup" \
-++    "Try Omarchy manages supported Linux packages. Update them and discover optional features such as dictation." \
+++    "Try Omarchy manages supported Linux packages. Click to update them." \
 +     --exec omarchy-launch-floating-terminal-with-presentation omarchy-update
 + }
 + 
@@ -545,12 +545,12 @@ index 5f80e31..3b8e5de 100644
 +        "description": "Offer first-run package updates with normal urgency.",
 +        "reference": "https://github.com/omacom/try-omarchy/commit/e546fee9aa3ed15739c8fc5b7eaa1c5f235cee7b",
 +        "patch": "patches/omarchy/first-run-update-notification.patch",
-+        "patchSha256": "163841700fa25087c70ba33370bfeb2d7954b710f42e93c601e3f744bad5b23c",
++        "patchSha256": "a2d980ec3c2720e2eabf84c22b18763a5b61ed2eb79b5a0a16d510ccf20f8444",
 +        "targets": [
 +          {
 +            "path": "install/user/first-run/wifi.sh",
 +            "beforeSha256": "4cc2621157be1efe6d449d1daa7b28d588e4a8e46127de493da03749af1ae5a7",
-+            "afterSha256": "1ccbd300917bb9b31bc38460ea5f7b758fcda8fcf51ddc81d45cbf65cd56c2fb"
++            "afterSha256": "64ea34a6acaca232f2292e3786512b3398d8f33983c9a2e7582cf4a0d0ae04ad"
 +          }
 +        ]
 +      },

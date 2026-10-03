@@ -464,7 +464,7 @@ index 0000000..f02f0ed
 @@ -0,0 +1,31 @@
 +notify_update() {
 +  omarchy-notification-send -u normal -g  "Update packages and finish setup" \
-+    "Try Omarchy manages supported Linux packages. Update them and discover optional features such as dictation." \
++    "Try Omarchy manages supported Linux packages. Click to update them." \
 +    --exec omarchy-launch-floating-terminal-with-presentation omarchy-update
 +}
 +
@@ -524,7 +524,7 @@ index 0000000..d4c69b7
 +    "beforeSha256": [
 +      "4cc2621157be1efe6d449d1daa7b28d588e4a8e46127de493da03749af1ae5a7"
 +    ],
-+    "afterSha256": "1ccbd300917bb9b31bc38460ea5f7b758fcda8fcf51ddc81d45cbf65cd56c2fb",
++    "afterSha256": "64ea34a6acaca232f2292e3786512b3398d8f33983c9a2e7582cf4a0d0ae04ad",
 +    "mode": 420
 +  },
 +  {
@@ -8873,7 +8873,7 @@ index 0000000..0dd74f4
 +                                env=self.env, text=True, capture_output=True, check=True)
 +        self.assertIn("normal\n", result.stdout)
 +        self.assertNotIn("critical", result.stdout)
-+        self.assertIn("Try Omarchy manages supported Linux packages", result.stdout)
++        self.assertIn("Update packages and finish setup\nTry Omarchy manages supported Linux packages. Click to update them.\n", result.stdout)
 +        self.assertIn("omarchy-update", result.stdout)
 +
 +    def test_power_profiles_are_informational_without_linux_daemon(self):
