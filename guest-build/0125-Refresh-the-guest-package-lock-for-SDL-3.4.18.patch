@@ -1,21 +1,23 @@
-From e3eb50cca2ebaa81ae5a06237d9efe7781e6b9a4 Mon Sep 17 00:00:00 2001
+From 8c7e3ca4cbb6161da2693ee23f66c9a2a13fa00e Mon Sep 17 00:00:00 2001
 From: Tyler South <tsouth2@gmail.com>
 Date: Sat, 3 Oct 2026 09:01:06 -0400
-Subject: [PATCH] Refresh the guest package lock for SDL 3.4.18
+Subject: [PATCH] Refresh the guest package lock for SDL
 
 ---
- guest/packages.lock.json | 2 +-
- 1 file changed, 1 insertion(+), 1 deletion(-)
+ guest/packages.lock.json | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
 
 diff --git a/guest/packages.lock.json b/guest/packages.lock.json
-index 61c93ac..61afc15 100644
+index 61c93ac..190eb24 100644
 --- a/guest/packages.lock.json
 +++ b/guest/packages.lock.json
-@@ -546,7 +546,7 @@
+@@ -545,8 +545,8 @@
+     "sbc": "2.2-1",
      "sdbus-cpp": "2.3.1-1",
      "sddm": "0.21.0-7",
-     "sdl2-compat": "2.32.72-1",
+-    "sdl2-compat": "2.32.72-1",
 -    "sdl3": "3.4.16-1",
++    "sdl2-compat": "2.32.74-1",
 +    "sdl3": "3.4.18-1",
      "seatd": "0.9.3-1",
      "sed": "4.10-2",
