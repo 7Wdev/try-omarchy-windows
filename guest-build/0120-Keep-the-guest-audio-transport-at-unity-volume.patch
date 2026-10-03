@@ -1,17 +1,17 @@
-From 132411bf9c6667332018dd2533b97029ba1e0eff Mon Sep 17 00:00:00 2001
+From 29bd61a7aaebb730422bff1c0ab34a560b708821 Mon Sep 17 00:00:00 2001
 From: Tyler South <tsouth2@gmail.com>
 Date: Sat, 3 Oct 2026 07:53:54 -0400
 Subject: [PATCH] Keep the guest audio transport at unity volume
 
 ---
- .../local/bin/omarchy-windows-audio-bridge    | 48 ++++++++++++++++++
+ .../local/bin/omarchy-windows-audio-bridge    | 71 +++++++++++++++---
  guest/scripts/finalize-rootfs.sh              |  2 +-
- guest/tests/test_windows_audio_bridge.py      | 49 +++++++++++++++++++
+ guest/tests/test_windows_audio_bridge.py      | 74 +++++++++++++++++++
  guest/tests/verify.py                         |  2 +-
- 4 files changed, 99 insertions(+), 2 deletions(-)
+ 4 files changed, 138 insertions(+), 11 deletions(-)
 
 diff --git a/guest/factory-overlay/usr/local/bin/omarchy-windows-audio-bridge b/guest/factory-overlay/usr/local/bin/omarchy-windows-audio-bridge
-index 55e9833..52d6016 100755
+index 55e9833..7d5dbd5 100755
 --- a/guest/factory-overlay/usr/local/bin/omarchy-windows-audio-bridge
 +++ b/guest/factory-overlay/usr/local/bin/omarchy-windows-audio-bridge
 @@ -8,6 +8,7 @@ import json
@@ -22,7 +22,37 @@ index 55e9833..52d6016 100755
  import subprocess
  import sys
  import time
-@@ -94,11 +95,53 @@ class PipeWireMirror:
+@@ -23,15 +24,20 @@ def log(message: str) -> None:
+ 
+ 
+ def run_pactl(*arguments: str, check: bool = True) -> str:
+-    result = subprocess.run(
+-        ["pactl", *arguments],
+-        stdin=subprocess.DEVNULL,
+-        stdout=subprocess.PIPE,
+-        stderr=subprocess.PIPE,
+-        text=True,
+-        timeout=10,
+-        check=False,
+-    )
++    try:
++        result = subprocess.run(
++            ["pactl", *arguments],
++            stdin=subprocess.DEVNULL,
++            stdout=subprocess.PIPE,
++            stderr=subprocess.PIPE,
++            text=True,
++            timeout=10,
++            check=False,
++        )
++    except (OSError, subprocess.TimeoutExpired) as error:
++        if check:
++            raise RuntimeError(f"pactl {' '.join(arguments[:2])}: {error}") from error
++        return ""
+     if check and result.returncode != 0:
+         detail = result.stderr.strip() or f"status {result.returncode}"
+         raise RuntimeError(f"pactl {' '.join(arguments[:2])}: {detail}")
+@@ -94,11 +100,53 @@ class PipeWireMirror:
          }
          self.last_health_check = 0.0
          self.pending: dict[str, tuple[str | None, float]] = {}
@@ -76,7 +106,7 @@ index 55e9833..52d6016 100755
  
      def apply(self, message: dict[str, Any]) -> None:
          # A catalog echo can arrive between two quick picker changes. Capture
-@@ -209,6 +252,10 @@ class PipeWireMirror:
+@@ -209,6 +257,10 @@ class PipeWireMirror:
          transport_sink = next((name for name in sinks if name.startswith("alsa_output.")), sinks[0])
          transport_source = next((name for name in sources if name.startswith("alsa_input.")), sources[0]) if sources else None
  
@@ -87,7 +117,7 @@ index 55e9833..52d6016 100755
          output_records = [{"deviceUID": None, "name": "Windows System Default"}, *outputs]
          input_records = [{"deviceUID": None, "name": "Windows System Default"}, *inputs] if inputs else []
          self.output_uids = {}
-@@ -266,6 +313,7 @@ def open_port() -> int:
+@@ -266,6 +318,7 @@ def open_port() -> int:
  
  
  def main() -> int:
@@ -109,18 +139,50 @@ index 3da1033..18179df 100755
  
  # Fail the build if DKMS or networking modules were not packaged for this kernel.
 diff --git a/guest/tests/test_windows_audio_bridge.py b/guest/tests/test_windows_audio_bridge.py
-index 99c8faf..7786d58 100644
+index 99c8faf..321f643 100644
 --- a/guest/tests/test_windows_audio_bridge.py
 +++ b/guest/tests/test_windows_audio_bridge.py
-@@ -4,6 +4,7 @@
+@@ -4,6 +4,8 @@
  from __future__ import annotations
  
  import importlib.util
 +import json
++import subprocess
  from importlib.machinery import SourceFileLoader
  from pathlib import Path
  import unittest
-@@ -32,11 +33,25 @@ class PactlStub:
+@@ -22,6 +24,30 @@ bridge = importlib.util.module_from_spec(SPEC)
+ SPEC.loader.exec_module(bridge)
+ 
+ 
++class PactlFailureTests(unittest.TestCase):
++    def test_timeout_and_missing_program_are_reported_as_command_errors(self) -> None:
++        for error in (subprocess.TimeoutExpired("pactl", 10), FileNotFoundError("pactl")):
++            with self.subTest(error=type(error).__name__), mock.patch.object(bridge.subprocess, "run", side_effect=error):
++                with self.assertRaises(RuntimeError):
++                    bridge.run_pactl("--format=json", "list", "sinks")
++                self.assertEqual(bridge.run_pactl("unload-module", "100", check=False), "")
++
++    def test_unload_timeout_does_not_skip_transport_restoration(self) -> None:
++        mirror = bridge.PipeWireMirror(lambda _: None)
++        mirror.module_ids = ["100"]
++        mirror.transport_volume = ("virtio", [26214, 32768])
++        sink = {"name": "virtio", "volume": {"left": {"value": 65536}, "right": {"value": 65536}}}
++        def command(arguments, **kwargs):
++            if arguments[1] == "unload-module":
++                raise subprocess.TimeoutExpired(arguments, 10)
++            output = json.dumps([sink]) if arguments[1] == "--format=json" else ""
++            return subprocess.CompletedProcess(arguments, 0, output, "")
++        with mock.patch.object(bridge.subprocess, "run", side_effect=command) as run:
++            mirror.close()
++        self.assertEqual(run.call_args_list[-1].args[0], ["pactl", "set-sink-volume", "virtio", "26214", "32768"])
++        self.assertIsNone(mirror.transport_volume)
++
++
+ class PactlStub:
+     """Small pactl model that records the graph built by PipeWireMirror."""
+ 
+@@ -32,11 +58,25 @@ class PactlStub:
          self.calls: list[tuple[tuple[str, ...], bool]] = []
          self.next_module_id = 100
          self.loaded_modules: set[str] = set()
@@ -146,7 +208,7 @@ index 99c8faf..7786d58 100644
          if arguments == ("list", "short", "sinks"):
              return f"10\t{self.transport_sink}\tmodule-alsa-card.c\ts16le 2ch 48000Hz\tRUNNING\n"
          if arguments == ("list", "short", "sources"):
-@@ -158,6 +173,40 @@ class PipeWireMirrorTests(unittest.TestCase):
+@@ -158,6 +198,40 @@ class PipeWireMirrorTests(unittest.TestCase):
          self.addCleanup(mirror.close)
          return mirror, pactl, sent
  
