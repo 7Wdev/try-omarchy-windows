@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Screensaver branding fits small windows, falling back to Omarchy when needed.
+- Update > Omarchy explains when the Omarchy disk needs free space and where
+  to increase its capacity in Settings. The first-run update notice uses normal
+  priority, and power menus show "Managed by Windows".
+- Chromium supports Wayland input methods, new input profiles include Chewing
+  for Traditional Chinese, and zh-TW/zh-Hant text prefers Noto CJK TC fonts.
+  Existing customized guest files are kept during compatibility catch-up.
+
 - Update > Omarchy no longer prints "Installation aborted" for the camera and
   battery modules when the guest's kernel headers catch up with the launcher's
   kernel. DKMS now takes those modules over and puts the launcher's copies back

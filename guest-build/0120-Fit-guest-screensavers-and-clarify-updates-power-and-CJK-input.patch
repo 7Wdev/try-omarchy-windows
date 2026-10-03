@@ -1,0 +1,590 @@
+From 0816813a7606557089b4073dd7ff69e9b2820d45 Mon Sep 17 00:00:00 2001
+From: Tyler South <tsouth2@gmail.com>
+Date: Sat, 3 Oct 2026 07:51:05 -0400
+Subject: [PATCH 1/2] Fit guest screensavers and clarify updates, power and CJK
+ input
+
+---
+ .../etc/fonts/conf.d/30-try-omarchy.conf      |  84 ++++++++++
+ .../local/bin/omarchy-native-screensaver-text |  44 +++++
+ .../chromium-flags-wayland-ime.append.conf    |   1 +
+ guest/fragments/fcitx5-profile.ini            |  19 +++
+ guest/packages.txt                            |   1 +
+ .../first-run-update-notification.patch       |  10 ++
+ .../omarchy/screensaver-terminal-fit.patch    |  39 +++++
+ .../omarchy/update-free-space-message.patch   |  15 ++
+ .../omarchy/windows-power-profile.patch       | 152 ++++++++++++++++++
+ guest/scripts/configure-rootfs.sh             |   5 +
+ guest/spec.json                               |  81 +++++++++-
+ 11 files changed, 447 insertions(+), 4 deletions(-)
+ create mode 100644 guest/factory-overlay/etc/fonts/conf.d/30-try-omarchy.conf
+ create mode 100755 guest/factory-overlay/usr/local/bin/omarchy-native-screensaver-text
+ create mode 100644 guest/fragments/chromium-flags-wayland-ime.append.conf
+ create mode 100644 guest/fragments/fcitx5-profile.ini
+ create mode 100644 guest/patches/omarchy/first-run-update-notification.patch
+ create mode 100644 guest/patches/omarchy/screensaver-terminal-fit.patch
+ create mode 100644 guest/patches/omarchy/update-free-space-message.patch
+ create mode 100644 guest/patches/omarchy/windows-power-profile.patch
+
+diff --git a/guest/factory-overlay/etc/fonts/conf.d/30-try-omarchy.conf b/guest/factory-overlay/etc/fonts/conf.d/30-try-omarchy.conf
+new file mode 100644
+index 0000000..534d9ca
+--- /dev/null
++++ b/guest/factory-overlay/etc/fonts/conf.d/30-try-omarchy.conf
+@@ -0,0 +1,84 @@
++<?xml version="1.0"?>
++<!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">
++<!--
++  Noto Sans/Serif CJK is one family with different glyph shapes per
++  region (JP/KR/SC/TC/HK). An unqualified match can silently render
++  zh-TW text with Simplified or Japanese Han forms even though every
++  codepoint is "covered", so prefer the Traditional Chinese (TC) face
++  when the requested text language is zh-tw or zh-hant (the latter
++  isn't a fontconfig orthography code; matched via compare="contains").
++
++  Numbered 30, in fontconfig's 30-39 "family substitution" range, so
++  this runs before 60-69's generic-alias stage (e.g. 65-nonlatin.conf)
++  appends its own fallback list.
++-->
++<fontconfig>
++  <match target="pattern">
++    <test qual="any" name="family">
++      <string>sans-serif</string>
++    </test>
++    <test name="lang" compare="contains">
++      <string>zh-tw</string>
++    </test>
++    <edit name="family" mode="prepend" binding="strong">
++      <string>Noto Sans CJK TC</string>
++    </edit>
++  </match>
++  <match target="pattern">
++    <test qual="any" name="family">
++      <string>sans-serif</string>
++    </test>
++    <test name="lang" compare="contains">
++      <string>zh-hant</string>
++    </test>
++    <edit name="family" mode="prepend" binding="strong">
++      <string>Noto Sans CJK TC</string>
++    </edit>
++  </match>
++
++  <match target="pattern">
++    <test qual="any" name="family">
++      <string>serif</string>
++    </test>
++    <test name="lang" compare="contains">
++      <string>zh-tw</string>
++    </test>
++    <edit name="family" mode="prepend" binding="strong">
++      <string>Noto Serif CJK TC</string>
++    </edit>
++  </match>
++  <match target="pattern">
++    <test qual="any" name="family">
++      <string>serif</string>
++    </test>
++    <test name="lang" compare="contains">
++      <string>zh-hant</string>
++    </test>
++    <edit name="family" mode="prepend" binding="strong">
++      <string>Noto Serif CJK TC</string>
++    </edit>
++  </match>
++
++  <match target="pattern">
++    <test qual="any" name="family">
++      <string>monospace</string>
++    </test>
++    <test name="lang" compare="contains">
++      <string>zh-tw</string>
++    </test>
++    <edit name="family" mode="prepend" binding="strong">
++      <string>Noto Sans Mono CJK TC</string>
++    </edit>
++  </match>
++  <match target="pattern">
++    <test qual="any" name="family">
++      <string>monospace</string>
++    </test>
++    <test name="lang" compare="contains">
++      <string>zh-hant</string>
++    </test>
++    <edit name="family" mode="prepend" binding="strong">
++      <string>Noto Sans Mono CJK TC</string>
++    </edit>
++  </match>
++</fontconfig>
+diff --git a/guest/factory-overlay/usr/local/bin/omarchy-native-screensaver-text b/guest/factory-overlay/usr/local/bin/omarchy-native-screensaver-text
+new file mode 100755
+index 0000000..b7d28e9
+--- /dev/null
++++ b/guest/factory-overlay/usr/local/bin/omarchy-native-screensaver-text
+@@ -0,0 +1,44 @@
++#!/usr/bin/env python3
++"""Keep screensaver text inside the live terminal, including small VM windows."""
++
++import os
++from pathlib import Path
++import sys
++import unicodedata
++
++
++def columns(line):
++    return sum(0 if unicodedata.combining(c) else
++               2 if unicodedata.east_asian_width(c) in ("W", "F") else 1
++               for c in line.expandtabs(4))
++
++
++def main():
++    try:
++        text = Path(sys.argv[1]).read_text()
++    except (OSError, UnicodeError):
++        text = "Omarchy\n"
++    try:
++        # Background shell commands can inherit /dev/null on stdin. The
++        # controlling terminal still has the live window dimensions.
++        try:
++            fd = os.open("/dev/tty", os.O_RDONLY)
++        except OSError:
++            fd = os.dup(sys.stdin.fileno())
++        try:
++            size = os.get_terminal_size(fd)
++        finally:
++            os.close(fd)
++    except OSError:
++        print(text, end="")
++        return
++    lines = text.splitlines()
++    if (not any(line.strip() for line in lines)
++            or len(lines) > size.lines
++            or max((columns(line) for line in lines), default=0) > size.columns):
++        text = "Omarchy"[:max(1, size.columns)] + "\n"
++    print(text, end="")
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/guest/fragments/chromium-flags-wayland-ime.append.conf b/guest/fragments/chromium-flags-wayland-ime.append.conf
+new file mode 100644
+index 0000000..48a0b6f
+--- /dev/null
++++ b/guest/fragments/chromium-flags-wayland-ime.append.conf
+@@ -0,0 +1 @@
++--enable-wayland-ime
+diff --git a/guest/fragments/fcitx5-profile.ini b/guest/fragments/fcitx5-profile.ini
+new file mode 100644
+index 0000000..10694f0
+--- /dev/null
++++ b/guest/fragments/fcitx5-profile.ini
+@@ -0,0 +1,19 @@
++[Groups/0]
++Name=Default
++Default Layout=us
++# DefaultIM= below is inert: fcitx5 resolves the group's real default from
++# Items order and rewrites this line (to chewing) on first save. What keeps
++# English users unaffected is keyboard-us being Items/0, ahead of chewing —
++# don't "fix" that ordering to match this line.
++DefaultIM=keyboard-us
++
++[Groups/0/Items/0]
++Name=keyboard-us
++Layout=
++
++[Groups/0/Items/1]
++Name=chewing
++Layout=
++
++[GroupOrder]
++0=Default
+diff --git a/guest/packages.txt b/guest/packages.txt
+index c21b655..8b9df7f 100644
+--- a/guest/packages.txt
++++ b/guest/packages.txt
+@@ -15,6 +15,7 @@ e2fsprogs
+ eza
+ fastfetch
+ fcitx5
++fcitx5-chewing
+ fcitx5-gtk
+ fcitx5-qt
+ fd
+diff --git a/guest/patches/omarchy/first-run-update-notification.patch b/guest/patches/omarchy/first-run-update-notification.patch
+new file mode 100644
+index 0000000..ba25dad
+--- /dev/null
++++ b/guest/patches/omarchy/first-run-update-notification.patch
+@@ -0,0 +1,10 @@
++--- a/install/user/first-run/wifi.sh
+++++ b/install/user/first-run/wifi.sh
++@@ -1,5 +1,6 @@
++ notify_update() {
++-  omarchy-notification-send -u critical -g  "Update System" "Click to update the system." \
+++  omarchy-notification-send -u normal -g  "Update packages and finish setup" \
+++    "Try Omarchy manages supported Linux packages. Update them and discover optional features such as dictation." \
++     --exec omarchy-launch-floating-terminal-with-presentation omarchy-update
++ }
++ 
+diff --git a/guest/patches/omarchy/screensaver-terminal-fit.patch b/guest/patches/omarchy/screensaver-terminal-fit.patch
+new file mode 100644
+index 0000000..a17852a
+--- /dev/null
++++ b/guest/patches/omarchy/screensaver-terminal-fit.patch
+@@ -0,0 +1,39 @@
++--- a/bin/omarchy-screensaver
+++++ b/bin/omarchy-screensaver
++@@ -8,7 +8,7 @@
++ 
++ exit_screensaver() {
++   hyprctl eval 'hl.config({ cursor = { invisible = false } })' &>/dev/null || hyprctl keyword cursor:invisible false &>/dev/null || true
++-  pkill -x ttfx 2>/dev/null
+++  [[ -z ${effect_pid:-} ]] || kill "$effect_pid" 2>/dev/null || true
++   pkill -f '[o]rg.omarchy.screensaver' 2>/dev/null
++   exit 0
++ }
++@@ -19,8 +19,6 @@
++ printf '\033]11;rgb:00/00/00\007'  # Set background color to black
++ 
++ hyprctl eval 'hl.config({ cursor = { invisible = true } })' &>/dev/null || hyprctl keyword cursor:invisible true &>/dev/null
++-
++-tty=$(tty 2>/dev/null)
++ 
++ # Terminals allocate the pty at the default 80x24 and only resize it once the
++ # compositor has told the window how big it is. ttfx measures the terminal once,
++@@ -36,13 +34,16 @@
++ wait_for_terminal_resize
++ 
++ while true; do
++-  ttfx -i ~/.config/omarchy/branding/screensaver.txt \
+++  ttfx <<< "$(/usr/local/bin/omarchy-native-screensaver-text ~/.config/omarchy/branding/screensaver.txt)" \
++     --frame-rate 120 --canvas-width 0 --canvas-height 0 --reuse-canvas --anchor-canvas c --anchor-text c\
++     --random-effect --no-eol --no-restore-cursor &
++ 
++-  while pgrep -t "${tty#/dev/}" -x ttfx >/dev/null; do
+++  # Track this launch, including text preparation, instead of probing process names.
+++  effect_pid=$!
+++  while kill -0 "$effect_pid" 2>/dev/null; do
++     if read -n1 -t 1 || ! screensaver_in_focus; then
++       exit_screensaver
++     fi
++   done
+++  wait "$effect_pid" || sleep 1
++ done
+diff --git a/guest/patches/omarchy/update-free-space-message.patch b/guest/patches/omarchy/update-free-space-message.patch
+new file mode 100644
+index 0000000..c9d4627
+--- /dev/null
++++ b/guest/patches/omarchy/update-free-space-message.patch
+@@ -0,0 +1,15 @@
++--- a/bin/omarchy-update-requires-free-space
+++++ b/bin/omarchy-update-requires-free-space
++@@ -11,6 +11,12 @@
++   [[ $available_bytes =~ ^[0-9]+$ ]] &&
++   (( available_bytes < 10 * 1024 * 1024 * 1024 )); then
++   echo "You need at least 10 GiB free to safely update Omarchy."
+++  echo "This is free space inside the Omarchy disk, not on your PC."
+++  echo
+++  df -h / 2>/dev/null || true
+++  echo
+++  echo "Free space with: sudo pacman -Scc or remove unused packages."
+++  echo "Or increase Disk capacity (GiB) in Try Omarchy Settings > General > Storage and relaunch."
++   exit 1
++ else
++   exit 0
+diff --git a/guest/patches/omarchy/windows-power-profile.patch b/guest/patches/omarchy/windows-power-profile.patch
+new file mode 100644
+index 0000000..f83dcf4
+--- /dev/null
++++ b/guest/patches/omarchy/windows-power-profile.patch
+@@ -0,0 +1,152 @@
++--- a/bin/omarchy-powerprofiles-list
+++++ b/bin/omarchy-powerprofiles-list
++@@ -8,10 +8,9 @@
++   exit 1
++ fi
++ 
++-powerprofilesctl list 2>/dev/null |
++-  awk -v with_state="${1:+1}" '/^\s*[* ]\s*[a-zA-Z0-9-]+:$/ {
++-    active = ($1 == "*") ? 1 : 0
++-    gsub(/^[*[:space:]]+|:$/, "")
++-    print $0 (with_state ? "\t" active : "")
++-  }' |
++-  tac
+++# The VM uses Windows power management; there is no Linux profile driver.
+++if [[ ${1:-} == "--active-state" ]]; then
+++  printf 'default\t1\n'
+++else
+++  printf 'default\n'
+++fi
++--- a/bin/omarchy-powerprofiles-set
+++++ b/bin/omarchy-powerprofiles-set
++@@ -1,63 +1,27 @@
++ #!/bin/bash
++ 
++-# omarchy:summary=Set and remember the power profile for AC or battery use
++-# omarchy:args=[autodetect|ac|battery] [power-saver|balanced|performance]
+++# omarchy:summary=Report the VM power profile managed by Windows
+++# omarchy:args=[autodetect|ac|battery] [default]
++ 
++ action="${1:-autodetect}"
++ requested_profile="${2:-}"
++ 
++ usage() {
++-  echo "Usage: omarchy-powerprofiles-set [autodetect|ac|battery] [power-saver|balanced|performance]" >&2
+++  echo "Usage: omarchy-powerprofiles-set [autodetect|ac|battery] [default]" >&2
++   exit 1
++ }
++ 
++ (( $# <= 2 )) || usage
++-
++ case "$action" in
++-  autodetect)
++-    # Use the same signal as the shell (UPower.onBattery) so every entry point
++-    # saves and restores the profile under the same ac/battery key.
++-    if [[ $(busctl get-property org.freedesktop.UPower /org/freedesktop/UPower org.freedesktop.UPower OnBattery 2>/dev/null) == "b true" ]]; then
++-      action=battery
++-    else
++-      action=ac
++-    fi
++-    ;;
++-  ac | battery) ;;
+++  autodetect | ac | battery) ;;
++   *) usage ;;
++ esac
++ 
++-mapfile -t profiles < <(omarchy-powerprofiles-list)
++-
++-profile_available() {
++-  [[ " ${profiles[*]} " == *" $1 "* ]]
++-}
++-
++-state_dir="${OMARCHY_POWERPROFILES_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/powerprofiles}"
++-state_file="$state_dir/$action"
++-
+++# Startup and AC transitions are no-ops. The guest cannot select a Windows mode.
++ if [[ -n $requested_profile ]]; then
++-  profile_available "$requested_profile" || {
++-    echo "Power profile is not available: $requested_profile" >&2
+++  if [[ $requested_profile != default ]]; then
+++    echo "Power profiles are managed by Windows; only default is available." >&2
++     exit 1
++-  }
++-
++-  profile="$requested_profile"
++-elif [[ -r $state_file ]]; then
++-  profile=$(<"$state_file")
+++  fi
+++  echo "Managed by Windows"
++ fi
++-
++-if [[ -z ${profile:-} ]] || ! profile_available "$profile"; then
++-  if [[ $action == "ac" ]] && profile_available performance; then
++-    profile=performance
++-  else
++-    profile=balanced
++-  fi
++-fi
++-
++-powerprofilesctl set "$profile" || exit
++-
++-if [[ -n $requested_profile ]]; then
++-  mkdir -p "$state_dir"
++-  printf '%s\n' "$requested_profile" >"$state_file"
++-fi
++--- a/shell/plugins/menu/Menu.qml
+++++ b/shell/plugins/menu/Menu.qml
++@@ -274,9 +274,9 @@
++       actionFor: function(value) { return "omarchy-font-set " + Util.shellQuote(value) }
++     },
++     "power-profiles": {
++-      script: "current=$(powerprofilesctl get 2>/dev/null); omarchy-powerprofiles-list 2>/dev/null | while read -r p; do [[ -z $p ]] && continue; printf '%s\\t%s\\t%s\\n' \"$p\" \"$p\" \"$current\"; done",
+++      script: "printf 'Managed by Windows\\tdefault\\tdefault\\n'",
++       icon: "\udb81\udc0b",
++-      actionFor: function(value) { return "omarchy-powerprofiles-set autodetect " + Util.shellQuote(value) }
+++      actionFor: function(value) { return "" }
++     }
++   })
++ 
++--- a/shell/plugins/panels/power/Panel.qml
+++++ b/shell/plugins/panels/power/Panel.qml
++@@ -17,6 +17,7 @@
++   property var systemInfo: ({})
++   property var profiles: []
++   property string activeProfile: ""
+++  readonly property bool managedByWindows: profiles.length === 1 && profiles[0] === "default"
++   property int profileIndex: 0
++   property bool cursorActive: false
++   readonly property bool showPercentage: setting("showPercentage", false) === true
++@@ -164,7 +165,7 @@
++   }
++ 
++   function setProfile(profile) {
++-    if (!profile || actionProc.running) return
+++    if (managedByWindows || !profile || actionProc.running) return
++     actionProc.command = ["omarchy-powerprofiles-set", root.discharging ? "battery" : "ac", profile]
++     actionProc.running = true
++   }
++@@ -480,10 +481,10 @@
++               Button {
++                 required property var modelData
++                 required property int index
++-                width: profileRow.cellWidth
++-                iconText: root.profileIcon(String(modelData))
+++                width: root.managedByWindows ? implicitWidth : profileRow.cellWidth
+++                iconText: root.managedByWindows ? "\uf17a" : root.profileIcon(String(modelData))
++                 iconSize: Style.font.title
++-                text: String(modelData).charAt(0).toUpperCase() + String(modelData).slice(1)
+++                text: root.managedByWindows ? "Managed by Windows" : String(modelData).charAt(0).toUpperCase() + String(modelData).slice(1)
++                 fontSize: Style.font.bodySmall
++                 foreground: root.bar.foreground
++                 fontFamily: root.bar.fontFamily
++@@ -491,7 +492,9 @@
++                 verticalPadding: Style.spacing.controlPaddingY + Style.space(2)
++                 bordered: true
++                 active: root.activeProfile === modelData
++-                hasCursor: root.cursorActive && root.profileIndex === index
+++                selected: root.managedByWindows
+++                enabled: !root.managedByWindows
+++                hasCursor: !root.managedByWindows && root.cursorActive && root.profileIndex === index
++                 onClicked: root.setProfile(modelData)
++                 onHovered: function(h) {
++                   if (h) {
+diff --git a/guest/scripts/configure-rootfs.sh b/guest/scripts/configure-rootfs.sh
+index 02e11ab..9087636 100755
+--- a/guest/scripts/configure-rootfs.sh
++++ b/guest/scripts/configure-rootfs.sh
+@@ -78,6 +78,11 @@ SYSTEM_PATHS
+ chmod 0755 "$root/usr/local/bin/omarchy-native-display-sync"
+ cat "$guest_dir/fragments/hypr-monitors-qemu.append.lua" >>"$root/etc/skel/.config/hypr/monitors.lua"
+ 
++chromium_flags="$root/etc/skel/.config/chromium-flags.conf"
++[[ -f $chromium_flags ]] || fail "Chromium flags missing: $chromium_flags"
++cat "$guest_dir/fragments/chromium-flags-wayland-ime.append.conf" >>"$chromium_flags"
++install -Dm644 "$guest_dir/fragments/fcitx5-profile.ini" "$root/etc/skel/.config/fcitx5/profile"
++
+ hostname=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["guest"]["hostname"])' "$spec")
+ printf '%s\n' "$hostname" >"$root/etc/hostname"
+ cat >"$root/etc/hosts" <<EOF
+diff --git a/guest/spec.json b/guest/spec.json
+index 5f80e31..2b922b9 100644
+--- a/guest/spec.json
++++ b/guest/spec.json
+@@ -30,7 +30,7 @@
+     "versionFile": "4.0.0.alpha",
+     "channel": "quattro",
+     "license": "MIT",
+-    "packageRelease": 2,
++    "packageRelease": 3,
+     "integrationDepends": [
+       "fcitx5",
+       "fcitx5-gtk",
+@@ -49,7 +49,9 @@
+       "socat",
+       "wl-clipboard",
+       "xdg-user-dirs",
+-      "zstd"
++      "zstd",
++      "fcitx5-chewing",
++      "man-db"
+     ]
+   },
+   "supplyChain": {
+@@ -96,14 +98,14 @@
+   "authenticity": {
+     "verbatimRuntimeTrees": [
+       "applications",
+-      "bin",
+       "config",
+       "default",
+       "migrations"
+     ],
+     "backportedRuntimeTrees": [
+       "shell",
+-      "install"
++      "install",
++      "bin"
+     ],
+     "backports": [
+       {
+@@ -166,6 +168,77 @@
+             "afterSha256": "29cd6b0c67dd97f18f9f5f9ee7e402f13d79d4ddc5e78dc08a838a3e03565a51"
+           }
+         ]
++      },
++      {
++        "id": "screensaver-terminal-fit",
++        "description": "Fit screensaver branding to the terminal and track the launched effect.",
++        "reference": "https://github.com/omacom/try-omarchy/commit/e1a0dbe9820a8f7554ac3b930c2f13e1f41b25a1",
++        "patch": "patches/omarchy/screensaver-terminal-fit.patch",
++        "patchSha256": "c915013c163d97d794393ea7945357cbe6a1c98d55e93cd72dc248aa3f13498e",
++        "targets": [
++          {
++            "path": "bin/omarchy-screensaver",
++            "beforeSha256": "9ad1b57d322b5ed04112824ef48c98b7f14f1f08a60b583395558afbfd9fb7d2",
++            "afterSha256": "364921e409c890e500f832437fbd986464ca36dce8d811f8ad63b940855338d5"
++          }
++        ]
++      },
++      {
++        "id": "update-free-space-message",
++        "description": "Explain guest disk free space and Windows disk growth.",
++        "reference": "https://github.com/omacom/try-omarchy/commit/e1a0dbe9820a8f7554ac3b930c2f13e1f41b25a1",
++        "patch": "patches/omarchy/update-free-space-message.patch",
++        "patchSha256": "0f0089aa7e86d32af3e3917c7b2e4d367c576076e0e6ffe38b300b90899216bc",
++        "targets": [
++          {
++            "path": "bin/omarchy-update-requires-free-space",
++            "beforeSha256": "50a5ddef021dac5e79f789a53643fa91a6b8d7193b4d27786516d142525eca93",
++            "afterSha256": "c9b0349d3a13980b382a89d41bedb407ec0572121f04315fdbccdb7885eab7a0"
++          }
++        ]
++      },
++      {
++        "id": "first-run-update-notification",
++        "description": "Offer first-run package updates with normal urgency.",
++        "reference": "https://github.com/omacom/try-omarchy/commit/e1a0dbe9820a8f7554ac3b930c2f13e1f41b25a1",
++        "patch": "patches/omarchy/first-run-update-notification.patch",
++        "patchSha256": "163841700fa25087c70ba33370bfeb2d7954b710f42e93c601e3f744bad5b23c",
++        "targets": [
++          {
++            "path": "install/user/first-run/wifi.sh",
++            "beforeSha256": "4cc2621157be1efe6d449d1daa7b28d588e4a8e46127de493da03749af1ae5a7",
++            "afterSha256": "1ccbd300917bb9b31bc38460ea5f7b758fcda8fcf51ddc81d45cbf65cd56c2fb"
++          }
++        ]
++      },
++      {
++        "id": "windows-power-profile",
++        "description": "Show Windows-managed power policy instead of Linux profiles.",
++        "reference": "https://github.com/omacom/try-omarchy/commit/e1a0dbe9820a8f7554ac3b930c2f13e1f41b25a1",
++        "patch": "patches/omarchy/windows-power-profile.patch",
++        "patchSha256": "5a3adf777acfdc3e6ad90476a486bc79c25362a52a32b76ced654eb63d451388",
++        "targets": [
++          {
++            "path": "bin/omarchy-powerprofiles-list",
++            "beforeSha256": "3d2e4b3d5ad974aa78c97a653d3fe937bd263063369a57f14918748502d1f609",
++            "afterSha256": "d27a9b6f2988719db911585f971d8963ad6da7f70210941a3f4734d8e90d921c"
++          },
++          {
++            "path": "bin/omarchy-powerprofiles-set",
++            "beforeSha256": "4595bb75e4000e2fc01bd3c7f1e578d07aecfa54e9dcd4e2d32d653c35bc66a9",
++            "afterSha256": "715bbefd4fdb3eff368dce4c8a3fd87b219976fa5de453e04afd48ea786488ce"
++          },
++          {
++            "path": "shell/plugins/menu/Menu.qml",
++            "beforeSha256": "0154d0ec3855fbb48aa06eaa724a19f3c07c377494d4a3de65daed2d7d9100e3",
++            "afterSha256": "6f266b3a7acd5ee97d5ea5446aa8c45306371586fc55f0ad4d93a6b2789dba3c"
++          },
++          {
++            "path": "shell/plugins/panels/power/Panel.qml",
++            "beforeSha256": "560e17a5144d3e2ea1e0ad36c2aec563909b535551e1e66e061f5fb25f1d4ec0",
++            "afterSha256": "c9b9519df8ecfae51f3073c15c1c1ef5481973d5ac8d941190e75fcb57246b65"
++          }
++        ]
+       }
+     ],
+     "requiredPaths": [
+-- 
+2.56.0
+
