@@ -89,6 +89,7 @@
   "settings.camera.none": "No Windows camera found. Connect a camera and reopen Settings.",
   "settings.microphone.allow": "Allow microphone access (next start)",
   "settings.microphone.help": "Turning microphone access off keeps sound playback enabled.",
+  "settings.sound.sync_volume": "Sync volume with Windows",
   "settings.sound.output": "Sound output",
   "settings.sound.microphone": "Microphone",
   "settings.sound.windows_default": "Windows default",

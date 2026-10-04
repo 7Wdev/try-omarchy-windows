@@ -1,0 +1,487 @@
+From 5115f7ee6dd99a2df0c1549efca91938989f5e25 Mon Sep 17 00:00:00 2001
+From: Tyler South <tsouth2@gmail.com>
+Date: Sun, 4 Oct 2026 17:49:18 -0400
+Subject: [PATCH] Sync guest volume with the Windows playback endpoint
+
+---
+ .../local/bin/omarchy-windows-audio-bridge    | 164 +++++++++++++++++-
+ guest/scripts/finalize-rootfs.sh              |   3 +-
+ guest/tests/test_battery_details.py           |   2 +-
+ guest/tests/test_guest_qol.py                 |   2 +-
+ guest/tests/test_windows_volume_sync.py       | 152 ++++++++++++++++
+ guest/tests/verify.py                         |   2 +-
+ 6 files changed, 313 insertions(+), 12 deletions(-)
+ create mode 100644 guest/tests/test_windows_volume_sync.py
+
+diff --git a/guest/factory-overlay/usr/local/bin/omarchy-windows-audio-bridge b/guest/factory-overlay/usr/local/bin/omarchy-windows-audio-bridge
+index 198f7b9..deca977 100755
+--- a/guest/factory-overlay/usr/local/bin/omarchy-windows-audio-bridge
++++ b/guest/factory-overlay/usr/local/bin/omarchy-windows-audio-bridge
+@@ -5,6 +5,7 @@ from __future__ import annotations
+ 
+ import hashlib
+ import json
++import math
+ import os
+ from pathlib import Path
+ import select
+@@ -107,6 +108,9 @@ class PipeWireMirror:
+         self.rebuild_volume: list[int] | None = None
+         self.retry_volume: list[int] | None = None
+         self.transport_applied = False
++        self.sync_enabled = False
++        self.volume_sync: VolumeMirror | None = None
++        self.catalog: dict[str, Any] | None = None
+ 
+     def _unload_modules(self) -> None:
+         for module_id in reversed(self.module_ids):
+@@ -114,6 +118,8 @@ class PipeWireMirror:
+         self.module_ids.clear()
+ 
+     def close(self) -> None:
++        if self.volume_sync is not None:
++            self.volume_sync.restore_transport_mute()
+         self._observe_transport_volume()
+         restore = self.transport_volume if self.transport_owned and self.transport_applied else None
+         self._unload_modules()
+@@ -212,6 +218,7 @@ class PipeWireMirror:
+             log("Could not set QEMU audio transport volume; will retry")
+ 
+     def apply(self, message: dict[str, Any]) -> None:
++        self.catalog = message
+         # A catalog echo can arrive between two quick picker changes. Capture
+         # the second local change before applying the echo to either direction.
+         if self.inventory is not None:
+@@ -221,6 +228,7 @@ class PipeWireMirror:
+         selected_output = self._selected_uid(message.get("selectedOutputUID"), outputs)
+         selected_input = self._selected_uid(message.get("selectedInputUID"), inputs)
+         inventory = (
++            self.sync_enabled,
+             tuple((record["deviceUID"], record["name"]) for record in outputs),
+             tuple((record["deviceUID"], record["name"]) for record in inputs),
+         )
+@@ -243,6 +251,8 @@ class PipeWireMirror:
+             self._set_selected(direction, selected)
+             self.last_sent[direction] = selected
+         self._finish_transport_volume()
++        if self.volume_sync is not None:
++            self.volume_sync.refresh_graph()
+ 
+     def poll_selection(self) -> None:
+         now = time.monotonic()
+@@ -256,6 +266,8 @@ class PipeWireMirror:
+                 return
+ 
+         self._capture_local_changes()
++        if self.volume_sync is not None:
++            self.volume_sync.poll()
+ 
+     def _capture_local_changes(self) -> None:
+         for direction, command, mapping in (
+@@ -310,6 +322,10 @@ class PipeWireMirror:
+         outputs: list[dict[str, str]],
+         inputs: list[dict[str, str]],
+     ) -> None:
++        if self.volume_sync is not None:
++            if self.sync_enabled and self.inventory is not None and self.inventory[0]:
++                self.volume_sync.local()
++            self.volume_sync.last.clear()
+         self._observe_transport_volume()
+         self._unload_modules()
+         sinks = [name for name in short_names("sinks") if not name.startswith(PREFIX)]
+@@ -345,12 +361,25 @@ class PipeWireMirror:
+                 ("device.description", record["name"]),
+                 ("device.icon_name", "audio-card"),
+             )
+-            self._load(
+-                "module-remap-sink",
+-                f"master={transport_sink}",
+-                f"sink_name={name}",
+-                pulse_module_proplist("sink_properties", properties),
+-            )
++            if self.sync_enabled:
++                # A null sink's raw monitor is before its volume AND mute.
++                # The visible controls represent Windows master controls;
++                # only Windows applies their gain to the audio signal.
++                properties += " monitor.channel-volumes=false monitor.passthrough=true"
++                self._load("module-null-sink", f"sink_name={name}",
++                           "channels=2", "channel_map=front-left,front-right",
++                           pulse_module_proplist("sink_properties", properties))
++                feed = f"try_omarchy_volume_feed_{hashlib.sha256(name.encode()).hexdigest()[:16]}"
++                self._load("module-loopback", f"source={name}.monitor", f"sink={transport_sink}",
++                           "source_dont_move=true", "sink_dont_move=true",
++                           pulse_module_proplist("sink_input_properties", f"node.name={feed} node.passive=true"))
++            else:
++                self._load(
++                    "module-remap-sink",
++                    f"master={transport_sink}",
++                    f"sink_name={name}",
++                    pulse_module_proplist("sink_properties", properties),
++                )
+             self.output_uids[name] = uid
+ 
+         for record in input_records:
+@@ -379,6 +408,120 @@ class PipeWireMirror:
+         run_pactl(command, endpoint)
+ 
+ 
++class VolumeMirror:
++    """The visible Pulse controls are Windows controls while sync is enabled."""
++
++    def __init__(self, mirror: PipeWireMirror, send: Any) -> None:
++        self.mirror, self.send = mirror, send
++        mirror.volume_sync = self
++        self.endpoint = ""
++        self.sequence = 0
++        self.value: tuple[float, bool] | None = None
++        self.last: dict[str, tuple[float, bool]] = {}
++        self.pending: tuple[float, bool] | None = None
++        self.changed_at = 0.0
++        self.inflight = False
++        self.transport_mute: tuple[str, bool] | None = None
++
++    @staticmethod
++    def equal(a: tuple[float, bool] | None, b: tuple[float, bool] | None) -> bool:
++        return a is not None and b is not None and a[1] == b[1] and abs(a[0] - b[0]) <= 0.001
++
++    def local(self) -> tuple[float, bool] | None:
++        current = run_pactl("get-default-sink", check=False)
++        if current not in self.mirror.output_uids:
++            return None
++        sink = next((s for s in self.mirror._sink_details() if s.get("name") == current), None)
++        if sink is None or type(sink.get("mute")) is not bool:
++            return None
++        value = (min(1.0, max(self.mirror._channel_volumes(sink)) / 65536), sink["mute"])
++        if not self.equal(value, self.last.get(current)):
++            self.last[current] = value
++            self.pending = value
++            self.changed_at = time.monotonic()
++        return value
++
++    def poll(self) -> None:
++        if not self.mirror.sync_enabled:
++            return
++        self.local()
++        if self.pending is not None and not self.inflight and time.monotonic() - self.changed_at >= 0.04:
++            volume, muted = self.pending
++            self.send({"type": "set-volume", "endpointID": self.endpoint,
++                       "volume": volume, "muted": muted, "origin": "guest", "sequence": self.sequence})
++            self.inflight = True
++
++    def apply(self, message: dict[str, Any]) -> None:
++        enabled, volume, muted = message.get("enabled"), message.get("volume"), message.get("muted")
++        sequence, endpoint, origin = message.get("sequence"), message.get("endpointID"), message.get("origin")
++        if (type(enabled) is not bool or type(muted) is not bool or type(volume) not in (int, float)
++                or not math.isfinite(volume) or not 0 <= volume <= 1 or type(sequence) is not int
++                or sequence <= 0 or not isinstance(endpoint, str) or len(endpoint) > 4096
++                or (enabled and not endpoint) or origin not in ("guest", "windows")):
++            raise ValueError("invalid Windows volume state")
++        if sequence < self.sequence:
++            return
++        was_enabled = self.mirror.sync_enabled
++        if was_enabled:
++            self.local()  # Keep a second guest gesture that arrived before the acknowledgement.
++        value = (float(volume), muted)
++        if origin == "windows" or endpoint != self.endpoint or not enabled or self.equal(self.pending, value):
++            self.pending = None
++        self.endpoint, self.sequence, self.value = endpoint, sequence, value
++        self.inflight = False
++        if enabled != was_enabled:
++            if not enabled:
++                self.restore_transport_mute()
++            self.mirror.sync_enabled = enabled
++            self.last.clear()
++            if self.mirror.catalog is not None:
++                self.mirror.apply(self.mirror.catalog)
++            if not enabled and was_enabled:
++                # Independent mode starts at the last visible level, with the
++                # original remap gain/mute semantics. Windows is left alone.
++                self.write_controls(value)
++        if enabled:
++            self.refresh_graph()
++            if was_enabled and origin == "windows":
++                self.show_osd(value)
++
++    def write_controls(self, value: tuple[float, bool]) -> None:
++        for name in self.mirror.output_uids:
++            if not self.equal(self.last.get(name), value):
++                run_pactl("set-sink-volume", name, str(round(value[0] * 65536)))
++                run_pactl("set-sink-mute", name, "1" if value[1] else "0")
++                self.last[name] = value
++
++    def refresh_graph(self) -> None:
++        if not self.mirror.sync_enabled or self.value is None:
++            return
++        transport = self.mirror.transport_name
++        if transport is not None and self.transport_mute is None:
++            sink = next((s for s in self.mirror._sink_details() if s.get("name") == transport), None)
++            if sink is not None and type(sink.get("mute")) is bool:
++                self.transport_mute = (transport, sink["mute"])
++                run_pactl("set-sink-mute", transport, "0")
++        self.write_controls(self.pending if self.pending is not None else self.value)
++
++    def restore_transport_mute(self) -> None:
++        if self.transport_mute is not None:
++            name, muted = self.transport_mute
++            sink = next((s for s in self.mirror._sink_details() if s.get("name") == name), None)
++            if sink is not None and sink.get("mute") is False:
++                run_pactl("set-sink-mute", name, "1" if muted else "0")
++            self.transport_mute = None
++
++    @staticmethod
++    def show_osd(value: tuple[float, bool]) -> None:
++        # Show the existing OSD without invoking another volume adjustment.
++        try:
++            subprocess.run(["omarchy-osd", "-i", "volume-muted" if value[1] or value[0] == 0 else "volume-high",
++                            "-p", str(round(value[0] * 100))], stdin=subprocess.DEVNULL,
++                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=1, check=False)
++        except (OSError, subprocess.TimeoutExpired):
++            pass
++
++
+ def open_port() -> int:
+     while True:
+         try:
+@@ -398,8 +541,10 @@ def main() -> int:
+             offset += os.write(descriptor, payload[offset:])
+ 
+     mirror = PipeWireMirror(send)
++    volume = VolumeMirror(mirror, send)
+     buffer = bytearray()
+     send({"type": "get-catalog"})
++    send({"type": "get-volume"})
+     try:
+         while True:
+             ready, _, _ = select.select([descriptor], [], [], 0.25)
+@@ -414,12 +559,15 @@ def main() -> int:
+                     line, _, remainder = buffer.partition(b"\n")
+                     buffer = bytearray(remainder)
+                     message = json.loads(line)
+-                    if not isinstance(message, dict) or message.get("type") != "catalog":
++                    if not isinstance(message, dict) or message.get("type") not in ("catalog", "volume"):
+                         raise ValueError("host sent an invalid audio message")
+                     applied = False
+                     while not applied:
+                         try:
+-                            mirror.apply(message)
++                            if message["type"] == "volume":
++                                volume.apply(message)
++                            else:
++                                mirror.apply(message)
+                             applied = True
+                         except RuntimeError as error:
+                             log(str(error))
+diff --git a/guest/scripts/finalize-rootfs.sh b/guest/scripts/finalize-rootfs.sh
+index cda101a..7eb0055 100755
+--- a/guest/scripts/finalize-rootfs.sh
++++ b/guest/scripts/finalize-rootfs.sh
+@@ -224,7 +224,8 @@ tar -C / -cf /usr/share/try-omarchy/compat-overlay.tar "${compat_paths[@]}"
+ # Revision 47 brings guest quality-of-life fixes to matching defaults only.
+ # Revision 48 delivers physical battery details and the updated DKMS source.
+ # Revision 49 allows Media Player software rendering in CPU mode.
+-compat_revision=49
++# Revision 50 synchronizes guest volume/mute with the Windows default endpoint.
++compat_revision=50
+ printf '%s:%s\n' "$compat_revision" "$kernel_release" >/usr/share/try-omarchy/compat-version
+ 
+ # Fail the build if DKMS or networking modules were not packaged for this kernel.
+diff --git a/guest/tests/test_battery_details.py b/guest/tests/test_battery_details.py
+index e52a1e0..7c2a9f5 100644
+--- a/guest/tests/test_battery_details.py
++++ b/guest/tests/test_battery_details.py
+@@ -204,7 +204,7 @@ class BatteryDetailsFlowTests(unittest.TestCase):
+     def test_compatibility_delivery_and_dkms_version(self):
+         overlay = GUEST / "factory-overlay"
+         finalize = (GUEST / "scripts/finalize-rootfs.sh").read_text()
+-        self.assertIn("compat_revision=49", finalize)
++        self.assertIn("compat_revision=50", finalize)
+         self.assertIn("usr/src/try-omarchy-battery-1.1.0", finalize)
+         self.assertIn("usr/local/lib/try-omarchy/update-battery-dkms", finalize)
+         self.assertIn('PACKAGE_VERSION="1.1.0"', (MODULE_SOURCE.parent / "dkms.conf").read_text())
+diff --git a/guest/tests/test_guest_qol.py b/guest/tests/test_guest_qol.py
+index 2a5acab..9cb119a 100644
+--- a/guest/tests/test_guest_qol.py
++++ b/guest/tests/test_guest_qol.py
+@@ -215,7 +215,7 @@ class GuestQolTests(unittest.TestCase):
+     def test_compatibility_delivers_guarded_payload_once_per_revision(self):
+         finalize = (GUEST / "scripts/finalize-rootfs.sh").read_text()
+         paths = finalize.split("compat_paths=(", 1)[1].split(")", 1)[0]
+-        self.assertIn("compat_revision=49", finalize)
++        self.assertIn("compat_revision=50", finalize)
+         for path in ("usr/local/bin/omarchy-native-screensaver-text", "usr/local/lib/try-omarchy/install-guest-qol", "usr/share/try-omarchy/guest-qol", "usr/local/bin/omarchy-windows-audio-bridge"):
+             self.assertIn(path, paths)
+         self.assertNotIn("etc/fonts/conf.d/30-try-omarchy.conf", paths)
+diff --git a/guest/tests/test_windows_volume_sync.py b/guest/tests/test_windows_volume_sync.py
+new file mode 100644
+index 0000000..13c4cfe
+--- /dev/null
++++ b/guest/tests/test_windows_volume_sync.py
+@@ -0,0 +1,152 @@
++"""Volume control, echo and compatibility contracts without an audio device."""
++
++import json
++from pathlib import Path
++import unittest
++from unittest import mock
++
++from test_windows_audio_bridge import bridge, PactlStub, catalog_message
++
++
++class VolumePactl(PactlStub):
++    def __init__(self):
++        super().__init__()
++        self.routes = {}
++        self.transport_muted = True
++
++    def __call__(self, *args, **kwargs):
++        if args == ("--format=json", "list", "sinks"):
++            records = json.loads(super().__call__(*args, **kwargs))
++            records[0]["mute"] = self.transport_muted
++            records += [{"name": name, "mute": value[1], "volume": {"left": {"value": value[0]}, "right": {"value": value[0]}}}
++                        for name, value in self.routes.items()]
++            return json.dumps(records)
++        if args[0] == "load-module":
++            for arg in args[2:]:
++                if arg.startswith("sink_name="):
++                    self.routes[arg.partition("=")[2]] = (65536, False)
++        if args[0] == "set-sink-volume" and args[1] in self.routes:
++            self.calls.append((args, True))
++            self.routes[args[1]] = (int(args[2]), self.routes[args[1]][1])
++            return ""
++        if args[0] == "set-sink-mute":
++            self.calls.append((args, True))
++            if args[1] == self.transport_sink:
++                self.transport_muted = args[2] == "1"
++            else:
++                self.routes[args[1]] = (self.routes[args[1]][0], args[2] == "1")
++            return ""
++        return super().__call__(*args, **kwargs)
++
++
++def state(sequence=1, volume=0.5, muted=False, endpoint="speakers", enabled=True, origin="windows"):
++    return {"type": "volume", "enabled": enabled, "volume": volume, "muted": muted,
++            "sequence": sequence, "endpointID": endpoint, "origin": origin}
++
++
++class VolumeSyncTests(unittest.TestCase):
++    def setUp(self):
++        self.pactl = VolumePactl()
++        self.patch = mock.patch.object(bridge, "run_pactl", self.pactl)
++        self.patch.start()
++        self.addCleanup(self.patch.stop)
++        self.sent = []
++        self.mirror = bridge.PipeWireMirror(self.sent.append)
++        self.volume = bridge.VolumeMirror(self.mirror, self.sent.append)
++        self.addCleanup(self.mirror.close)
++        self.osd = mock.patch.object(self.volume, "show_osd").start()
++        self.addCleanup(mock.patch.stopall)
++        self.mirror.apply(catalog_message())
++        self.volume.apply(state())
++        self.default = self.pactl.default_sink
++
++    def poll(self):
++        self.volume.poll()
++        self.volume.changed_at = 0
++        self.volume.poll()
++
++    def test_sync_graph_bypasses_volume_and_mute_without_double_gain(self):
++        nulls = [c for c in self.pactl.matching_calls("load-module") if c[1] == "module-null-sink"]
++        feeds = [c for c in self.pactl.matching_calls("load-module") if c[1] == "module-loopback"]
++        self.assertEqual(len(nulls), 3)
++        self.assertEqual(len(feeds), 3)
++        for call in nulls:
++            self.assertIn("monitor.channel-volumes=false", " ".join(call))
++            self.assertIn("monitor.passthrough=true", " ".join(call))
++        for call in feeds:
++            self.assertIn(f"sink={self.pactl.transport_sink}", call)
++            # Omarchy's DSP resolver follows a stream whose node.name starts
++            # with the sink name. Feeds must NOT make it bypass our controls.
++            self.assertIn("node.name=try_omarchy_volume_feed_", " ".join(call))
++        self.assertEqual(self.pactl.volumes, [65536, 65536])
++        self.assertFalse(self.pactl.transport_muted)
++        self.assertEqual(self.pactl.routes[self.default], (32768, False))
++
++    def test_host_mute_osd_and_echo(self):
++        self.volume.apply(state(2, 0.7, True))
++        self.assertEqual(self.pactl.routes[self.default], (45875, True))
++        self.osd.assert_called_once_with((0.7, True))
++        self.poll()
++        self.assertEqual(self.sent, [])
++        self.assertFalse(self.pactl.transport_muted)
++
++    def test_guest_mute_and_second_gesture_survive_ack(self):
++        self.pactl.routes[self.default] = (39322, True)
++        self.poll()
++        self.assertEqual(len(self.sent), 1)
++        self.assertEqual(self.sent[-1]["sequence"], 1)
++        self.assertTrue(self.sent[-1]["muted"])
++        self.pactl.routes[self.default] = (52429, False)
++        self.volume.apply(state(2, 39322 / 65536, True, origin="guest"))
++        self.assertEqual(self.pactl.routes[self.default], (52429, False))
++        self.poll()
++        self.assertEqual(self.sent[-1]["sequence"], 2)
++        self.assertAlmostEqual(self.sent[-1]["volume"], 0.8, places=4)
++
++    def test_device_switch_discards_old_write_and_initializes_new_device(self):
++        self.pactl.routes[self.default] = (60000, True)
++        self.poll()
++        self.volume.apply(state(2, 0.2, False, endpoint="headphones"))
++        self.assertIsNone(self.volume.pending)
++        self.assertEqual(self.pactl.routes[self.default], (13107, False))
++        self.poll()
++        self.assertEqual(len(self.sent), 1)
++
++    def test_toggle_off_restores_independent_remaps_and_transport_mute(self):
++        self.volume.apply(state(2, enabled=False))
++        self.assertFalse(self.mirror.sync_enabled)
++        self.assertTrue(self.pactl.transport_muted)
++        self.assertEqual(len(self.mirror.module_ids), 6)
++        self.pactl.routes[self.default] = (20000, True)
++        self.poll()
++        self.assertEqual(self.sent, [])
++        self.volume.apply(state(3, 0.9, True, enabled=False))
++        self.assertEqual(self.pactl.routes[self.default], (20000, True))
++        self.volume.apply(state(4, 0.3, False))
++        self.assertEqual(self.pactl.routes[self.default], (19661, False))
++        self.assertFalse(self.pactl.transport_muted)
++
++    def test_graph_rebuild_keeps_host_control_state(self):
++        changed = catalog_message()
++        changed["outputs"][0]["name"] = "Renamed speakers"
++        self.mirror.apply(changed)
++        self.assertEqual(self.pactl.routes[self.default], (32768, False))
++        self.poll()
++        self.assertEqual(self.sent, [])
++
++    def test_old_launcher_catalog_alone_keeps_independent_behavior(self):
++        mirror = bridge.PipeWireMirror(self.sent.append)
++        bridge.VolumeMirror(mirror, self.sent.append)
++        mirror.apply(catalog_message())
++        self.assertFalse(mirror.sync_enabled)
++        self.assertEqual(len(mirror.module_ids), 6)
++        mirror.close()
++
++    def test_revision_delivers_bridge_to_existing_disks(self):
++        finalize = (Path(__file__).resolve().parents[1] / "scripts/finalize-rootfs.sh").read_text()
++        self.assertIn("compat_revision=50", finalize)
++        self.assertIn("usr/local/bin/omarchy-windows-audio-bridge", finalize)
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/guest/tests/verify.py b/guest/tests/verify.py
+index b3fb72a..406708c 100755
+--- a/guest/tests/verify.py
++++ b/guest/tests/verify.py
+@@ -324,7 +324,7 @@ def main() -> None:
+         "system services run without watchdogs, which fire after Windows sleeps",
+     )
+     check(
+-        "compat_revision=49" in finalize_rootfs
++        "compat_revision=50" in finalize_rootfs
+         and "usr/local/bin/mpv" in compat_paths
+         and "usr/share/dkms/modules_to_force_install/try-omarchy" in compat_paths
+         and "usr/local/lib/try-omarchy/try-omarchy-import.pyz" in compat_paths
+-- 
+2.56.0
+

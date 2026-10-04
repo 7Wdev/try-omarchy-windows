@@ -70,6 +70,7 @@ const (
 	settingsAppListID            = 2125
 	settingsAltTabID             = 2126
 	settingsUSBSelectionID       = 2127
+	settingsVolumeSyncID         = 2128
 	settingsInstallOmarchyID     = 2130
 	settingsSaveID               = 2001
 	settingsCancelID             = 2002
@@ -253,7 +254,7 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 	fullscreenChoices := []string{""}
 	var hRenderAuto, hRenderGPU, hRenderCPU, hDisplays, hLANPublic uintptr
 	var hCameraOn, hMicrophoneOn, hCamera, hUpdateOn uintptr
-	var hAudioOutput, hAudioInput uintptr
+	var hAudioOutput, hAudioInput, hVolumeSync uintptr
 	var hResourceProfile, hResourceHelp uintptr
 	var hApprovedApps uintptr
 	var updateResourceControls func()
@@ -490,6 +491,8 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 					updated.CameraDisabled = v != bstChecked
 					v, _, _ = procSendMessageW.Call(hMicrophoneOn, bmGetcheck, 0, 0)
 					updated.MicrophoneDisabled = v != bstChecked
+					v, _, _ = procSendMessageW.Call(hVolumeSync, bmGetcheck, 0, 0)
+					updated.VolumeSyncDisabled = v != bstChecked
 					v, _, _ = procSendMessageW.Call(hUpdateOn, bmGetcheck, 0, 0)
 					updated.AutomaticUpdatesDisabled = v != bstChecked
 					index, _, _ := procSendMessageW.Call(hCamera, 0x147, 0, 0)
@@ -1084,6 +1087,11 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 	section(uiText("settings.section.sound"))
 	hAudioOutput = addAudioCombo(uiText("settings.sound.output"), settingsAudioOutputID, audioDevices.Output, audioPrefs.Output)
 	hAudioInput = addAudioCombo(uiText("settings.sound.microphone"), settingsAudioInputID, audioDevices.Input, audioPrefs.Input)
+	hVolumeSync, grow = check(uiText("settings.sound.sync_volume"), left, y, 24, settingsVolumeSyncID)
+	if !prefs.VolumeSyncDisabled {
+		procSendMessageW.Call(hVolumeSync, bmSetcheck, bstChecked, 0)
+	}
+	y += 28 + grow
 	audioHelp := uiText("settings.sound.help")
 	if !audioSupported {
 		audioHelp = uiText("settings.sound.unsupported")
