@@ -365,7 +365,7 @@ func serveAudioBridge(conn net.Conn, dataDir, qemu string, microphoneDisabledAtB
 				if err != nil || !actual.equal(value) {
 					origin = "windows"
 				}
-				sync.observe(actual, volumeEnabled(), origin)
+				sync.acknowledge(actual, volumeEnabled(), origin)
 			}
 			if err := publishVolume(); err != nil {
 				return err

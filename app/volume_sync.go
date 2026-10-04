@@ -70,6 +70,16 @@ func (s *volumeSync) request(request volumeSyncRequest) bool {
 	return true
 }
 
+func (s *volumeSync) acknowledge(value endpointVolume, enabled bool, origin string) {
+	if !s.observe(value, enabled, origin) {
+		// A failed setter can leave the value unchanged. Still acknowledge the
+		// attempt with a new sequence and Windows origin so the guest drops it.
+		s.pending = nil
+		s.message.Sequence++
+		s.message.Origin = origin
+	}
+}
+
 func (s *volumeSync) take() (endpointVolume, bool) {
 	request := s.pending
 	s.pending = nil

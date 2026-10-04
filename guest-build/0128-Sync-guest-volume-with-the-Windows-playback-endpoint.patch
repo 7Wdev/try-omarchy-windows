@@ -1,20 +1,20 @@
-From f025e3675dcc44b0b7b2dc446c73dce78c5fefc1 Mon Sep 17 00:00:00 2001
+From 395997b73ff746514f4ea746804da44cb47e96b6 Mon Sep 17 00:00:00 2001
 From: Tyler South <tsouth2@gmail.com>
 Date: Sun, 4 Oct 2026 17:49:18 -0400
 Subject: [PATCH] Sync guest volume with the Windows playback endpoint
 
 ---
- .../local/bin/omarchy-windows-audio-bridge    | 173 +++++++++++++++++-
+ .../local/bin/omarchy-windows-audio-bridge    | 176 +++++++++++++++++-
  guest/scripts/finalize-rootfs.sh              |   3 +-
  guest/tests/test_battery_details.py           |   2 +-
  guest/tests/test_guest_qol.py                 |   2 +-
- guest/tests/test_windows_volume_sync.py       | 169 +++++++++++++++++
+ guest/tests/test_windows_volume_sync.py       | 175 +++++++++++++++++
  guest/tests/verify.py                         |   2 +-
- 6 files changed, 339 insertions(+), 12 deletions(-)
+ 6 files changed, 348 insertions(+), 12 deletions(-)
  create mode 100644 guest/tests/test_windows_volume_sync.py
 
 diff --git a/guest/factory-overlay/usr/local/bin/omarchy-windows-audio-bridge b/guest/factory-overlay/usr/local/bin/omarchy-windows-audio-bridge
-index 198f7b9..b02526d 100755
+index 198f7b9..1824b6c 100755
 --- a/guest/factory-overlay/usr/local/bin/omarchy-windows-audio-bridge
 +++ b/guest/factory-overlay/usr/local/bin/omarchy-windows-audio-bridge
 @@ -5,6 +5,7 @@ from __future__ import annotations
@@ -121,7 +121,7 @@ index 198f7b9..b02526d 100755
              self.output_uids[name] = uid
  
          for record in input_records:
-@@ -379,6 +408,124 @@ class PipeWireMirror:
+@@ -379,6 +408,127 @@ class PipeWireMirror:
          run_pactl(command, endpoint)
  
  
@@ -151,7 +151,10 @@ index 198f7b9..b02526d 100755
 +        sink = next((s for s in self.mirror._sink_details() if s.get("name") == current), None)
 +        if sink is None or type(sink.get("mute")) is not bool:
 +            return None
-+        value = (min(1.0, max(self.mirror._channel_volumes(sink)) / 65536), sink["mute"])
++        raw_volume = max(self.mirror._channel_volumes(sink))
++        value = (min(1.0, raw_volume / 65536), sink["mute"])
++        if raw_volume > 65536:
++            run_pactl("set-sink-volume", current, "65536")
 +        if not self.equal(value, self.last.get(current)):
 +            self.last[current] = value
 +            self.pending = value
@@ -246,7 +249,7 @@ index 198f7b9..b02526d 100755
  def open_port() -> int:
      while True:
          try:
-@@ -398,7 +545,9 @@ def main() -> int:
+@@ -398,7 +548,9 @@ def main() -> int:
              offset += os.write(descriptor, payload[offset:])
  
      mirror = PipeWireMirror(send)
@@ -256,7 +259,7 @@ index 198f7b9..b02526d 100755
      send({"type": "get-catalog"})
      try:
          while True:
-@@ -414,12 +563,20 @@ def main() -> int:
+@@ -414,12 +566,20 @@ def main() -> int:
                      line, _, remainder = buffer.partition(b"\n")
                      buffer = bytearray(remainder)
                      message = json.loads(line)
@@ -321,10 +324,10 @@ index 2a5acab..9cb119a 100644
          self.assertNotIn("etc/fonts/conf.d/30-try-omarchy.conf", paths)
 diff --git a/guest/tests/test_windows_volume_sync.py b/guest/tests/test_windows_volume_sync.py
 new file mode 100644
-index 0000000..bf4fe6d
+index 0000000..ac27f77
 --- /dev/null
 +++ b/guest/tests/test_windows_volume_sync.py
-@@ -0,0 +1,169 @@
+@@ -0,0 +1,175 @@
 +"""Volume control, echo and compatibility contracts without an audio device."""
 +
 +import json
@@ -439,6 +442,12 @@ index 0000000..bf4fe6d
 +        self.assertEqual(self.pactl.routes[self.default], (13107, False))
 +        self.poll()
 +        self.assertEqual(len(self.sent), 1)
++
++    def test_guest_boost_is_clamped_to_windows_master_range(self):
++        self.pactl.routes[self.default] = (98304, False)
++        self.poll()
++        self.assertEqual(self.pactl.routes[self.default], (65536, False))
++        self.assertEqual(self.sent[-1]["volume"], 1.0)
 +
 +    def test_toggle_off_restores_independent_remaps_and_transport_mute(self):
 +        self.volume.apply(state(2, enabled=False))

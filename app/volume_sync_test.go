@@ -95,3 +95,16 @@ func TestVolumeSyncWindowsChangeCancelsGuestBurst(t *testing.T) {
 		t.Fatal("guest burst overwrote a newer Windows change")
 	}
 }
+
+func TestVolumeSyncFailedWriteAcknowledgesWithoutRetryLoop(t *testing.T) {
+	var sync volumeSync
+	v := endpointVolume{"speakers", 0.5, false}
+	sync.observe(v, true, "guest")
+	r := volumeSyncRequest{"guest", sync.message.Sequence, endpointVolume{"speakers", 0.8, true}}
+	sync.request(r)
+	sync.take()
+	sync.acknowledge(v, true, "windows")
+	if sync.message.Origin != "windows" || sync.message.Sequence == r.Sequence || sync.pending != nil || sync.request(r) {
+		t.Fatal("failed write kept a guest origin or a stale request")
+	}
+}
