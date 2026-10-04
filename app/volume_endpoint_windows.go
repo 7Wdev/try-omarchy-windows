@@ -114,8 +114,9 @@ type volumeEndpointResult struct {
 	err   error
 }
 type volumeEndpointCommand struct {
-	value endpointVolume
-	done  chan volumeEndpointResult
+	value    endpointVolume
+	expected endpointVolume
+	done     chan volumeEndpointResult
 }
 type windowsVolumeEndpoint struct {
 	changes  chan endpointVolume
@@ -137,8 +138,8 @@ func startWindowsVolumeEndpoint() (*windowsVolumeEndpoint, endpointVolume, error
 }
 
 func (b *windowsVolumeEndpoint) close() { close(b.stop); <-b.done }
-func (b *windowsVolumeEndpoint) set(value endpointVolume) (endpointVolume, error) {
-	command := volumeEndpointCommand{value, make(chan volumeEndpointResult, 1)}
+func (b *windowsVolumeEndpoint) set(value, expected endpointVolume) (endpointVolume, error) {
+	command := volumeEndpointCommand{value, expected, make(chan volumeEndpointResult, 1)}
 	b.commands <- command
 	r := <-command.done
 	return r.value, r.err
@@ -235,8 +236,8 @@ func (b *windowsVolumeEndpoint) run(ready chan<- volumeEndpointResult) {
 		case command := <-b.commands:
 			current := read() // A queued device notification must never send a write to the old device.
 			var err error
-			if !command.value.valid() || current.EndpointID != command.value.EndpointID || endpoint == 0 {
-				err = fmt.Errorf("Windows default playback endpoint changed")
+			if !command.value.valid() || current.EndpointID != command.value.EndpointID || !current.equal(command.expected) || endpoint == 0 {
+				err = fmt.Errorf("Windows playback controls changed")
 			} else {
 				context := uintptr(unsafe.Pointer(&volumeEventContext))
 				// Windows amd64 SyscallN places argument bits in both integer and

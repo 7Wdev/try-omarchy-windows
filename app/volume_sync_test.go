@@ -84,3 +84,14 @@ func TestVolumeSyncToggleOff(t *testing.T) {
 		t.Fatal("re-enable did not start from current Windows state")
 	}
 }
+
+func TestVolumeSyncWindowsChangeCancelsGuestBurst(t *testing.T) {
+	var sync volumeSync
+	sync.observe(endpointVolume{"speakers", 0.5, false}, true, "windows")
+	r := volumeSyncRequest{"guest", sync.message.Sequence, endpointVolume{"speakers", 0.8, true}}
+	sync.request(r)
+	sync.observe(endpointVolume{"speakers", 0.3, false}, true, "windows")
+	if _, apply := sync.take(); apply || sync.request(r) {
+		t.Fatal("guest burst overwrote a newer Windows change")
+	}
+}

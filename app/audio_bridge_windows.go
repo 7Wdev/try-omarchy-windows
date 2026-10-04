@@ -23,6 +23,7 @@ type audioBridgeDevice struct {
 
 type audioBridgeCatalog struct {
 	Type              string              `json:"type"`
+	VolumeSync        bool                `json:"volumeSync,omitempty"`
 	Outputs           []audioBridgeDevice `json:"outputs"`
 	Inputs            []audioBridgeDevice `json:"inputs"`
 	SelectedOutputUID *string             `json:"selectedOutputUID"`
@@ -80,7 +81,7 @@ func audioBridgeSelected(id, name string, devices []audioBridgeDevice) *string {
 }
 
 func currentAudioBridgeCatalog(dataDir, qemu string, microphoneDisabledAtBoot bool) (audioBridgeCatalog, error) {
-	catalog := audioBridgeCatalog{Type: "catalog", Outputs: []audioBridgeDevice{}, Inputs: []audioBridgeDevice{}}
+	catalog := audioBridgeCatalog{Type: "catalog", VolumeSync: true, Outputs: []audioBridgeDevice{}, Inputs: []audioBridgeDevice{}}
 	names, err := loadAudioPreferences(dataDir)
 	if err != nil {
 		return catalog, err
@@ -356,11 +357,15 @@ func serveAudioBridge(conn net.Conn, dataDir, qemu string, microphoneDisabledAtB
 				sync.observe(sync.message.endpointVolume, false, "windows")
 			}
 			if value, apply := sync.take(); apply && volume != nil {
-				actual, err := volume.set(value)
+				actual, err := volume.set(value, sync.message.endpointVolume)
 				if err != nil {
 					logf("audio bridge: volume: %v", err)
 				}
-				sync.observe(actual, volumeEnabled(), "guest")
+				origin := "guest"
+				if err != nil || !actual.equal(value) {
+					origin = "windows"
+				}
+				sync.observe(actual, volumeEnabled(), origin)
 			}
 			if err := publishVolume(); err != nil {
 				return err

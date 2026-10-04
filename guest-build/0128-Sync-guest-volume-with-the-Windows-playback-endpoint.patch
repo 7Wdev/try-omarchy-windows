@@ -1,20 +1,20 @@
-From e21ebc5322da43dba2ff119ff24f3c07b383644b Mon Sep 17 00:00:00 2001
+From f025e3675dcc44b0b7b2dc446c73dce78c5fefc1 Mon Sep 17 00:00:00 2001
 From: Tyler South <tsouth2@gmail.com>
 Date: Sun, 4 Oct 2026 17:49:18 -0400
 Subject: [PATCH] Sync guest volume with the Windows playback endpoint
 
 ---
- .../local/bin/omarchy-windows-audio-bridge    | 168 +++++++++++++++++-
+ .../local/bin/omarchy-windows-audio-bridge    | 173 +++++++++++++++++-
  guest/scripts/finalize-rootfs.sh              |   3 +-
  guest/tests/test_battery_details.py           |   2 +-
  guest/tests/test_guest_qol.py                 |   2 +-
- guest/tests/test_windows_volume_sync.py       | 153 ++++++++++++++++
+ guest/tests/test_windows_volume_sync.py       | 169 +++++++++++++++++
  guest/tests/verify.py                         |   2 +-
- 6 files changed, 318 insertions(+), 12 deletions(-)
+ 6 files changed, 339 insertions(+), 12 deletions(-)
  create mode 100644 guest/tests/test_windows_volume_sync.py
 
 diff --git a/guest/factory-overlay/usr/local/bin/omarchy-windows-audio-bridge b/guest/factory-overlay/usr/local/bin/omarchy-windows-audio-bridge
-index 198f7b9..9cdc43a 100755
+index 198f7b9..b02526d 100755
 --- a/guest/factory-overlay/usr/local/bin/omarchy-windows-audio-bridge
 +++ b/guest/factory-overlay/usr/local/bin/omarchy-windows-audio-bridge
 @@ -5,6 +5,7 @@ from __future__ import annotations
@@ -246,18 +246,17 @@ index 198f7b9..9cdc43a 100755
  def open_port() -> int:
      while True:
          try:
-@@ -398,8 +545,10 @@ def main() -> int:
+@@ -398,7 +545,9 @@ def main() -> int:
              offset += os.write(descriptor, payload[offset:])
  
      mirror = PipeWireMirror(send)
 +    volume = VolumeMirror(mirror, send)
      buffer = bytearray()
++    volume_requested = False
      send({"type": "get-catalog"})
-+    send({"type": "get-volume"})
      try:
          while True:
-             ready, _, _ = select.select([descriptor], [], [], 0.25)
-@@ -414,12 +563,15 @@ def main() -> int:
+@@ -414,12 +563,20 @@ def main() -> int:
                      line, _, remainder = buffer.partition(b"\n")
                      buffer = bytearray(remainder)
                      message = json.loads(line)
@@ -272,6 +271,11 @@ index 198f7b9..9cdc43a 100755
 +                                volume.apply(message)
 +                            else:
 +                                mirror.apply(message)
++                                # Older hosts reject unknown requests. Opt in
++                                # only when their catalog advertises support.
++                                if message.get("volumeSync") is True and not volume_requested:
++                                    send({"type": "get-volume"})
++                                    volume_requested = True
                              applied = True
                          except RuntimeError as error:
                              log(str(error))
@@ -317,10 +321,10 @@ index 2a5acab..9cb119a 100644
          self.assertNotIn("etc/fonts/conf.d/30-try-omarchy.conf", paths)
 diff --git a/guest/tests/test_windows_volume_sync.py b/guest/tests/test_windows_volume_sync.py
 new file mode 100644
-index 0000000..ae57a71
+index 0000000..bf4fe6d
 --- /dev/null
 +++ b/guest/tests/test_windows_volume_sync.py
-@@ -0,0 +1,153 @@
+@@ -0,0 +1,169 @@
 +"""Volume control, echo and compatibility contracts without an audio device."""
 +
 +import json
@@ -465,6 +469,22 @@ index 0000000..ae57a71
 +        self.assertFalse(mirror.sync_enabled)
 +        self.assertEqual(len(mirror.module_ids), 6)
 +        mirror.close()
++
++    def test_main_requests_volume_only_from_a_capable_host(self):
++        for capable in (False, True):
++            with self.subTest(capable=capable):
++                message = catalog_message()
++                if capable:
++                    message["volumeSync"] = True
++                writes = []
++                with mock.patch.object(bridge, "open_port", return_value=17), \
++                        mock.patch.object(bridge.os, "read", side_effect=[json.dumps(message).encode() + b"\n", b""]), \
++                        mock.patch.object(bridge.os, "write", side_effect=lambda fd, data: writes.append(json.loads(data)) or len(data)), \
++                        mock.patch.object(bridge.os, "close"), \
++                        mock.patch.object(bridge.select, "select", return_value=([17], [], [])), \
++                        mock.patch.object(bridge.signal, "signal"):
++                    self.assertEqual(bridge.main(), 0)
++                self.assertEqual(writes, [{"type": "get-catalog"}] + ([{"type": "get-volume"}] if capable else []))
 +
 +    def test_revision_delivers_bridge_to_existing_disks(self):
 +        finalize = (Path(__file__).resolve().parents[1] / "scripts/finalize-rootfs.sh").read_text()
