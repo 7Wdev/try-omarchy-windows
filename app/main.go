@@ -835,6 +835,8 @@ func main() {
 	cfg.audio = "sdl"
 
 	startBootCurtain(cfg)
+	stopDiskMonitor := startHostDiskMonitor(cfg.dir)
+	defer stopDiskMonitor()
 	for relaunch := supervise(cfg, bootLine); relaunch; relaunch = supervise(cfg, bootLine) {
 		// A guest reboot applies what Settings saved meanwhile. A failed
 		// measurement keeps the previous boot's size.
@@ -844,6 +846,7 @@ func main() {
 		}
 		bootLine = bootCmdline(cfg, plan)
 	}
+	stopDiskMonitor()
 	if finishSetupCancellation(cfg, checkSetupCancelled()) {
 		return
 	}
@@ -1099,6 +1102,7 @@ func watch(cfg *config, qmp *qmpConn, exited <-chan error) bool {
 	defer ticker.Stop()
 	procDown := false
 	movedBootPending := false
+	diskPauseNotified := false
 	// Cancel in the setup window, which stays up while Omarchy boots, shuts
 	// the guest down. Early in its boot the guest misses the power button, so
 	// it is pressed again once Omarchy reports that it is up; stopping it
@@ -1133,6 +1137,12 @@ func watch(cfg *config, qmp *qmpConn, exited <-chan error) bool {
 				break
 			}
 			silent = 0
+			if diskFullPauseEvent(line) && !diskPauseNotified {
+				diskPauseNotified = true
+				message := uiText("tray.disk.paused")
+				logf("%s", message)
+				showTrayNotice(uiText("tray.disk.paused_title"), message)
+			}
 			if paths, point, ok := droppedFilesEvent(line); ok {
 				logf("file drop: received %d item(s)", len(paths))
 				if err := sendDroppedFilesAt(paths, guestDropPoint(point), cursorPosition()); err != nil {

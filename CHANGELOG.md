@@ -13,6 +13,8 @@
 - The camera and audio bridges accept only Omarchy's own connection, the LAN
   firewall helper only adds rules for Omarchy's QEMU, and uninstall refuses a
   folder that is not a Try Omarchy data folder.
+- The launcher warns when Omarchy's Windows drive is running low or almost
+  full, with guidance for Reclaim and moving the data in Settings.
 
 ## v0.9.0 - 2026-10-04
 

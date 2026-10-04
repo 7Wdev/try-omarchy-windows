@@ -26,19 +26,23 @@ func existingDiskPath(path string) (string, error) {
 }
 
 func platformDiskFreeBytes(path string) (int64, error) {
+	space, err := platformDiskVolumeSpace(path)
+	return space.available, err
+}
+
+func platformDiskVolumeSpace(path string) (diskVolumeSpace, error) {
 	existing, err := existingDiskPath(path)
 	if err != nil {
-		return 0, err
+		return diskVolumeSpace{}, err
 	}
 	var stat syscall.Statfs_t
 	if err := syscall.Statfs(existing, &stat); err != nil {
-		return 0, err
+		return diskVolumeSpace{}, err
 	}
-	available := uint64(stat.Bavail) * uint64(stat.Bsize)
-	if available > uint64(1<<63-1) {
-		return 1<<63 - 1, nil
-	}
-	return int64(available), nil
+	return diskVolumeSpace{
+		available: boundedDiskBytes(uint64(stat.Bavail) * uint64(stat.Bsize)),
+		total:     boundedDiskBytes(uint64(stat.Blocks) * uint64(stat.Bsize)),
+	}, nil
 }
 
 func platformAllocatedFileBytes(path string) (int64, error) {
