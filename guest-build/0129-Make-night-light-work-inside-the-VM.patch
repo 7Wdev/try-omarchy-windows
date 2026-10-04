@@ -1,4 +1,4 @@
-From 495684de413eda129de35bc657db6da64f08c069 Mon Sep 17 00:00:00 2001
+From 59a1f87b1e70b7c037c64a14bc4e1cb533e7741c Mon Sep 17 00:00:00 2001
 From: Tyler South <tsouth2@gmail.com>
 Date: Sun, 4 Oct 2026 17:40:39 -0400
 Subject: [PATCH] Apply manual night light through the Windows VM screen shader
@@ -729,7 +729,7 @@ index 3998c9d..542e95b 100755
  # installed above. Updates preserve edits in /etc instead of silently replacing them.
  while IFS= read -r relative; do
 diff --git a/guest/spec.json b/guest/spec.json
-index 70c6d8f..d7e2cad 100644
+index 70c6d8f..f67d944 100644
 --- a/guest/spec.json
 +++ b/guest/spec.json
 @@ -30,7 +30,7 @@
@@ -749,7 +749,7 @@ index 70c6d8f..d7e2cad 100644
 +      {
 +        "id": "virtio-nightlight",
 +        "description": "Apply manual night light through a screen shader on the Windows virtio GPU, preserving custom shaders and serialized toggle intent.",
-+        "reference": "https://github.com/omacom/try-omarchy/pull/251",
++        "reference": "https://github.com/omacom/try-omarchy/commit/54a222371eddb9d2c5286f0431302fd16bea9054",
 +        "patch": "patches/omarchy/virtio-nightlight.patch",
 +        "patchSha256": "bd80f94c99d639374e80dabff3608cd0e4a9ae5d15d62f0843e28858903e07f8",
 +        "targets": [
