@@ -115,7 +115,29 @@ func trayControlArguments(cfg trayLaunchConfig, control string) []string {
 }
 
 var trayWindow atomic.Uintptr
-var pendingTrayNotice atomic.Pointer[string]
+
+type trayNotice struct{ title, message string }
+
+var trayNotices struct {
+	sync.Mutex
+	pending []trayNotice
+}
+
+func showTrayNotice(title, message string) bool {
+	hwnd := trayWindow.Load()
+	if hwnd == 0 {
+		return false
+	}
+	trayNotices.Lock()
+	defer trayNotices.Unlock()
+	trayNotices.pending = append(trayNotices.pending, trayNotice{title, message})
+	if posted, _, _ := procPostMessageW.Call(hwnd, trayNoticeMessage, 0, 0); posted != 0 {
+		return true
+	}
+	trayNotices.pending = trayNotices.pending[:len(trayNotices.pending)-1]
+	return false
+}
+
 var transferErrorDialog atomic.Bool
 
 func requestTraySettings() bool {
@@ -134,11 +156,8 @@ func requestTraySettings() bool {
 func reportTransferError(err error) {
 	logf("file transfer: %v", err)
 	message := uiTextWith("tray.transfer.failed", map[string]string{"error": err.Error()})
-	if hwnd := trayWindow.Load(); hwnd != 0 {
-		pendingTrayNotice.Store(&message)
-		if posted, _, _ := procPostMessageW.Call(hwnd, trayNoticeMessage, 0, 0); posted != 0 {
-			return
-		}
+	if showTrayNotice(uiText("tray.transfer.title"), message) {
+		return
 	}
 	if transferErrorDialog.CompareAndSwap(false, true) {
 		go func() { defer transferErrorDialog.Store(false); infoBox(message) }()
@@ -200,6 +219,7 @@ func runTray(cfg trayLaunchConfig, ready chan<- uintptr, done chan<- struct{}) {
 	var nid notifyIconData
 	var aboutOpen atomic.Bool
 	var settingsOpen, diagnosticsOpen, devicesOpen atomic.Bool
+	var noticeDetails string
 
 	addIcon := func() bool {
 		if hwnd == 0 {
@@ -369,20 +389,32 @@ func runTray(cfg trayLaunchConfig, ready chan<- uintptr, done chan<- struct{}) {
 			launchControl("-settings", &settingsOpen)
 			return 0
 		case trayNoticeMessage:
-			if text := pendingTrayNotice.Swap(nil); text != nil {
+			trayNotices.Lock()
+			var text *trayNotice
+			if len(trayNotices.pending) > 0 {
+				text = &trayNotices.pending[0]
+				trayNotices.pending = trayNotices.pending[1:]
+			}
+			trayNotices.Unlock()
+			if text != nil {
+				noticeDetails = text.message
 				notice := nid
 				notice.flags = 0x10  // NIF_INFO
 				notice.infoFlags = 2 // NIIF_WARNING
-				notificationText(notice.info[:], *text)
-				notificationText(notice.infoTitle[:], uiText("tray.transfer.title"))
+				notificationText(notice.info[:], text.message)
+				notificationText(notice.infoTitle[:], text.title)
 				if ok, _, err := procShellNotifyIconW.Call(1, uintptr(unsafe.Pointer(&notice))); ok == 0 {
-					logf("tray: file-transfer notification failed: %v", err)
+					logf("tray: notification failed: %v", err)
 				}
 			}
 			return 0
 		case trayCallbackMessage:
 			event := uint32(lParam & 0xffff)
 			switch event {
+			case 0x405: // NIN_BALLOONUSERCLICK: the full rule list may exceed the balloon.
+				if noticeDetails != "" {
+					go infoBox(noticeDetails)
+				}
 			case wmLButtonDblClk:
 				if qemuWindow := qemuHwnd.Load(); qemuWindow != 0 {
 					liftCurtain("asked for from the tray")

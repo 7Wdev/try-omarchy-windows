@@ -13,6 +13,8 @@
 - The camera and audio bridges accept only Omarchy's own connection, the LAN
   firewall helper only adds rules for Omarchy's QEMU, and uninstall refuses a
   folder that is not a Try Omarchy data folder.
+- Omarchy starts when a saved LAN adapter is unavailable, pauses only its
+  forwards for that launch, and resumes them on a later launch when it returns.
 
 ## v0.9.0 - 2026-10-04
 
