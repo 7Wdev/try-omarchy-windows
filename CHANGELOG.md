@@ -1,7 +1,27 @@
 # Changelog
 
-## Unreleased
+## v0.9.0 - 2026-10-04
 
+- Audio opens Windows playback and recording devices at their own sample rate,
+  falling back to the default device and 48 kHz. A hidden volume reduction in
+  Omarchy's audio routing is removed, so Omarchy plays as loud as Windows, and
+  volume and mute changes you make survive audio device changes (#278, #277).
+- Precision touchpads scroll smoothly vertically and horizontally instead of in
+  whole wheel steps. Ordinary mouse wheels keep their normal steps (#280).
+- Omarchy's battery details show the design and full-charge capacity, health,
+  cycle count, manufacturer, model and chemistry that Windows reports (#281).
+- Image Viewer and Media Player in GPU mode share images with the Windows GPU
+  driver only in formats the driver supports, and keep per-plane memory
+  requirements for multi-plane images (#284).
+- Media Player plays video in CPU rendering mode instead of closing at
+  startup (#283).
+- Settings no longer leaves old text behind when scrolling at higher display
+  scaling (#275, #273).
+- The launcher is available in Simplified Chinese (#272, thanks @Dazzle-sys).
+  Every launcher window now comes from the translation catalog, and the new
+  translator guide and tooling check for missing strings and changed
+  placeholders (#268, #269, #270, #271).
+- The runtime moves to r21.
 - Screensaver branding fits small windows, falling back to Omarchy when needed.
 - Update > Omarchy explains when the Omarchy disk needs free space and where
   to increase its capacity in Settings. The first-run update notice uses normal
@@ -9,7 +29,6 @@
 - Chromium supports Wayland input methods, new input profiles include Chewing
   for Traditional Chinese, and zh-TW/zh-Hant text prefers Noto CJK TC fonts.
   Existing customized guest files are kept during compatibility catch-up.
-
 - Update > Omarchy no longer prints "Installation aborted" for the camera and
   battery modules when the guest's kernel headers catch up with the launcher's
   kernel. DKMS now takes those modules over and puts the launcher's copies back
