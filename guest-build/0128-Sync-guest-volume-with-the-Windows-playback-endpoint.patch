@@ -1,20 +1,20 @@
-From 395997b73ff746514f4ea746804da44cb47e96b6 Mon Sep 17 00:00:00 2001
+From 9935415b702626bb73df7ee30b476f4f15f7dd38 Mon Sep 17 00:00:00 2001
 From: Tyler South <tsouth2@gmail.com>
 Date: Sun, 4 Oct 2026 17:49:18 -0400
 Subject: [PATCH] Sync guest volume with the Windows playback endpoint
 
 ---
- .../local/bin/omarchy-windows-audio-bridge    | 176 +++++++++++++++++-
+ .../local/bin/omarchy-windows-audio-bridge    | 177 +++++++++++++++++-
  guest/scripts/finalize-rootfs.sh              |   3 +-
  guest/tests/test_battery_details.py           |   2 +-
  guest/tests/test_guest_qol.py                 |   2 +-
  guest/tests/test_windows_volume_sync.py       | 175 +++++++++++++++++
  guest/tests/verify.py                         |   2 +-
- 6 files changed, 348 insertions(+), 12 deletions(-)
+ 6 files changed, 349 insertions(+), 12 deletions(-)
  create mode 100644 guest/tests/test_windows_volume_sync.py
 
 diff --git a/guest/factory-overlay/usr/local/bin/omarchy-windows-audio-bridge b/guest/factory-overlay/usr/local/bin/omarchy-windows-audio-bridge
-index 198f7b9..1824b6c 100755
+index 198f7b9..616c635 100755
 --- a/guest/factory-overlay/usr/local/bin/omarchy-windows-audio-bridge
 +++ b/guest/factory-overlay/usr/local/bin/omarchy-windows-audio-bridge
 @@ -5,6 +5,7 @@ from __future__ import annotations
@@ -89,7 +89,7 @@ index 198f7b9..1824b6c 100755
          self._observe_transport_volume()
          self._unload_modules()
          sinks = [name for name in short_names("sinks") if not name.startswith(PREFIX)]
-@@ -345,12 +361,25 @@ class PipeWireMirror:
+@@ -345,12 +361,26 @@ class PipeWireMirror:
                  ("device.description", record["name"]),
                  ("device.icon_name", "audio-card"),
              )
@@ -110,6 +110,7 @@ index 198f7b9..1824b6c 100755
 +                feed = f"try_omarchy_volume_feed_{hashlib.sha256(name.encode()).hexdigest()[:16]}"
 +                self._load("module-loopback", f"source={name}.monitor", f"sink={transport_sink}",
 +                           "source_dont_move=true", "sink_dont_move=true",
++                           pulse_module_proplist("source_output_properties", "node.passive=true"),
 +                           pulse_module_proplist("sink_input_properties", f"node.name={feed} node.passive=true"))
 +            else:
 +                self._load(
@@ -121,7 +122,7 @@ index 198f7b9..1824b6c 100755
              self.output_uids[name] = uid
  
          for record in input_records:
-@@ -379,6 +408,127 @@ class PipeWireMirror:
+@@ -379,6 +409,127 @@ class PipeWireMirror:
          run_pactl(command, endpoint)
  
  
@@ -249,7 +250,7 @@ index 198f7b9..1824b6c 100755
  def open_port() -> int:
      while True:
          try:
-@@ -398,7 +548,9 @@ def main() -> int:
+@@ -398,7 +549,9 @@ def main() -> int:
              offset += os.write(descriptor, payload[offset:])
  
      mirror = PipeWireMirror(send)
@@ -259,7 +260,7 @@ index 198f7b9..1824b6c 100755
      send({"type": "get-catalog"})
      try:
          while True:
-@@ -414,12 +566,20 @@ def main() -> int:
+@@ -414,12 +567,20 @@ def main() -> int:
                      line, _, remainder = buffer.partition(b"\n")
                      buffer = bytearray(remainder)
                      message = json.loads(line)

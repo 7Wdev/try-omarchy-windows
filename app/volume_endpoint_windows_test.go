@@ -9,7 +9,8 @@ import (
 
 func TestVolumeEndpointCallbacks(t *testing.T) {
 	wake := make(chan struct{}, 1)
-	c := newVolumeCOMCallback(wake, false)
+	context := mmGUIDValue{Data1: 123}
+	c := newVolumeCOMCallback(wake, false, context)
 	p := uintptr(unsafe.Pointer(c))
 	defer volumeRelease(p)
 	var out uintptr
@@ -17,7 +18,7 @@ func TestVolumeEndpointCallbacks(t *testing.T) {
 		t.Fatalf("callback interface: %x %x", hr, out)
 	}
 	volumeRelease(out)
-	volumeOnNotify(p, uintptr(unsafe.Pointer(&volumeEventContext)))
+	volumeOnNotify(p, uintptr(unsafe.Pointer(&context)))
 	select {
 	case <-wake:
 		t.Fatal("own setter echoed")

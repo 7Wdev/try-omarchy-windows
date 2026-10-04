@@ -19,7 +19,7 @@ var (
 	volumeIUnknownIID       = mmGUIDValue{Data4: [8]byte{0xc0, 0, 0, 0, 0, 0, 0, 0x46}}
 	volumeCallbackIID       = mmGUIDValue{Data1: 0x657804fa, Data2: 0xd6ad, Data3: 0x4496, Data4: [8]byte{0x8a, 0x60, 0x35, 0x27, 0x52, 0xaf, 0x4f, 0x89}}
 	volumeDeviceCallbackIID = mmGUIDValue{Data1: 0x7991eec9, Data2: 0x7e89, Data3: 0x4d85, Data4: [8]byte{0x83, 0x90, 0x6c, 0x70, 0x3c, 0xec, 0x60, 0xc0}}
-	volumeEventContext      = mmGUIDValue{Data1: 0x1577af21, Data2: 0xb24e, Data3: 0x49c9, Data4: [8]byte{0xa8, 0x61, 0x63, 0xf8, 0x50, 0xc2, 0x17, 0x50}}
+	procVolumeCreateGuid    = ole32MMDevice.NewProc("CoCreateGuid")
 	volumeCallbackTable     = [8]uintptr{
 		syscall.NewCallback(volumeQueryInterface), syscall.NewCallback(volumeAddRef), syscall.NewCallback(volumeRelease),
 		syscall.NewCallback(volumeOnNotify),
@@ -33,15 +33,16 @@ var (
 )
 
 type volumeCOMCallback struct {
-	vtable *[8]uintptr
-	iid    mmGUIDValue
-	wake   chan struct{}
-	refs   atomic.Int32
-	pin    runtime.Pinner
+	vtable  *[8]uintptr
+	iid     mmGUIDValue
+	context mmGUIDValue
+	wake    chan struct{}
+	refs    atomic.Int32
+	pin     runtime.Pinner
 }
 
-func newVolumeCOMCallback(wake chan struct{}, devices bool) *volumeCOMCallback {
-	c := &volumeCOMCallback{wake: wake, iid: volumeCallbackIID, vtable: &volumeCallbackTable}
+func newVolumeCOMCallback(wake chan struct{}, devices bool, context mmGUIDValue) *volumeCOMCallback {
+	c := &volumeCOMCallback{wake: wake, iid: volumeCallbackIID, context: context, vtable: &volumeCallbackTable}
 	if devices {
 		c.iid, c.vtable = volumeDeviceCallbackIID, &volumeDeviceCallbackTable
 	}
@@ -91,7 +92,8 @@ func volumeWake(this uintptr) uintptr {
 
 func volumeOnNotify(this, data uintptr) uintptr {
 	// AUDIO_VOLUME_NOTIFICATION_DATA begins with the setter's event GUID.
-	if data != 0 && *(*mmGUIDValue)(unsafe.Pointer(data)) != volumeEventContext {
+	c := (*volumeCOMCallback)(unsafe.Pointer(this))
+	if data != 0 && *(*mmGUIDValue)(unsafe.Pointer(data)) != c.context {
 		return volumeWake(this)
 	}
 	return 0
@@ -155,6 +157,11 @@ func (b *windowsVolumeEndpoint) run(ready chan<- volumeEndpointResult) {
 		return
 	}
 	defer procMMCoUninitialize.Call()
+	var eventContext mmGUIDValue
+	if hr, _, _ = procVolumeCreateGuid.Call(uintptr(unsafe.Pointer(&eventContext))); int32(hr) < 0 {
+		ready <- volumeEndpointResult{err: fmt.Errorf("volume event context: 0x%x", hr)}
+		return
+	}
 	clsid, _ := mmGUID(mmDeviceEnumeratorCLSID)
 	iid, _ := mmGUID(mmDeviceEnumeratorIID)
 	var enumerator uintptr
@@ -165,7 +172,7 @@ func (b *windowsVolumeEndpoint) run(ready chan<- volumeEndpointResult) {
 	}
 	defer mmVCall(enumerator, 2, 0, 0, 0, 0)
 	wake := make(chan struct{}, 1)
-	deviceCallback := newVolumeCOMCallback(wake, true)
+	deviceCallback := newVolumeCOMCallback(wake, true, eventContext)
 	devicePointer := uintptr(unsafe.Pointer(deviceCallback))
 	defer volumeRelease(devicePointer)
 	if hr = mmVCall(enumerator, 6, devicePointer, 0, 0, 0); int32(hr) < 0 {
@@ -206,7 +213,7 @@ func (b *windowsVolumeEndpoint) run(ready chan<- volumeEndpointResult) {
 				endpoint = 0
 				return endpointVolume{}
 			}
-			callback = newVolumeCOMCallback(wake, false)
+			callback = newVolumeCOMCallback(wake, false, eventContext)
 			if int32(mmVCall(endpoint, 3, uintptr(unsafe.Pointer(callback)), 0, 0, 0)) < 0 {
 				releaseEndpoint()
 				return endpointVolume{}
@@ -239,7 +246,7 @@ func (b *windowsVolumeEndpoint) run(ready chan<- volumeEndpointResult) {
 			if !command.value.valid() || current.EndpointID != command.value.EndpointID || !current.equal(command.expected) || endpoint == 0 {
 				err = fmt.Errorf("Windows playback controls changed")
 			} else {
-				context := uintptr(unsafe.Pointer(&volumeEventContext))
+				context := uintptr(unsafe.Pointer(&eventContext))
 				// Windows amd64 SyscallN places argument bits in both integer and
 				// XMM registers, including this float parameter in argument slot 1.
 				if math.Abs(current.Volume-command.value.Volume) > volumeSyncEpsilon {
