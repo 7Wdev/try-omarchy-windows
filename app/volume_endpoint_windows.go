@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
@@ -186,9 +187,11 @@ func (b *windowsVolumeEndpoint) run(ready chan<- volumeEndpointResult) {
 	var callback *volumeCOMCallback
 	releaseEndpoint := func() {
 		if endpoint != 0 {
-			mmVCall(endpoint, 4, uintptr(unsafe.Pointer(callback)), 0, 0, 0)
+			if callback != nil {
+				mmVCall(endpoint, 4, uintptr(unsafe.Pointer(callback)), 0, 0, 0)
+				volumeRelease(uintptr(unsafe.Pointer(callback)))
+			}
 			mmVCall(endpoint, 2, 0, 0, 0, 0)
-			volumeRelease(uintptr(unsafe.Pointer(callback)))
 		}
 		endpoint, endpointID, callback = 0, "", nil
 	}
@@ -209,13 +212,12 @@ func (b *windowsVolumeEndpoint) run(ready chan<- volumeEndpointResult) {
 		procMMCoTaskMemFree.Call(idPointer)
 		if endpointID != id {
 			releaseEndpoint()
-			if int32(mmVCall(device, 3, uintptr(unsafe.Pointer(&volumeIID)), 1, 0, uintptr(unsafe.Pointer(&endpoint)))) < 0 || endpoint == 0 {
-				endpoint = 0
-				return endpointVolume{}
-			}
-			callback = newVolumeCOMCallback(wake, false, eventContext)
-			if int32(mmVCall(endpoint, 3, uintptr(unsafe.Pointer(callback)), 0, 0, 0)) < 0 {
-				releaseEndpoint()
+			if !openVolumeEndpoint(func() bool {
+				return int32(mmVCall(device, 3, uintptr(unsafe.Pointer(&volumeIID)), 1, 0, uintptr(unsafe.Pointer(&endpoint)))) >= 0 && endpoint != 0
+			}, func() bool {
+				callback = newVolumeCOMCallback(wake, false, eventContext)
+				return int32(mmVCall(endpoint, 3, uintptr(unsafe.Pointer(callback)), 0, 0, 0)) >= 0
+			}, releaseEndpoint) {
 				return endpointVolume{}
 			}
 			endpointID = id
@@ -228,11 +230,15 @@ func (b *windowsVolumeEndpoint) run(ready chan<- volumeEndpointResult) {
 		}
 		return endpointVolume{endpointID, float64(level), mute != 0}
 	}
+	poll := time.NewTicker(3 * time.Second)
+	defer poll.Stop()
 	ready <- volumeEndpointResult{value: read()}
 	for {
 		select {
 		case <-b.stop:
 			return
+		case <-poll.C:
+			volumeWake(devicePointer)
 		case <-wake:
 			value := read()
 			select {

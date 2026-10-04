@@ -88,3 +88,13 @@ func (s *volumeSync) take() (endpointVolume, bool) {
 	}
 	return request.endpointVolume, true
 }
+
+// A failed activation or notification registration cannot provide live controls.
+// Release partial COM state and let the next endpoint poll try again.
+func openVolumeEndpoint(activate, register func() bool, release func()) bool {
+	if !activate() || !register() {
+		release()
+		return false
+	}
+	return true
+}

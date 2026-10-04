@@ -1,20 +1,20 @@
-From 9935415b702626bb73df7ee30b476f4f15f7dd38 Mon Sep 17 00:00:00 2001
+From 24502d30ebe4ca8a44cbadb6709ceee29d85070d Mon Sep 17 00:00:00 2001
 From: Tyler South <tsouth2@gmail.com>
 Date: Sun, 4 Oct 2026 17:49:18 -0400
 Subject: [PATCH] Sync guest volume with the Windows playback endpoint
 
 ---
- .../local/bin/omarchy-windows-audio-bridge    | 177 +++++++++++++++++-
+ .../local/bin/omarchy-windows-audio-bridge    | 282 ++++++++++++++---
  guest/scripts/finalize-rootfs.sh              |   3 +-
  guest/tests/test_battery_details.py           |   2 +-
  guest/tests/test_guest_qol.py                 |   2 +-
- guest/tests/test_windows_volume_sync.py       | 175 +++++++++++++++++
+ guest/tests/test_windows_volume_sync.py       | 287 ++++++++++++++++++
  guest/tests/verify.py                         |   2 +-
- 6 files changed, 349 insertions(+), 12 deletions(-)
+ 6 files changed, 537 insertions(+), 41 deletions(-)
  create mode 100644 guest/tests/test_windows_volume_sync.py
 
 diff --git a/guest/factory-overlay/usr/local/bin/omarchy-windows-audio-bridge b/guest/factory-overlay/usr/local/bin/omarchy-windows-audio-bridge
-index 198f7b9..616c635 100755
+index 198f7b9..6bbbb86 100755
 --- a/guest/factory-overlay/usr/local/bin/omarchy-windows-audio-bridge
 +++ b/guest/factory-overlay/usr/local/bin/omarchy-windows-audio-bridge
 @@ -5,6 +5,7 @@ from __future__ import annotations
@@ -44,15 +44,20 @@ index 198f7b9..616c635 100755
          self._observe_transport_volume()
          restore = self.transport_volume if self.transport_owned and self.transport_applied else None
          self._unload_modules()
-@@ -212,6 +218,7 @@ class PipeWireMirror:
+@@ -211,16 +217,18 @@ class PipeWireMirror:
+         except (RuntimeError, ValueError, TypeError, KeyError):
              log("Could not set QEMU audio transport volume; will retry")
  
-     def apply(self, message: dict[str, Any]) -> None:
+-    def apply(self, message: dict[str, Any]) -> None:
++    def apply(self, message: dict[str, Any], *, capture: bool = True) -> None:
 +        self.catalog = message
          # A catalog echo can arrive between two quick picker changes. Capture
          # the second local change before applying the echo to either direction.
-         if self.inventory is not None:
-@@ -221,6 +228,7 @@ class PipeWireMirror:
+-        if self.inventory is not None:
++        if capture and self.inventory is not None:
+             self._capture_local_changes()
+         outputs = self._validated_devices(message.get("outputs"))
+         inputs = self._validated_devices(message.get("inputs"))
          selected_output = self._selected_uid(message.get("selectedOutputUID"), outputs)
          selected_input = self._selected_uid(message.get("selectedInputUID"), inputs)
          inventory = (
@@ -122,16 +127,21 @@ index 198f7b9..616c635 100755
              self.output_uids[name] = uid
  
          for record in input_records:
-@@ -379,6 +409,127 @@ class PipeWireMirror:
+@@ -379,6 +409,158 @@ class PipeWireMirror:
          run_pactl(command, endpoint)
  
  
++VOLUME_HOST_TIMEOUT = 10.0
++
++
 +class VolumeMirror:
 +    """The visible Pulse controls are Windows controls while sync is enabled."""
 +
 +    def __init__(self, mirror: PipeWireMirror, send: Any) -> None:
 +        self.mirror, self.send = mirror, send
 +        mirror.volume_sync = self
++        self.capable = False
++        self.last_host_state = 0.0
 +        self.endpoint = ""
 +        self.sequence = 0
 +        self.value: tuple[float, bool] | None = None
@@ -162,7 +172,34 @@ index 198f7b9..616c635 100755
 +            self.changed_at = time.monotonic()
 +        return value
 +
++    def disable(self) -> None:
++        if not self.mirror.sync_enabled:
++            return
++        # Snapshot the visible guest gesture before rebuilding its sinks.
++        value = self.local() or self.value
++        self.mirror.sync_enabled = False
++        self.pending, self.inflight = None, False
++        self.restore_transport_mute()
++        self.last.clear()
++        if self.mirror.catalog is not None:
++            self.mirror.apply(self.mirror.catalog, capture=False)
++        if value is not None:
++            self.write_controls(value)
++
++    def disconnect(self) -> None:
++        self.disable()
++        self.capable = False
++        self.endpoint, self.sequence = "", 0
++        self.last_host_state = 0.0
++
++    def check_host(self) -> bool:
++        if self.mirror.sync_enabled and time.monotonic() - self.last_host_state >= VOLUME_HOST_TIMEOUT:
++            self.disconnect()
++            return False
++        return True
++
 +    def poll(self) -> None:
++        self.check_host()
 +        if not self.mirror.sync_enabled:
 +            return
 +        self.local()
@@ -180,27 +217,26 @@ index 198f7b9..616c635 100755
 +                or sequence <= 0 or not isinstance(endpoint, str) or len(endpoint) > 4096
 +                or (enabled and not endpoint) or origin not in ("guest", "windows")):
 +            raise ValueError("invalid Windows volume state")
-+        if sequence < self.sequence:
++        if not self.capable or sequence < self.sequence:
 +            return
++        self.last_host_state = time.monotonic()
++        if sequence == self.sequence:
++            return  # An unchanged heartbeat must not cancel a guest gesture.
 +        was_enabled = self.mirror.sync_enabled
-+        if was_enabled:
++        if not enabled:
++            self.disable()
++        elif was_enabled:
 +            self.local()  # Keep a second guest gesture that arrived before the acknowledgement.
 +        value = (float(volume), muted)
 +        if origin == "windows" or endpoint != self.endpoint or not enabled or self.equal(self.pending, value):
 +            self.pending = None
 +        self.endpoint, self.sequence, self.value = endpoint, sequence, value
 +        self.inflight = False
-+        if enabled != was_enabled:
-+            if not enabled:
-+                self.restore_transport_mute()
-+            self.mirror.sync_enabled = enabled
++        if enabled and not was_enabled:
++            self.mirror.sync_enabled = True
 +            self.last.clear()
 +            if self.mirror.catalog is not None:
 +                self.mirror.apply(self.mirror.catalog)
-+            if not enabled and was_enabled:
-+                # Independent mode starts at the last visible level, with the
-+                # original remap gain/mute semantics. Windows is left alone.
-+                self.write_controls(value)
 +        if enabled:
 +            self.refresh_graph()
 +            if was_enabled and origin == "windows":
@@ -250,39 +286,110 @@ index 198f7b9..616c635 100755
  def open_port() -> int:
      while True:
          try:
-@@ -398,7 +549,9 @@ def main() -> int:
-             offset += os.write(descriptor, payload[offset:])
+@@ -389,48 +571,74 @@ def open_port() -> int:
+ 
+ def main() -> int:
+     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+-    descriptor = open_port()
++    descriptor: int | None = None
+ 
+     def send(message: dict[str, Any]) -> None:
+         payload = json.dumps(message, separators=(",", ":"), sort_keys=True).encode() + b"\n"
+         offset = 0
+         while offset < len(payload):
+-            offset += os.write(descriptor, payload[offset:])
++            written = os.write(descriptor, payload[offset:])
++            if written <= 0:
++                raise OSError("host audio bridge stopped accepting writes")
++            offset += written
  
      mirror = PipeWireMirror(send)
+-    buffer = bytearray()
+-    send({"type": "get-catalog"})
 +    volume = VolumeMirror(mirror, send)
-     buffer = bytearray()
-+    volume_requested = False
-     send({"type": "get-catalog"})
      try:
          while True:
-@@ -414,12 +567,20 @@ def main() -> int:
-                     line, _, remainder = buffer.partition(b"\n")
-                     buffer = bytearray(remainder)
-                     message = json.loads(line)
+-            ready, _, _ = select.select([descriptor], [], [], 0.25)
+-            if ready:
+-                chunk = os.read(descriptor, 65536)
+-                if not chunk:
+-                    return 0
+-                buffer.extend(chunk)
+-                if len(buffer) > 1_048_576:
+-                    raise RuntimeError("host audio catalog exceeds one MiB")
+-                while b"\n" in buffer:
+-                    line, _, remainder = buffer.partition(b"\n")
+-                    buffer = bytearray(remainder)
+-                    message = json.loads(line)
 -                    if not isinstance(message, dict) or message.get("type") != "catalog":
-+                    if not isinstance(message, dict) or message.get("type") not in ("catalog", "volume"):
-                         raise ValueError("host sent an invalid audio message")
-                     applied = False
-                     while not applied:
-                         try:
+-                        raise ValueError("host sent an invalid audio message")
+-                    applied = False
+-                    while not applied:
+-                        try:
 -                            mirror.apply(message)
-+                            if message["type"] == "volume":
-+                                volume.apply(message)
-+                            else:
-+                                mirror.apply(message)
-+                                # Older hosts reject unknown requests. Opt in
-+                                # only when their catalog advertises support.
-+                                if message.get("volumeSync") is True and not volume_requested:
-+                                    send({"type": "get-volume"})
-+                                    volume_requested = True
-                             applied = True
-                         except RuntimeError as error:
-                             log(str(error))
+-                            applied = True
+-                        except RuntimeError as error:
+-                            log(str(error))
+-                            time.sleep(1)
++            descriptor = open_port()
++            buffer = bytearray()
++            volume_requested = False
+             try:
+-                mirror.poll_selection()
+-            except RuntimeError as error:
++                send({"type": "get-catalog"})
++                while True:
++                    if not volume.check_host():
++                        volume_requested = False
++                        send({"type": "get-catalog"})
++                    ready, _, _ = select.select([descriptor], [], [], 0.25)
++                    if ready:
++                        chunk = os.read(descriptor, 65536)
++                        if not chunk:
++                            break
++                        buffer.extend(chunk)
++                        if len(buffer) > 1_048_576:
++                            raise ValueError("host audio catalog exceeds one MiB")
++                        while b"\n" in buffer:
++                            line, _, remainder = buffer.partition(b"\n")
++                            buffer = bytearray(remainder)
++                            message = json.loads(line)
++                            if not isinstance(message, dict) or message.get("type") not in ("catalog", "volume"):
++                                raise ValueError("host sent an invalid audio message")
++                            try:
++                                if message["type"] == "volume":
++                                    volume.apply(message)
++                                else:
++                                    mirror.apply(message)
++                                    volume.capable = message.get("volumeSync") is True
++                                    if not volume.capable:
++                                        volume.disconnect()
++                                    elif not volume_requested:
++                                        send({"type": "get-volume"})
++                                        volume_requested = True
++                            except RuntimeError as error:
++                                log(str(error))
++                    try:
++                        mirror.poll_selection()
++                    except RuntimeError as error:
++                        log(str(error))
++            except (OSError, ValueError) as error:
+                 log(str(error))
++            finally:
++                # Keep the independent graph and its controls alive while the
++                # host is absent. A new capable catalog starts a fresh session.
++                volume.disconnect()
++                os.close(descriptor)
++                descriptor = None
++            time.sleep(1)
+     finally:
+         mirror.close()
+-        os.close(descriptor)
++        if descriptor is not None:
++            os.close(descriptor)
+ 
+ 
+ if __name__ == "__main__":
 diff --git a/guest/scripts/finalize-rootfs.sh b/guest/scripts/finalize-rootfs.sh
 index cda101a..7eb0055 100755
 --- a/guest/scripts/finalize-rootfs.sh
@@ -325,10 +432,10 @@ index 2a5acab..9cb119a 100644
          self.assertNotIn("etc/fonts/conf.d/30-try-omarchy.conf", paths)
 diff --git a/guest/tests/test_windows_volume_sync.py b/guest/tests/test_windows_volume_sync.py
 new file mode 100644
-index 0000000..ac27f77
+index 0000000..8b79448
 --- /dev/null
 +++ b/guest/tests/test_windows_volume_sync.py
-@@ -0,0 +1,175 @@
+@@ -0,0 +1,287 @@
 +"""Volume control, echo and compatibility contracts without an audio device."""
 +
 +import json
@@ -389,6 +496,7 @@ index 0000000..ac27f77
 +        self.osd = osd_patch.start()
 +        self.addCleanup(osd_patch.stop)
 +        self.mirror.apply(catalog_message())
++        self.volume.capable = True
 +        self.volume.apply(state())
 +        self.default = self.pactl.default_sink
 +
@@ -487,14 +595,125 @@ index 0000000..ac27f77
 +                if capable:
 +                    message["volumeSync"] = True
 +                writes = []
-+                with mock.patch.object(bridge, "open_port", return_value=17), \
++                with mock.patch.object(bridge, "open_port", side_effect=[17, SystemExit(0)]), \
 +                        mock.patch.object(bridge.os, "read", side_effect=[json.dumps(message).encode() + b"\n", b""]), \
 +                        mock.patch.object(bridge.os, "write", side_effect=lambda fd, data: writes.append(json.loads(data)) or len(data)), \
 +                        mock.patch.object(bridge.os, "close"), \
 +                        mock.patch.object(bridge.select, "select", return_value=([17], [], [])), \
-+                        mock.patch.object(bridge.signal, "signal"):
-+                    self.assertEqual(bridge.main(), 0)
++                        mock.patch.object(bridge.signal, "signal"), \
++                        mock.patch.object(bridge.time, "sleep"):
++                    with self.assertRaises(SystemExit):
++                        bridge.main()
 +                self.assertEqual(writes, [{"type": "get-catalog"}] + ([{"type": "get-volume"}] if capable else []))
++
++    def test_disconnect_restores_current_guest_controls_and_clears_inflight(self):
++        self.pactl.routes[self.default] = (20000, True)
++        self.poll()
++        self.assertTrue(self.volume.inflight)
++        self.volume.disconnect()
++        self.assertFalse(self.mirror.sync_enabled)
++        self.assertFalse(self.volume.capable)
++        self.assertTrue(self.pactl.transport_muted)
++        self.assertEqual(len(self.mirror.module_ids), 6)
++        self.assertEqual(self.pactl.routes[self.default], (20000, True))
++        self.assertIsNone(self.volume.pending)
++        self.assertFalse(self.volume.inflight)
++        count = len(self.sent)
++        self.poll()
++        self.assertEqual(len(self.sent), count)
++
++    def test_disconnect_does_not_write_to_failed_bridge_during_rebuild(self):
++        self.pactl.routes[self.default] = (24000, True)
++        self.mirror.last_sent["output"] = "stale-picker"
++        self.mirror.send = mock.Mock(side_effect=OSError("bridge lost"))
++        self.volume.disconnect()
++        self.assertFalse(self.mirror.sync_enabled)
++        self.mirror.send.assert_not_called()
++        self.assertEqual(self.pactl.routes[self.default], (24000, True))
++
++    def test_reconnect_requires_capable_catalog_and_accepts_restarted_sequence(self):
++        self.volume.apply(state(25))
++        self.volume.disconnect()
++        self.volume.apply(state(1, 0.8))
++        self.assertFalse(self.mirror.sync_enabled)
++        self.volume.capable = True  # A newly received capable catalog.
++        self.assertFalse(self.mirror.sync_enabled)
++        self.volume.apply(state(1, 0.3))
++        self.assertTrue(self.mirror.sync_enabled)
++        self.assertEqual(self.pactl.routes[self.default], (19661, False))
++        self.assertFalse(self.pactl.transport_muted)
++
++    def test_host_timeout_restores_current_controls_until_new_handshake(self):
++        self.pactl.routes[self.default] = (21000, True)
++        with mock.patch.object(bridge.time, "monotonic", return_value=self.volume.last_host_state + bridge.VOLUME_HOST_TIMEOUT):
++            self.assertFalse(self.volume.check_host())
++        self.assertFalse(self.mirror.sync_enabled)
++        self.assertTrue(self.pactl.transport_muted)
++        self.assertEqual(self.pactl.routes[self.default], (21000, True))
++        self.volume.apply(state(2, 0.9))
++        self.assertFalse(self.mirror.sync_enabled)
++        self.assertTrue(self.volume.check_host())
++
++    def test_heartbeat_refreshes_timeout_without_canceling_guest_gesture(self):
++        self.pactl.routes[self.default] = (22000, True)
++        self.volume.local()
++        with mock.patch.object(bridge.time, "monotonic", return_value=self.volume.last_host_state + 9):
++            self.volume.apply(state())
++            self.assertTrue(self.volume.check_host())
++        self.assertEqual(self.volume.pending, (22000 / 65536, True))
++        self.assertEqual(self.pactl.routes[self.default], (22000, True))
++
++    def test_main_disconnect_eof_and_error_fall_back_before_reopening(self):
++        for failure in (b"", OSError("bridge lost")):
++            with self.subTest(failure=failure):
++                self.volume.capable = True
++                self.volume.apply(state(1))
++                self.pactl.routes[self.default] = (23000, True)
++                def disconnected(_):
++                    self.assertFalse(self.mirror.sync_enabled)
++                    self.assertEqual(self.pactl.routes[self.default], (23000, True))
++                    self.assertTrue(self.pactl.transport_muted)
++                with mock.patch.object(bridge, "PipeWireMirror", return_value=self.mirror), \
++                        mock.patch.object(bridge, "VolumeMirror", return_value=self.volume), \
++                        mock.patch.object(bridge, "open_port", side_effect=[17, SystemExit(0)]), \
++                        mock.patch.object(bridge.os, "read", side_effect=[failure]), \
++                        mock.patch.object(bridge.os, "write", side_effect=lambda fd, data: len(data)), \
++                        mock.patch.object(bridge.os, "close"), \
++                        mock.patch.object(bridge.select, "select", return_value=([17], [], [])), \
++                        mock.patch.object(bridge.signal, "signal"), \
++                        mock.patch.object(bridge.time, "sleep", side_effect=disconnected):
++                    with self.assertRaises(SystemExit):
++                        bridge.main()
++                # main's final cleanup closed this mirror. Set up a fresh graph.
++                self.mirror.apply(catalog_message())
++
++    def test_main_reconnect_negotiates_capability_and_new_sequence(self):
++        capable = catalog_message()
++        capable["volumeSync"] = True
++        old = catalog_message()
++        chunks = iter([
++            json.dumps(capable).encode() + b"\n" + json.dumps(state(10)).encode() + b"\n", b"",
++            json.dumps(old).encode() + b"\n" + json.dumps(state(1)).encode() + b"\n", b"",
++            json.dumps(capable).encode() + b"\n" + json.dumps(state(1, 0.3)).encode() + b"\n", b"",
++        ])
++        sessions = []
++        def read(_fd, _size):
++            chunk = next(chunks)
++            if not chunk:
++                sessions.append(self.mirror.sync_enabled)
++            return chunk
++        with mock.patch.object(bridge, "PipeWireMirror", return_value=self.mirror), \
++                mock.patch.object(bridge, "VolumeMirror", return_value=self.volume), \
++                mock.patch.object(bridge, "open_port", side_effect=[17, 18, 19, SystemExit(0)]), \
++                mock.patch.object(bridge.os, "read", side_effect=read), \
++                mock.patch.object(bridge.os, "write", side_effect=lambda fd, data: len(data)), \
++                mock.patch.object(bridge.os, "close"), \
++                mock.patch.object(bridge.select, "select", side_effect=lambda *args: ([args[0][0]], [], [])), \
++                mock.patch.object(bridge.signal, "signal"), \
++                mock.patch.object(bridge.time, "sleep"):
++            with self.assertRaises(SystemExit):
++                bridge.main()
++        self.assertEqual(sessions, [True, False, True])
 +
 +    def test_revision_delivers_bridge_to_existing_disks(self):
 +        finalize = (Path(__file__).resolve().parents[1] / "scripts/finalize-rootfs.sh").read_text()

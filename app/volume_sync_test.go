@@ -108,3 +108,34 @@ func TestVolumeSyncFailedWriteAcknowledgesWithoutRetryLoop(t *testing.T) {
 		t.Fatal("failed write kept a guest origin or a stale request")
 	}
 }
+
+func TestVolumeEndpointFailureDisablesSyncAndRecovers(t *testing.T) {
+	for _, failure := range []string{"open", "callback", "no-default"} {
+		t.Run(failure, func(t *testing.T) {
+			var sync volumeSync
+			value := endpointVolume{"speakers", 0.4, true}
+			sync.observe(value, true, "windows")
+			request := volumeSyncRequest{"guest", sync.message.Sequence, endpointVolume{"speakers", 0.8, false}}
+			sync.request(request)
+			released, registered := false, false
+			available := openVolumeEndpoint(func() bool { return failure == "callback" }, func() bool {
+				registered = true
+				return false
+			}, func() { released = true })
+			if available || !released || registered != (failure == "callback") {
+				t.Fatal("failed endpoint activation/registration was retained")
+			}
+			if !sync.observe(endpointVolume{}, available, "windows") || sync.message.Enabled {
+				t.Fatal("failed endpoint did not publish enabled=false")
+			}
+			if _, apply := sync.take(); apply || sync.request(request) {
+				t.Fatal("failed endpoint retained guest writes")
+			}
+			available = openVolumeEndpoint(func() bool { return true }, func() bool { return true }, func() { t.Fatal("healthy endpoint released") })
+			value.EndpointID = "headphones"
+			if !sync.observe(value, available, "windows") || !sync.message.Enabled || sync.message.EndpointID != "headphones" {
+				t.Fatal("restored endpoint did not publish enabled=true")
+			}
+		})
+	}
+}

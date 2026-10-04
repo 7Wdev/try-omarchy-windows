@@ -149,6 +149,13 @@ and restoration remain in place. Disabling sync restores the original remap
 graph and independent guest gain/mute at the last visible level, leaving
 Windows unchanged. Revision 50 delivers this bridge to existing disks.
 
+If the audio bridge disconnects, the guest immediately restores independent
+controls at the current guest volume and mute. Ten seconds without a host volume
+state has the same effect. Sync resumes after a capable host sends enabled state.
+The launcher sends disabled state when Windows playback controls are unavailable
+and retries them every three seconds. While sync is on, Omarchy volume above 100%
+is clamped to Windows' 100% master range.
+
 Older guests keep their independent controls because they do not request volume
 state. The updated guest can also use an older launcher by falling back to its
 catalog-only remap graph. Missing preferences enable sync; the off choice is

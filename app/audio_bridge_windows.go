@@ -276,7 +276,20 @@ func serveAudioBridge(conn net.Conn, dataDir, qemu string, microphoneDisabledAtB
 	}
 	volumeEnabled := func() bool {
 		prefs, err := loadDesktopPreferences(dataDir)
-		return err == nil && !prefs.VolumeSyncDisabled
+		return err == nil && !prefs.VolumeSyncDisabled && volume != nil
+	}
+	startVolume := func() {
+		var initial endpointVolume
+		var err error
+		volume, initial, err = startWindowsVolumeEndpoint()
+		if err != nil {
+			logf("audio bridge: volume: %v", err)
+			initial = endpointVolume{}
+		}
+		if volume != nil {
+			volumeChanges = volume.changes
+		}
+		sync.observe(initial, volumeEnabled(), "windows")
 	}
 	for {
 		select {
@@ -287,15 +300,7 @@ func serveAudioBridge(conn net.Conn, dataDir, qemu string, microphoneDisabledAtB
 			}
 			if request.Type == "get-volume" {
 				if sync.message.Sequence == 0 {
-					var initial endpointVolume
-					volume, initial, err = startWindowsVolumeEndpoint()
-					if err != nil {
-						logf("audio bridge: volume: %v", err)
-					}
-					if volume != nil {
-						volumeChanges = volume.changes
-					}
-					sync.observe(initial, volumeEnabled(), "windows")
+					startVolume()
 				}
 				if err := publishVolume(); err != nil {
 					return err
@@ -340,7 +345,14 @@ func serveAudioBridge(conn net.Conn, dataDir, qemu string, microphoneDisabledAtB
 			if err := refresh(false); err != nil {
 				logf("audio bridge: catalog refresh: %v", err)
 			}
-			if sync.message.Sequence != 0 && sync.observe(sync.message.endpointVolume, volumeEnabled(), "windows") {
+			if sync.message.Sequence != 0 {
+				if volume == nil {
+					startVolume()
+				} else {
+					sync.observe(sync.message.endpointVolume, volumeEnabled(), "windows")
+				}
+				// Heartbeats keep an idle guest from retaining bypassed controls
+				// after the launcher or its bridge disappears.
 				if err := publishVolume(); err != nil {
 					return err
 				}
