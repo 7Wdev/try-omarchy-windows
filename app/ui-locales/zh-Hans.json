@@ -429,7 +429,7 @@
   "install.button.shut_down": "关闭 Omarchy",
   "install.todo.fast_startup": "请关闭快速启动，以使 Windows 完全关机。",
   "install.button.fast_startup": "关闭快速启动",
-  "install.todo.bitlocker": "请关闭 {drive} 的 BitLocker。Omarchy 无法安装到已加密的磁盘上。",
+  "install.todo.bitlocker": "请关闭 {drive} 的 BitLocker。Omarchy 无法安装在已加密的磁盘旁边。",
   "install.button.bitlocker": "打开 BitLocker 设置",
   "install.todo.decrypting": "请等待 {drive} 解密完成。",
   "install.todo.intro": "在将 Omarchy 安装到本机硬盘（与 Windows 组成双系统）之前：",
