@@ -298,3 +298,4 @@ master gain and mute. The original remap graph returns when sync is disabled,
 the bridge disconnects or host volume state is absent for ten seconds. The current
 guest volume and mute survive fallback; a capable host can enable sync again.
 Compatibility revision 50 delivers the updated bridge to existing disks.
+Patch 0129 ports the manual night-light shader from [Mac PR #251](https://github.com/omacom/try-omarchy/pull/251). The existing night-light menu and Super + Ctrl + N use the same serialized backend on `omarchy.qemu=1`, since virtio GPU lacks DRM CTM. It refuses to replace custom screen shaders and reads status from Hyprland. A config reload clears the manual tint and refreshes the indicator. Compatibility revision 51 updates only known command and service defaults on existing disks, preserving customized or linked files. Runtime package 4.0.4-4 owns the command, helper and shader.
