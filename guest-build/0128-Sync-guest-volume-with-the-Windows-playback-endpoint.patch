@@ -1,20 +1,20 @@
-From 5115f7ee6dd99a2df0c1549efca91938989f5e25 Mon Sep 17 00:00:00 2001
+From e21ebc5322da43dba2ff119ff24f3c07b383644b Mon Sep 17 00:00:00 2001
 From: Tyler South <tsouth2@gmail.com>
 Date: Sun, 4 Oct 2026 17:49:18 -0400
 Subject: [PATCH] Sync guest volume with the Windows playback endpoint
 
 ---
- .../local/bin/omarchy-windows-audio-bridge    | 164 +++++++++++++++++-
+ .../local/bin/omarchy-windows-audio-bridge    | 168 +++++++++++++++++-
  guest/scripts/finalize-rootfs.sh              |   3 +-
  guest/tests/test_battery_details.py           |   2 +-
  guest/tests/test_guest_qol.py                 |   2 +-
- guest/tests/test_windows_volume_sync.py       | 152 ++++++++++++++++
+ guest/tests/test_windows_volume_sync.py       | 153 ++++++++++++++++
  guest/tests/verify.py                         |   2 +-
- 6 files changed, 313 insertions(+), 12 deletions(-)
+ 6 files changed, 318 insertions(+), 12 deletions(-)
  create mode 100644 guest/tests/test_windows_volume_sync.py
 
 diff --git a/guest/factory-overlay/usr/local/bin/omarchy-windows-audio-bridge b/guest/factory-overlay/usr/local/bin/omarchy-windows-audio-bridge
-index 198f7b9..deca977 100755
+index 198f7b9..9cdc43a 100755
 --- a/guest/factory-overlay/usr/local/bin/omarchy-windows-audio-bridge
 +++ b/guest/factory-overlay/usr/local/bin/omarchy-windows-audio-bridge
 @@ -5,6 +5,7 @@ from __future__ import annotations
@@ -121,7 +121,7 @@ index 198f7b9..deca977 100755
              self.output_uids[name] = uid
  
          for record in input_records:
-@@ -379,6 +408,120 @@ class PipeWireMirror:
+@@ -379,6 +408,124 @@ class PipeWireMirror:
          run_pactl(command, endpoint)
  
  
@@ -223,10 +223,14 @@ index 198f7b9..deca977 100755
 +    def restore_transport_mute(self) -> None:
 +        if self.transport_mute is not None:
 +            name, muted = self.transport_mute
-+            sink = next((s for s in self.mirror._sink_details() if s.get("name") == name), None)
-+            if sink is not None and sink.get("mute") is False:
-+                run_pactl("set-sink-mute", name, "1" if muted else "0")
-+            self.transport_mute = None
++            try:
++                sink = next((s for s in self.mirror._sink_details() if s.get("name") == name), None)
++                if sink is not None and sink.get("mute") is False:
++                    run_pactl("set-sink-mute", name, "1" if muted else "0")
++            except (RuntimeError, ValueError, TypeError, KeyError):
++                log("Could not restore QEMU audio transport mute")
++            finally:
++                self.transport_mute = None
 +
 +    @staticmethod
 +    def show_osd(value: tuple[float, bool]) -> None:
@@ -242,7 +246,7 @@ index 198f7b9..deca977 100755
  def open_port() -> int:
      while True:
          try:
-@@ -398,8 +541,10 @@ def main() -> int:
+@@ -398,8 +545,10 @@ def main() -> int:
              offset += os.write(descriptor, payload[offset:])
  
      mirror = PipeWireMirror(send)
@@ -253,7 +257,7 @@ index 198f7b9..deca977 100755
      try:
          while True:
              ready, _, _ = select.select([descriptor], [], [], 0.25)
-@@ -414,12 +559,15 @@ def main() -> int:
+@@ -414,12 +563,15 @@ def main() -> int:
                      line, _, remainder = buffer.partition(b"\n")
                      buffer = bytearray(remainder)
                      message = json.loads(line)
@@ -313,10 +317,10 @@ index 2a5acab..9cb119a 100644
          self.assertNotIn("etc/fonts/conf.d/30-try-omarchy.conf", paths)
 diff --git a/guest/tests/test_windows_volume_sync.py b/guest/tests/test_windows_volume_sync.py
 new file mode 100644
-index 0000000..13c4cfe
+index 0000000..ae57a71
 --- /dev/null
 +++ b/guest/tests/test_windows_volume_sync.py
-@@ -0,0 +1,152 @@
+@@ -0,0 +1,153 @@
 +"""Volume control, echo and compatibility contracts without an audio device."""
 +
 +import json
@@ -373,8 +377,9 @@ index 0000000..13c4cfe
 +        self.mirror = bridge.PipeWireMirror(self.sent.append)
 +        self.volume = bridge.VolumeMirror(self.mirror, self.sent.append)
 +        self.addCleanup(self.mirror.close)
-+        self.osd = mock.patch.object(self.volume, "show_osd").start()
-+        self.addCleanup(mock.patch.stopall)
++        osd_patch = mock.patch.object(self.volume, "show_osd")
++        self.osd = osd_patch.start()
++        self.addCleanup(osd_patch.stop)
 +        self.mirror.apply(catalog_message())
 +        self.volume.apply(state())
 +        self.default = self.pactl.default_sink
