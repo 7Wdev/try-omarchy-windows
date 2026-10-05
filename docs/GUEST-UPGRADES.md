@@ -40,6 +40,16 @@ transactions. They prevent the config watcher from loading a temporarily absent
 `bootstrap.lua` while pacman replaces the runtime. An instance that already had
 autoreload disabled keeps that setting after the explicit reload.
 
+Compatibility revision 55 repairs the default package-conflict handler before
+login so **Update > Omarchy** can adopt the night-light helper and shader that
+compatibility catch-up delivered before the runtime package owned them. It
+accepts only those two unowned paths, rechecks pacman ownership, and keeps their
+previous contents under `/var/lib/omarchy/replaced`. If the retry fails before
+installing either file, the handler restores its previous copy. Unrelated
+conflicts and files owned by another package still stop the update. Customized
+or linked conflict handlers are preserved. Runtime `4.0.4-6` carries the same
+repair for fresh installations and subsequent updates.
+
 If repository publication fails, inspect:
 
 ```sh
