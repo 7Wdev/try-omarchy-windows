@@ -52,6 +52,8 @@ type config struct {
 	renderMode    string
 	runtimeID     string
 	displayDriver string
+	// venus offers guest Vulkan on the host GPU in GPU mode (venus.go).
+	venus bool
 }
 
 type progressUI struct{}

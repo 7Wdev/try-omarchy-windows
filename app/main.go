@@ -73,6 +73,8 @@ type config struct {
 	renderMode    string
 	runtimeID     string
 	displayDriver string
+	// venus offers guest Vulkan on the host GPU in GPU mode (venus.go).
+	venus bool
 }
 
 // memoryStarved reports whether the current attempt's QEMU died because the
@@ -485,6 +487,7 @@ func main() {
 		}
 		cfg.renderMode = mode
 	}
+	forceCPU := cfg.noGpu
 	if cfg.noGpu {
 		cfg.renderMode = renderCPU
 	}
@@ -701,6 +704,8 @@ func main() {
 		if reason != "" {
 			logf("rendering: %s", reason)
 		}
+		cfg.venus, reason = venusDecision(os.Getenv(venusVariable), cfg.displayDriver)
+		logf("rendering: Venus Vulkan %s - %s", map[bool]string{false: "off", true: "on"}[cfg.venus], reason)
 	} else {
 		cfg.qemu = stockQemu
 	}
@@ -751,11 +756,10 @@ func main() {
 		cmdline += " tryomarchy.instant=1"
 	}
 	cmdline += sshCmdline(cfg.forwards, cfg.sshKey)
-	cmdline += shareCmdline(cfg.share)
-	zone, layout, variant, locale := hostLocale(*timeZoneFlag, *keyboardFlag, *localeFlag)
-	if words := hostLocaleCmdline(zone, layout, variant, locale); words != "" {
-		cmdline += words
-		logf("guest follows Windows locale:%s", words)
+	plan := &bootPlan{
+		explicit: explicitFlags, baseCmdline: cmdline, profile: resourcePrefs.Profile, forceCPU: forceCPU,
+		timeZone: *timeZoneFlag, keyboard: *keyboardFlag, language: *localeFlag, home: home,
+		gpuRuntime: gpuRoot != "", multiDisplayRuntime: gpuRoot != "" && gpuRoot != cfg.winqEmu,
 	}
 
 	if err := prepareDisk(cfg, spec.Runtime.Storage.ExpandedSizeMiB); err != nil {
@@ -778,17 +782,11 @@ func main() {
 	if finishSetupCancellation(cfg, checkSetupCancelled()) {
 		return
 	}
-	profile := effectiveResourceProfile(resourcePrefs.Profile, cfg.cpuOverride, cfg.memOverrideMiB)
 	getUI().setStatus("%s", uiText("status.measuring_resources"))
-	host := measureHostResources(profile == resourceMaximum)
-	allocation, err := planGuestResources(profile, host, cfg.useGpu, cfg.cpuOverride, cfg.memOverrideMiB,
-		explicitFlags["cpus"], explicitFlags["memory"])
-	if err != nil {
+	if err := planBootResources(cfg, plan); err != nil {
 		fatal(uiTextWith("fatal.resources", map[string]string{"error": err.Error()}))
 	}
-	cfg.cpus, cfg.memMiB, cfg.hostTotalMiB = allocation.CPUs, allocation.MemoryMiB, host.TotalMiB
-	logf("resources: profile=%s, %d of %d logical processors, %d MiB guest RAM; Windows available=%d MiB, CPU sample known=%t busy=%.1f%%",
-		profile, cfg.cpus, host.LogicalCPUs, cfg.memMiB, host.AvailableMiB, host.CPUKnown, host.CPUBusy*100)
+	bootLine := bootCmdline(cfg, plan)
 	getUI().setStatus("%s", uiText("status.starting_omarchy"))
 	stopTray := startTray(cfg)
 	defer stopTray()
@@ -796,19 +794,6 @@ func main() {
 	// SDL's keyboard grab installs a system-wide Win-key hook that leaks past
 	// window focus; our hook does it right (focus-scoped).
 	os.Setenv("SDL_GRAB_KEYBOARD", "0")
-	// Launch-UX contract (NOTES.md): guest console sized to the window it will
-	// actually get, so the picture fills it from the first frame.
-	conW, conH := screenSize(cfg.fullscreen)
-	if cfg.fullscreen {
-		conW, conH = fullscreenTargetSize(cfg.fullscreenDisplay)
-	}
-	if !cfg.fullscreen {
-		if p := rememberedWindow(cfg.dir); p != nil && !p.Maximized {
-			conW, conH = p.consoleSize()
-		}
-	}
-	cfg.displayWidth, cfg.displayHeight = conW, conH
-	cmdline += fmt.Sprintf(" video=%dx%d", conW, conH)
 
 	reclaimDir.Store(&cfg.dir)
 	reclaimSupported.Store(cfg.diskFormat == "raw")
@@ -850,8 +835,14 @@ func main() {
 	cfg.audio = "sdl"
 
 	startBootCurtain(cfg)
-	for relaunch := true; relaunch; {
-		relaunch = supervise(cfg, cmdline)
+	for relaunch := supervise(cfg, bootLine); relaunch; relaunch = supervise(cfg, bootLine) {
+		// A guest reboot applies what Settings saved meanwhile. A failed
+		// measurement keeps the previous boot's size.
+		reloadBootSettings(cfg, plan)
+		if err := planBootResources(cfg, plan); err != nil {
+			logf("reboot: keeping %d CPUs and %d MiB: %v", cfg.cpus, cfg.memMiB, err)
+		}
+		bootLine = bootCmdline(cfg, plan)
 	}
 	if finishSetupCancellation(cfg, checkSetupCancelled()) {
 		return
@@ -897,8 +888,10 @@ func supervise(cfg *config, cmdline string) bool {
 			return false
 		}
 		mode := "CPU rendering (llvmpipe)"
-		if cfg.useGpu {
+		if cfg.useGpu && cfg.venus {
 			mode = "GPU accelerated (virgl + Venus Vulkan)"
+		} else if cfg.useGpu {
+			mode = "GPU accelerated (virgl)"
 		}
 		logf("booting - %s (attempt %d)", mode, attempt)
 		pendingReboot.Store(false)
@@ -941,13 +934,19 @@ func supervise(cfg *config, cmdline string) bool {
 		proc.Env = pinchEnvironment(proc.Env, pinch)
 		// The w-binary's startup errors (bad args, SDL init) only ever reach
 		// stderr; without this they vanish and a dead QEMU is undebuggable.
-		if ef, err := os.OpenFile(filepath.Join(cfg.vmDir, "qemu-stderr.log"),
-			os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644); err == nil { // per-attempt: the memory ladder sniffs it
+		ef, err := os.OpenFile(filepath.Join(cfg.vmDir, "qemu-stderr.log"),
+			os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644) // per-attempt: the memory ladder sniffs it
+		if err == nil {
 			proc.Stdout = ef
 			proc.Stderr = ef
-			defer ef.Close()
 		}
-		if err := proc.Start(); err != nil {
+		err = proc.Start()
+		// QEMU inherits its own handle. Closing ours per attempt keeps retries
+		// and guest reboots from leaking one handle each.
+		if ef != nil {
+			ef.Close()
+		}
+		if err != nil {
 			fatal(uiTextWith("fatal.qemu.start", map[string]string{"error": err.Error()}))
 		}
 		qemuPid.Store(uint32(proc.Process.Pid))
