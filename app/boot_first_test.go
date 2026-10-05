@@ -128,7 +128,7 @@ func TestBootFirstSignedChannelUpgradeMatrix(t *testing.T) {
 			if _, err := verifiedStagedUpdate(context.Background(), dir, payloadRoot, "v0.11.0", public); err == nil {
 				t.Fatal("accepted corrupt launcher")
 			}
-			discardStagedUpdate(dir, payloadRoot, "v0.11.0")
+			discardStagedUpdate(dir, payloadRoot, "v0.11.0", public)
 			if _, err := os.Stat(filepath.Join(launcherUpdateDir(dir), stagedUpdateFilename)); !os.IsNotExist(err) {
 				t.Fatal("corrupt update stayed ready")
 			}

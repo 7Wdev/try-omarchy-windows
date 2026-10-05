@@ -144,13 +144,37 @@ func verifiedStagedUpdate(ctx context.Context, dir, payloadRoot, version string,
 	return manifest, nil
 }
 
-func discardStagedUpdate(dir, payloadRoot, version string) {
+func discardStagedUpdate(dir, payloadRoot, version string, keys ...ed25519.PublicKey) {
 	_ = removeUpdateFile(filepath.Join(launcherUpdateDir(dir), stagedUpdateFilename))
 	if _, ok := parseReleaseVersion(version); !ok {
 		return
 	}
-	// Read the signed identity separately when possible; never delete active or
-	// rollback payloads just because a local pointer or signature is damaged.
+	key, _ := updatePublicKey()
+	if len(keys) > 0 {
+		key = keys[0]
+	}
+	if manifest, err := readStagedManifest(dir, version, key); err == nil {
+		keep := map[string]bool{}
+		for _, root := range []string{"guest", "guest.previous"} {
+			_, digest, ok := installReceiptIdentity(filepath.Join(dir, root))
+			if ok {
+				keep[digest] = true
+			}
+		}
+		for _, root := range []string{"runtime", "runtime.previous"} {
+			_, digest, ok := runtimeReceiptIdentity(filepath.Join(dir, root))
+			if ok {
+				keep[digest] = true
+			}
+		}
+		if !keep[manifest.ManifestSHA256] {
+			payload := filepath.Join(payloadRoot, manifest.ManifestSHA256)
+			if validateMovePath(payload) == nil {
+				_ = os.RemoveAll(payload)
+			}
+		}
+	}
+	// Unknown or damaged metadata never authorizes deleting active payloads.
 	_ = os.RemoveAll(filepath.Join(launcherUpdateDir(dir), version))
 }
 

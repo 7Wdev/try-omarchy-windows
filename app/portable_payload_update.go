@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -199,7 +200,8 @@ func pruneUpdatePayloads(root, active, previous string, retained ...string) erro
 	}
 	for _, entry := range entries {
 		name := entry.Name()
-		if !entry.IsDir() || !validSHA256(name) || keep[name] {
+		digest := strings.TrimPrefix(name, ".payload-staging-")
+		if !entry.IsDir() || !validSHA256(digest) || keep[digest] {
 			continue
 		}
 		if err := os.RemoveAll(filepath.Join(root, name)); err != nil {

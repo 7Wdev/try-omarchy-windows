@@ -357,3 +357,44 @@ func TestNativeBootFirstApplyHelper(t *testing.T) {
 	}
 	os.Exit(0)
 }
+
+func TestNativeLauncherIntentionalStopsRetryUntilReady(t *testing.T) {
+	dir := t.TempDir()
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous, err := os.ReadFile(self)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(launcherUpdateDir(dir), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(previousLauncherPath(dir), previous, 0700); err != nil {
+		t.Fatal(err)
+	}
+	state := &launcherUpdateState{Schema: updateStateVersion, Version: currentVersion, SHA256: testSHA256(previous), Started: true, HasPrevious: true}
+	if err := writeLauncherUpdateState(dir, state); err != nil {
+		t.Fatal(err)
+	}
+	args, _ := encodeRestartArgs(nil)
+	for n := 0; n < 5; n++ {
+		if err := interruptPendingUpdates(dir); err != nil {
+			t.Fatal(err)
+		}
+		if rolled, err := recoverLauncherUpdate(dir, args); err != nil || rolled {
+			t.Fatalf("intentional stop %d rolled back: %v", n, err)
+		}
+	}
+	if state, err := readLauncherUpdateState(dir); err != nil || state == nil || !state.Started || state.Interrupted {
+		t.Fatal("retry transaction lost", err)
+	}
+	commitLauncherUpdate(dir)
+	if state, err := readLauncherUpdateState(dir); err != nil || state != nil {
+		t.Fatal("ready did not commit", err)
+	}
+	if _, err := os.Stat(previousLauncherPath(dir)); err != nil {
+		t.Fatal("ready discarded rollback launcher", err)
+	}
+}

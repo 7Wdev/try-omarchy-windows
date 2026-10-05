@@ -85,7 +85,7 @@ func downloadProxy(req *http.Request) (*url.URL, error) {
 	done := make(chan result, 1)
 	go func() {
 		defer func() { <-systemProxyGate }()
-		proxy, err := resolveWindowsProxy(req.URL)
+		proxy, err := windowsDownloadProxy(req.URL)
 		done <- result{proxy, err}
 	}()
 	select {
@@ -98,6 +98,8 @@ func downloadProxy(req *http.Request) (*url.URL, error) {
 	}
 }
 
+var windowsDownloadProxy = resolveWindowsProxy
+
 func resolveWindowsProxy(target *url.URL) (*url.URL, error) {
 	var cfg ieProxyConfig
 	ok, _, err := procWinHTTPGetIEProxyConfig.Call(uintptr(unsafe.Pointer(&cfg)))
@@ -105,6 +107,10 @@ func resolveWindowsProxy(target *url.URL) (*url.URL, error) {
 		return nil, fmt.Errorf("reading Windows proxy settings: %w", err)
 	}
 	defer freeProxyStrings(cfg.autoURL, cfg.proxy, cfg.bypass)
+	return windowsProxyForConfig(target, &cfg)
+}
+
+func windowsProxyForConfig(target *url.URL, cfg *ieProxyConfig) (*url.URL, error) {
 	if cfg.autoURL == nil && cfg.autoDetect == 0 {
 		return systemProxyURL(target, proxyString(cfg.proxy), proxyString(cfg.bypass))
 	}
@@ -126,7 +132,7 @@ func resolveWindowsProxy(target *url.URL) (*url.URL, error) {
 	}
 	source, _ := syscall.UTF16PtrFromString(target.String())
 	var info winHTTPProxyInfo
-	ok, _, err = procWinHTTPGetProxy.Call(session, uintptr(unsafe.Pointer(source)), uintptr(unsafe.Pointer(&options)), uintptr(unsafe.Pointer(&info)))
+	ok, _, err := procWinHTTPGetProxy.Call(session, uintptr(unsafe.Pointer(source)), uintptr(unsafe.Pointer(&options)), uintptr(unsafe.Pointer(&info)))
 	if ok == 0 {
 		// WPAD finding no configuration is normal on a direct network. A failed
 		// explicit PAC configuration must not silently bypass the user's policy.
