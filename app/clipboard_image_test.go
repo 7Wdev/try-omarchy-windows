@@ -194,12 +194,12 @@ func TestClipboardImageBudgetBeforeDecode(t *testing.T) {
 	if pngItem(data).allowed() {
 		t.Fatal("bomb accepted by bridge")
 	}
-	for _, size := range [][2]int{{4096, 4096}, {7680, 2160}, {16384, 1}} {
+	for _, size := range [][2]int{{4096, 4096}, {7680, 4320}, {1920, 16384}, {16384, 1}} {
 		if !clipboardImageSizeAllowed(size[0], size[1]) {
 			t.Fatal("bounded image rejected", size)
 		}
 	}
-	for _, size := range [][2]int{{4097, 4096}, {16384, 16384}, {1, 16385}, {0, 1}} {
+	for _, size := range [][2]int{{8192, 4097}, {16384, 16384}, {1, 16385}, {0, 1}} {
 		if clipboardImageSizeAllowed(size[0], size[1]) {
 			t.Fatal("unbounded image accepted", size)
 		}

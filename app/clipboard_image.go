@@ -19,8 +19,9 @@ const (
 	biRGB           = 0
 	biBitfields     = 3
 	maxDIBSide      = 16384
-	// Budget for an 8-byte PNG decode, BGRA conversion and native copy.
-	maxClipboardPixels   = 16 << 20
+	// Budget for an 8-byte PNG decode, BGRA conversion and native copy. 32 Mi
+	// pixels admits 8K screens and long full-page screenshots.
+	maxClipboardPixels   = 32 << 20
 	maxClipboardDIBBytes = 4*maxClipboardPixels + dibV5HeaderSize + 1024
 )
 
