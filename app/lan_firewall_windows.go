@@ -49,6 +49,12 @@ func executeLANFirewall(plan lanFirewallPlan, apply bool) error {
 	if err := plan.validate(); err != nil {
 		return err
 	}
+	if apply && len(plan.Rules) > 0 {
+		// A link would let the rule follow a different program later.
+		if info, err := os.Lstat(plan.Program); err != nil || !info.Mode().IsRegular() {
+			return fmt.Errorf("firewall program is not a regular file: %s", plan.Program)
+		}
+	}
 	data, err := json.Marshal(plan)
 	if err != nil {
 		return err

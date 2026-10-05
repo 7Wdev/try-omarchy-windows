@@ -4,16 +4,59 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 )
+
+func TestLANFirewallProgramWindowsPaths(t *testing.T) {
+	for _, program := range []string{
+		`C:\Users\a\AppData\Local\TryOmarchy\runtime\bin\qemu-system-x86_64w.exe`,
+		`C:\WINQ-EMU\bin\qemu-system-x86_64w.exe`,
+		`C:\Program Files\qemu\qemu-system-x86_64w.exe`,
+	} {
+		if err := validateLANFirewallProgram(program); err != nil {
+			t.Errorf("%s: %v", program, err)
+		}
+	}
+	for _, program := range []string{
+		`\\server\share\bin\qemu-system-x86_64w.exe`,
+		`\\?\C:\runtime\bin\qemu-system-x86_64w.exe`,
+		`C:\Windows\System32\cmd.exe`,
+		`C:\Program Files\Other\qemu-system-x86_64w.exe`,
+		`C:qemu\bin\qemu-system-x86_64w.exe`,
+	} {
+		if err := validateLANFirewallProgram(program); err == nil {
+			t.Errorf("accepted firewall program %q", program)
+		}
+	}
+}
+
+func TestLANFirewallApplyRefusesMissingProgram(t *testing.T) {
+	forward, _ := parseForward("tcp:0.0.0.0:59188:8080")
+	program := filepath.Join(t.TempDir(), "runtime", "bin", lanFirewallQEMUName)
+	plan, err := makeLANFirewallPlan(t.TempDir(), program, false, []portForward{forward})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := executeLANFirewall(plan, true); err == nil {
+		t.Fatal("applied rules for a program that does not exist")
+	}
+}
 
 func TestNativeLANFirewallLifecycle(t *testing.T) {
 	if os.Getenv("TRYOMARCHY_FIREWALL_TEST") != "1" {
 		t.Skip("explicit disposable Windows firewall test")
 	}
 	configureSetupCancellation(false)
-	program, err := os.Executable()
+	self, err := os.ReadFile(os.Args[0])
 	if err != nil {
+		t.Fatal(err)
+	}
+	program := filepath.Join(t.TempDir(), "runtime", "bin", lanFirewallQEMUName)
+	if err := os.MkdirAll(filepath.Dir(program), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(program, self, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	forward, _ := parseForward("tcp:0.0.0.0:59188:8080")
