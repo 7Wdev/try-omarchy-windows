@@ -200,6 +200,8 @@ func curtainTick(primary uintptr) {
 	if !setupCancelled() {
 		status := uiText("status.starting_omarchy")
 		switch {
+		case runtimeLoaderPreparing.Load():
+			status = uiText("status.preparing_runtime")
 		case !times.boot.IsZero() && now.Sub(times.boot) >= curtainSlowNotice:
 			status = uiText("status.slow_start")
 		case times.checkPaint():

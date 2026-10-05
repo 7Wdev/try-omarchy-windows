@@ -471,6 +471,8 @@ func runTray(cfg trayLaunchConfig, ready chan<- uintptr, done chan<- struct{}) {
 			tip := appTitle
 			if HostPowerState().Phase == "recovery" {
 				tip = uiText("tray.power.paused_title")
+			} else if runtimeLoaderPreparing.Load() {
+				tip = uiText("status.preparing_runtime")
 			}
 			notificationText(nid.tip[:], tip)
 			notice := nid

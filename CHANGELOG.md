@@ -2,10 +2,6 @@
 
 ## v0.10.0 - 2026-10-05
 
-- Recovery choices stay above the Omarchy window when its desktop freezes.
-
-- Images copied from Windows keep their exact pixels when pasted into Omarchy.
-
 - On NVIDIA graphics, GPU mode no longer freezes when Media Player opens, and
   GTK4 apps such as Files open instead of crashing. Guest Vulkan apps use
   OpenGL there (#276).
@@ -68,6 +64,11 @@
   **Restart to update** in the tray (#307).
 - CPU rendering mode now really limits the processor features Omarchy sees,
   and PowerToys and AutoHotkey can see the Win key while Omarchy runs (#306).
+- Omarchy waits for Windows to finish loading a newly updated runtime instead
+  of giving up and retrying on slow first starts.
+- Images copied in Windows keep their exact pixels when pasted into Omarchy.
+- The recovery choices shown when Omarchy stops responding stay above the
+  Omarchy window.
 
 ## v0.9.0 - 2026-10-04
 

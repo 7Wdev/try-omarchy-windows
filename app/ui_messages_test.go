@@ -90,6 +90,18 @@ func TestLauncherLanguageSelectionKeepsChineseScriptsSeparate(t *testing.T) {
 	}
 }
 
+func TestRuntimeLoaderStatusFallsBackToEnglish(t *testing.T) {
+	catalogs, err := readUICatalogs(uiLocaleFiles)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for language := range catalogs {
+		if got := (uiTranslator{language: language, catalogs: catalogs}).text("status.preparing_runtime"); got == "" || got == "status.preparing_runtime" {
+			t.Fatalf("%s: missing preparation status: %q", language, got)
+		}
+	}
+}
+
 func TestLauncherCatalogRejectsBrokenPlaceholders(t *testing.T) {
 	files := fstest.MapFS{
 		"ui-locales/en.json":      {Data: []byte(`{"prompt":"Remove {path}?"}`)},
