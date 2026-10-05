@@ -17,7 +17,7 @@ const maxSumsBytes = 1 << 20
 // with -ldflags -X. Normal builds retain these production defaults.
 var (
 	defaultReleaseURL        = "https://github.com/omacom/try-omarchy-windows/releases/download/v0.10.0"
-	defaultSumsSHA256        = "5ebbe7dfd435e442eda30abcb9350df7d110037942b2acb696c52f08640bd4c0"
+	defaultSumsSHA256        = "5ef750a08e0fb487d093f30fea7aefa7ea7401195999aa6aecb191d397f00aee"
 	defaultRuntimeReleaseURL = ""
 	defaultRuntimeSumsSHA256 = ""
 )
