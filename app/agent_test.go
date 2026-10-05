@@ -321,3 +321,46 @@ func TestDropDragRequestReachesTheHandlerOnlyWhenWellFormed(t *testing.T) {
 	default:
 	}
 }
+
+func TestAgentHeartbeatStreamSurvivesOldLifetimeLimit(t *testing.T) {
+	host, guest := net.Pipe()
+	now := time.Unix(2000, 0)
+	health := &compositorHealth{}
+	health.boot(now)
+	health.userspaceReady()
+	health.connect(now)
+	a := &guestAgent{conn: host, now: func() time.Time { return now }, health: health}
+	done := make(chan struct{})
+	go func() { a.read(host, bufio.NewReaderSize(host, 16<<10)); close(done) }()
+	// A normal five-second heartbeat stream outlives the former 64 KiB budget
+	// after only a few hours. Reaching the final reply proves it stays open.
+	if _, err := guest.Write([]byte(strings.Repeat("compositor ok\n", 6000) + "compositor inactive\n")); err != nil {
+		t.Fatal(err)
+	}
+	guest.Close()
+	<-done
+	health.mu.Lock()
+	defer health.mu.Unlock()
+	if health.armed {
+		t.Fatal("final inactive report was lost")
+	}
+	if !health.lastOK.Equal(now) {
+		t.Fatal("valid heartbeats were not received")
+	}
+}
+
+func TestAgentRefusesForeignHealthPeer(t *testing.T) {
+	host, guest := net.Pipe()
+	health := &compositorHealth{}
+	a := &guestAgent{now: time.Now, health: health, peerAllowed: func(net.Conn) bool { return false }}
+	done := make(chan struct{})
+	go func() { a.serve(host); close(done) }()
+	if _, err := guest.Write([]byte("hello 5\ncompositor ok\n")); err == nil {
+		t.Fatal("foreign stream accepted")
+	}
+	guest.Close()
+	<-done
+	if health.armed || health.connected {
+		t.Fatal("foreign stream changed health")
+	}
+}

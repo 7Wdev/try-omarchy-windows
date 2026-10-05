@@ -49,9 +49,11 @@ type config struct {
 	cpus           int
 	hostTotalMiB   int
 	// Rendering decision inputs, see render_probe.go.
-	renderMode    string
-	runtimeID     string
-	displayDriver string
+	renderMode     string
+	runtimeID      string
+	displayDriver  string
+	temporaryCPU   bool
+	recoveryChoice *gpuRecoveryDecision
 	// venus offers guest Vulkan on the host GPU in GPU mode (venus.go).
 	venus bool
 }

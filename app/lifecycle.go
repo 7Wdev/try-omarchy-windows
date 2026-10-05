@@ -17,7 +17,7 @@ func serveLifecycle(c net.Conn, fromQEMU func(net.Conn) bool, handle func(string
 		return
 	}
 	switch line {
-	case "ready\n", "reboot\n":
+	case "ready\n", "reboot\n", "shutdown\n":
 		if !fromQEMU(c) {
 			return
 		}

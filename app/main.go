@@ -70,9 +70,11 @@ type config struct {
 	cpus         int
 	hostTotalMiB int
 	// Rendering decision inputs, see render_probe.go.
-	renderMode    string
-	runtimeID     string
-	displayDriver string
+	renderMode     string
+	runtimeID      string
+	displayDriver  string
+	temporaryCPU   bool
+	recoveryChoice *gpuRecoveryDecision
 	// venus offers guest Vulkan on the host GPU in GPU mode (venus.go).
 	venus bool
 }
@@ -916,6 +918,7 @@ func supervise(cfg *config, cmdline string) bool {
 		}
 		logf("booting - %s (attempt %d)", mode, attempt)
 		pendingReboot.Store(false)
+		guestCompositorHealth.boot(time.Now())
 		guestReady.Store(false)
 		guestBootStarted()
 		controlDir, err := prepareQMPControl()
@@ -953,6 +956,10 @@ func supervise(cfg *config, cmdline string) bool {
 		pinch := pinchEnabled(cfg)
 		logf("touchpad pinch forwarding: %v (guest declares device: %v)", pinch, cfg.guestPinch)
 		proc.Env = pinchEnvironment(proc.Env, pinch)
+		if cfg.useGpu {
+			cfg.displayDriver = displayDriverIdentity()
+			logGPULaunchFacts(cfg, proc.Env, dxgiAdapterFacts(), qemuGPUPreference(cfg.qemu))
+		}
 		// The w-binary's startup errors (bad args, SDL init) only ever reach
 		// stderr; without this they vanish and a dead QEMU is undebuggable.
 		ef, err := os.OpenFile(filepath.Join(cfg.vmDir, "qemu-stderr.log"),
@@ -1114,7 +1121,59 @@ func watch(cfg *config, qmp *qmpConn, exited <-chan error) bool {
 	logf("supervisor: watching guest lifecycle and file drops")
 	lines := qmp.readLines()
 	reason := ""
-	silent := 0
+	silence := qmpSilence{}
+	postReady := false
+	qmpRunning := true
+	lastTick, lastReply := time.Now(), time.Now()
+	hangReported := false
+	var recovery <-chan gpuRecoveryDecision
+	var cancelRecovery context.CancelFunc
+	defer func() {
+		if cancelRecovery != nil {
+			cancelRecovery()
+		}
+	}()
+	offerRecovery := func(trigger string) {
+		if recovery != nil || !postReady || setupCancelled() || pendingReboot.Load() || guestCompositorHealth.suppressRecovery() {
+			return
+		}
+		logf("display health: %s stopped responding; preserving session while offering recovery", trigger)
+		suggest := false
+		if cfg.useGpu {
+			var err error
+			suggest, err = recordGPUFreeze(cfg.dir, cfg.renderMode, true, postReady, cfg.runtimeID, cfg.displayDriver)
+			if err != nil {
+				logf("could not record GPU freeze: %v", err)
+			}
+		}
+		result := make(chan gpuRecoveryDecision, 1)
+		recovery = result
+		snapshotCfg := *cfg
+		dialogContext, cancel := context.WithCancel(context.Background())
+		cancelRecovery = cancel
+		go func() {
+			facts := launcherFacts(&snapshotCfg)
+			facts["display.freeze.trigger"] = trigger
+			facts["display.freeze.qemuPID"] = fmt.Sprint(qemuPid.Load())
+			facts["display.freeze.qmpMisses"] = fmt.Sprint(qmpHangMisses)
+			if snapshotCfg.useGpu {
+				recordGPURuntimeReport(snapshotCfg.dir, snapshotCfg.vmDir)
+			}
+			bundle, err := writeDiagnostics(snapshotCfg.dir, facts)
+			if err != nil {
+				logf("display freeze diagnostics failed: %v", err)
+			} else {
+				logf("display freeze diagnostics saved: %s", bundle)
+			}
+			select {
+			case <-dialogContext.Done():
+				result <- gpuRecoveryDecision{}
+				return
+			default:
+			}
+			result <- chooseFreezeRecovery(dialogContext.Done(), snapshotCfg.useGpu, trigger, bundle, err, suggest)
+		}()
+	}
 	tick := 0
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
@@ -1136,6 +1195,11 @@ func watch(cfg *config, qmp *qmpConn, exited <-chan error) bool {
 			stopDeadline = time.After(30 * time.Second)
 		}
 		if guestReady.Swap(false) {
+			postReady = true
+			guestCompositorHealth.userspaceReady()
+			if cfg.useGpu {
+				recordGPURuntimeReport(cfg.dir, cfg.vmDir)
+			}
 			commitLauncherUpdate(cfg.dir)
 			commitPayloadUpdates(cfg.dir)
 			commitCheckpointBoot(cfg.dir)
@@ -1150,11 +1214,39 @@ func watch(cfg *config, qmp *qmpConn, exited <-chan error) bool {
 			procDown = true
 		case line, ok := <-lines:
 			if !ok {
-				lines = nil // connection gone; QEMU is exiting
-				procDown = waitExit(exited, 15*time.Second, cfg)
+				lines = nil
+				if postReady && !pendingReboot.Load() && !setupCancelled() {
+					hangReported = true
+					select {
+					case <-exited:
+						procDown = true
+					default:
+						offerRecovery("qmp")
+					}
+				} else {
+					procDown = waitExit(exited, 15*time.Second, cfg)
+				}
 				break
 			}
-			silent = 0
+			silence.answered()
+			hangReported = false
+			lastReply = time.Now()
+			var status struct {
+				Return *vmRuntimeStatus `json:"return"`
+				Event  string           `json:"event"`
+			}
+			if json.Unmarshal([]byte(line), &status) == nil {
+				if status.Return != nil && status.Return.Status != "" {
+					qmpRunning = status.Return.Running
+				}
+				if status.Event == "STOP" {
+					qmpRunning = false
+				}
+				if status.Event == "RESUME" {
+					qmpRunning = true
+					guestCompositorHealth.power(time.Now(), false)
+				}
+			}
 			if diskFullPauseEvent(line) && !diskPauseNotified {
 				diskPauseNotified = true
 				message := uiText("tray.disk.paused")
@@ -1172,6 +1264,7 @@ func watch(cfg *config, qmp *qmpConn, exited <-chan error) bool {
 			}
 		case <-setupCancelWake:
 			if stopDeadline == nil {
+				guestCompositorHealth.stop()
 				logf("startup cancelled - shutting the guest down")
 				if err := qmp.writeLine(`{"execute":"system_powerdown"}`); err != nil {
 					procDown = waitExit(exited, 15*time.Second, cfg)
@@ -1189,17 +1282,60 @@ func watch(cfg *config, qmp *qmpConn, exited <-chan error) bool {
 			qmp.writeLine(`{"execute":"quit"}`)
 			stopDeadline = nil
 			procDown = waitExit(exited, 15*time.Second, cfg)
+		case decision := <-recovery:
+			recovery = nil
+			if cancelRecovery != nil {
+				cancelRecovery()
+				cancelRecovery = nil
+			}
+			if !decision.restart || setupCancelled() || pendingReboot.Load() || guestCompositorHealth.suppressRecovery() {
+				continue
+			}
+			if err := saveGPURecoveryChoice(cfg.dir, decision); err != nil {
+				errorBox(uiTextWith("recovery.gpu.settings_failed", map[string]string{"error": err.Error()}))
+				continue
+			}
+			guestCompositorHealth.stop()
+			cfg.recoveryChoice = &decision
+			// Only this explicit choice authorizes discarding the session.
+			qmp.writeLine(`{"execute":"quit"}`)
+			waitExit(exited, 15*time.Second, cfg)
+			guestUp.Store(false)
+			qemuPid.Store(0)
+			return true
 		case <-ticker.C:
+			now := time.Now()
+			if cancelRecovery != nil && guestCompositorHealth.suppressRecovery() {
+				cancelRecovery()
+			}
+			if now.Sub(lastTick) > 5*time.Second {
+				silence.answered()
+				lastReply = now
+			}
+			lastTick = now
+			if stopDeadline == nil && !pendingReboot.Load() && !setupCancelled() && guestCompositorHealth.stalled(now, qmpRunning && now.Sub(lastReply) < 15*time.Second) {
+				offerRecovery("compositor")
+			}
 			tick++
 			if tick%5 == 0 {
 				if err := qmp.writeLine(`{"execute":"query-status"}`); err != nil {
-					procDown = waitExit(exited, 15*time.Second, cfg)
-					break
+					if !postReady {
+						procDown = waitExit(exited, 15*time.Second, cfg)
+						break
+					}
+					if !hangReported && stopDeadline == nil {
+						hangReported = true
+						offerRecovery("qmp")
+					}
 				}
-				silent++
-				if silent >= 9 {
-					logf("QEMU main loop stopped answering - guest is down")
-					procDown = waitExit(exited, 15*time.Second, cfg)
+				if silence.probe() && !hangReported {
+					hangReported = true
+					if postReady && stopDeadline == nil && !setupCancelled() && !pendingReboot.Load() {
+						offerRecovery("qmp")
+					} else if !postReady {
+						logf("QEMU stopped answering during boot")
+						procDown = waitExit(exited, 15*time.Second, cfg)
+					}
 				}
 			}
 		}
@@ -1279,7 +1415,10 @@ func runLifecycleListener() {
 					defer func() { <-gate }()
 					serveLifecycle(c, lifecycleConnectionFromQEMU, func(line string, c net.Conn) {
 						switch line {
+						case "shutdown":
+							guestCompositorHealth.stop()
 						case "reboot":
+							guestCompositorHealth.stop()
 							logf("guest announced reboot")
 							pendingReboot.Store(true)
 						case "ready":
@@ -1328,7 +1467,7 @@ func waitExit(exited <-chan error, grace time.Duration, cfg *config) bool {
 // (settings say CPU) must not later be mistaken for a probe failure, so only
 // automatic and forced-GPU launches record CPU.
 func recordRenderResult(cfg *config) {
-	if cfg.runtimeID == "" || (cfg.renderMode == renderCPU && !cfg.useGpu) {
+	if !shouldRecordRenderResult(cfg.runtimeID, cfg.renderMode, cfg.useGpu, cfg.temporaryCPU) {
 		return
 	}
 	result := renderCPU
@@ -1357,6 +1496,8 @@ func runGuestAgent(dir string) {
 	}
 	logf("agent: listening on %d", agentPort)
 	a := newGuestAgent()
+	a.peerAllowed = lifecycleConnectionFromQEMU
+	a.health = &guestCompositorHealth
 	a.appsDir = dir
 	a.launchApp = func(id string) error { return launchApprovedWindowsApp(dir, id) }
 	a.dropDrag = performDropDrag

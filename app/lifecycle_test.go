@@ -6,7 +6,7 @@ import (
 )
 
 func TestLifecycleRefusesForeignPeers(t *testing.T) {
-	for _, line := range []string{"ready\n", "reboot\n", "ready extra\n", " ready\n", "ready", "reboot\r\n"} {
+	for _, line := range []string{"ready\n", "reboot\n", "shutdown\n", "ready extra\n", " ready\n", "ready", "reboot\r\n"} {
 		host, peer := net.Pipe()
 		handled := make(chan string, 1)
 		done := make(chan struct{})
