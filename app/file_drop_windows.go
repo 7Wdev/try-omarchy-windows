@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"unsafe"
 )
@@ -18,6 +19,9 @@ type fileDropWindow struct {
 }
 
 var fileDropWindows sync.Map
+var trayTransfersOpen atomic.Bool
+var trayTransfersWindow atomic.Uintptr
+var receivedDropCascade atomic.Uint32
 var fileDropClassOnce sync.Once
 var fileDropClassOK bool
 var fileDropCallback = syscall.NewCallback(fileDropWindowProc)
@@ -126,11 +130,16 @@ func fileDropWindowProc(hwnd, message, w, l uintptr) uintptr {
 			var paths []string
 			for i := uintptr(0); i < count; i++ {
 				length, _, _ := query.Call(w, i, 0, 0)
-				if length == 0 || length > 32768 {
+				if !validDropPathLength(length) {
+					usbSetText(state.status, uiText("drop.invalid_paths"))
 					return 0
 				}
 				data := make([]uint16, length+1)
-				query.Call(w, i, uintptr(unsafe.Pointer(&data[0])), uintptr(len(data)))
+				copied, _, _ := query.Call(w, i, uintptr(unsafe.Pointer(&data[0])), uintptr(len(data)))
+				if copied != length || data[0] == 0 {
+					usbSetText(state.status, uiText("drop.invalid_paths"))
+					return 0
+				}
 				paths = append(paths, syscall.UTF16ToString(data))
 			}
 			if err := sendDroppedFiles(paths); err != nil {
@@ -160,11 +169,16 @@ func fileDropWindowProc(hwnd, message, w, l uintptr) uintptr {
 				procDestroyWindow.Call(hwnd)
 			}
 			return 0
+		case 0x8005:
+			procShowWindow.Call(hwnd, swRestore)
+			procSetForegroundWindow.Call(hwnd)
+			return 0
 		case wmClose:
 			procDestroyWindow.Call(hwnd)
 			return 0
 		case wmDestroy:
 			fileDropWindows.Delete(hwnd)
+			trayTransfersWindow.CompareAndSwap(hwnd, 0)
 			procPostQuitMessage.Call(0)
 			return 0
 		}
@@ -173,7 +187,48 @@ func fileDropWindowProc(hwnd, message, w, l uintptr) uintptr {
 	return result
 }
 
-func showFileDropWindow(paths []string) {
+func validDropPathLength(length uintptr) bool { return length > 0 && length <= 32768 }
+
+func showTrayTransfers() {
+	requestTrayTransfers(func() {
+		go func() {
+			defer trayTransfersOpen.Store(false)
+			runFileDropWindow(nil, true)
+		}()
+	}, func(hwnd uintptr) { procPostMessageW.Call(hwnd, 0x8005, 0, 0) })
+}
+
+func requestTrayTransfers(open func(), activate func(uintptr)) {
+	if !trayTransfersOpen.CompareAndSwap(false, true) {
+		if hwnd := trayTransfersWindow.Load(); hwnd != 0 {
+			activate(hwnd)
+		}
+		return
+	}
+	open()
+}
+
+func dropWindowPosition(work screenRect, step uint32) (int32, int32) {
+	offset := int32(step%8) * 24
+	x := work.Left + 32 + offset
+	y := work.Top + 32 + offset
+	x = max(work.Left, min(x, work.Right-580))
+	y = max(work.Top, min(y, work.Bottom-380))
+	return x, y
+}
+
+func allowExplorerDrops(hwnd uintptr, allow func(uintptr, uintptr) error) error {
+	for _, message := range []uintptr{0x233, 0x4a, 0x49} { // WM_DROPFILES, WM_COPYDATA, WM_COPYGLOBALDATA
+		if err := allow(hwnd, message); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func showFileDropWindow(paths []string) { runFileDropWindow(paths, false) }
+
+func runFileDropWindow(paths []string, userInitiated bool) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	ole := syscall.NewLazyDLL("ole32.dll")
@@ -203,9 +258,24 @@ func showFileDropWindow(paths []string) {
 		return
 	}
 	title, _ := syscall.UTF16PtrFromString(uiText("drop.title"))
-	hwnd, _, _ := procCreateWindowExW.Call(0, uintptr(unsafe.Pointer(class)), uintptr(unsafe.Pointer(title)), wsCaption|wsSysmenu, 100, 100, 580, 380, 0, 0, instance, 0)
+	monitor, _, _ := user32.NewProc("MonitorFromWindow").Call(qemuHwnd.Load(), 2) // nearest monitor, primary if no VM
+	info := monitorInfoEx{Size: uint32(unsafe.Sizeof(monitorInfoEx{}))}
+	work := screenRect{Right: 1024, Bottom: 768}
+	if ok, _, _ := procGetMonitorInfoW.Call(monitor, uintptr(unsafe.Pointer(&info))); ok != 0 {
+		work = info.Work
+	}
+	step := uint32(0)
+	if !userInitiated {
+		step = receivedDropCascade.Add(1) - 1
+	}
+	x, y := dropWindowPosition(work, step)
+	hwnd, _, _ := procCreateWindowExW.Call(0, uintptr(unsafe.Pointer(class)), uintptr(unsafe.Pointer(title)), wsCaption|wsSysmenu, uintptr(x), uintptr(y), 580, 380, 0, 0, instance, 0)
 	if hwnd == 0 {
 		return
+	}
+	if userInitiated {
+		trayTransfersWindow.Store(hwnd)
+		defer trayTransfersWindow.CompareAndSwap(hwnd, 0)
 	}
 	state := &fileDropWindow{paths: append([]string(nil), paths...)}
 	fileDropWindows.Store(hwnd, state)
@@ -231,10 +301,24 @@ func showFileDropWindow(paths []string) {
 	control("BUTTON", chooseLabel, 16, 302, chooseWidth, 28, 4602, wsTabstop)
 	control("BUTTON", openLabel, 16+chooseWidth+10, 302, openWidth, 28, 4601, wsTabstop)
 	control("BUTTON", closeLabel, 552-closeWidth, 302, closeWidth, 28, 2, wsTabstop)
+	if err := allowExplorerDrops(hwnd, func(window, message uintptr) error {
+		ok, _, err := user32.NewProc("ChangeWindowMessageFilterEx").Call(window, message, 1, 0) // MSGFLT_ALLOW
+		if ok == 0 {
+			return err
+		}
+		return nil
+	}); err != nil {
+		logf("file drops: cannot allow Explorer messages: %v", err)
+		usbSetText(state.status, uiText("drop.filter_failed"))
+	}
 	shell32.NewProc("DragAcceptFiles").Call(hwnd, 1)
 	comctl32.NewProc("SetWindowSubclass").Call(state.list, fileDropListCallback, 1, 0)
-	procShowWindow.Call(hwnd, swShow)
-	procSetForegroundWindow.Call(hwnd)
+	if userInitiated {
+		procShowWindow.Call(hwnd, swShow)
+		procSetForegroundWindow.Call(hwnd)
+	} else {
+		procShowWindow.Call(hwnd, swShowNoActivate)
+	}
 	var message msgStruct
 	for {
 		r, _, _ := procGetMessageW.Call(uintptr(unsafe.Pointer(&message)), 0, 0, 0)

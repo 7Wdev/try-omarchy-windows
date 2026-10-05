@@ -220,6 +220,8 @@ func runTray(cfg trayLaunchConfig, ready chan<- uintptr, done chan<- struct{}) {
 	var aboutOpen atomic.Bool
 	var settingsOpen, diagnosticsOpen, devicesOpen atomic.Bool
 	var noticeDetails string
+	const retryTimer = 1
+	retry := trayAddRetry{}
 
 	addIcon := func() bool {
 		if hwnd == 0 {
@@ -233,6 +235,15 @@ func runTray(cfg trayLaunchConfig, ready chan<- uintptr, done chan<- struct{}) {
 		nid.version = notifyVersion
 		procShellNotifyIconW.Call(nimSetVersion, uintptr(unsafe.Pointer(&nid)))
 		return true
+	}
+
+	retryAdd := func() {
+		user32.NewProc("KillTimer").Call(hwnd, retryTimer)
+		if retry.afterAdd(addIcon()) {
+			if timer, _, err := user32.NewProc("SetTimer").Call(hwnd, retryTimer, 2000, 0); timer == 0 {
+				logf("tray: retry timer failed: %v", err)
+			}
+		}
 	}
 
 	launchControl := func(flag string, running *atomic.Bool) {
@@ -334,7 +345,7 @@ func runTray(cfg trayLaunchConfig, ready chan<- uintptr, done chan<- struct{}) {
 		case trayCommandShare:
 			openSharedFolder()
 		case trayCommandTransfers:
-			go showFileDropWindow(nil)
+			showTrayTransfers()
 		case trayCommandDevices:
 			launchControl("-devices", &devicesOpen)
 		case trayCommandSettings:
@@ -380,11 +391,17 @@ func runTray(cfg trayLaunchConfig, ready chan<- uintptr, done chan<- struct{}) {
 	}
 
 	wndProc := syscall.NewCallback(func(window, message, wParam, lParam uintptr) uintptr {
-		if message == uintptr(taskbarCreated) {
-			addIcon()
+		if taskbarCreated != 0 && message == uintptr(taskbarCreated) {
+			retry = trayAddRetry{}
+			retryAdd()
 			return 0
 		}
 		switch message {
+		case 0x113: // WM_TIMER
+			if wParam == retryTimer {
+				retryAdd()
+			}
+			return 0
 		case traySettingsMessage:
 			launchControl("-settings", &settingsOpen)
 			return 0
@@ -432,6 +449,7 @@ func runTray(cfg trayLaunchConfig, ready chan<- uintptr, done chan<- struct{}) {
 			procDestroyWindow.Call(window)
 			return 0
 		case wmDestroy:
+			user32.NewProc("KillTimer").Call(window, retryTimer)
 			unregisterPower()
 			trayWindow.CompareAndSwap(window, 0)
 			procShellNotifyIconW.Call(nimDelete, uintptr(unsafe.Pointer(&nid)))
@@ -473,13 +491,22 @@ func runTray(cfg trayLaunchConfig, ready chan<- uintptr, done chan<- struct{}) {
 	nid.id = trayIconID
 	nid.flags = nifMessage | nifIcon | nifTip | nifShowTip
 	nid.callbackMessage = trayCallbackMessage
-	nid.icon, _, _ = procLoadIconW.Call(hInst, 1)
-	copy(nid.tip[:], syscall.StringToUTF16(appTitle))
-	if !addIcon() {
-		procDestroyWindow.Call(hwnd)
-		ready <- 0
-		return
+	var ownedIcon bool
+	nid.icon, ownedIcon = selectTrayIcon(func() (uintptr, bool) {
+		metric := comctl32.NewProc("LoadIconMetric")
+		if metric.Find() != nil {
+			return 0, false
+		}
+		var icon uintptr
+		hr, _, _ := metric.Call(hInst, 1, 0, uintptr(unsafe.Pointer(&icon))) // LIM_SMALL
+		return icon, int32(hr) >= 0
+	}, func() uintptr { icon, _, _ := procLoadIconW.Call(hInst, 1); return icon })
+	if ownedIcon {
+		defer user32.NewProc("DestroyIcon").Call(nid.icon)
 	}
+
+	copy(nid.tip[:], syscall.StringToUTF16(appTitle))
+	retryAdd()
 	trayWindow.Store(hwnd)
 	logf("tray: ready")
 	ready <- hwnd
@@ -494,4 +521,22 @@ func runTray(cfg trayLaunchConfig, ready chan<- uintptr, done chan<- struct{}) {
 		procDispatchMessageW.Call(uintptr(unsafe.Pointer(&message)))
 	}
 	logf("tray: stopped")
+}
+
+// The initial add plus ten timer retries leave TaskbarCreated available afterward.
+type trayAddRetry struct{ retries int }
+
+func (r *trayAddRetry) afterAdd(added bool) bool {
+	if added || r.retries >= 10 {
+		return false
+	}
+	r.retries++
+	return true
+}
+
+func selectTrayIcon(metric func() (uintptr, bool), fallback func() uintptr) (uintptr, bool) {
+	if icon, ok := metric(); ok && icon != 0 {
+		return icon, true
+	}
+	return fallback(), false // LoadIconW returns a shared icon.
 }
