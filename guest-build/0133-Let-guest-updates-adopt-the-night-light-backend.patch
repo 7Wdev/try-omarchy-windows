@@ -1,0 +1,591 @@
+From 8ff6f68435e2b96df4b7ee3400550f8d5d62fce7 Mon Sep 17 00:00:00 2001
+From: Tyler South <tsouth2@gmail.com>
+Date: Mon, 5 Oct 2026 00:58:12 -0400
+Subject: [PATCH] Let guest updates adopt the night-light backend
+
+---
+ .../usr/local/lib/try-omarchy/catch-up        |   5 +-
+ .../local/lib/try-omarchy/install-nightlight  |   2 +-
+ ...omarchy-update-system-pkgs-when-conflicted | 116 ++++++++++++++++++
+ .../try-omarchy/nightlight/manifest.json      |   9 ++
+ guest/patches/omarchy/virtio-nightlight.patch |  15 +++
+ guest/scripts/finalize-rootfs.sh              |   3 +-
+ guest/spec.json                               |  11 +-
+ ...omarchy-update-system-pkgs-when-conflicted | 115 +++++++++++++++++
+ guest/tests/test_battery_details.py           |   2 +-
+ guest/tests/test_compositor_health.py         |   2 +-
+ guest/tests/test_guest_qol.py                 |   2 +-
+ guest/tests/test_live_update.py               |   2 +-
+ guest/tests/test_native_nightlight.py         |   4 +-
+ guest/tests/test_nightlight_upgrade.py        |  82 +++++++++++++
+ guest/tests/test_notification_privacy.py      |   4 +-
+ guest/tests/test_windows_volume_sync.py       |   2 +-
+ guest/tests/verify.py                         |   2 +-
+ 17 files changed, 361 insertions(+), 17 deletions(-)
+ create mode 100644 guest/factory-overlay/usr/share/try-omarchy/nightlight/bin_omarchy-update-system-pkgs-when-conflicted
+ create mode 100644 guest/tests/fixtures/nightlight/bin/omarchy-update-system-pkgs-when-conflicted
+ create mode 100644 guest/tests/test_nightlight_upgrade.py
+
+diff --git a/guest/factory-overlay/usr/local/lib/try-omarchy/catch-up b/guest/factory-overlay/usr/local/lib/try-omarchy/catch-up
+index ce8cdd5..6ebd654 100755
+--- a/guest/factory-overlay/usr/local/lib/try-omarchy/catch-up
++++ b/guest/factory-overlay/usr/local/lib/try-omarchy/catch-up
+@@ -44,9 +44,10 @@ if [[ -x $battery_installer ]] && { [[ ! $previous_revision =~ ^[0-9]+$ ]] || ((
+   "$battery_installer"
+ fi
+ 
+-# Upgrade only reviewed night-light defaults, preserving custom commands and services.
++# Upgrade reviewed night-light defaults and their package-conflict recovery,
++# preserving custom commands and services.
+ nightlight_installer=${TRY_OMARCHY_NIGHTLIGHT_INSTALLER:-/usr/local/lib/try-omarchy/install-nightlight}
+-if [[ -x $nightlight_installer ]] && { [[ ! $previous_revision =~ ^[0-9]+$ ]] || (( previous_revision < 51 )); }; then
++if [[ -x $nightlight_installer ]] && { [[ ! $previous_revision =~ ^[0-9]+$ ]] || (( previous_revision < 55 )); }; then
+   "$nightlight_installer" --homes "$homes"
+ fi
+ 
+diff --git a/guest/factory-overlay/usr/local/lib/try-omarchy/install-nightlight b/guest/factory-overlay/usr/local/lib/try-omarchy/install-nightlight
+index 1518ffc..142e0a2 100755
+--- a/guest/factory-overlay/usr/local/lib/try-omarchy/install-nightlight
++++ b/guest/factory-overlay/usr/local/lib/try-omarchy/install-nightlight
+@@ -8,7 +8,7 @@ import os
+ from pathlib import Path
+ import tempfile
+ 
+-TARGETS = {'usr/bin/omarchy-toggle-nightlight', 'usr/share/omarchy/shell/plugins/services/nightlight/Service.qml'}
++TARGETS = {'usr/bin/omarchy-toggle-nightlight', 'usr/bin/omarchy-update-system-pkgs-when-conflicted', 'usr/share/omarchy/shell/plugins/services/nightlight/Service.qml'}
+ 
+ 
+ def digest(data):
+diff --git a/guest/factory-overlay/usr/share/try-omarchy/nightlight/bin_omarchy-update-system-pkgs-when-conflicted b/guest/factory-overlay/usr/share/try-omarchy/nightlight/bin_omarchy-update-system-pkgs-when-conflicted
+new file mode 100644
+index 0000000..d78952c
+--- /dev/null
++++ b/guest/factory-overlay/usr/share/try-omarchy/nightlight/bin_omarchy-update-system-pkgs-when-conflicted
+@@ -0,0 +1,116 @@
++#!/bin/bash
++
++# omarchy:summary=Retry a system package update that hit a conflict
++# omarchy:hidden=true
++
++# Internal to omarchy-update-system-pkgs. Not a command to run by hand: it acts
++# on a pacman error report, and an old or hand-written one would move live files
++# out of the way for an upgrade that is not happening.
++#
++# Paths written by a script rather than installed by a package -- an earlier
++# release's installer, an in-place edit -- belong to nobody, and pacman refuses
++# to install over a file it doesn't own. This clears them and runs the upgrade
++# again.
++#
++# Packages that conflict with each other are the other blocked upgrade, and that
++# one is a decision rather than a cleanup, so it goes back to the person
++# watching the update.
++
++set -e
++
++[[ ${OMARCHY_UPDATE_CONFLICT:-} == 1 ]] || {
++  echo "omarchy-update-system-pkgs-when-conflicted runs as part of omarchy update" >&2
++  exit 1
++}
++
++errors=${1:?usage: omarchy-update-system-pkgs-when-conflicted <pacman-error-report>}
++
++# Where a file pacman is taking over gets moved, mirroring its full path. Kept
++# out of the directory it came from: SDDM reads every file in sddm.conf.d
++# whatever its extension, and systemd-sleep runs every executable in
++# system-sleep, so a copy left beside the original would still be live.
++replaced=${OMARCHY_REPLACED_DIR:-/var/lib/omarchy/replaced}
++
++# Anything moved that the upgrade didn't end up installing goes back, whether
++# the retry failed or the move loop itself was interrupted partway. Nothing here
++# should leave configuration inactive that was live when it started.
++#
++# -e follows symlinks, so a dangling one reads as absent. -L catches those: a
++# link pacman installed, and a relative link that no longer resolves from inside
++# the quarantine.
++moved=()
++restore_moved() {
++  local path restorable=()
++
++  for path in "${moved[@]}"; do
++    if [[ ! -e $path && ! -L $path ]] && [[ -e $replaced$path || -L $replaced$path ]]; then
++      restorable+=("$path")
++    fi
++  done
++  ((${#restorable[@]})) || return 0
++
++  echo -e "\e[33m\nPutting back what the upgrade didn't take:\e[0m"
++  for path in "${restorable[@]}"; do
++    sudo mv -T "$replaced$path" "$path"
++    echo "  $path"
++  done
++}
++
++# exec'd into, so the caller's EXIT trap never ran and the report is still here.
++# Cleaning it up is this script's job from now on.
++trap 'restore_moved; rm -f "$errors"' EXIT
++trap 'exit 1' INT TERM
++
++# Pacman answers its own conflict question with No under --noconfirm, so one
++# retired package can stop every upgrade after it. Which package to drop is a
++# decision -- an upstream split retires one, but so does a package the user
++# picked on purpose -- so put the question to whoever started the update rather
++# than guess at it. Pacman printed what conflicts just above.
++if grep -q 'unresolvable package conflicts detected' "$errors"; then
++  # -y promised not to ask anything, and without a terminal there is nowhere to
++  # ask; either way pacman would sit on a prompt nobody answers. An upgrade that
++  # isn't running --noconfirm puts its questions on stderr and reads the answers
++  # from stdin, so those are the two that have to be a terminal.
++  if [[ ${OMARCHY_UPDATE_UNATTENDED:-} == 1 || ! -t 0 || ! -t 2 ]]; then
++    echo -e "\e[33m\nThis upgrade needs an answer. Run omarchy update interactively to give it.\e[0m" >&2
++    exit 1
++  fi
++
++  echo -e "\e[33m\nA package conflict stopped this upgrade. Running it again so you can answer:\e[0m"
++  OMARCHY_UPDATE_INTERACTIVE=1 omarchy-update-system-pkgs
++  exit 0
++fi
++
++# Paths one of these packages installs that pacman doesn't own. Moving them out
++# of the way is what lets the upgrade through, and works on a leftover directory
++# as well as a file.
++#
++# "pkg: /path exists in filesystem" is unowned; the same line plus "(owned by
++# x)" is not, so the end anchor takes only ours. -Qo re-checks the live database
++# before anything moves. The night-light backend arrives through compatibility
++# catch-up before the runtime package owns it; adopt only those two paths.
++mapfile -t leftovers < <(
++  grep -oP '^(omarchy(-dev|-settings|-settings-dev)?: \K.+|try-omarchy-runtime: \K/usr/local/(bin/omarchy-native-nightlight|share/try-omarchy/nightlight\.frag))(?= exists in filesystem$)' "$errors" |
++    while IFS= read -r path; do pacman -Qo "$path" &>/dev/null || echo "$path"; done
++)
++((${#leftovers[@]})) || exit 1
++
++# All of them or none: moving a subset leaves the retry blocked by the rest, and
++# the moved files inactive for nothing.
++((${#leftovers[@]} == $(grep -c ' exists in filesystem' "$errors"))) || exit 1
++
++echo -e "\e[33m\nTaking over files pacman doesn't own yet:\e[0m"
++for path in "${leftovers[@]}"; do
++  sudo mkdir -p "$replaced${path%/*}"
++  # -T so an existing directory at the destination is replaced, not moved into.
++  sudo mv -T --backup=numbered "$path" "$replaced$path"
++  moved+=("$path")
++  echo "  $path -> $replaced$path"
++done
++echo
++
++if OMARCHY_UPDATE_RETRY=1 omarchy-update-system-pkgs; then
++  moved=()
++  exit 0
++fi
++exit 1
+diff --git a/guest/factory-overlay/usr/share/try-omarchy/nightlight/manifest.json b/guest/factory-overlay/usr/share/try-omarchy/nightlight/manifest.json
+index 35e405f..cf9c5ee 100644
+--- a/guest/factory-overlay/usr/share/try-omarchy/nightlight/manifest.json
++++ b/guest/factory-overlay/usr/share/try-omarchy/nightlight/manifest.json
+@@ -16,5 +16,14 @@
+     ],
+     "afterSha256": "7b50c10f2975fb264707374a752ddc00040c8416891451e76846c211f39c852a",
+     "mode": 420
++  },
++  {
++    "path": "usr/bin/omarchy-update-system-pkgs-when-conflicted",
++    "asset": "bin_omarchy-update-system-pkgs-when-conflicted",
++    "beforeSha256": [
++      "dae1379216754e372f749ce4a4f3232b20225d08e2d0784d7607bba113ebbc62"
++    ],
++    "afterSha256": "496a4d7e07a3af365d5f6669c348452fa6303c1db9950095bc2b259e66d2537a",
++    "mode": 493
+   }
+ ]
+diff --git a/guest/patches/omarchy/virtio-nightlight.patch b/guest/patches/omarchy/virtio-nightlight.patch
+index 995c95f..9a20736 100644
+--- a/guest/patches/omarchy/virtio-nightlight.patch
++++ b/guest/patches/omarchy/virtio-nightlight.patch
+@@ -129,3 +129,18 @@
+ +      var enabling = root.toggle()
+        return enabling ? "enabled" : "disabled"
+      }
++--- a/bin/omarchy-update-system-pkgs-when-conflicted
+++++ b/bin/omarchy-update-system-pkgs-when-conflicted
++@@ -87,9 +87,10 @@
++ #
++ # "pkg: /path exists in filesystem" is unowned; the same line plus "(owned by
++ # x)" is not, so the end anchor takes only ours. -Qo re-checks the live database
++-# before anything moves.
+++# before anything moves. The night-light backend arrives through compatibility
+++# catch-up before the runtime package owns it; adopt only those two paths.
++ mapfile -t leftovers < <(
++-  grep -oP '^omarchy(-dev|-settings|-settings-dev)?: \K.+(?= exists in filesystem$)' "$errors" |
+++  grep -oP '^(omarchy(-dev|-settings|-settings-dev)?: \K.+|try-omarchy-runtime: \K/usr/local/(bin/omarchy-native-nightlight|share/try-omarchy/nightlight\.frag))(?= exists in filesystem$)' "$errors" |
++     while IFS= read -r path; do pacman -Qo "$path" &>/dev/null || echo "$path"; done
++ )
++ ((${#leftovers[@]})) || exit 1
+diff --git a/guest/scripts/finalize-rootfs.sh b/guest/scripts/finalize-rootfs.sh
+index 5ab94a1..b5069e5 100755
+--- a/guest/scripts/finalize-rootfs.sh
++++ b/guest/scripts/finalize-rootfs.sh
+@@ -239,7 +239,8 @@ tar -C / -cf /usr/share/try-omarchy/compat-overlay.tar "${compat_paths[@]}"
+ # Revision 52 repairs popup privacy using the private authentication state.
+ # Revision 53 delivers bounded compositor health probes through the agent.
+ # Revision 54 pauses config autoreload during live package updates.
+-compat_revision=54
++# Revision 55 lets pacman adopt the catch-up night-light backend on update.
++compat_revision=55
+ printf '%s:%s\n' "$compat_revision" "$kernel_release" >/usr/share/try-omarchy/compat-version
+ 
+ # Fail the build if DKMS or networking modules were not packaged for this kernel.
+diff --git a/guest/spec.json b/guest/spec.json
+index 367b452..0c62e86 100644
+--- a/guest/spec.json
++++ b/guest/spec.json
+@@ -30,7 +30,7 @@
+     "versionFile": "4.0.0.alpha",
+     "channel": "quattro",
+     "license": "MIT",
+-    "packageRelease": 5,
++    "packageRelease": 6,
+     "integrationDepends": [
+       "fcitx5",
+       "fcitx5-chewing",
+@@ -252,10 +252,10 @@
+       },
+       {
+         "id": "virtio-nightlight",
+-        "description": "Apply manual night light through a screen shader on the Windows virtio GPU, preserving custom shaders and serialized toggle intent.",
++        "description": "Apply manual night light through a screen shader on the Windows virtio GPU, preserving custom shaders and serialized toggle intent. Adopt only the two unowned compatibility-delivered backend files during runtime upgrades, with failed-retry recovery.",
+         "reference": "https://github.com/omacom/try-omarchy/commit/54a222371eddb9d2c5286f0431302fd16bea9054",
+         "patch": "patches/omarchy/virtio-nightlight.patch",
+-        "patchSha256": "bd80f94c99d639374e80dabff3608cd0e4a9ae5d15d62f0843e28858903e07f8",
++        "patchSha256": "38e20de5825cf6131bbf7762ec519a7f43326275b944c145c3f9d7d2d3d6ad92",
+         "targets": [
+           {
+             "path": "bin/omarchy-toggle-nightlight",
+@@ -266,6 +266,11 @@
+             "path": "shell/plugins/services/nightlight/Service.qml",
+             "beforeSha256": "721cd63d2404859918e28f92420e87369328c26fcef7df821443baa16d0b1897",
+             "afterSha256": "7b50c10f2975fb264707374a752ddc00040c8416891451e76846c211f39c852a"
++          },
++          {
++            "path": "bin/omarchy-update-system-pkgs-when-conflicted",
++            "beforeSha256": "dae1379216754e372f749ce4a4f3232b20225d08e2d0784d7607bba113ebbc62",
++            "afterSha256": "496a4d7e07a3af365d5f6669c348452fa6303c1db9950095bc2b259e66d2537a"
+           }
+         ]
+       }
+diff --git a/guest/tests/fixtures/nightlight/bin/omarchy-update-system-pkgs-when-conflicted b/guest/tests/fixtures/nightlight/bin/omarchy-update-system-pkgs-when-conflicted
+new file mode 100644
+index 0000000..58a3a0c
+--- /dev/null
++++ b/guest/tests/fixtures/nightlight/bin/omarchy-update-system-pkgs-when-conflicted
+@@ -0,0 +1,115 @@
++#!/bin/bash
++
++# omarchy:summary=Retry a system package update that hit a conflict
++# omarchy:hidden=true
++
++# Internal to omarchy-update-system-pkgs. Not a command to run by hand: it acts
++# on a pacman error report, and an old or hand-written one would move live files
++# out of the way for an upgrade that is not happening.
++#
++# Paths written by a script rather than installed by a package -- an earlier
++# release's installer, an in-place edit -- belong to nobody, and pacman refuses
++# to install over a file it doesn't own. This clears them and runs the upgrade
++# again.
++#
++# Packages that conflict with each other are the other blocked upgrade, and that
++# one is a decision rather than a cleanup, so it goes back to the person
++# watching the update.
++
++set -e
++
++[[ ${OMARCHY_UPDATE_CONFLICT:-} == 1 ]] || {
++  echo "omarchy-update-system-pkgs-when-conflicted runs as part of omarchy update" >&2
++  exit 1
++}
++
++errors=${1:?usage: omarchy-update-system-pkgs-when-conflicted <pacman-error-report>}
++
++# Where a file pacman is taking over gets moved, mirroring its full path. Kept
++# out of the directory it came from: SDDM reads every file in sddm.conf.d
++# whatever its extension, and systemd-sleep runs every executable in
++# system-sleep, so a copy left beside the original would still be live.
++replaced=${OMARCHY_REPLACED_DIR:-/var/lib/omarchy/replaced}
++
++# Anything moved that the upgrade didn't end up installing goes back, whether
++# the retry failed or the move loop itself was interrupted partway. Nothing here
++# should leave configuration inactive that was live when it started.
++#
++# -e follows symlinks, so a dangling one reads as absent. -L catches those: a
++# link pacman installed, and a relative link that no longer resolves from inside
++# the quarantine.
++moved=()
++restore_moved() {
++  local path restorable=()
++
++  for path in "${moved[@]}"; do
++    if [[ ! -e $path && ! -L $path ]] && [[ -e $replaced$path || -L $replaced$path ]]; then
++      restorable+=("$path")
++    fi
++  done
++  ((${#restorable[@]})) || return 0
++
++  echo -e "\e[33m\nPutting back what the upgrade didn't take:\e[0m"
++  for path in "${restorable[@]}"; do
++    sudo mv -T "$replaced$path" "$path"
++    echo "  $path"
++  done
++}
++
++# exec'd into, so the caller's EXIT trap never ran and the report is still here.
++# Cleaning it up is this script's job from now on.
++trap 'restore_moved; rm -f "$errors"' EXIT
++trap 'exit 1' INT TERM
++
++# Pacman answers its own conflict question with No under --noconfirm, so one
++# retired package can stop every upgrade after it. Which package to drop is a
++# decision -- an upstream split retires one, but so does a package the user
++# picked on purpose -- so put the question to whoever started the update rather
++# than guess at it. Pacman printed what conflicts just above.
++if grep -q 'unresolvable package conflicts detected' "$errors"; then
++  # -y promised not to ask anything, and without a terminal there is nowhere to
++  # ask; either way pacman would sit on a prompt nobody answers. An upgrade that
++  # isn't running --noconfirm puts its questions on stderr and reads the answers
++  # from stdin, so those are the two that have to be a terminal.
++  if [[ ${OMARCHY_UPDATE_UNATTENDED:-} == 1 || ! -t 0 || ! -t 2 ]]; then
++    echo -e "\e[33m\nThis upgrade needs an answer. Run omarchy update interactively to give it.\e[0m" >&2
++    exit 1
++  fi
++
++  echo -e "\e[33m\nA package conflict stopped this upgrade. Running it again so you can answer:\e[0m"
++  OMARCHY_UPDATE_INTERACTIVE=1 omarchy-update-system-pkgs
++  exit 0
++fi
++
++# Paths one of these packages installs that pacman doesn't own. Moving them out
++# of the way is what lets the upgrade through, and works on a leftover directory
++# as well as a file.
++#
++# "pkg: /path exists in filesystem" is unowned; the same line plus "(owned by
++# x)" is not, so the end anchor takes only ours. -Qo re-checks the live database
++# before anything moves.
++mapfile -t leftovers < <(
++  grep -oP '^omarchy(-dev|-settings|-settings-dev)?: \K.+(?= exists in filesystem$)' "$errors" |
++    while IFS= read -r path; do pacman -Qo "$path" &>/dev/null || echo "$path"; done
++)
++((${#leftovers[@]})) || exit 1
++
++# All of them or none: moving a subset leaves the retry blocked by the rest, and
++# the moved files inactive for nothing.
++((${#leftovers[@]} == $(grep -c ' exists in filesystem' "$errors"))) || exit 1
++
++echo -e "\e[33m\nTaking over files pacman doesn't own yet:\e[0m"
++for path in "${leftovers[@]}"; do
++  sudo mkdir -p "$replaced${path%/*}"
++  # -T so an existing directory at the destination is replaced, not moved into.
++  sudo mv -T --backup=numbered "$path" "$replaced$path"
++  moved+=("$path")
++  echo "  $path -> $replaced$path"
++done
++echo
++
++if OMARCHY_UPDATE_RETRY=1 omarchy-update-system-pkgs; then
++  moved=()
++  exit 0
++fi
++exit 1
+diff --git a/guest/tests/test_battery_details.py b/guest/tests/test_battery_details.py
+index 2a677db..4462eda 100644
+--- a/guest/tests/test_battery_details.py
++++ b/guest/tests/test_battery_details.py
+@@ -204,7 +204,7 @@ class BatteryDetailsFlowTests(unittest.TestCase):
+     def test_compatibility_delivery_and_dkms_version(self):
+         overlay = GUEST / "factory-overlay"
+         finalize = (GUEST / "scripts/finalize-rootfs.sh").read_text()
+-        self.assertIn("compat_revision=54", finalize)
++        self.assertIn("compat_revision=55", finalize)
+         self.assertIn("usr/src/try-omarchy-battery-1.1.0", finalize)
+         self.assertIn("usr/local/lib/try-omarchy/update-battery-dkms", finalize)
+         self.assertIn('PACKAGE_VERSION="1.1.0"', (MODULE_SOURCE.parent / "dkms.conf").read_text())
+diff --git a/guest/tests/test_compositor_health.py b/guest/tests/test_compositor_health.py
+index f93f9e2..b503175 100644
+--- a/guest/tests/test_compositor_health.py
++++ b/guest/tests/test_compositor_health.py
+@@ -34,7 +34,7 @@ class CompositorHealthTests(unittest.TestCase):
+ 
+     def test_existing_disks_receive_health_files(self):
+         finalizer = (GUEST / 'scripts/finalize-rootfs.sh').read_text()
+-        self.assertIn('compat_revision=54', finalizer)
++        self.assertIn('compat_revision=55', finalizer)
+         for name in ['agent', 'compositor-health']:
+             self.assertIn('  usr/local/lib/try-omarchy/' + name, finalizer)
+         self.assertTrue(HELPER.stat().st_mode & 0o111)
+diff --git a/guest/tests/test_guest_qol.py b/guest/tests/test_guest_qol.py
+index 78b36c6..184a071 100644
+--- a/guest/tests/test_guest_qol.py
++++ b/guest/tests/test_guest_qol.py
+@@ -215,7 +215,7 @@ class GuestQolTests(unittest.TestCase):
+     def test_compatibility_delivers_guarded_payload_once_per_revision(self):
+         finalize = (GUEST / "scripts/finalize-rootfs.sh").read_text()
+         paths = finalize.split("compat_paths=(", 1)[1].split(")", 1)[0]
+-        self.assertIn("compat_revision=54", finalize)
++        self.assertIn("compat_revision=55", finalize)
+         for path in ("usr/local/bin/omarchy-native-screensaver-text", "usr/local/lib/try-omarchy/install-guest-qol", "usr/share/try-omarchy/guest-qol", "usr/local/bin/omarchy-windows-audio-bridge"):
+             self.assertIn(path, paths)
+         self.assertNotIn("etc/fonts/conf.d/30-try-omarchy.conf", paths)
+diff --git a/guest/tests/test_live_update.py b/guest/tests/test_live_update.py
+index c8bb26b..6e7a5bd 100644
+--- a/guest/tests/test_live_update.py
++++ b/guest/tests/test_live_update.py
+@@ -176,7 +176,7 @@ class LiveUpdateTests(unittest.TestCase):
+ 
+     def test_delivery_and_best_effort_hook(self):
+         finalizer = (GUEST / 'scripts/finalize-rootfs.sh').read_text()
+-        self.assertIn('compat_revision=54', finalizer)
++        self.assertIn('compat_revision=55', finalizer)
+         for path in ['usr/local/lib/try-omarchy/live-update', 'etc/pacman.d/hooks/00-try-omarchy-live-update.hook', 'etc/pacman.d/hooks/zz-try-omarchy-live-update.hook']:
+             self.assertIn(path, finalizer)
+         pre = (GUEST / 'factory-overlay/etc/pacman.d/hooks/00-try-omarchy-live-update.hook').read_text()
+diff --git a/guest/tests/test_native_nightlight.py b/guest/tests/test_native_nightlight.py
+index ac34166..9f7ced4 100644
+--- a/guest/tests/test_native_nightlight.py
++++ b/guest/tests/test_native_nightlight.py
+@@ -214,5 +214,5 @@ class PersistentNightlightTests(unittest.TestCase):
+         catch_up = (self.overlay / 'usr/local/lib/try-omarchy/catch-up').read_text()
+         for path in ['usr/local/bin/omarchy-native-nightlight', 'usr/local/share/try-omarchy/nightlight.frag', 'usr/local/lib/try-omarchy/install-nightlight', 'usr/share/try-omarchy/nightlight']:
+             self.assertIn(path, finalizer)
+-        self.assertIn('compat_revision=54', finalizer)
+-        self.assertIn('previous_revision < 51', catch_up)
++        self.assertIn('compat_revision=55', finalizer)
++        self.assertIn('previous_revision < 55', catch_up)
+diff --git a/guest/tests/test_nightlight_upgrade.py b/guest/tests/test_nightlight_upgrade.py
+new file mode 100644
+index 0000000..fe53a75
+--- /dev/null
++++ b/guest/tests/test_nightlight_upgrade.py
+@@ -0,0 +1,82 @@
++"""Exercise bounded adoption and failed-transaction recovery without host writes."""
++import os
++from pathlib import Path
++import subprocess
++import tempfile
++import unittest
++
++GUEST = Path(__file__).resolve().parents[1]
++HANDLER = GUEST / 'factory-overlay/usr/share/try-omarchy/nightlight/bin_omarchy-update-system-pkgs-when-conflicted'
++
++
++class NightlightUpgradeTests(unittest.TestCase):
++    def setUp(self):
++        self.temp = tempfile.TemporaryDirectory()
++        self.addCleanup(self.temp.cleanup)
++        self.root = Path(self.temp.name)
++        self.bin = self.root / 'bin'
++        self.bin.mkdir()
++        # Relocate the two absolute guest paths in a disposable copy of the
++        # actual handler. Its parser, ownership check, move/retry and EXIT trap
++        # still run; no guest or host system files are touched by this test.
++        self.handler = self.root / 'handler'
++        self.handler.write_text(HANDLER.read_text().replace('/usr/local/', f'{self.root}/usr/local/'))
++        self.paths = [self.root / 'usr/local/bin/omarchy-native-nightlight',
++                      self.root / 'usr/local/share/try-omarchy/nightlight.frag']
++        for path in self.paths:
++            path.parent.mkdir(parents=True, exist_ok=True)
++            path.write_text('catch-up bytes\n')
++        self.fake('sudo', 'exec "$@"')
++        self.fake('pacman', '[[ $2 == "${OWNED_PATH:-}" ]]')
++        self.fake('omarchy-update-system-pkgs', '''touch "$RETRY_MARKER"
++[[ ${FAIL_RETRY:-0} == 0 ]] || exit 1
++printf 'packaged bytes\\n' > "$HELPER"
++printf 'packaged bytes\\n' > "$SHADER"''')
++        self.report = self.root / 'errors'
++        self.replaced = self.root / 'replaced'
++        self.marker = self.root / 'retried'
++        self.env = dict(os.environ, PATH=f'{self.bin}:{os.environ["PATH"]}',
++                        OMARCHY_UPDATE_CONFLICT='1', OMARCHY_REPLACED_DIR=str(self.replaced),
++                        RETRY_MARKER=str(self.marker), HELPER=str(self.paths[0]), SHADER=str(self.paths[1]))
++
++    def fake(self, name, body):
++        command = self.bin / name
++        command.write_text('#!/bin/bash\nset -e\n' + body + '\n')
++        command.chmod(0o755)
++
++    def run_handler(self, rows=None, **env):
++        self.report.write_text('\n'.join(rows or [f'try-omarchy-runtime: {p} exists in filesystem' for p in self.paths]) + '\n')
++        return subprocess.run(['bash', str(self.handler), str(self.report)],
++                              env=dict(self.env, **env), capture_output=True, text=True, timeout=5)
++
++    def test_adopts_both_paths_and_retains_previous_bytes(self):
++        result = self.run_handler()
++        self.assertEqual(result.returncode, 0, result.stderr)
++        self.assertTrue(self.marker.exists())
++        for path in self.paths:
++            self.assertEqual(path.read_text(), 'packaged bytes\n')
++            self.assertEqual((self.replaced / str(path).lstrip('/')).read_text(), 'catch-up bytes\n')
++
++    def test_failed_retry_restores_both_paths(self):
++        result = self.run_handler(FAIL_RETRY='1')
++        self.assertNotEqual(result.returncode, 0)
++        self.assertTrue(self.marker.exists())
++        for path in self.paths:
++            self.assertEqual(path.read_text(), 'catch-up bytes\n')
++
++    def test_unrelated_conflict_blocks_all_moves(self):
++        rows = [f'try-omarchy-runtime: {p} exists in filesystem' for p in self.paths]
++        for extra in [f'try-omarchy-runtime: {self.paths[0]}.custom exists in filesystem',
++                      f'other-package: {self.paths[0]} exists in filesystem',
++                      f'try-omarchy-runtime: {str(self.paths[1]).replace(".frag", "Xfrag")} exists in filesystem',
++                      f'try-omarchy-runtime: {self.paths[0]} exists in filesystem (owned by other-package)']:
++            result = self.run_handler(rows + [extra])
++            self.assertNotEqual(result.returncode, 0)
++            self.assertFalse(self.marker.exists())
++            self.assertFalse(self.replaced.exists())
++
++    def test_live_owner_blocks_adoption(self):
++        result = self.run_handler(OWNED_PATH=str(self.paths[0]))
++        self.assertNotEqual(result.returncode, 0)
++        self.assertFalse(self.marker.exists())
++        self.assertFalse(self.replaced.exists())
+diff --git a/guest/tests/test_notification_privacy.py b/guest/tests/test_notification_privacy.py
+index a9bab09..57dbb76 100644
+--- a/guest/tests/test_notification_privacy.py
++++ b/guest/tests/test_notification_privacy.py
+@@ -116,8 +116,8 @@ for (const state of [null, {screensaverStateKnown:false}, {screensaverStateKnown
+     def test_compatibility_overlay_and_catch_up_revision(self):
+         finalizer = (GUEST / 'scripts/finalize-rootfs.sh').read_text()
+         catch_up = (GUEST / 'factory-overlay/usr/local/lib/try-omarchy/catch-up').read_text()
+-        self.assertIn('compat_revision=54', finalizer)
++        self.assertIn('compat_revision=55', finalizer)
+         self.assertIn('usr/share/try-omarchy/notifications', finalizer)
+         self.assertIn('usr/local/lib/try-omarchy/install-notifications', finalizer)
+         self.assertIn('previous_revision < 52', catch_up)
+-        self.assertEqual(json.loads((GUEST / 'spec.json').read_text())['upstream']['packageRelease'], 5)
++        self.assertEqual(json.loads((GUEST / 'spec.json').read_text())['upstream']['packageRelease'], 6)
+diff --git a/guest/tests/test_windows_volume_sync.py b/guest/tests/test_windows_volume_sync.py
+index dd75ab4..432ed81 100644
+--- a/guest/tests/test_windows_volume_sync.py
++++ b/guest/tests/test_windows_volume_sync.py
+@@ -279,7 +279,7 @@ class VolumeSyncTests(unittest.TestCase):
+ 
+     def test_revision_delivers_bridge_to_existing_disks(self):
+         finalize = (Path(__file__).resolve().parents[1] / "scripts/finalize-rootfs.sh").read_text()
+-        self.assertIn("compat_revision=54", finalize)
++        self.assertIn("compat_revision=55", finalize)
+         self.assertIn("usr/local/bin/omarchy-windows-audio-bridge", finalize)
+ 
+ 
+diff --git a/guest/tests/verify.py b/guest/tests/verify.py
+index f73d3c9..94517c8 100755
+--- a/guest/tests/verify.py
++++ b/guest/tests/verify.py
+@@ -324,7 +324,7 @@ def main() -> None:
+         "system services run without watchdogs, which fire after Windows sleeps",
+     )
+     check(
+-        "compat_revision=54" in finalize_rootfs
++        "compat_revision=55" in finalize_rootfs
+         and "usr/local/bin/mpv" in compat_paths
+         and "usr/share/dkms/modules_to_force_install/try-omarchy" in compat_paths
+         and "usr/local/lib/try-omarchy/try-omarchy-import.pyz" in compat_paths
+-- 
+2.56.0
+

@@ -322,3 +322,11 @@ seconds. Each probe gives Hyprland two seconds to answer. Compatibility revision
 logout report an inactive compositor. Launchers without health monitoring ignore
 these messages; guests without heartbeats do not trigger compositor warnings.
 IPC health does not certify that a frame reached the physical display.
+
+Patch 0133 lets Update > Omarchy adopt only the two unowned night-light backend
+files delivered by compatibility catch-up. It uses the updater's existing
+move, retry and restoration path, retaining previous bytes for recovery and
+stopping on unrelated or package-owned conflicts. Compatibility revision 55
+repairs only the reviewed default conflict handler before login, including disks
+that already reached revisions 51 through 54. Runtime `4.0.4-6` packages the same
+handler for fresh guests.
