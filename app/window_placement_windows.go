@@ -1,6 +1,7 @@
 package main
 
 import (
+	"sync"
 	"syscall"
 	"unsafe"
 )
@@ -13,16 +14,9 @@ var (
 	procGetMonitorInfoW     = user32.NewProc("GetMonitorInfoW")
 	// One callback for the process: syscall.NewCallback never frees its slot.
 	enumMonitorsCallback = syscall.NewCallback(enumMonitorsProc)
-	enumMonitorsResult   []screenRect
 	enumMonitorDetails   []hostMonitor
+	monitorEnumerationMu sync.Mutex
 )
-
-type hostMonitor struct {
-	Name    string
-	Bounds  screenRect
-	Primary bool
-	Work    screenRect // Bounds minus the taskbar
-}
 
 type monitorInfoEx struct {
 	Size   uint32
@@ -33,9 +27,11 @@ type monitorInfoEx struct {
 }
 
 const (
-	swShowNormal    = 1
-	swShowMinimized = 2
-	swShowMaximized = 3
+	swShowNormal     = 1
+	swShowMinimized  = 2
+	swShowMaximized  = 3
+	swShowNoActivate = 4
+	swShowNA         = 8
 )
 
 type windowPlacementStruct struct {
@@ -46,7 +42,6 @@ type windowPlacementStruct struct {
 }
 
 func enumMonitorsProc(monitor, _ uintptr, rect *screenRect, _ uintptr) uintptr {
-	enumMonitorsResult = append(enumMonitorsResult, *rect)
 	info := monitorInfoEx{Size: uint32(unsafe.Sizeof(monitorInfoEx{}))}
 	if ok, _, _ := procGetMonitorInfoW.Call(monitor, uintptr(unsafe.Pointer(&info))); ok != 0 {
 		enumMonitorDetails = append(enumMonitorDetails, hostMonitor{syscall.UTF16ToString(info.Device[:]), info.Bounds, info.Flags&1 != 0, info.Work})
@@ -56,18 +51,23 @@ func enumMonitorsProc(monitor, _ uintptr, rect *screenRect, _ uintptr) uintptr {
 	return 1
 }
 
-// monitorRects lists the virtual-screen rectangles of every display. Only the
-// title enforcer's goroutine calls it, so the shared result slice needs no lock.
+// Enumeration is shared by boot planning, Settings and the title enforcer.
 func monitorRects() []screenRect {
-	enumMonitorsResult = nil
-	enumMonitorDetails = nil
-	procEnumDisplayMonitors.Call(0, 0, enumMonitorsCallback, 0)
-	return append([]screenRect(nil), enumMonitorsResult...)
+	monitors := hostMonitors()
+	rects := make([]screenRect, 0, len(monitors))
+	for _, m := range monitors {
+		rects = append(rects, m.Bounds)
+	}
+	return rects
 }
 
 func hostMonitors() []hostMonitor {
-	monitorRects()
-	return append([]hostMonitor(nil), enumMonitorDetails...)
+	monitorEnumerationMu.Lock()
+	defer monitorEnumerationMu.Unlock()
+	enumMonitorDetails = nil
+	procEnumDisplayMonitors.Call(0, 0, enumMonitorsCallback, 0)
+	// Enumeration order is not a promise that the primary display is first.
+	return primaryFirstMonitors(enumMonitorDetails)
 }
 
 // A missing selected display falls back to the primary display. Keep the
@@ -120,24 +120,22 @@ func applyPlacement(hwnd uintptr, p *windowPlacement) bool {
 	return r != 0
 }
 
-// rememberedWindow returns the placement to restore this launch, or nil for
-// the maximized default.
-func rememberedWindow(dir string) *windowPlacement {
-	p, err := loadWindowPlacement(dir)
-	if err != nil {
-		logf("ignoring %s: %v", windowPlacementFilename, err)
-		return nil
+// correctPlacement repairs an existing window without activating it. The
+// ordinary boot/shutdown correction only applies to restored windows.
+func correctPlacement(hwnd uintptr, p *windowPlacement) bool {
+	if p == nil {
+		return false
 	}
-	if !p.usable(monitorRects()) {
-		return nil
+	var wp windowPlacementStruct
+	wp.length = uint32(unsafe.Sizeof(wp))
+	if r, _, _ := procGetWindowPlacement.Call(hwnd, uintptr(unsafe.Pointer(&wp))); r == 0 || wp.showCmd == swShowMinimized {
+		return false
 	}
-	return p.fittedTo(workAreas(hostMonitors()))
-}
-
-func workAreas(monitors []hostMonitor) []screenRect {
-	areas := make([]screenRect, 0, len(monitors))
-	for _, monitor := range monitors {
-		areas = append(areas, monitor.Work)
+	wp.normalPosition = p.Normal
+	wp.showCmd = swShowNoActivate
+	if p.Maximized {
+		wp.showCmd = swShowNA // preserve the current maximized state
 	}
-	return areas
+	r, _, _ := procSetWindowPlacement.Call(hwnd, uintptr(unsafe.Pointer(&wp)))
+	return r != 0
 }
