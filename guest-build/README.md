@@ -307,3 +307,10 @@ guest volume and mute survive fallback; a capable host can enable sync again.
 Compatibility revision 50 delivers the updated bridge to existing disks.
 
 Patch 0129 ports the manual night-light shader from [Mac PR #251](https://github.com/omacom/try-omarchy/pull/251). The existing night-light menu and Super + Ctrl + N use the same serialized backend on `omarchy.qemu=1`, since virtio GPU lacks DRM CTM. It refuses to replace custom screen shaders and reads status from Hyprland. A config reload clears the manual tint and refreshes the indicator. Compatibility revision 51 updates only known command and service defaults on existing disks, preserving customized or linked files. Runtime package 4.0.4-4 owns the command, helper and shader.
+
+Patch 0131 reports compositor IPC health over the guest agent channel every five
+seconds. Each probe gives Hyprland two seconds to answer. Compatibility revision
+53 delivers the agent and helper to existing disks on their next boot. Login and
+logout report an inactive compositor. Launchers without health monitoring ignore
+these messages; guests without heartbeats do not trigger compositor warnings.
+IPC health does not certify that a frame reached the physical display.
