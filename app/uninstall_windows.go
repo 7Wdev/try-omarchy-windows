@@ -150,7 +150,13 @@ func runUninstall(dir string) error {
 		return nil
 	}
 	if err := ensureLANFirewall(&config{dir: dir}); err != nil {
-		return err
+		// The user confirmed removal and may already have a backup, so a
+		// declined permission prompt must not leave a half-removed install.
+		// Leftover rules name only this folder's QEMU, which is deleted next.
+		logf("uninstall: LAN firewall rules were not removed: %v", err)
+		if id, idErr := networkIdentity(dir, false); idErr == nil && id != "" {
+			logf("uninstall: remove the Windows Firewall rules in group TryOmarchy-%s by hand", id)
+		}
 	}
 	if err := forgetMovedInstallation(dir); err != nil {
 		return err
