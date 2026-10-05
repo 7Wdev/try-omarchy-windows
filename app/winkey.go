@@ -20,6 +20,8 @@ import (
 // otherwise fire together with Snipping Tool. Ctrl+Alt+End stands in for
 // Windows-reserved Ctrl+Alt+Delete while Omarchy is focused.
 
+var qemuExternalKeyboardHook atomic.Bool
+
 var (
 	qemuPid        atomic.Uint32                // current QEMU child, set by the supervisor
 	guestUp        atomic.Bool                  // supervisor handshake succeeded for this launch
@@ -100,12 +102,9 @@ func hookCallback(nCode, wParam, lParam uintptr) uintptr {
 			if swallow {
 				return 1 // QMP delivers it to the guest
 			}
-			if vk != vkSnapshot {
-				// Windows owns this Win press: approve the key and SKIP the
-				// rest of the hook chain. QEMU installs its own LL hook on
-				// every grab which swallows Win even when unfocused;
-				// returning 0 without CallNextHookEx bypasses it, so the
-				// release still reaches Windows after the VM takes focus.
+			if vk != vkSnapshot && !qemuExternalKeyboardHook.Load() {
+				// Older runtimes still install SDL's reserved-key hook. Keep
+				// their host-owned Win presses out of that hook.
 				return 0
 			}
 		}

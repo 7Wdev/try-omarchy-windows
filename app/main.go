@@ -972,6 +972,9 @@ func supervise(cfg *config, cmdline string) bool {
 		pinch := pinchEnabled(cfg)
 		logf("touchpad pinch forwarding: %v (guest declares device: %v)", pinch, cfg.guestPinch)
 		proc.Env = pinchEnvironment(proc.Env, pinch)
+		externalHook := keyboardRuntimeSupportsExternalHook(cfg.qemu)
+		qemuExternalKeyboardHook.Store(externalHook)
+		proc.Env = keyboardEnvironment(proc.Env, externalHook)
 		if cfg.useGpu {
 			cfg.displayDriver = displayDriverIdentity()
 			logGPULaunchFacts(cfg, proc.Env, dxgiAdapterFacts(), qemuGPUPreference(cfg.qemu))

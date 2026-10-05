@@ -444,3 +444,23 @@ func audioBackendOptions(backend string, microphoneDisabled bool, rates audioSam
 	}
 	return options
 }
+
+const externalKeyboardHookPatch = "patches/qemu/0020-allow-external-sdl-keyboard-hook.patch"
+const externalKeyboardHookEnv = "OMARCHY_SDL_EXTERNAL_KEYBOARD_HOOK"
+
+func keyboardRuntimeSupportsExternalHook(qemu string) bool {
+	return runtimeHasPatch(qemu, externalKeyboardHookPatch)
+}
+
+func keyboardEnvironment(env []string, enabled bool) []string {
+	result := make([]string, 0, len(env)+1)
+	for _, value := range env {
+		if !strings.EqualFold(strings.SplitN(value, "=", 2)[0], externalKeyboardHookEnv) {
+			result = append(result, value)
+		}
+	}
+	if enabled {
+		result = append(result, externalKeyboardHookEnv+"=1")
+	}
+	return result
+}

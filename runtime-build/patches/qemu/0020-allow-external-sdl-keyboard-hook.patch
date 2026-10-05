@@ -1,0 +1,19 @@
+--- a/ui/sdl2.c
++++ b/ui/sdl2.c
+@@ -1070,7 +1070,16 @@
+ #ifdef SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR /* only available since SDL 2.0.8 */
+     SDL_SetHint(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR, "0");
+ #endif
++#ifdef _WIN32
++    /* The launcher routes reserved keys itself and must leave other hooks in
++     * the Windows chain. Mouse grabbing remains independent. */
++    const char *external_keyboard = getenv("OMARCHY_SDL_EXTERNAL_KEYBOARD_HOOK");
++    SDL_SetHintWithPriority(SDL_HINT_GRAB_KEYBOARD,
++        external_keyboard && !strcmp(external_keyboard, "1") ? "0" : "1",
++        SDL_HINT_OVERRIDE);
++#else
+     SDL_SetHint(SDL_HINT_GRAB_KEYBOARD, "1");
++#endif
+ #ifdef SDL_HINT_ALLOW_ALT_TAB_WHILE_GRABBED
+     SDL_SetHint(SDL_HINT_ALLOW_ALT_TAB_WHILE_GRABBED, "0");
+ #endif
