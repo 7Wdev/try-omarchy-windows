@@ -37,7 +37,7 @@ func runClipboardBridge() {
 			logf("file transfers: %v", err)
 		}
 	}()
-	b := &clipBridge{dropRequests: make(chan droppedFiles, 8), setDropPaths: func(paths []string) bool { go showFileDropWindow(paths); return true }, transferError: reportTransferError, showTransfer: showTransferProgress, transfers: transfers, getPaths: clipboardGetFilePaths, setPaths: clipboardSetFilePaths, getHost: clipboardGetItem, setHost: clipboardSetItem, sequence: clipboardSequence, sessionStarted: desktopSessionStarted}
+	b := &clipBridge{dropRequests: make(chan droppedFiles, 8), setDropPaths: func(paths []string) bool { go runFileDropWindow(paths, false); return true }, transferError: reportTransferError, showTransfer: showTransferProgress, transfers: transfers, getPaths: clipboardGetFilePaths, setPaths: clipboardSetFilePaths, getHost: clipboardGetItem, setHost: clipboardSetItem, sequence: clipboardSequence, sessionStarted: desktopSessionStarted}
 	b.authorizePeer = connectionFromQEMU
 	b.readPaths = clipboardReadFilePaths
 	b.readHost = clipboardReadNonFileItem

@@ -408,6 +408,10 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 					approvedApps.Apps = append(approvedApps.Apps[:index], approvedApps.Apps[index+1:]...)
 					refreshApprovedApps()
 				}
+			case settingsRenderAutoID, settingsRenderGPUID, settingsRenderCPUID:
+				if wParam>>16 == 0 && updateResourceControls != nil { // BN_CLICKED
+					updateResourceControls()
+				}
 			case settingsResourceProfileID:
 				if wParam>>16 == 1 && updateResourceControls != nil { // CBN_SELCHANGE
 					updateResourceControls()
@@ -959,7 +963,9 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 		gib := func(mib int) string { return strconv.FormatFloat(float64(mib)/1024, 'f', 1, 64) }
 		help := uiText("settings.resources.manual_help")
 		if profile != resourceManual {
-			plan, err := planGuestResources(profile, hostSnapshot, current.Render != renderCPU, 0, 0, false, false)
+			checked, _, _ := procSendMessageW.Call(hRenderCPU, bmGetcheck, 0, 0)
+			gpu := settingsEstimateGPU(current.Render, hRenderCPU, checked)
+			plan, err := planGuestResources(profile, hostSnapshot, gpu, 0, 0, false, false)
 			estimate := map[string]string{"cpus": strconv.Itoa(plan.CPUs), "memory": gib(plan.MemoryMiB)}
 			switch {
 			case err != nil:
@@ -1150,6 +1156,7 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 	default:
 		procSendMessageW.Call(hRenderAuto, bmSetcheck, bstChecked, 0)
 	}
+	updateResourceControls()
 	y += 24 + grow
 	y = note(uiText("settings.graphics.rendering_help"), left, y, clientW-2*left, 36, 44)
 	graphics := uiText("settings.graphics.gpu_note")
@@ -1402,4 +1409,11 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 		procDispatchMessageW.Call(uintptr(unsafe.Pointer(&m)))
 	}
 	return saved
+}
+
+func settingsEstimateGPU(saved string, cpuControl, checked uintptr) bool {
+	if cpuControl == 0 {
+		return saved != renderCPU
+	}
+	return checked != bstChecked
 }

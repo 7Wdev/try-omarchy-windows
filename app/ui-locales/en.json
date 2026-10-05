@@ -352,6 +352,8 @@
   "drop.limit": "Choose up to 1000 files or folders.",
   "drop.sending": "Sending files to Omarchy...",
   "drop.choose_file": "Choose a file to send to Omarchy",
+  "drop.invalid_paths": "No files were sent because a path was empty, too long, or unreadable. Try dropping a smaller selection with valid paths.",
+  "drop.filter_failed": "Windows could not enable Explorer drops. Restart the launcher without administrator privileges or use Choose file.",
   "drop.title": "Files between Windows and Omarchy",
   "drop.intro": "Drop files here to send them to Omarchy. Drag received files below into Explorer or another application.",
   "drop.ready": "Ready",
