@@ -822,11 +822,6 @@ func main() {
 	go runTitleEnforcer(cfg.dir, cfg.fullscreen, cfg.fullscreenDisplay)
 	go runCursorReleaseGuard()
 	go runCloseGuard()
-	cfg.launchForwards = append([]portForward(nil), cfg.forwards...)
-	// Command-line -forward and -ssh replace the saved list for this launch.
-	if !explicitFlags["forward"] && !explicitFlags["ssh"] {
-		go runLiveForwardWatcher(cfg.dir, cfg.launchForwards)
-	}
 	runClipboardBridge()
 	runCameraBridge(cfg.desktop)
 	runHelloBridge()
@@ -844,11 +839,21 @@ func main() {
 		runAudioBridge(cfg.dir, cfg.qemu, cfg.desktop.MicrophoneDisabled)
 	}
 
-	if err := checkForwardBindings(cfg.forwards); err != nil {
-		fatal(uiTextWith("fatal.forwarding", map[string]string{"error": err.Error()}))
+	activeForwards, pausedPorts := filterForwardBindings(cfg.forwards)
+	cfg.forwards = activeForwards
+	pauseLaunchForwards(pausedPorts, false)
+	noticePausedForwards("tray.forward.paused", pausedPorts, "")
+	if err := prepareLANFirewall(cfg); err != nil {
+		var paused []portForward
+		cfg.forwards, paused = filterLANForwards(cfg.forwards)
+		pauseLaunchForwards(paused, true)
+		noticePausedForwards("tray.lan.firewall_paused", paused, err.Error())
+		logf("LAN firewall unavailable: %v", err)
 	}
-	if err := ensureLANFirewall(cfg); err != nil {
-		fatal(uiTextWith("fatal.lan.forwarding", map[string]string{"error": err.Error()}))
+	cfg.launchForwards = append([]portForward(nil), cfg.forwards...)
+	// Command-line -forward and -ssh replace the saved list for this launch.
+	if !explicitFlags["forward"] && !explicitFlags["ssh"] {
+		go runLiveForwardWatcher(cfg.dir, cfg.launchForwards)
 	}
 	cfg.audio = "sdl"
 
@@ -931,7 +936,7 @@ func supervise(cfg *config, cmdline string) bool {
 		}
 		// Local forwards changed while running (forward_live.go) carry into a
 		// reboot instead of reverting to the launch list.
-		cfg.forwards = forwardsForBoot(cfg.launchForwards)
+		cfg.forwards = filterPausedLaunchForwards(forwardsForBoot(cfg.launchForwards))
 		audioSelection := cfg.audio == "sdl" && audioRuntimeSupportsSelection(cfg.qemu)
 		if cfg.audio == "sdl" {
 			cfg.audioRates = launchAudioSampleRates(cfg.audioDevices, audioSelection, cfg.desktop.MicrophoneDisabled)
@@ -1001,6 +1006,25 @@ func supervise(cfg *config, cmdline string) bool {
 					logf("QEMU startup failure (attempt %d, %s):\n%s", attempt, mode, detail)
 				}
 				if forwardStartupProblem(cfg.vmDir) {
+					active, paused := failedStartupForwards(cfg.vmDir, cfg.forwards)
+					if len(paused) == 0 {
+						// Some QEMU versions omit the rule. Re-probe before giving up
+						// forwarding for this launch; keep the VM available either way.
+						active, paused = filterForwardBindings(cfg.forwards)
+						if len(paused) == 0 {
+							active, paused = nil, cfg.forwards
+						}
+					}
+					if len(paused) > 0 {
+						pauseLaunchForwards(paused, false)
+						cfg.forwards, cfg.launchForwards = active, active
+						setLiveForwards(active)
+						noticePausedForwards("tray.forward.paused", paused, "")
+						// Every retry removes a rule. Keep the existing watchdog budget
+						// for VM failures rather than spending it on up to 64 forwards.
+						attempt--
+						break probe
+					}
 					fatal(uiText("fatal.qemu.port"))
 				}
 				// The host refused nested virtualization for the partition

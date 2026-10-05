@@ -8,13 +8,20 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
+	"syscall"
 )
 
 // Only this installation's named rules are reconciled. Unrelated application
 // and enterprise rules are never modified.
 const lanFirewallScript = `$ErrorActionPreference='Stop'
 $p=$env:TRYOMARCHY_FIREWALL | ConvertFrom-Json
-$existing=@(Get-NetFirewallRule -PolicyStore PersistentStore -Group $p.group -ErrorAction SilentlyContinue)
+try {
+ $existing=@(Get-NetFirewallRule -PolicyStore PersistentStore -Group $p.group -ErrorAction Stop)
+} catch {
+ if($_.CategoryInfo.Category -eq [System.Management.Automation.ErrorCategory]::ObjectNotFound){$existing=@()}else{throw}
+}
 $names=@(); $matches=($existing.Count -eq $p.rules.Count)
 for($i=0;$i -lt $p.rules.Count;$i++) {
  $wanted=$p.rules[$i]; $name=$p.group+'-'+$p.generation+'-'+$i; $names+=,$name
@@ -90,13 +97,20 @@ func ensureLANFirewall(cfg *config) error {
 	if err != nil {
 		return err
 	}
+	return ensureLANFirewallPlan(plan, executeLANFirewall, runElevated, checkSetupCancelled)
+}
+
+func ensureLANFirewallPlan(plan lanFirewallPlan, execute func(lanFirewallPlan, bool) error, elevate func(string) (int, error), cancelled func() error) error {
 	if plan.Group == "" {
 		return nil
 	}
-	if executeLANFirewall(plan, false) == nil {
+	if err := plan.validate(); err != nil {
+		return err
+	}
+	if execute(plan, false) == nil {
 		return nil
 	}
-	if err := checkSetupCancelled(); err != nil {
+	if err := cancelled(); err != nil {
 		return err
 	}
 	data, err := json.Marshal(plan)
@@ -107,7 +121,7 @@ func ensureLANFirewall(cfg *config) error {
 	if len(encoded) > 28000 {
 		return fmt.Errorf("LAN configuration is too large")
 	}
-	code, err := runElevated("-firewall-plan " + encoded)
+	code, err := elevate("-firewall-plan " + encoded)
 	if err != nil {
 		return err
 	}
@@ -117,5 +131,71 @@ func ensureLANFirewall(cfg *config) error {
 	if code != 0 {
 		return uiError(uiTextWith("error.lan.firewall", map[string]string{"code": fmt.Sprint(code)}), nil)
 	}
-	return executeLANFirewall(plan, false)
+	return execute(plan, false)
+}
+
+func noticePausedForwards(key string, forwards []portForward, detail string) {
+	if len(forwards) == 0 {
+		return
+	}
+	rules := make([]string, 0, len(forwards))
+	for _, forward := range forwards {
+		rules = append(rules, forward.String())
+	}
+	values := map[string]string{"rules": strings.Join(rules, ", "), "error": detail}
+	title := uiText("tray.forward.title")
+	message := uiTextWith("tray.forward.paused", values)
+	if key == "tray.lan.firewall_paused" {
+		title = uiText("tray.lan.title")
+		message = uiTextWith("tray.lan.firewall_paused", values)
+	}
+	logf("%s", message)
+	showTrayNotice(title, message)
+}
+
+func portableFirewallProcessRunning(pid int) bool {
+	const synchronize = 0x100000
+	handle, _, err := procOpenProcess.Call(synchronize, 0, uintptr(uint32(pid)))
+	if handle == 0 {
+		// ERROR_INVALID_PARAMETER means the PID no longer exists. Access denial
+		// is ambiguous: leave its rules alone rather than disrupt another VM.
+		return err != syscall.Errno(87)
+	}
+	defer procCloseHandle.Call(handle)
+	result, _, _ := procWaitForSingleObject.Call(handle, 0)
+	return result != 0
+}
+
+func prepareLANFirewall(cfg *config) error {
+	local := os.Getenv("LOCALAPPDATA")
+	root := filepath.Join(local, "TryOmarchy", "portable-host", "firewall-owners")
+	notice := func(err error) { firewallCleanupNotice(err.Error(), "") }
+	return ensureLANFirewallAfterCleanup(func() error {
+		if !filepath.IsAbs(local) {
+			return fmt.Errorf("Windows local application data is unavailable")
+		}
+		return cleanupStalePortableFirewallOwners(root, portableFirewallProcessRunning, func(plan lanFirewallPlan) error {
+			return ensureLANFirewallPlan(plan, executeLANFirewall, runElevated, checkSetupCancelled)
+		})
+	}, notice, func() error {
+		if cfg.portable && filepath.IsAbs(local) {
+			// Keep a host-local deletion record across exits and relaunches.
+			// Inventory failures are reported but do not block our own setup.
+			plan, err := makeLANFirewallPlan(cfg.dir, cfg.qemu, cfg.lanPublic, cfg.forwards)
+			if err == nil && plan.Group != "" {
+				plan.Rules = nil
+				err = savePortableFirewallOwner(root, portableFirewallOwner{Plan: plan, PID: os.Getpid(), Dir: cfg.dir})
+			}
+			if err != nil {
+				notice(err)
+			}
+		}
+		return ensureLANFirewall(cfg)
+	})
+}
+
+func firewallCleanupNotice(detail, group string) {
+	message := uiTextWith("tray.lan.cleanup_failed", map[string]string{"error": detail, "rules": group})
+	logf("%s", message)
+	showTrayNotice(uiText("tray.lan.cleanup_title"), message)
 }
