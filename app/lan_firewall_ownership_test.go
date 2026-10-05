@@ -18,7 +18,7 @@ func testPortableFirewallOwner(t *testing.T) portableFirewallOwner {
 		t.Fatal(err)
 	}
 	p.Rules = nil
-	return portableFirewallOwner{Plan: p, PID: 123}
+	return portableFirewallOwner{Plan: p, PID: 123, Dir: dir}
 }
 
 func TestPortableFirewallCleanupRetainsFailedAndRunningOwners(t *testing.T) {
@@ -69,14 +69,14 @@ func TestPortableFirewallCleanupRetainsFailedAndRunningOwners(t *testing.T) {
 	}
 	owners, err = loadPortableFirewallOwners(root)
 	if err != nil || len(owners) != 0 {
-		t.Fatal("clean shutdown record remains")
+		t.Fatal("explicit cleanup record remains")
 	}
 }
 
 func TestPortableFirewallOwnerRefusals(t *testing.T) {
 	valid := testPortableFirewallOwner(t)
 	for _, mutate := range []func(*portableFirewallOwner){
-		func(o *portableFirewallOwner) { o.PID = 0 }, func(o *portableFirewallOwner) { o.PID = -1 }, func(o *portableFirewallOwner) { o.PID = int(int64(0x100000000)) }, func(o *portableFirewallOwner) { o.Plan.Group = "OtherApplication" }, func(o *portableFirewallOwner) { o.Plan.Generation = "bad" }, func(o *portableFirewallOwner) { o.Plan.Program = filepath.Join(t.TempDir(), "evil.exe") }, func(o *portableFirewallOwner) {
+		func(o *portableFirewallOwner) { o.Dir = "relative" }, func(o *portableFirewallOwner) { o.PID = 0 }, func(o *portableFirewallOwner) { o.PID = -1 }, func(o *portableFirewallOwner) { o.PID = int(int64(0x100000000)) }, func(o *portableFirewallOwner) { o.Plan.Group = "OtherApplication" }, func(o *portableFirewallOwner) { o.Plan.Generation = "bad" }, func(o *portableFirewallOwner) { o.Plan.Program = filepath.Join(t.TempDir(), "evil.exe") }, func(o *portableFirewallOwner) {
 			o.Plan.Rules = []lanFirewallRule{{Protocol: "tcp", Address: "0.0.0.0", Port: 9000}}
 		},
 	} {
@@ -178,5 +178,157 @@ func TestLANFirewallDHCPChangeRetainsNarrowScope(t *testing.T) {
 	next, _ := makeLANFirewallPlan(dir, program, false, []portForward{b})
 	if old.Group != next.Group || old.Generation == next.Generation || next.Rules[0].Address != b.bind || next.Public {
 		t.Fatal("DHCP change widened or lost rule ownership")
+	}
+}
+
+func writePortableFirewallProgram(t *testing.T, owner portableFirewallOwner) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(owner.Plan.Program), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(owner.Plan.Program, []byte("QEMU"), 0600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPortableFirewallSameInstallRelaunchSkipsCleanup(t *testing.T) {
+	root := t.TempDir()
+	owner := testPortableFirewallOwner(t)
+	writePortableFirewallProgram(t, owner)
+	if err := savePortableFirewallOwner(root, owner); err != nil {
+		t.Fatal(err)
+	}
+	for launch := 0; launch < 2; launch++ {
+		if err := cleanupStalePortableFirewallOwners(root, func(int) bool { return false }, func(lanFirewallPlan) error {
+			t.Fatal("requested cleanup for the same portable installation")
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	owners, err := loadPortableFirewallOwners(root)
+	if err != nil || len(owners) != 1 {
+		t.Fatalf("lost persistent owner: %v %v", owners, err)
+	}
+}
+
+func TestPortableFirewallGoneInstallCleanup(t *testing.T) {
+	for _, scenario := range []string{"missing-program", "different-identity", "missing-identity", "legacy-missing-program", "legacy-existing-program", "invalid-identity"} {
+		t.Run(scenario, func(t *testing.T) {
+			root := t.TempDir()
+			owner := testPortableFirewallOwner(t)
+			if scenario != "missing-program" && scenario != "legacy-missing-program" {
+				writePortableFirewallProgram(t, owner)
+			}
+			switch scenario {
+			case "different-identity":
+				other := testPortableFirewallOwner(t)
+				data, err := os.ReadFile(filepath.Join(other.Dir, networkIdentityFilename))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(owner.Dir, networkIdentityFilename), data, 0600); err != nil {
+					t.Fatal(err)
+				}
+			case "missing-identity":
+				if err := os.Remove(filepath.Join(owner.Dir, networkIdentityFilename)); err != nil {
+					t.Fatal(err)
+				}
+			case "invalid-identity":
+				if err := os.WriteFile(filepath.Join(owner.Dir, networkIdentityFilename), []byte("invalid"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			case "legacy-missing-program", "legacy-existing-program":
+				owner.Dir = ""
+			}
+			if err := savePortableFirewallOwner(root, owner); err != nil {
+				t.Fatal(err)
+			}
+			calls := 0
+			err := cleanupStalePortableFirewallOwners(root, func(int) bool { return false }, func(plan lanFirewallPlan) error {
+				calls++
+				if plan.Group != owner.Plan.Group || len(plan.Rules) != 0 {
+					t.Fatal("wrong cleanup scope")
+				}
+				return nil
+			})
+			want := 1
+			if scenario == "legacy-existing-program" || scenario == "invalid-identity" {
+				want = 0
+			}
+			if calls != want || (err != nil) != (scenario == "invalid-identity") {
+				t.Fatalf("calls=%d err=%v", calls, err)
+			}
+		})
+	}
+}
+
+func TestPortableFirewallCleanupOneOwnerPerLaunch(t *testing.T) {
+	for _, outcome := range []string{"approved", "declined", "failed"} {
+		t.Run(outcome, func(t *testing.T) {
+			root := t.TempDir()
+			for i := 0; i < 3; i++ {
+				if err := savePortableFirewallOwner(root, testPortableFirewallOwner(t)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			calls := 0
+			apply := func(lanFirewallPlan) error {
+				calls++
+				if outcome != "approved" {
+					return errors.New(outcome)
+				}
+				return nil
+			}
+			for launch := 0; launch < 2; launch++ {
+				err := cleanupStalePortableFirewallOwners(root, func(int) bool { return false }, apply)
+				if calls != launch+1 || (err != nil) != (outcome != "approved") {
+					t.Fatalf("calls=%d err=%v", calls, err)
+				}
+			}
+			owners, err := loadPortableFirewallOwners(root)
+			want := 3
+			if outcome == "approved" {
+				want = 1
+			}
+			if err != nil || len(owners) != want {
+				t.Fatalf("owners=%v err=%v", owners, err)
+			}
+		})
+	}
+}
+
+func TestPortableFirewallCleanupFailureKeepsOwnForwards(t *testing.T) {
+	lan, _ := parseForward("tcp:192.168.1.5:9000:80")
+	local, _ := parseForward("tcp:8080:80")
+	for _, ownFailure := range []bool{false, true} {
+		root := t.TempDir()
+		if err := savePortableFirewallOwner(root, testPortableFirewallOwner(t)); err != nil {
+			t.Fatal(err)
+		}
+		calls, notices, setups := 0, 0, 0
+		err := ensureLANFirewallAfterCleanup(func() error {
+			return cleanupStalePortableFirewallOwners(root, func(int) bool { return false }, func(lanFirewallPlan) error {
+				calls++
+				return errors.New("UAC declined")
+			})
+		}, func(error) { notices++ }, func() error {
+			setups++
+			if ownFailure {
+				return errors.New("own firewall failed")
+			}
+			return nil
+		})
+		active := []portForward{lan, local}
+		if err != nil {
+			active, _ = filterLANForwards(active)
+		}
+		want := 2
+		if ownFailure {
+			want = 1
+		}
+		if len(active) != want || calls != 1 || notices != 1 || setups != 1 || (err != nil) != ownFailure {
+			t.Fatalf("active=%v cleanup=%d notices=%d setup=%d err=%v", active, calls, notices, setups, err)
+		}
 	}
 }

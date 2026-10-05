@@ -843,12 +843,7 @@ func main() {
 	cfg.forwards = activeForwards
 	pauseLaunchForwards(pausedPorts, false)
 	noticePausedForwards("tray.forward.paused", pausedPorts, "")
-	cleanupPortableFirewall, firewallErr := preparePortableLANFirewall(cfg)
-	defer cleanupPortableFirewall()
-	if firewallErr == nil {
-		firewallErr = ensureLANFirewall(cfg)
-	}
-	if err := firewallErr; err != nil {
+	if err := prepareLANFirewall(cfg); err != nil {
 		var paused []portForward
 		cfg.forwards, paused = filterLANForwards(cfg.forwards)
 		pauseLaunchForwards(paused, true)

@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // This inventory stays on the Windows host, not on the removable drive.
@@ -13,6 +14,7 @@ import (
 type portableFirewallOwner struct {
 	Plan lanFirewallPlan `json:"plan"`
 	PID  int             `json:"pid"`
+	Dir  string          `json:"dir,omitempty"`
 }
 
 func (o portableFirewallOwner) validate() error {
@@ -21,6 +23,14 @@ func (o portableFirewallOwner) validate() error {
 	}
 	if err := o.Plan.validate(); err != nil {
 		return err
+	}
+	if o.Dir != "" {
+		if !filepath.IsAbs(o.Dir) || filepath.Clean(o.Dir) != o.Dir {
+			return fmt.Errorf("invalid portable firewall data folder")
+		}
+		if err := validateMovePath(o.Dir); err != nil {
+			return err
+		}
 	}
 	return validateLANFirewallProgram(o.Plan.Program)
 }
@@ -155,9 +165,46 @@ func cleanupStalePortableFirewallOwners(root string, running func(int) bool, app
 		if running(owner.PID) {
 			continue
 		}
+		stale, err := portableFirewallOwnerStale(owner)
+		if err != nil {
+			return fmt.Errorf("%s: %w", owner.Plan.Group, err)
+		}
+		if !stale {
+			continue
+		}
+		// Attempt one owner per launch, even on success. A refusal or failure
+		// leaves the record for a later launch and cannot trigger another prompt.
 		if err := cleanupPortableFirewallOwner(root, owner, apply); err != nil {
 			return fmt.Errorf("%s: %w", owner.Plan.Group, err)
 		}
+		break
 	}
 	return nil
+}
+
+func portableFirewallOwnerStale(owner portableFirewallOwner) (bool, error) {
+	if _, err := os.Stat(owner.Plan.Program); os.IsNotExist(err) {
+		return true, nil
+	} else if err != nil {
+		return false, err
+	}
+	// Old records have no data folder. An existing program alone cannot prove
+	// that its installation is gone, so retain those rules conservatively.
+	if owner.Dir == "" {
+		return false, nil
+	}
+	id, err := networkIdentity(owner.Dir, false)
+	if err != nil {
+		return false, err
+	}
+	// This identity survives runtime updates, unlike a runtime receipt, and
+	// distinguishes a different installation reusing the same drive and path.
+	return id != strings.TrimPrefix(owner.Plan.Group, "TryOmarchy-"), nil
+}
+
+func ensureLANFirewallAfterCleanup(cleanup func() error, notice func(error), ensure func() error) error {
+	if err := cleanup(); err != nil {
+		notice(err)
+	}
+	return ensure()
 }

@@ -166,40 +166,32 @@ func portableFirewallProcessRunning(pid int) bool {
 	return result != 0
 }
 
-func preparePortableLANFirewall(cfg *config) (func(), error) {
-	nothing := func() {}
+func prepareLANFirewall(cfg *config) error {
 	local := os.Getenv("LOCALAPPDATA")
-	if !filepath.IsAbs(local) {
-		return nothing, fmt.Errorf("Windows local application data is unavailable")
-	}
 	root := filepath.Join(local, "TryOmarchy", "portable-host", "firewall-owners")
-	apply := func(plan lanFirewallPlan) error {
-		return ensureLANFirewallPlan(plan, executeLANFirewall, runElevated, checkSetupCancelled)
-	}
-	if err := cleanupStalePortableFirewallOwners(root, portableFirewallProcessRunning, apply); err != nil {
-		firewallCleanupNotice(err.Error(), "")
-		return nothing, err
-	}
-	if !cfg.portable {
-		return nothing, nil
-	}
-	plan, err := makeLANFirewallPlan(cfg.dir, cfg.qemu, cfg.lanPublic, cfg.forwards)
-	if err != nil {
-		return nothing, err
-	}
-	if plan.Group == "" {
-		return nothing, nil
-	}
-	plan.Rules = nil
-	owner := portableFirewallOwner{Plan: plan, PID: os.Getpid()}
-	if err := savePortableFirewallOwner(root, owner); err != nil {
-		return nothing, err
-	}
-	return func() {
-		if err := cleanupPortableFirewallOwner(root, owner, apply); err != nil {
-			firewallCleanupNotice(err.Error(), plan.Group)
+	notice := func(err error) { firewallCleanupNotice(err.Error(), "") }
+	return ensureLANFirewallAfterCleanup(func() error {
+		if !filepath.IsAbs(local) {
+			return fmt.Errorf("Windows local application data is unavailable")
 		}
-	}, nil
+		return cleanupStalePortableFirewallOwners(root, portableFirewallProcessRunning, func(plan lanFirewallPlan) error {
+			return ensureLANFirewallPlan(plan, executeLANFirewall, runElevated, checkSetupCancelled)
+		})
+	}, notice, func() error {
+		if cfg.portable && filepath.IsAbs(local) {
+			// Keep a host-local deletion record across exits and relaunches.
+			// Inventory failures are reported but do not block our own setup.
+			plan, err := makeLANFirewallPlan(cfg.dir, cfg.qemu, cfg.lanPublic, cfg.forwards)
+			if err == nil && plan.Group != "" {
+				plan.Rules = nil
+				err = savePortableFirewallOwner(root, portableFirewallOwner{Plan: plan, PID: os.Getpid(), Dir: cfg.dir})
+			}
+			if err != nil {
+				notice(err)
+			}
+		}
+		return ensureLANFirewall(cfg)
+	})
 }
 
 func firewallCleanupNotice(detail, group string) {
