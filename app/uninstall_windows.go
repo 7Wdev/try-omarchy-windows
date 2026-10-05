@@ -120,6 +120,9 @@ func runUninstall(dir string) error {
 	if err != nil {
 		return err
 	}
+	if err := validateUninstallDirectory(dir); err != nil {
+		return err
+	}
 	if disk := filepath.Join(dir, "vm", "disk.raw"); fileExists(disk) {
 		f, err := openBackupDisk(disk)
 		if err != nil {
@@ -198,6 +201,9 @@ func finishUninstall(dir string, waitPID int) int {
 		waitForProcess(waitPID)
 	}
 	dir, err := filepath.Abs(dir)
+	if err == nil {
+		err = validateUninstallDirectory(dir)
+	}
 	if err == nil {
 		err = removeAllWithRetry(dir)
 	}
