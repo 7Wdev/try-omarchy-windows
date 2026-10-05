@@ -101,7 +101,16 @@ func TestKeyboardNativeHookChain(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer procDestroyWindow.Call(host)
+	foreground, _, _ := procGetForegroundWindow.Call()
+	foregroundThread, _, _ := procGetWindowThreadProcessId.Call(foreground, 0)
+	currentThread, _, _ := kernel32.NewProc("GetCurrentThreadId").Call()
+	attach := user32.NewProc("AttachThreadInput")
+	attached, _, attachErr := attach.Call(currentThread, foregroundThread, 1)
+	if attached == 0 {
+		t.Fatalf("cannot join the foreground input thread: %v", attachErr)
+	}
 	procSetForegroundWindow.Call(host)
+	attach.Call(currentThread, foregroundThread, 0)
 	qemuPid.Store(uint32(cmd.Process.Pid))
 	qemuExternalKeyboardHook.Store(true)
 	for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); {
