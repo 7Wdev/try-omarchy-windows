@@ -49,7 +49,7 @@ The destination folder must already exist on an NTFS or ReFS drive, outside the
 Try Omarchy data folder. Choose a new filename; an existing backup is never
 overwritten. Add `-dir "D:\TryOmarchy"` if you normally use an explicit data path.
 
-The ZIP includes the writable disk, factory image, matching kernel and initramfs,
+The ZIP includes the writable disk, an available factory image, matching kernel and initramfs,
 bundled runtime when present, and launcher settings. Shared Windows folders,
 external QEMU installations, logs, and the launcher executable are not included.
 Keep a copy of the launcher used to create the backup.
@@ -105,3 +105,20 @@ Keep the original installation until you have checked the restored copy.
 
 For changing the active installation's location, see the next preview's
 [move flow](MOVING.md). Restore continues to create an independent copy.
+
+## Template-free installations in v0.10.1
+
+A standard raw disk and an independent portable disk can run without a local
+factory image. Backup does not fetch one. Full archives retain the existing v1
+format; template-free archives use v2 and include boot files, the exact release
+receipt, authenticated SHA256SUMS and factory size metadata. Every archive stores
+a complete independent raw disk, materializing a portable source first and
+verifying its original backing when needed.
+
+Restore v2 with Try Omarchy v0.10.1 or newer. Older launchers require the full
+layout and cannot restore or boot a template-free copy. Restored boot components
+retain their own release pins and can boot offline. Reset obtains that exact
+release's template before moving the old disk. If acquisition fails or is
+cancelled, the existing disk and boot receipt stay usable. Retained portable
+reset disks are not standalone bundles; restore their matching layout or use a
+complete checkpoint.

@@ -6,6 +6,9 @@
   instead of failing silently (#277).
 - Choosing the raw VirtIO audio device in Omarchy's audio menu no longer turns
   off volume sync; Omarchy switches back to the Windows device (#277).
+- Updates download boot files and the Windows runtime. The pinned factory image
+  is fetched only for creation or reset, with safe offline errors and backups
+  for installations without a local factory image (#312).
 
 ## v0.10.1 - 2026-10-06
 

@@ -1,7 +1,8 @@
 # Offline portable mode
 
 Portable mode runs the Windows launcher and a persistent Omarchy guest from
-removable storage without downloading anything on the target PC. It is an
+removable storage. A complete distribution supports offline creation and boot;
+updates and resets can acquire missing authenticated components. It is an
 experimental launcher mode; preparation and redistribution tooling are outside
 this core change.
 
@@ -77,3 +78,22 @@ files back when possible. If Windows prevents rollback, the error identifies
 the retained folder. Keep both files and the matching original factory payload
 for recovery. A retained QCOW2 disk must be returned to the `vm` folder before
 use because its factory path is relative to that folder.
+
+## Updates and Start fresh in v0.10.1
+
+Updates acquire the matching boot files and Windows runtime without downloading
+another factory image. A factory-backed QCOW2 is checkpointed and verified as
+independent before its original `data/guest/rootfs.ext4` can be replaced by a new
+boot directory. Never replace that original backing file yourself.
+
+Complete distribution ZIPs still include the authenticated factory archive and
+support offline creation. An exported independent portable copy can boot offline
+without a template. **Start fresh** reuses a verified matching local template or
+acquires the exact installed or explicitly selected release online. A missing,
+corrupt, cancelled or unavailable template stops reset and keeps the old system.
+`-no-update` disables feed checks; it does not disable an explicitly requested
+factory acquisition. Move the entire bundle when changing drives or drive letters.
+
+Files retained in `vm/before-reset-*` are recovery data, not a standalone portable
+bundle. A backed disk needs its original guest tree and backing identity at the
+original relative layout. Use a complete checkpoint or backup to recover it.

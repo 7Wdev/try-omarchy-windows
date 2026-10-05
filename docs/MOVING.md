@@ -44,3 +44,13 @@ errors.
 
 Move history is stored separately in `%LOCALAPPDATA%\TryOmarchy-host`. Do not
 delete or edit it while a move or retained-copy cleanup is outstanding.
+
+## Installations without a factory image
+
+From v0.10.1, moving a complete standard installation does not require
+`guest/rootfs.ext4` and does not download it. The writable raw disk, matching boot
+files and authenticated reset metadata move together. Start fresh at the new
+location may require the network if the exact pinned factory is not cached.
+Settings Move remains a standard-install operation. To relocate portable mode,
+copy the entire bundle, including `data/guest`, `data/vm`, receipts and sibling
+`payload`; preserve a backed disk's original relative backing path.
