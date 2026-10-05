@@ -1,0 +1,36 @@
+From 2d11ed6f396d4a916ee45db577c169595c1e8571 Mon Sep 17 00:00:00 2001
+From: Try Omarchy Release <actions@users.noreply.github.com>
+Date: Mon, 5 Oct 2026 21:40:13 +0000
+Subject: [PATCH] Refresh the guest package lock
+
+inotify-tools 4.26.262-1 -> 4.26.268-1
+libheif 1.23.5-1 -> 1.23.6-1
+---
+ guest/packages.lock.json | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/guest/packages.lock.json b/guest/packages.lock.json
+index 96f366f..affe145 100644
+--- a/guest/packages.lock.json
++++ b/guest/packages.lock.json
+@@ -178,7 +178,7 @@
+     "imath": "3.2.3-1",
+     "imv": "5.0.1-2",
+     "iniparser": "4.3.2-1",
+-    "inotify-tools": "4.26.262-1",
++    "inotify-tools": "4.26.268-1",
+     "iproute2": "7.2.0-1",
+     "iptables": "1:1.8.13-1",
+     "iputils": "20250605-1",
+@@ -271,7 +271,7 @@
+     "libgsf": "1.14.60-1",
+     "libgudev": "238-3",
+     "libgxps": "0.3.2-5",
+-    "libheif": "1.23.5-1",
++    "libheif": "1.23.6-1",
+     "libhwasan": "16.2.1+r23+gd564253eb6c8-1",
+     "libice": "1.1.2-1",
+     "libidn2": "2.3.8-1",
+-- 
+2.55.0
+
