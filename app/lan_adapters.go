@@ -22,6 +22,27 @@ func availableLANAdapters() ([]lanAdapter, error) {
 	return result, nil
 }
 
+// Filter only for this launch. The saved addresses and adapter identities stay
+// intact so a dock's rules return the next time its adapter is available.
+func filterUnavailableForwardAdapters(forwards []portForward, bindings map[string]string, adapters []lanAdapter) (active, paused []portForward) {
+	for _, forward := range forwards {
+		identity := bindings[forward.String()]
+		found := identity == ""
+		for _, adapter := range adapters {
+			if adapter.Identity != "" && strings.EqualFold(adapter.Identity, identity) {
+				found = true
+				break
+			}
+		}
+		if found {
+			active = append(active, forward)
+		} else {
+			paused = append(paused, forward)
+		}
+	}
+	return active, paused
+}
+
 func resolveForwardAdapters(forwards []portForward, bindings map[string]string, adapters []lanAdapter) ([]portForward, error) {
 	var resolved forwardList
 	for _, forward := range forwards {

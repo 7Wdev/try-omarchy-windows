@@ -515,12 +515,15 @@ func main() {
 		fatal(uiTextWith("fatal.ssh", map[string]string{"error": err.Error()}))
 	}
 	cfg.forwards = forwards
+	var pausedLANForwards []portForward
 	if !explicitFlags["forward"] && !explicitFlags["ssh"] && len(userSettings.ForwardAdapters) > 0 {
 		adapters, err := availableLANAdapters()
 		if err != nil {
 			fatal(uiTextWith("fatal.lan.adapters", map[string]string{"error": err.Error()}))
 		}
-		cfg.forwards, err = resolveForwardAdapters(forwards, userSettings.ForwardAdapters, adapters)
+		active, paused := filterUnavailableForwardAdapters(forwards, userSettings.ForwardAdapters, adapters)
+		pausedLANForwards = paused
+		cfg.forwards, err = resolveForwardAdapters(active, userSettings.ForwardAdapters, adapters)
 		if err != nil {
 			fatal(uiTextWith("fatal.lan.prepare", map[string]string{"error": err.Error()}))
 		}
@@ -790,6 +793,15 @@ func main() {
 	getUI().setStatus("%s", uiText("status.starting_omarchy"))
 	stopTray := startTray(cfg)
 	defer stopTray()
+	if len(pausedLANForwards) > 0 {
+		rules := make([]string, 0, len(pausedLANForwards))
+		for _, forward := range pausedLANForwards {
+			rules = append(rules, forward.String())
+		}
+		message := uiTextWith("tray.lan.paused", map[string]string{"rules": strings.Join(rules, ", ")})
+		logf("%s", message)
+		showTrayNotice(uiText("tray.lan.title"), message)
+	}
 
 	// SDL's keyboard grab installs a system-wide Win-key hook that leaks past
 	// window focus; our hook does it right (focus-scoped).

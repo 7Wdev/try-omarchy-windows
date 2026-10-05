@@ -17,6 +17,8 @@
   playback device changes. Turn off **Sync volume with Windows** in Settings to
   control them independently.
 - Night light now warms the VM display from the existing menu and keyboard shortcut.
+- Omarchy starts when a saved LAN adapter is unavailable, pauses only its
+  forwards for that launch, and resumes them on a later launch when it returns.
 
 ## v0.9.0 - 2026-10-04
 

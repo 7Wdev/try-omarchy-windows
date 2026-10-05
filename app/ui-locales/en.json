@@ -188,6 +188,8 @@
   "tray.reclaim.started": "Preparing free space. Keep Omarchy running. Choose Reclaim status from the tray to check when it is ready to shut down.",
   "tray.reclaim.not_ready": "Omarchy is not ready yet.",
   "tray.shutdown.starting": "Omarchy is still starting. You can shut it down once its window opens.",
+  "tray.lan.title": "LAN forwards paused",
+  "tray.lan.paused": "Windows adapter unavailable: {rules}. These rules resume next launch when it is back. Other forwards and internet access are unchanged.",
   "tray.transfer.title": "File transfer",
   "tray.transfer.failed": "These files could not be copied to Omarchy.\n\n{error}",
   "recovery.cancel": "Cancel this operation?\n\nThe original installation and completed backups will be kept. Temporary files will be removed.",
