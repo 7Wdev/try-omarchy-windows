@@ -44,6 +44,13 @@ existing disks. Catch-up retires 1.0.0 while preserving the launcher-delivered
 module, registers the new source, and rebuilds when matching headers exist.
 The force-install entry from patch 0118 remains in place for later header updates.
 
+Patch 0130 restores notification popups using a read-only lock-state boolean
+from the shell's private authentication store. Lock services remain private;
+popups and their timers stay hidden and paused during startup, lock and
+screensaver activity. Compatibility revision 52 delivers the matching shell
+files to existing disks, preserving custom and linked files. Runtime `4.0.4-5`
+includes the fix for the next **Update > Omarchy**.
+
 Patch 0091 adds a Windows audio endpoint mirror to the guest PipeWire picker.
 The bridge talks over a dedicated virtio serial port, and compatibility
 revision 33 delivers its user service to existing persistent disks. It needs
