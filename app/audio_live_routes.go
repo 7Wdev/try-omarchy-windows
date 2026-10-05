@@ -2,12 +2,10 @@ package main
 
 import (
 	"encoding/base64"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
-	"syscall"
 	"time"
 )
 
@@ -87,7 +85,9 @@ func publishSavedAudioRoutes(dataDir string, p audioPreferences, microphoneDisab
 func renameAudioRoute(from, to string, rename func(string, string) error, sleep func(time.Duration)) error {
 	for attempt := 0; ; attempt++ {
 		err := rename(from, to)
-		if err == nil || runtime.GOOS != "windows" || (!errors.Is(err, syscall.Errno(32)) && !errors.Is(err, syscall.Errno(33))) || attempt == 9 {
+		// MoveFileEx can report ACCESS_DENIED for an open destination too.
+		// Persistent permissions still fail after the same bounded interval.
+		if err == nil || runtime.GOOS != "windows" || !retryableWindowsRenameError(err) || attempt == 9 {
 			return err
 		}
 		sleep(20 * time.Millisecond)

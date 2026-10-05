@@ -13,8 +13,8 @@ import (
 	"time"
 )
 
-func TestAudioRouteRenameRetriesOnlySharingErrors(t *testing.T) {
-	for _, errno := range []syscall.Errno{32, 33, 5} {
+func TestAudioRouteRenameRetriesWindowsLockErrors(t *testing.T) {
+	for _, errno := range []syscall.Errno{32, 33, 5, 2} {
 		calls, sleeps := 0, 0
 		err := renameAudioRoute("from", "to", func(string, string) error {
 			calls++
@@ -28,7 +28,7 @@ func TestAudioRouteRenameRetriesOnlySharingErrors(t *testing.T) {
 				t.Fatalf("delay=%v", delay)
 			}
 		})
-		if errno == 5 {
+		if errno == 2 {
 			if !errors.Is(err, errno) || calls != 1 || sleeps != 0 {
 				t.Fatalf("permanent error: %v calls=%d sleeps=%d", err, calls, sleeps)
 			}
@@ -59,7 +59,7 @@ func TestAudioRoutePublishWhileTargetIsOpen(t *testing.T) {
 	var closeOnce sync.Once
 	closeHandle := func() { closeOnce.Do(func() { syscall.CloseHandle(h) }) }
 	defer closeHandle()
-	if err := writeAudioRoute(dir, "output", "blocked"); !errors.Is(err, syscall.Errno(32)) {
+	if err := writeAudioRoute(dir, "output", "blocked"); !retryableWindowsRenameError(err) {
 		t.Fatalf("locked destination: %v", err)
 	}
 	entries, _ := os.ReadDir(dir)
