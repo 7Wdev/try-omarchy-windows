@@ -124,6 +124,8 @@ func reloadBootSettings(cfg *config, plan *bootPlan) {
 			logf("rendering: %s", reason)
 		}
 	}
+	applyRecoveryBootChoice(cfg)
+
 	// Startup fallbacks recover one failed start, so a clean reboot tries the
 	// preferred audio again; memory is planned afresh by planBootResources. A
 	// host that refused nested virtualization keeps refusing, so

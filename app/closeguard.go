@@ -81,6 +81,9 @@ func runCloseGuard() {
 			c, err := dialQMPControl(ctx, qmpToolsPort)
 			if err == nil {
 				err = c.Call(ctx, "system_powerdown", nil, nil)
+				if err == nil {
+					guestCompositorHealth.stop()
+				}
 				c.Close()
 			}
 			cancel()

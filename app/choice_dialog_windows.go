@@ -18,6 +18,10 @@ func chooseAction(title, body string, labels ...string) (int, error) {
 }
 
 func chooseActionWithTextHeight(title, body string, textHeight int32, labels ...string) (int, error) {
+	return chooseActionCancelable(nil, title, body, textHeight, labels...)
+}
+
+func chooseActionCancelable(cancel <-chan struct{}, title, body string, textHeight int32, labels ...string) (int, error) {
 	type result struct {
 		action int
 		err    error
@@ -92,6 +96,17 @@ func chooseActionWithTextHeight(title, body string, textHeight int32, labels ...
 		if hwnd == 0 {
 			dialogErr = fmt.Errorf("create choice window: %w", err)
 			return
+		}
+		closed := make(chan struct{})
+		defer close(closed)
+		if cancel != nil {
+			go func() {
+				select {
+				case <-cancel:
+					procPostMessageW.Call(hwnd, wmClose, 0, 0)
+				case <-closed:
+				}
+			}()
 		}
 		brand.window(hwnd)
 

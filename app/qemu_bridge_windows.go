@@ -5,6 +5,7 @@ package main
 import (
 	"net"
 	"sync/atomic"
+	"time"
 )
 
 // connectionFromQEMU reports whether an accepted loopback connection belongs
@@ -44,4 +45,19 @@ func acceptQEMUBridge(listener net.Listener, name string, limit int32, serve fun
 			serve(conn)
 		}()
 	}
+}
+
+func lifecycleConnectionFromQEMU(conn net.Conn) bool {
+	peer, err := loopbackPeerPID(conn)
+	if err != nil {
+		return false
+	}
+	deadline := time.Now().Add(500 * time.Millisecond)
+	return lifecyclePeerMatches(peer, qemuPid.Load, func() bool {
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(10 * time.Millisecond)
+		return true
+	})
 }

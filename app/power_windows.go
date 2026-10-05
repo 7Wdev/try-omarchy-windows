@@ -86,10 +86,12 @@ func (p *guestPowerState) handle(event uintptr) {
 			return
 		}
 		p.suspended = true
+		guestCompositorHealth.power(time.Now(), true)
 		p.pause()
 	case pbtApmResumeAutomatic, pbtApmResumeSuspend:
 		firstResume := p.suspended
 		p.suspended = false
+		guestCompositorHealth.power(time.Now(), false)
 		p.resume()
 		if firstResume {
 			logf("windows resumed from sleep")
