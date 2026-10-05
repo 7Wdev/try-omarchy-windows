@@ -109,8 +109,17 @@ func dibToPNG(dib []byte) ([]byte, error) {
 	}
 	offset += int(count * 4)
 	stride := (int(width)*int(bits) + 31) / 32 * 4
-	if len(dib) < offset+stride*int(height) {
+	imageBytes := stride * int(height)
+	if imageBytes > len(dib)-offset {
 		return nil, fmt.Errorf("bitmap pixels truncated")
+	}
+	// Windows can synthesize CF_DIBV5 with another copy of the three
+	// bitfield masks after the V5 header, even though that header already
+	// contains them. Skip only that exact copy: GlobalSize may round the
+	// buffer up, so the pixel rows cannot be located from its end.
+	if compression == biBitfields && headerSize != dibHeaderSize && offset == int(headerSize) &&
+		len(dib)-offset >= imageBytes+12 && bytes.Equal(dib[offset:offset+12], dib[40:52]) {
+		offset += 12
 	}
 	img := image.NewNRGBA(image.Rect(0, 0, int(width), int(height)))
 	anyAlpha := false

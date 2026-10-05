@@ -91,7 +91,10 @@ func chooseActionCancelable(cancel <-chan struct{}, title, body string, textHeig
 		height := bodyHeight + 24 + int32(40*len(labels))
 		w, h := width+frame[2]-frame[0], height+frame[3]-frame[1]
 		titlePtr, _ := syscall.UTF16PtrFromString(title)
-		hwnd, _, err := procCreateWindowExW.Call(0, uintptr(unsafe.Pointer(class)), uintptr(unsafe.Pointer(titlePtr)),
+		// Stay above a maximized QEMU window until answered. The dialog is
+		// deliberately not owned by QEMU: a cross-process owner attaches the
+		// input queues, so a hung QEMU window could hang this recovery prompt.
+		hwnd, _, err := procCreateWindowExW.Call(0x00000008, uintptr(unsafe.Pointer(class)), uintptr(unsafe.Pointer(titlePtr)), // WS_EX_TOPMOST
 			style, uintptr(work[0]+(work[2]-work[0]-w)/2), uintptr(work[1]+(work[3]-work[1]-h)/2), uintptr(w), uintptr(h), 0, 0, instance, 0)
 		if hwnd == 0 {
 			dialogErr = fmt.Errorf("create choice window: %w", err)
@@ -146,7 +149,17 @@ func chooseActionCancelable(cancel <-chan struct{}, title, body string, textHeig
 		// console. The first ShowWindow would inherit that hidden state. Show
 		// the native window explicitly, independent of process startup flags.
 		procSetWindowPos.Call(hwnd, 0, 0, 0, 0, 0, swpNoMove|swpNoSize|swpShowWindow|0x0004)
-		procSetForegroundWindow.Call(hwnd)
+		if activated, _, _ := procSetForegroundWindow.Call(hwnd); activated == 0 {
+			info := struct {
+				size    uint32
+				hwnd    uintptr
+				flags   uint32
+				count   uint32
+				timeout uint32
+			}{hwnd: hwnd, flags: 0x0000000f} // FLASHW_ALL | FLASHW_TIMERNOFG
+			info.size = uint32(unsafe.Sizeof(info))
+			user32.NewProc("FlashWindowEx").Call(uintptr(unsafe.Pointer(&info)))
+		}
 		procSetFocus.Call(first)
 		var message msgStruct
 		for {

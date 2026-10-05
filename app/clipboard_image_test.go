@@ -3,13 +3,130 @@ package main
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"hash/crc32"
 	"image"
 	"image/color"
 	"image/png"
+	"os"
 	"strings"
 	"testing"
 )
+
+func TestDIBPixelOffsetLayouts(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		header      int
+		bits        uint16
+		compression uint32
+		extraMasks  bool
+	}{
+		{"info RGB", 40, 32, biRGB, false},
+		{"info bitfields", 40, 32, biBitfields, true},
+		{"V4 bitfields", 108, 32, biBitfields, false},
+		{"V4 bitfields extra masks", 108, 32, biBitfields, true},
+		{"V5 bitfields", 124, 32, biBitfields, false},
+		{"V5 bitfields extra masks", 124, 32, biBitfields, true},
+		{"V5 RGB", 124, 32, biRGB, false},
+		{"one bit palette", 40, 1, biRGB, false},
+		{"four bit palette", 108, 4, biRGB, false},
+		{"eight bit palette", 124, 8, biRGB, false},
+	} {
+		for _, topDown := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/topDown=%t", tc.name, topDown), func(t *testing.T) {
+				const width, height = 4, 2
+				dib := make([]byte, tc.header)
+				binary.LittleEndian.PutUint32(dib, uint32(tc.header))
+				binary.LittleEndian.PutUint32(dib[4:], width)
+				h := int32(height)
+				if topDown {
+					h = -h
+				}
+				binary.LittleEndian.PutUint32(dib[8:], uint32(h))
+				binary.LittleEndian.PutUint16(dib[12:], 1)
+				binary.LittleEndian.PutUint16(dib[14:], tc.bits)
+				binary.LittleEndian.PutUint32(dib[16:], tc.compression)
+				masks := []uint32{0xff0000, 0xff00, 0xff}
+				if tc.compression == biBitfields && tc.header > 40 {
+					for i, mask := range masks {
+						binary.LittleEndian.PutUint32(dib[40+i*4:], mask)
+					}
+				}
+				if tc.extraMasks {
+					for _, mask := range masks {
+						dib = binary.LittleEndian.AppendUint32(dib, mask)
+					}
+				}
+				palette := []color.NRGBA{{17, 31, 7, 255}, {137, 121, 57, 255}}
+				if tc.bits <= 8 {
+					binary.LittleEndian.PutUint32(dib[32:], 2)
+					for _, c := range palette {
+						dib = append(dib, c.B, c.G, c.R, 0)
+					}
+				}
+				stride := (width*int(tc.bits) + 31) / 32 * 4
+				binary.LittleEndian.PutUint32(dib[20:], uint32(stride*height))
+				want := image.NewNRGBA(image.Rect(0, 0, width, height))
+				for storedY := 0; storedY < height; storedY++ {
+					y := storedY
+					if !topDown {
+						y = height - 1 - storedY
+					}
+					row := make([]byte, stride)
+					for x := 0; x < width; x++ {
+						c := color.NRGBA{uint8(17 + x*40), uint8(31 + y*90), uint8(7 + x*10 + y*20), 255}
+						if tc.bits <= 8 {
+							index := (x + y) % 2
+							c = palette[index]
+							bit := x * int(tc.bits)
+							row[bit/8] |= byte(index) << (8 - int(tc.bits) - bit%8)
+						} else {
+							copy(row[x*4:], []byte{c.B, c.G, c.R, c.A})
+						}
+						want.SetNRGBA(x, y, c)
+					}
+					dib = append(dib, row...)
+				}
+				// GlobalSize can report a block larger than the DIB.
+				for _, slack := range []int{0, 7, 16} {
+					data, err := dibToPNG(append(dib[:len(dib):len(dib)], make([]byte, slack)...))
+					if err != nil {
+						t.Fatal(err)
+					}
+					if got := decodeNRGBA(t, data); !bytes.Equal(got.Pix, want.Pix) {
+						t.Fatalf("slack %d: pixels = %v, want %v", slack, got.Pix, want.Pix)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestDIBWinFormsSynthesizedV5(t *testing.T) {
+	// Captured directly from GetClipboardData(CF_DIBV5), before requesting
+	// CF_DIB, after WinForms Clipboard.SetImage of a 4x2 Bitmap. GlobalSize
+	// is 168: 124-byte header, 12 repeated RGB masks, 32 bottom-up pixel bytes.
+	dib, err := os.ReadFile("testdata/winforms-synthesized-v5.dib")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := dibToPNG(dib)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := decodeNRGBA(t, data)
+	if got.Bounds() != image.Rect(0, 0, 4, 2) {
+		t.Fatal(got.Bounds())
+	}
+	for y := 0; y < 2; y++ {
+		for x := 0; x < 4; x++ {
+			want := color.NRGBA{uint8(17 + x*40), uint8(31 + y*90), uint8(7 + x*10 + y*20), 255}
+			if c := got.NRGBAAt(x, y); c != want {
+				t.Fatalf("pixel %d,%d = %v, want %v", x, y, c, want)
+			}
+		}
+	}
+}
 
 func samplePNG(t *testing.T) ([]byte, *image.NRGBA) {
 	t.Helper()
