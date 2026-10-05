@@ -32,21 +32,13 @@ func runCameraBridge(preferences desktopPreferences) {
 		fatal(uiTextWith("fatal.port.camera", map[string]string{"port": fmt.Sprint(cameraPort)}))
 	}
 	logf("camera: bridge listening on %d", cameraPort)
-	go func() {
-		for {
-			conn, err := listener.Accept()
-			if err != nil {
-				logf("camera: accept: %v", err)
-				return
-			}
-			go func() {
-				defer conn.Close()
-				if err := serveCamera(conn, configuredCameraSource(preferences)); err != nil {
-					logf("camera: %v", err)
-				}
-			}()
+	// Only this launcher's QEMU may receive frames. One connection is QEMU's
+	// own; the second slot covers a reconnect while the old one closes.
+	go acceptQEMUBridge(listener, "camera", 2, func(conn net.Conn) {
+		if err := serveCamera(conn, configuredCameraSource(preferences)); err != nil {
+			logf("camera: %v", err)
 		}
-	}()
+	})
 }
 
 // syntheticCameraSource emits a slow-moving bar as video-range NV12. It exists
