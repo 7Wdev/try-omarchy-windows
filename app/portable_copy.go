@@ -83,7 +83,16 @@ func stageDirectPortableData(dir, data string, disk installationDisk, tool strin
 			seen[filepath.ToSlash(entry.Name)] = true
 		}
 	}
-	if err := requiredBackupFiles(seen); err != nil {
+	version := 1
+	var receiptData []byte
+	if !seen["guest/rootfs.ext4"] {
+		version = 2
+		receiptData, err = templateFreeReceipt(dir)
+		if err != nil {
+			return err
+		}
+	}
+	if err := requiredBackupFiles(seen, version); err != nil {
 		return err
 	}
 	// For raw input, add metadata to the inventoried nonzero data blocks.
@@ -143,6 +152,11 @@ func stageDirectPortableData(dir, data string, disk installationDisk, tool strin
 			continue
 		}
 		if err := copyMoveFile(dir, target, entry, source, report); err != nil {
+			return err
+		}
+	}
+	if version == 2 {
+		if err := writeUpdateFile(filepath.Join(data, "guest", installReceiptFilename), receiptData); err != nil {
 			return err
 		}
 	}

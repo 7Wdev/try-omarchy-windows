@@ -37,6 +37,7 @@ type config struct {
 	dir, hostDir, payloadDir    string
 	winqEmu, share              string
 	fresh, fullscreen, noGpu    bool
+	resetPayloadPrepared        bool
 	fullscreenDisplay           string
 	hostCursor                  bool
 	experimentalPinch           bool
@@ -584,7 +585,7 @@ func main() {
 	}
 	completeAtStart := completeInstallExists(cfg.dir, filepath.Base(cfg.disk))
 	needsProvisioning := cfg.fresh || !completeAtStart
-	configureSetupCancellation(!completeAtStart && removeDataOnCancel)
+	configureSetupCancellation(!installationDataExists(cfg.dir) && removeDataOnCancel)
 	if err := os.MkdirAll(cfg.vmDir, 0o755); err != nil {
 		fatal(uiTextWith("fatal.data_directory", map[string]string{"error": err.Error()}))
 	}
@@ -733,11 +734,14 @@ func main() {
 		}
 	}()
 
-	if err := preparePortablePayloadTransition(cfg, *release, *sumsSHA256); err != nil {
-		if finishSetupCancellation(cfg, err) {
-			return
+	// Explicit reset acquisition must complete before runtime/guest publication.
+	if cfg.fresh {
+		if err := ensureGuest(cfg, *release, *sumsSHA256); err != nil {
+			if finishSetupCancellation(cfg, err) {
+				return
+			}
+			fatal(uiTextWith("fatal.image.setup", map[string]string{"error": err.Error(), "help": setupFailureHelp(err)}))
 		}
-		fatal(uiTextWith("fatal.portable_disk_update", map[string]string{"error": err.Error()}))
 	}
 
 	// Machine setup the old bootstrap.ps1 handled: hypervisor on (may walk the
@@ -812,11 +816,11 @@ func main() {
 		cfg.qemu = stockQemu
 	}
 
-	// First run: fetch the guest image, or copy and unpack the authenticated
-	// local payload. Portable mode never falls back to the network.
+	// Prepare boot files from the authenticated selected payload. Creation and
+	// explicit reset acquire a missing exact-pin factory separately.
 	if payloadsRolledBack {
-		ready, err := installReceiptMatches(cfg.guestDir, *release, *sumsSHA256, installedGuestArtifacts)
-		if err != nil || !ready {
+		ready, err := installReceiptMatches(cfg.guestDir, *release, *sumsSHA256, bootGuestArtifacts)
+		if err != nil || !ready || validateInstalledDiskBacking(cfg) != nil {
 			fatal(uiText("fatal.image.incomplete"))
 		}
 	} else {

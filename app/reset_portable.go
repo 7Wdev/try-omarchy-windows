@@ -10,6 +10,9 @@ import (
 // identity before its new disk; an interruption must never pair an old disk
 // with the replacement factory's identity.
 func resetPortableDisk(cfg *config, expandedBytes int64) error {
+	if err := rejectPendingReset(cfg); err != nil {
+		return err
+	}
 	existing := make([]string, 0, 2)
 	for _, path := range []string{cfg.disk, portableBackingStatePath(cfg.disk)} {
 		info, err := os.Lstat(path)

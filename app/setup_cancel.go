@@ -88,13 +88,39 @@ func (r setupReader) Read(p []byte) (int, error) {
 	return r.r.Read(p)
 }
 
+// Existing user or recovery data protects the whole tree even when verification
+// fails. Completeness alone must never authorize recursive cancellation cleanup.
+func installationDataExists(dir string) bool {
+	for _, name := range []string{"vm/disk.raw", "vm/disk.qcow2", "checkpoints", "guest.previous", "runtime.previous", "rollback-state.json"} {
+		if _, err := os.Lstat(filepath.Join(dir, filepath.FromSlash(name))); !os.IsNotExist(err) {
+			return true
+		}
+	}
+	entries, err := os.ReadDir(filepath.Join(dir, "vm"))
+	if err != nil && !os.IsNotExist(err) {
+		return true
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), "before-reset-") || strings.HasPrefix(entry.Name(), "disk.") && strings.Contains(entry.Name(), ".incomplete-") {
+			return true
+		}
+	}
+	return false
+}
+
 func completeInstallExists(dir, diskName string) bool {
-	for _, name := range []string{
-		filepath.Join("guest", "build-spec.json"),
-		filepath.Join("guest", "rootfs.ext4"),
-		filepath.Join("vm", diskName),
-	} {
-		info, err := os.Stat(filepath.Join(dir, name))
+	for _, name := range bootGuestArtifacts {
+		info, err := os.Lstat(filepath.Join(dir, "guest", name))
+		if err != nil || !info.Mode().IsRegular() {
+			return false
+		}
+	}
+	disk, err := inspectInstallationDisk(dir)
+	if err != nil || filepath.Base(disk.Path) != diskName {
+		return false
+	}
+	if disk.Backing != "" {
+		info, err := os.Lstat(disk.Backing)
 		if err != nil || !info.Mode().IsRegular() {
 			return false
 		}
@@ -103,7 +129,7 @@ func completeInstallExists(dir, diskName string) bool {
 }
 
 func cleanupCancelledSetup(dir, executable string, removeAll bool) error {
-	if removeAll {
+	if removeAll && !installationDataExists(dir) {
 		return removeInstallExceptExecutable(dir, executable)
 	}
 	// Restrict cleanup to the launcher's own staging files. A recursive *.part

@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -25,7 +26,9 @@ func TestNativePinnedPayloadConvergesAfterLegacyHop(t *testing.T) {
 	for _, baseline := range []string{"v0.8.0", "v0.9.0"} {
 		t.Run(baseline, func(t *testing.T) {
 			dir := t.TempDir()
-			cfg := &config{dir: dir, guestDir: filepath.Join(dir, "guest")}
+			cfg := &config{dir: dir, guestDir: filepath.Join(dir, "guest"), vmDir: filepath.Join(dir, "vm"), disk: filepath.Join(dir, "vm", "disk.raw")}
+			os.MkdirAll(cfg.vmDir, 0700)
+			os.WriteFile(cfg.disk, append([]byte("user disk sentinel"), make([]byte, 1<<20)...), 0600)
 			cfg.desktop.AutomaticUpdatesDisabled = true
 			files := updatePayloadFixture()
 			encoder, err := zstd.NewWriter(nil)
@@ -51,6 +54,11 @@ func TestNativePinnedPayloadConvergesAfterLegacyHop(t *testing.T) {
 			var requests atomic.Int32
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				requests.Add(1)
+				if strings.HasPrefix(filepath.Base(r.URL.Path), "rootfs.") {
+					t.Errorf("native update requested factory: %s %s", r.Method, r.URL.Path)
+					http.Error(w, "factory forbidden", 500)
+					return
+				}
 				data, ok := files[filepath.Base(r.URL.Path)]
 				if !ok {
 					t.Error("unexpected request", r.URL.Path)

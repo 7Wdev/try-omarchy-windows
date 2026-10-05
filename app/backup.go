@@ -2,6 +2,7 @@ package main
 
 import (
 	"archive/zip"
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -65,8 +66,21 @@ func backupNameAllowed(name string) bool {
 	return name == "vm/disk.raw" || name == "settings.json" || name == desktopPreferencesFilename || name == launchPreferencesFilename || name == usbPreferencesFilename || name == keyboardPreferencesFilename || name == audioPreferencesFilename || name == audioEndpointsFilename || name == resourcePreferencesFilename || name == storageSettingsFilename || strings.HasPrefix(name, "guest/") || strings.HasPrefix(name, "runtime/")
 }
 
-func requiredBackupFiles(files map[string]bool) error {
-	for _, name := range []string{"vm/disk.raw", "guest/build-spec.json", "guest/rootfs.ext4", "guest/vmlinuz-linux", "guest/initramfs-linux.img"} {
+func requiredBackupFiles(files map[string]bool, versions ...int) error {
+	version := 1
+	if len(versions) > 0 {
+		version = versions[0]
+	}
+	required := []string{"vm/disk.raw", "guest/build-spec.json", "guest/vmlinuz-linux", "guest/initramfs-linux.img"}
+	switch version {
+	case 1:
+		required = append(required, "guest/rootfs.ext4")
+	case 2:
+		required = append(required, "guest/guest-manifest.json", "guest/SHA256SUMS", "guest/"+installReceiptFilename)
+	default:
+		return fmt.Errorf("unsupported backup version; template-free backups require Try Omarchy v0.10.1 or newer")
+	}
+	for _, name := range required {
 		if !files[name] {
 			return fmt.Errorf("backup is missing %s", name)
 		}
@@ -181,7 +195,22 @@ func writeVMArchive(dir, destination string, report backupProgress, checkpoint b
 			return err
 		}
 	}
-	if err := requiredBackupFiles(seen); err != nil {
+	version := 1
+	var receiptData []byte
+	if !seen["guest/rootfs.ext4"] {
+		version = 2
+		receiptData, err = templateFreeReceipt(dir)
+		if err != nil {
+			return err
+		}
+		for i := range entries {
+			if entries[i].Name == "guest/"+installReceiptFilename {
+				total += int64(len(receiptData)) - entries[i].Size
+				entries[i].Size = int64(len(receiptData))
+			}
+		}
+	}
+	if err := requiredBackupFiles(seen, version); err != nil {
 		return err
 	}
 	// Budget uncompressed size so success does not depend on compressibility.
@@ -201,8 +230,10 @@ func writeVMArchive(dir, destination string, report backupProgress, checkpoint b
 	var processed int64
 	for i := range entries {
 		entry := &entries[i]
-		source := disk
-		if entry.Name != "vm/disk.raw" {
+		var source io.ReadCloser = disk
+		if version == 2 && entry.Name == "guest/"+installReceiptFilename {
+			source = io.NopCloser(bytes.NewReader(receiptData))
+		} else if entry.Name != "vm/disk.raw" {
 			source, err = os.Open(filepath.Join(dir, filepath.FromSlash(entry.Name)))
 			if err != nil {
 				zw.Close()
@@ -235,7 +266,7 @@ func writeVMArchive(dir, destination string, report backupProgress, checkpoint b
 		zw.Close()
 		return err
 	}
-	if err = json.NewEncoder(writer).Encode(backupManifest{Version: 1, Files: entries}); err != nil {
+	if err = json.NewEncoder(writer).Encode(backupManifest{Version: version, Files: entries}); err != nil {
 		zw.Close()
 		return err
 	}
@@ -288,8 +319,8 @@ func readVMBackupReader(z *zip.Reader) (backupManifest, map[string]*zip.File, er
 	if err = dec.Decode(&manifest); err != nil {
 		return manifest, nil, err
 	}
-	if dec.Decode(&struct{}{}) != io.EOF || manifest.Version != 1 || len(manifest.Files) != len(files)-1 {
-		return manifest, nil, fmt.Errorf("unsupported backup manifest")
+	if dec.Decode(&struct{}{}) != io.EOF || (manifest.Version != 1 && manifest.Version != 2) || len(manifest.Files) != len(files)-1 {
+		return manifest, nil, fmt.Errorf("unsupported backup manifest; template-free backups require Try Omarchy v0.10.1 or newer")
 	}
 	seen := map[string]bool{}
 	var total int64
@@ -301,7 +332,58 @@ func readVMBackupReader(z *zip.Reader) (backupManifest, map[string]*zip.File, er
 		seen[entry.Name] = true
 		total += entry.Size
 	}
-	return manifest, files, requiredBackupFiles(seen)
+	if err := requiredBackupFiles(seen, manifest.Version); err != nil {
+		return manifest, nil, err
+	}
+	if manifest.Version == 2 {
+		if seen["guest/rootfs.ext4"] {
+			return manifest, nil, fmt.Errorf("template-free backup contains a template")
+		}
+		read := func(name string, limit int64) ([]byte, error) {
+			f := files[name]
+			if f == nil || f.UncompressedSize64 > uint64(limit) {
+				return nil, fmt.Errorf("missing or oversized reset metadata")
+			}
+			reader, err := f.Open()
+			if err != nil {
+				return nil, err
+			}
+			defer reader.Close()
+			data, err := io.ReadAll(io.LimitReader(reader, limit+1))
+			if err != nil {
+				return nil, err
+			}
+			if int64(len(data)) > limit {
+				return nil, fmt.Errorf("oversized reset metadata")
+			}
+			for _, entry := range manifest.Files {
+				if entry.Name == name && artifactDigest(data) != entry.SHA256 {
+					return nil, fmt.Errorf("reset metadata checksum mismatch")
+				}
+			}
+			return data, nil
+		}
+		receipt, err := read("guest/"+installReceiptFilename, maxInstallReceiptBytes)
+		if err != nil {
+			return manifest, nil, err
+		}
+		sums, err := read("guest/SHA256SUMS", maxSumsBytes)
+		if err != nil {
+			return manifest, nil, err
+		}
+		metadata, err := read("guest/guest-manifest.json", maxGuestManifestBytes)
+		if err != nil {
+			return manifest, nil, err
+		}
+		entries := map[string]backupEntry{}
+		for _, entry := range manifest.Files {
+			entries[entry.Name] = entry
+		}
+		if err := validateTemplateFreeArchive(receipt, sums, metadata, entries); err != nil {
+			return manifest, nil, err
+		}
+	}
+	return manifest, files, nil
 }
 
 type backupSparseWriter struct{ file *os.File }

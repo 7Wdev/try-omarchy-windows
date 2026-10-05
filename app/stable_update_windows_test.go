@@ -332,7 +332,11 @@ func TestNativeInstalledPayloadStartsOfflineWithoutRequests(t *testing.T) {
 		t.Fatal(err)
 	}
 	server.Close()
-	cfg := &config{dir: dir, guestDir: guest}
+	vm := filepath.Join(dir, "vm")
+	os.MkdirAll(vm, 0700)
+	disk := filepath.Join(vm, "disk.raw")
+	os.WriteFile(disk, []byte("existing user disk"), 0600)
+	cfg := &config{dir: dir, guestDir: guest, vmDir: vm, disk: disk}
 	started := time.Now()
 	if err := ensureGuest(cfg, release, digest); err != nil {
 		t.Fatal(err)

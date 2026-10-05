@@ -22,6 +22,7 @@ type config struct {
 	dir, hostDir, payloadDir    string
 	winqEmu, share              string
 	fresh, fullscreen, noGpu    bool
+	resetPayloadPrepared        bool
 	fullscreenDisplay           string
 	hostCursor                  bool
 	experimentalPinch           bool
@@ -88,6 +89,7 @@ func TestPrepareDiskPublishesCompleteFile(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(guestDir, "rootfs.ext4"), []byte("factory rootfs"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	installFactoryFixture(t, guestDir, []byte("factory rootfs"))
 	cfg := &config{guestDir: guestDir, vmDir: vmDir, disk: filepath.Join(vmDir, "disk.raw"), diskFormat: "raw"}
 	if err := prepareDisk(cfg, 1); err != nil {
 		t.Fatal(err)
@@ -126,6 +128,7 @@ func TestPrepareDiskRejectsInsufficientAllocatedSpace(t *testing.T) {
 		diskFreeBytes = originalFree
 		allocatedFileBytes = originalAllocated
 	})
+	installFactoryFixture(t, guestDir, []byte("factory rootfs"))
 	cfg := &config{guestDir: guestDir, vmDir: vmDir, disk: filepath.Join(vmDir, "disk.raw")}
 	err := prepareDisk(cfg, 4*1024)
 	if err == nil || !strings.Contains(err.Error(), "preflighting writable disk storage") {
@@ -148,7 +151,7 @@ func TestSDLDisplayUsesOnlyGuestCursorByDefault(t *testing.T) {
 	}
 }
 
-func TestPrepareDiskRebuildsLegacyPartialCopy(t *testing.T) {
+func TestPrepareDiskKeepsAmbiguousLegacyPartialCopy(t *testing.T) {
 	dir := t.TempDir()
 	guestDir := filepath.Join(dir, "guest")
 	vmDir := filepath.Join(dir, "vm")
@@ -166,30 +169,18 @@ func TestPrepareDiskRebuildsLegacyPartialCopy(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := &config{guestDir: guestDir, vmDir: vmDir, disk: disk, diskFormat: "raw"}
-	if err := prepareDisk(cfg, 1); err != nil {
-		t.Fatal(err)
+	if err := prepareDisk(cfg, 1); err == nil {
+		t.Fatal("ambiguous disk was rebuilt")
 	}
 	data, err := os.ReadFile(disk)
-	if err != nil {
-		t.Fatal(err)
+	if err != nil || string(data) != "partial" {
+		t.Fatal("disk changed", err)
 	}
-	if len(data) != 1<<20 || string(data[:len("factory rootfs")]) != "factory rootfs" {
-		t.Fatalf("rebuilt disk = size %d prefix %q", len(data), data[:len("factory rootfs")])
+	matches, _ := filepath.Glob(disk + ".incomplete-*")
+	if len(matches) != 0 {
+		t.Fatal("disk was quarantined")
 	}
-	matches, err := filepath.Glob(disk + ".incomplete-*")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(matches) != 1 {
-		t.Fatalf("quarantined disks = %d, want 1", len(matches))
-	}
-	old, err := os.ReadFile(matches[0])
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(old) != "partial" {
-		t.Fatalf("quarantined contents = %q", old)
-	}
+
 }
 
 func TestPrepareDiskGrowsCompleteOlderDiskWithoutReplacingIt(t *testing.T) {
@@ -210,6 +201,7 @@ func TestPrepareDiskGrowsCompleteOlderDiskWithoutReplacingIt(t *testing.T) {
 	if err := os.WriteFile(disk, original, 0o644); err != nil {
 		t.Fatal(err)
 	}
+	installFactoryFixture(t, guestDir, []byte("factory"))
 	cfg := &config{guestDir: guestDir, vmDir: vmDir, disk: disk, diskFormat: "raw"}
 	if err := prepareDisk(cfg, 1); err != nil {
 		t.Fatal(err)

@@ -109,7 +109,8 @@ func TestCompleteInstallDetection(t *testing.T) {
 	}
 	for _, name := range []string{
 		filepath.Join("guest", "build-spec.json"),
-		filepath.Join("guest", "rootfs.ext4"),
+		filepath.Join("guest", "vmlinuz-linux"),
+		filepath.Join("guest", "initramfs-linux.img"),
 		filepath.Join("vm", "disk.raw"),
 	} {
 		path := filepath.Join(root, name)
@@ -126,9 +127,8 @@ func TestCompleteInstallDetection(t *testing.T) {
 	if completeInstallExists(root, "disk.qcow2") {
 		t.Fatal("raw installation was reported as a portable installation")
 	}
-	if err := os.WriteFile(filepath.Join(root, "vm", "disk.qcow2"), []byte("data"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	os.Remove(filepath.Join(root, "vm", "disk.raw"))
+	independentFixture(t, filepath.Join(root, "vm", "disk.qcow2"), 1<<20)
 	if !completeInstallExists(root, "disk.qcow2") {
 		t.Fatal("complete portable installation was not detected")
 	}

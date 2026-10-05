@@ -28,7 +28,7 @@ func (p pinnedPayloadUpdate) artifacts() []pinnedPayloadArtifacts {
 	if p.Digest == p.RuntimeDigest {
 		return []pinnedPayloadArtifacts{{p.Release, p.Digest, updatePayloadNames()}}
 	}
-	return []pinnedPayloadArtifacts{{p.Release, p.Digest, append([]string{"rootfs.ext4.zst"}, downloadedGuestArtifacts...)},
+	return []pinnedPayloadArtifacts{{p.Release, p.Digest, append([]string{}, downloadedGuestArtifacts...)},
 		{p.RuntimeRelease, p.RuntimeDigest, []string{runtimeZip}}}
 }
 
