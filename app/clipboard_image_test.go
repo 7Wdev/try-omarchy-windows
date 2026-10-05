@@ -87,12 +87,15 @@ func TestDIBPixelOffsetLayouts(t *testing.T) {
 					}
 					dib = append(dib, row...)
 				}
-				data, err := dibToPNG(dib)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if got := decodeNRGBA(t, data); !bytes.Equal(got.Pix, want.Pix) {
-					t.Fatalf("pixels = %v, want %v", got.Pix, want.Pix)
+				// GlobalSize can report a block larger than the DIB.
+				for _, slack := range []int{0, 7, 16} {
+					data, err := dibToPNG(append(dib[:len(dib):len(dib)], make([]byte, slack)...))
+					if err != nil {
+						t.Fatal(err)
+					}
+					if got := decodeNRGBA(t, data); !bytes.Equal(got.Pix, want.Pix) {
+						t.Fatalf("slack %d: pixels = %v, want %v", slack, got.Pix, want.Pix)
+					}
 				}
 			})
 		}
