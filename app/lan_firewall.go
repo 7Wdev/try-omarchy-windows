@@ -106,14 +106,40 @@ func (p lanFirewallPlan) validate() error {
 	if len(p.Rules) > 64 {
 		return uiError(uiText("error.lan.limit"), nil)
 	}
-	if len(p.Rules) > 0 && !filepath.IsAbs(p.Program) {
-		return fmt.Errorf("firewall program must be an absolute path")
+	if len(p.Rules) > 0 {
+		if err := validateLANFirewallProgram(p.Program); err != nil {
+			return err
+		}
 	}
 	for _, rule := range p.Rules {
 		forward, err := parseForward(fmt.Sprintf("%s:%s:%d:1", rule.Protocol, rule.Address, rule.Port))
 		if err != nil || !forward.exposedToLAN() {
 			return fmt.Errorf("invalid LAN firewall rule")
 		}
+	}
+	return nil
+}
+
+const (
+	lanFirewallQEMUName  = "qemu-system-x86_64w.exe"
+	lanFirewallStockQEMU = `C:\Program Files\qemu\` + lanFirewallQEMUName
+)
+
+// validateLANFirewallProgram limits the elevated helper to the QEMU binaries
+// the launcher runs: <runtime>\bin\qemu-system-x86_64w.exe (the bundled
+// runtime or a WINQ-EMU tree) or stock QEMU. The plan arrives on the command
+// line, so without this check the helper would open inbound ports for any
+// program a caller named.
+func validateLANFirewallProgram(program string) error {
+	invalid := fmt.Errorf("firewall program must be Try Omarchy's QEMU")
+	if !filepath.IsAbs(program) || filepath.Clean(program) != program || strings.HasPrefix(program, `\\`) {
+		return invalid
+	}
+	if !strings.EqualFold(filepath.Base(program), lanFirewallQEMUName) {
+		return invalid
+	}
+	if !strings.EqualFold(filepath.Base(filepath.Dir(program)), "bin") && !strings.EqualFold(program, lanFirewallStockQEMU) {
+		return invalid
 	}
 	return nil
 }
