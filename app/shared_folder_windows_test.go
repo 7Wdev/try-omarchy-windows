@@ -114,3 +114,57 @@ func TestIsLinkReparsePoint(t *testing.T) {
 		}
 	}
 }
+
+func TestSharedFolderFailsClosedWithoutAbsoluteHome(t *testing.T) {
+	share := t.TempDir()
+	for _, home := range []string{"", " ", "relative", `C:relative`} {
+		if _, err := validateWindowsSharedFolder(share, "", home); err == nil {
+			t.Errorf("accepted home %q", home)
+		}
+		if _, ok := canonicalWindowsComparisonPath(home); ok {
+			t.Errorf("canonicalized invalid path %q", home)
+		}
+	}
+	if pathWithinWindows("", share) || pathWithinWindows(share, "") {
+		t.Fatal("empty path participated in containment")
+	}
+}
+
+func TestSharedFolderRejectsMappedNetworkSubdirectory(t *testing.T) {
+	share := t.TempDir()
+	home := filepath.Join(t.TempDir(), "home")
+	original := sharedFolderIsLocal
+	t.Cleanup(func() { sharedFolderIsLocal = original })
+	calls := 0
+	sharedFolderIsLocal = func(path string) bool { calls++; return false }
+	if _, err := validateWindowsSharedFolder(share, "", home); err == nil || calls != 1 {
+		t.Fatalf("remote volume accepted: calls=%d err=%v", calls, err)
+	}
+}
+
+func TestSharedFolderAcceptsLocalSubstSubdirectory(t *testing.T) {
+	root := t.TempDir()
+	share := filepath.Join(root, "shared")
+	if err := os.Mkdir(share, 0700); err != nil {
+		t.Fatal(err)
+	}
+	// Choose an unused letter without disturbing an existing mapping.
+	for letter := 'Z'; letter >= 'D'; letter-- {
+		drive := string(letter) + ":"
+		if _, err := os.Stat(drive + `\`); !os.IsNotExist(err) {
+			continue
+		}
+		if out, err := exec.Command(system32("subst.exe"), drive, root).CombinedOutput(); err != nil {
+			t.Skipf("SUBST unavailable: %v %s", err, out)
+		}
+		defer exec.Command(system32("subst.exe"), drive, "/D").Run()
+		for _, key := range []string{"LOCALAPPDATA", "APPDATA", "ProgramData", "PUBLIC"} {
+			t.Setenv(key, "")
+		}
+		if _, err := validateWindowsSharedFolder(drive+`\shared`, "", filepath.Join(t.TempDir(), "home")); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	t.Skip("no unused drive letter")
+}

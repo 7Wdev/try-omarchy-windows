@@ -616,6 +616,7 @@
   "error.share.not_folder": "the shared path is not a folder",
   "error.share.drive": "choose a folder instead of sharing an entire drive",
   "error.share.home": "choose one folder inside your Windows home instead of sharing the home folder or one of its parents",
+  "error.share.home_unavailable": "the Windows home folder is unavailable. Restore the user profile environment before sharing a folder",
   "error.share.system": "Windows system and shared profile folders cannot be shared",
   "error.share.overlap": "the shared folder and Try Omarchy data directory cannot contain each other",
   "error.share.exists": "{path} already exists and is not a regular folder",
