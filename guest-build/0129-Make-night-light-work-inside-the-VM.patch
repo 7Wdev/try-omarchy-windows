@@ -1,4 +1,4 @@
-From 59a1f87b1e70b7c037c64a14bc4e1cb533e7741c Mon Sep 17 00:00:00 2001
+From 64938844936ae56b6ff2268333ab9b1e4915ef3e Mon Sep 17 00:00:00 2001
 From: Tyler South <tsouth2@gmail.com>
 Date: Sun, 4 Oct 2026 17:40:39 -0400
 Subject: [PATCH] Apply manual night light through the Windows VM screen shader
@@ -13,7 +13,7 @@ Subject: [PATCH] Apply manual night light through the Windows VM screen shader
  .../local/share/try-omarchy/nightlight.frag   |  12 +
  guest/patches/omarchy/virtio-nightlight.patch | 131 +++++++++++
  guest/scripts/configure-rootfs.sh             |   2 +-
- guest/scripts/finalize-rootfs.sh              |   6 +-
+ guest/scripts/finalize-rootfs.sh              |   7 +-
  guest/scripts/register-omarchy-runtime.sh     |   4 +
  guest/spec.json                               |  21 +-
  .../nightlight/bin/omarchy-toggle-nightlight  |  59 +++++
@@ -23,8 +23,9 @@ Subject: [PATCH] Apply manual night light through the Windows VM screen shader
  guest/tests/test_guest_qol.py                 |   4 +-
  guest/tests/test_native_nightlight.py         | 218 ++++++++++++++++++
  guest/tests/test_runtime_package.py           |   6 +
+ guest/tests/test_windows_volume_sync.py       |   2 +-
  guest/tests/verify.py                         |   4 +-
- 20 files changed, 1125 insertions(+), 8 deletions(-)
+ 21 files changed, 1127 insertions(+), 9 deletions(-)
  create mode 100755 guest/factory-overlay/usr/local/lib/try-omarchy/install-nightlight
  create mode 100644 guest/factory-overlay/usr/share/try-omarchy/nightlight/bin_omarchy-toggle-nightlight
  create mode 100644 guest/factory-overlay/usr/share/try-omarchy/nightlight/manifest.json
@@ -690,7 +691,7 @@ index 9087636..d0bcf42 100755
  
  chromium_flags="$root/etc/skel/.config/chromium-flags.conf"
 diff --git a/guest/scripts/finalize-rootfs.sh b/guest/scripts/finalize-rootfs.sh
-index cda101a..57fe797 100755
+index 7eb0055..ac5c463 100755
 --- a/guest/scripts/finalize-rootfs.sh
 +++ b/guest/scripts/finalize-rootfs.sh
 @@ -73,6 +73,10 @@ version = subprocess.check_output(["pacman", "-Q", "try-omarchy-runtime"], text=
@@ -704,11 +705,12 @@ index cda101a..57fe797 100755
    usr/local/bin/mpv
    usr/local/bin/omarchy-native-screensaver-text
    usr/local/lib/try-omarchy/install-guest-qol
-@@ -224,7 +228,7 @@ tar -C / -cf /usr/share/try-omarchy/compat-overlay.tar "${compat_paths[@]}"
- # Revision 47 brings guest quality-of-life fixes to matching defaults only.
+@@ -225,7 +229,8 @@ tar -C / -cf /usr/share/try-omarchy/compat-overlay.tar "${compat_paths[@]}"
  # Revision 48 delivers physical battery details and the updated DKMS source.
  # Revision 49 allows Media Player software rendering in CPU mode.
--compat_revision=49
+ # Revision 50 synchronizes guest volume/mute with the Windows default endpoint.
+-compat_revision=50
++# Revision 51 delivers the VM night-light shader and guarded defaults.
 +compat_revision=51
  printf '%s:%s\n' "$compat_revision" "$kernel_release" >/usr/share/try-omarchy/compat-version
  
@@ -1066,20 +1068,20 @@ index 0000000..b214ee1
 +}
 +console.log('ok - night-light rapid toggles, stale probes, failures, and external changes');
 diff --git a/guest/tests/test_battery_details.py b/guest/tests/test_battery_details.py
-index e52a1e0..41aa43a 100644
+index 7c2a9f5..41aa43a 100644
 --- a/guest/tests/test_battery_details.py
 +++ b/guest/tests/test_battery_details.py
 @@ -204,7 +204,7 @@ class BatteryDetailsFlowTests(unittest.TestCase):
      def test_compatibility_delivery_and_dkms_version(self):
          overlay = GUEST / "factory-overlay"
          finalize = (GUEST / "scripts/finalize-rootfs.sh").read_text()
--        self.assertIn("compat_revision=49", finalize)
+-        self.assertIn("compat_revision=50", finalize)
 +        self.assertIn("compat_revision=51", finalize)
          self.assertIn("usr/src/try-omarchy-battery-1.1.0", finalize)
          self.assertIn("usr/local/lib/try-omarchy/update-battery-dkms", finalize)
          self.assertIn('PACKAGE_VERSION="1.1.0"', (MODULE_SOURCE.parent / "dkms.conf").read_text())
 diff --git a/guest/tests/test_guest_qol.py b/guest/tests/test_guest_qol.py
-index 2a5acab..fb9d9a6 100644
+index 9cb119a..fb9d9a6 100644
 --- a/guest/tests/test_guest_qol.py
 +++ b/guest/tests/test_guest_qol.py
 @@ -61,7 +61,7 @@ class GuestQolTests(unittest.TestCase):
@@ -1095,7 +1097,7 @@ index 2a5acab..fb9d9a6 100644
      def test_compatibility_delivers_guarded_payload_once_per_revision(self):
          finalize = (GUEST / "scripts/finalize-rootfs.sh").read_text()
          paths = finalize.split("compat_paths=(", 1)[1].split(")", 1)[0]
--        self.assertIn("compat_revision=49", finalize)
+-        self.assertIn("compat_revision=50", finalize)
 +        self.assertIn("compat_revision=51", finalize)
          for path in ("usr/local/bin/omarchy-native-screensaver-text", "usr/local/lib/try-omarchy/install-guest-qol", "usr/share/try-omarchy/guest-qol", "usr/local/bin/omarchy-windows-audio-bridge"):
              self.assertIn(path, paths)
@@ -1348,8 +1350,21 @@ index cbb88ba..528ad1e 100644
              self.assertIn('usr/bin/omarchy', names)
              self.assertIn('usr/bin/omarchy-version', names)
              self.assertNotIn('usr/bin/omarchy-nvim-setup', names)
+diff --git a/guest/tests/test_windows_volume_sync.py b/guest/tests/test_windows_volume_sync.py
+index 8b79448..3ec3f68 100644
+--- a/guest/tests/test_windows_volume_sync.py
++++ b/guest/tests/test_windows_volume_sync.py
+@@ -279,7 +279,7 @@ class VolumeSyncTests(unittest.TestCase):
+ 
+     def test_revision_delivers_bridge_to_existing_disks(self):
+         finalize = (Path(__file__).resolve().parents[1] / "scripts/finalize-rootfs.sh").read_text()
+-        self.assertIn("compat_revision=50", finalize)
++        self.assertIn("compat_revision=51", finalize)
+         self.assertIn("usr/local/bin/omarchy-windows-audio-bridge", finalize)
+ 
+ 
 diff --git a/guest/tests/verify.py b/guest/tests/verify.py
-index b3fb72a..fb0f708 100755
+index 406708c..fb0f708 100755
 --- a/guest/tests/verify.py
 +++ b/guest/tests/verify.py
 @@ -67,7 +67,7 @@ def main() -> None:
@@ -1365,11 +1380,11 @@ index b3fb72a..fb0f708 100755
          "system services run without watchdogs, which fire after Windows sleeps",
      )
      check(
--        "compat_revision=49" in finalize_rootfs
+-        "compat_revision=50" in finalize_rootfs
 +        "compat_revision=51" in finalize_rootfs
          and "usr/local/bin/mpv" in compat_paths
          and "usr/share/dkms/modules_to_force_install/try-omarchy" in compat_paths
          and "usr/local/lib/try-omarchy/try-omarchy-import.pyz" in compat_paths
 -- 
-2.56.0
+2.43.0
 
