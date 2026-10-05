@@ -18,20 +18,36 @@ func queryWindowsBatteryDetails() (batteryDetails, error) {
 		return fail(err)
 	}
 	defer batterySetupAPI.NewProc("SetupDiDestroyDeviceInfoList").Call(devices)
-	var iface struct {
-		Size     uint32
-		Class    syscall.GUID
-		Flags    uint32
-		Reserved uintptr
+	return enumerateBatteryDetails(func(index uint32) (batteryInformation, batteryDetails, bool, error) {
+		var iface batteryDeviceInterface
+		iface.Size = uint32(unsafe.Sizeof(iface))
+		ok, _, err := batterySetupAPI.NewProc("SetupDiEnumDeviceInterfaces").Call(devices, 0, uintptr(unsafe.Pointer(&batteryClassGUID)), uintptr(index), uintptr(unsafe.Pointer(&iface)))
+		if ok == 0 {
+			if err == syscall.Errno(259) {
+				return batteryInformation{}, batteryDetails{}, true, nil
+			}
+			return batteryInformation{}, batteryDetails{}, false, err
+		}
+		info, details, err := queryWindowsBatteryInterface(devices, &iface)
+		return info, details, false, err
+	})
+}
+
+type batteryDeviceInterface struct {
+	Size     uint32
+	Class    syscall.GUID
+	Flags    uint32
+	Reserved uintptr
+}
+
+func queryWindowsBatteryInterface(devices uintptr, iface *batteryDeviceInterface) (batteryInformation, batteryDetails, error) {
+	fail := func(err error) (batteryInformation, batteryDetails, error) {
+		return batteryInformation{}, batteryDetails{}, err
 	}
-	iface.Size = uint32(unsafe.Sizeof(iface))
-	ok, _, err := batterySetupAPI.NewProc("SetupDiEnumDeviceInterfaces").Call(devices, 0, uintptr(unsafe.Pointer(&batteryClassGUID)), 0, uintptr(unsafe.Pointer(&iface)))
-	if ok == 0 {
-		return fail(err)
-	}
+
 	detailProc := batterySetupAPI.NewProc("SetupDiGetDeviceInterfaceDetailW")
 	var size uint32
-	detailProc.Call(devices, uintptr(unsafe.Pointer(&iface)), 0, 0, uintptr(unsafe.Pointer(&size)), 0)
+	detailProc.Call(devices, uintptr(unsafe.Pointer(iface)), 0, 0, uintptr(unsafe.Pointer(&size)), 0)
 	if size < 6 || size > 65536 {
 		return fail(fmt.Errorf("invalid battery device path size: %d", size))
 	}
@@ -41,7 +57,7 @@ func queryWindowsBatteryDetails() (batteryDetails, error) {
 		headerSize = 8
 	}
 	*(*uint32)(unsafe.Pointer(&detail[0])) = headerSize
-	ok, _, err = detailProc.Call(devices, uintptr(unsafe.Pointer(&iface)), uintptr(unsafe.Pointer(&detail[0])), uintptr(size), 0, 0)
+	ok, _, err := detailProc.Call(devices, uintptr(unsafe.Pointer(iface)), uintptr(unsafe.Pointer(&detail[0])), uintptr(size), 0, 0)
 	if ok == 0 {
 		return fail(err)
 	}
@@ -83,5 +99,5 @@ func queryWindowsBatteryDetails() (batteryDetails, error) {
 	// Some batteries do not report names. Keep capacity and cycle count anyway.
 	manufacturer, _ := readName(6)
 	model, _ := readName(4)
-	return batteryDetailsFromWindows(info, manufacturer, model), nil
+	return info, batteryDetailsFromWindows(info, manufacturer, model), nil
 }

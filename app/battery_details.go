@@ -9,6 +9,7 @@ import (
 )
 
 const batteryCapacityRelative = 0x40000000
+const batterySystemBattery = 0x80000000
 
 // Windows capacities are mWh unless BATTERY_CAPACITY_RELATIVE is set.
 type batteryInformation struct {
@@ -67,6 +68,7 @@ type batteryDetailsCache struct {
 	mu      sync.Mutex
 	next    time.Time
 	details batteryDetails
+	retry   time.Duration
 }
 
 func (c *batteryDetailsCache) get(now time.Time, query func() (batteryDetails, error)) batteryDetails {
@@ -74,11 +76,21 @@ func (c *batteryDetailsCache) get(now time.Time, query func() (batteryDetails, e
 	defer c.mu.Unlock()
 	if !now.Before(c.next) {
 		details, err := query()
-		c.details = batteryDetails{}
 		if err == nil {
 			c.details = details
+			c.retry = 0
+			c.next = now.Add(time.Hour)
+		} else {
+			if c.retry == 0 {
+				c.retry = time.Minute
+			} else {
+				c.retry *= 2
+			}
+			if c.retry > 5*time.Minute {
+				c.retry = 5 * time.Minute
+			}
+			c.next = now.Add(c.retry)
 		}
-		c.next = now.Add(time.Hour)
 	}
 	return c.details
 }
@@ -87,5 +99,55 @@ func (c *batteryDetailsCache) clear() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.next = time.Time{}
+	c.retry = 0
 	c.details = batteryDetails{}
+}
+
+// Multiple packs have no single model or cycle count. Sum energy only when
+// every system pack reports absolute capacity in the guest's supported range.
+func aggregateBatteryDetails(packs []batteryDetails) batteryDetails {
+	if len(packs) == 0 {
+		return batteryDetails{}
+	}
+	if len(packs) == 1 {
+		return packs[0]
+	}
+	sum := func(get func(batteryDetails) *int64) *int64 {
+		var total int64
+		for _, p := range packs {
+			v := get(p)
+			if v == nil || *v <= 0 || *v > 2147483647-total {
+				return nil
+			}
+			total += *v
+		}
+		return &total
+	}
+	d := batteryDetails{
+		EnergyFullDesignMicroWh: sum(func(p batteryDetails) *int64 { return p.EnergyFullDesignMicroWh }),
+		EnergyFullMicroWh:       sum(func(p batteryDetails) *int64 { return p.EnergyFullMicroWh }),
+		Chemistry:               packs[0].Chemistry,
+	}
+	for _, p := range packs {
+		if p.Chemistry != d.Chemistry {
+			d.Chemistry = ""
+		}
+	}
+	return d
+}
+
+func enumerateBatteryDetails(query func(uint32) (batteryInformation, batteryDetails, bool, error)) (batteryDetails, error) {
+	var packs []batteryDetails
+	for index := uint32(0); ; index++ {
+		info, details, done, err := query(index)
+		if err != nil {
+			return batteryDetails{}, err
+		}
+		if done {
+			return aggregateBatteryDetails(packs), nil
+		}
+		if info.Capabilities&batterySystemBattery != 0 {
+			packs = append(packs, details)
+		}
+	}
 }
