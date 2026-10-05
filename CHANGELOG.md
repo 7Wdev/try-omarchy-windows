@@ -58,6 +58,10 @@
   independently (#294).
 - **Update > Omarchy** no longer flashes a configuration error banner while it
   installs (#305).
+- Omarchy starts right away instead of waiting for updates. Updates download in
+  the background while you use it, resume after interruptions, use the Windows
+  proxy settings, and install the next time Omarchy starts, or right away with
+  **Restart to update** in the tray (#307).
 - CPU rendering mode now really limits the processor features Omarchy sees,
   and PowerToys and AutoHotkey can see the Win key while Omarchy runs (#306).
 
