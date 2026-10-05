@@ -36,6 +36,45 @@ func TestPortableFilesystemLimits(t *testing.T) {
 	}
 }
 
+func TestPortableStartupFilesystemQueryErrorKeepsLaunching(t *testing.T) {
+	original := queryFilesystemCapability
+	t.Cleanup(func() { queryFilesystemCapability = original })
+	failure := errors.New("GetVolumeInformationW failed")
+	queryFilesystemCapability = func(string) (filesystemCapability, error) {
+		return filesystemCapability{}, failure
+	}
+	if err := requirePortableStartupFilesystem("existing-portable"); err != nil {
+		t.Fatalf("query error blocked startup: %v", err)
+	}
+	if err := requirePortableFilesystem("new-portable"); !errors.Is(err, failure) {
+		t.Fatalf("creation lost strict query check: %v", err)
+	}
+}
+
+func TestPortableStartupRefusesFAT32AndAllowsUnknownFilesystem(t *testing.T) {
+	original := queryFilesystemCapability
+	t.Cleanup(func() { queryFilesystemCapability = original })
+	for _, tc := range []struct {
+		name    string
+		allowed bool
+	}{
+		{"FAT", false}, {"fat32", false}, {"exFAT", true}, {"NTFS", true}, {"", true}, {"unknown", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			queryFilesystemCapability = func(string) (filesystemCapability, error) {
+				return filesystemCapability{Name: tc.name}, nil
+			}
+			err := requirePortableStartupFilesystem("existing-portable")
+			if (err == nil) != tc.allowed {
+				t.Fatalf("startup allowed=%v err=%v", tc.allowed, err)
+			}
+			if !tc.allowed && err.Error() != uiText("error.portable.filesystem") {
+				t.Fatalf("missing filesystem guidance: %v", err)
+			}
+		})
+	}
+}
+
 func TestPortableFAT32FailsBeforeStagingOrOpeningSource(t *testing.T) {
 	original := queryFilesystemCapability
 	t.Cleanup(func() { queryFilesystemCapability = original })

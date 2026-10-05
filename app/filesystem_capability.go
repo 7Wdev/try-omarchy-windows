@@ -30,6 +30,18 @@ func requirePortableFilesystem(path string) error {
 	return err
 }
 
+func requirePortableStartupFilesystem(path string) error {
+	capability, err := queryFilesystemCapability(path)
+	if err != nil {
+		logf("portable: could not identify filesystem at %s; continuing startup: %v", path, err)
+		return nil
+	}
+	if filesystemFileLimit(capability.Name) < 4<<30 {
+		return uiError(uiText("error.portable.filesystem"), nil)
+	}
+	return nil
+}
+
 func portableFilesystemCapability(path string) (filesystemCapability, error) {
 	capability, err := queryFilesystemCapability(path)
 	if err != nil {

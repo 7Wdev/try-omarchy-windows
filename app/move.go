@@ -238,6 +238,9 @@ func resolveMoveTarget(state moveState, target string, removing ...bool) (string
 		return "", fmt.Errorf("invalid moved location")
 	}
 	if err := validateMovePath(target); err != nil {
+		if len(removing) > 0 && removing[0] {
+			return "", uninstallPathError(err)
+		}
 		return "", err
 	}
 	if len(removing) > 0 && removing[0] && validUninstallState(target) {
@@ -323,7 +326,8 @@ func (s moveStore) rememberVolume(state moveState, dir string, removing ...bool)
 		}
 		location, err := identifyMoveVolume(target)
 		if err != nil {
-			return state, err
+			logf("move: could not record volume identity for %s; keeping the existing redirect: %v", target, err)
+			return state, nil
 		}
 		if location == nil {
 			return state, nil
@@ -639,7 +643,7 @@ func (s moveStore) prepare(source, destination string, report backupProgress) (*
 	m := &installationMove{ID: hex.EncodeToString(id[:]), Source: source, Destination: destination, Phase: "copying", Files: files}
 	m.Volume, err = identifyMoveVolume(destination)
 	if err != nil {
-		return nil, err
+		return nil, uiError(uiTextWith("error.move.identify_volume", map[string]string{"path": destination, "error": err.Error()}), err)
 	}
 	m.Stage = filepath.Join(filepath.Dir(destination), ".TryOmarchy-move-"+m.ID)
 	selected, found, err := loadDataLocationPointer(s.defaultDir)

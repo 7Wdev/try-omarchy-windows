@@ -6,8 +6,42 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func TestWindowsAppsUninstallLinkedProfileShowsRecoveryGuidance(t *testing.T) {
+	t.Setenv("LOCALAPPDATA", t.TempDir())
+	root := t.TempDir()
+	realProfile := filepath.Join(root, "real-profile")
+	realDir := filepath.Join(realProfile, "TryOmarchy")
+	if err := os.MkdirAll(realDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(realDir, provisionModeFilename)
+	if err := os.WriteFile(marker, []byte("keep"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	junction := filepath.Join(root, "linked-profile")
+	if out, err := exec.Command(system32("cmd.exe"), "/c", "mklink", "/J", junction, realProfile).CombinedOutput(); err != nil {
+		t.Skipf("junction unavailable: %v %s", err, out)
+	}
+	dir := filepath.Join(junction, "TryOmarchy")
+	resolved, err := prepareMovedLocation(dir, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = runUninstall(resolved)
+	if err == nil || !strings.Contains(err.Error(), junction) || !strings.Contains(err.Error(), "real folder path") || !strings.Contains(err.Error(), "manually") {
+		t.Fatalf("Apps uninstall lost junction recovery guidance: %v", err)
+	}
+	if message := uiTextWith("recovery.error", map[string]string{"error": err.Error()}); !strings.Contains(message, junction) || !strings.Contains(message, "manually") {
+		t.Fatalf("Apps uninstall dialog lost guidance: %s", message)
+	}
+	if data, err := os.ReadFile(marker); err != nil || string(data) != "keep" {
+		t.Fatalf("data changed: %q err=%v", data, err)
+	}
+}
 
 func TestUninstallRefusesJunctionAndLinkedMarkerAncestor(t *testing.T) {
 	outside := t.TempDir()
@@ -19,8 +53,8 @@ func TestUninstallRefusesJunctionAndLinkedMarkerAncestor(t *testing.T) {
 	if out, err := exec.Command(system32("cmd.exe"), "/c", "mklink", "/J", junction, outside).CombinedOutput(); err != nil {
 		t.Skipf("junction unavailable: %v %s", err, out)
 	}
-	if err := removeUninstallDirectory(junction, func(string) error { t.Fatal("attempted junction deletion"); return nil }); err == nil {
-		t.Fatal("accepted junction root")
+	if err := removeUninstallDirectory(junction, func(string) error { t.Fatal("attempted junction deletion"); return nil }); err == nil || !strings.Contains(err.Error(), junction) || !strings.Contains(err.Error(), "manually") {
+		t.Fatalf("junction root lost refusal or recovery guidance: %v", err)
 	}
 	docs := t.TempDir()
 	if err := os.WriteFile(filepath.Join(outside, "disk.raw"), []byte("keep"), 0600); err != nil {

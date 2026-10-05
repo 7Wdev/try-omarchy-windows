@@ -5,8 +5,44 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func TestUninstallLinkedAncestorHasRecoveryGuidance(t *testing.T) {
+	root := t.TempDir()
+	realProfile := filepath.Join(root, "real-profile")
+	realDir := filepath.Join(realProfile, "TryOmarchy")
+	if err := os.MkdirAll(realDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(realDir, provisionModeFilename)
+	if err := os.WriteFile(marker, []byte("keep"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	linkedProfile := filepath.Join(root, "linked-profile")
+	if err := os.Symlink(realProfile, linkedProfile); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	dir := filepath.Join(linkedProfile, "TryOmarchy")
+	err := removeUninstallDirectory(dir, func(string) error {
+		t.Fatal("attempted deletion through a linked profile")
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), linkedProfile) || !strings.Contains(err.Error(), "real folder path") || !strings.Contains(err.Error(), "manually") {
+		t.Fatalf("missing linked-component recovery guidance: %v", err)
+	}
+	if err := validateUninstallDirectory(realDir); err != nil {
+		t.Fatalf("real folder path rejected: %v", err)
+	}
+	if data, err := os.ReadFile(marker); err != nil || string(data) != "keep" {
+		t.Fatalf("data changed: %q err=%v", data, err)
+	}
+	state := moveState{Redirects: map[string]string{filepath.Join(root, "old-install"): dir}}
+	if _, err := resolveMovedDirectory(state, filepath.Join(root, "old-install"), true); err == nil || !strings.Contains(err.Error(), "manually") {
+		t.Fatalf("moved uninstall lost recovery guidance: %v", err)
+	}
+}
 
 func TestValidateUninstallDirectoryNeedsADataFolder(t *testing.T) {
 	for _, marker := range uninstallMarkers {

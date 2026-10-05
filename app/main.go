@@ -319,7 +319,7 @@ func main() {
 		root := filepath.Dir(self)
 		cfg.dir = filepath.Join(root, "data")
 		cfg.payloadDir = filepath.Join(root, "payload")
-		if err := requirePortableFilesystem(root); err != nil {
+		if err := requirePortableStartupFilesystem(root); err != nil {
 			fatal(err.Error())
 		}
 		removeDataOnCancel, err = dataDirectoryEmpty(cfg.dir)

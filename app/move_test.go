@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -25,6 +26,70 @@ func prepareFixtureMove(t *testing.T, s moveStore, source, destination string) *
 		t.Fatal(err)
 	}
 	return m
+}
+
+func TestMoveVolumeIdentificationErrorKeepsLaunching(t *testing.T) {
+	s, source, destination := moveFixture(t)
+	prepareFixtureMove(t, s, source, destination)
+	if err := s.recover(func(*installationMove) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	state, err := s.load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.Locations = nil
+	state.Retained.Volume = nil
+	if err := s.save(state); err != nil {
+		t.Fatal(err)
+	}
+	original := identifyMoveVolume
+	t.Cleanup(func() { identifyMoveVolume = original })
+	calls := 0
+	identifyMoveVolume = func(path string) (*moveVolumeLocation, error) {
+		calls++
+		if path != destination {
+			t.Fatalf("identified %q instead of existing destination", path)
+		}
+		return nil, errors.New("volume GUID unavailable")
+	}
+	state, err = s.rememberVolume(state, source)
+	if err != nil || calls != 1 {
+		t.Fatalf("identity upgrade blocked startup: calls=%d err=%v", calls, err)
+	}
+	state, err = s.relocate(state, source, func(*installationMove) error {
+		t.Fatal("attempted to relocate without volume identity")
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved, err := resolveMovedDirectory(state, source); err != nil || resolved != destination {
+		t.Fatalf("launch redirect=%q err=%v", resolved, err)
+	}
+	saved, err := s.load()
+	if err != nil || saved.Redirects[source] != destination || len(saved.Locations) != 0 || saved.Retained.Volume != nil {
+		t.Fatalf("existing history changed: %+v err=%v", saved, err)
+	}
+}
+
+func TestMoveVolumeIdentificationFailureHasRecoveryGuidance(t *testing.T) {
+	s, source, destination := moveFixture(t)
+	if err := os.MkdirAll(filepath.Dir(destination), 0700); err != nil {
+		t.Fatal(err)
+	}
+	original := identifyMoveVolume
+	t.Cleanup(func() { identifyMoveVolume = original })
+	failure := errors.New("volume GUID unavailable")
+	identifyMoveVolume = func(string) (*moveVolumeLocation, error) { return nil, failure }
+	_, err := s.prepare(source, destination, nil)
+	if !errors.Is(err, failure) || !strings.Contains(err.Error(), destination) || !strings.Contains(err.Error(), "another local drive") {
+		t.Fatalf("missing move recovery guidance: %v", err)
+	}
+	state, err := s.load()
+	if err != nil || state.Pending != nil {
+		t.Fatalf("failed identification started a move: %+v err=%v", state, err)
+	}
 }
 
 func TestMovePreservesContentsCapacityTimestampsAndRedirects(t *testing.T) {

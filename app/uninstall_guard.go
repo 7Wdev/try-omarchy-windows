@@ -73,6 +73,10 @@ var uninstallMarkers = []string{
 	networkIdentityFilename,
 }
 
+func uninstallPathError(err error) error {
+	return uiError(uiTextWith("error.uninstall.unsafe_path", map[string]string{"error": err.Error()}), err)
+}
+
 // validateUninstallDirectory refuses to delete a folder that is not a Try
 // Omarchy data folder. Uninstall removes the whole folder, and -dir is
 // taken from the command line, so a mistyped or crafted path must not
@@ -88,11 +92,11 @@ func validateUninstallDirectory(dir string) error {
 	if err != nil {
 		return err
 	}
+	if err := validateMovePath(dir); err != nil {
+		return uninstallPathError(err)
+	}
 	if !info.IsDir() {
 		return fmt.Errorf("%s is not a folder; nothing was removed", dir)
-	}
-	if err := validateMovePath(dir); err != nil {
-		return err
 	}
 	for _, marker := range uninstallMarkers {
 		path := filepath.Join(dir, marker)
