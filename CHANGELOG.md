@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- On NVIDIA graphics, GPU mode no longer freezes when Media Player opens, and
+  GTK4 apps such as Files open instead of crashing. Guest Vulkan apps use
+  OpenGL there (#276).
+- Resources, Graphics, displays and the shared folder now apply when Omarchy
+  restarts, as Settings promises.
+- The Windows key no longer gets stuck held in Windows after switching between
+  Windows and Omarchy.
+- Scrolling Settings no longer changes dropdown values.
+- The camera and audio bridges accept only Omarchy's own connection, the LAN
+  firewall helper only adds rules for Omarchy's QEMU, and uninstall refuses a
+  folder that is not a Try Omarchy data folder.
+
 ## v0.9.0 - 2026-10-04
 
 - Audio opens Windows playback and recording devices at their own sample rate,
