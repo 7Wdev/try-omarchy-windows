@@ -31,6 +31,9 @@ config once, then restore the recorded values. If pacman fails or is killed,
 the service restores them when the process exits, even though pacman skips
 post-transaction hooks on failure. State lives only under `/run`, and no service
 is enabled for the next boot. Headless transactions need no running compositor.
+Both hooks are best-effort: setup or cleanup failures are printed to pacman
+and do not cancel the package update. Failed setup asks the guardian to restore
+any partially paused sessions; setup waits at most five seconds for readiness.
 
 The hooks protect **Update > Omarchy**, its conflict retries, and direct pacman
 transactions. They prevent the config watcher from loading a temporarily absent

@@ -56,7 +56,8 @@ files, preventing a temporary missing-bootstrap error banner during live updates
 Compatibility revision 54 delivers the hooks and transaction guardian to existing
 disks before login. The guardian restores each session's previous setting after
 one explicit reload, including failed or interrupted transactions. It does not
-change user config files or enable a service on the next boot.
+change user config files or enable a service on the next boot. Hook failures
+print a diagnostic and let the package update continue.
 
 Patch 0091 adds a Windows audio endpoint mirror to the guest PipeWire picker.
 The bridge talks over a dedicated virtio serial port, and compatibility

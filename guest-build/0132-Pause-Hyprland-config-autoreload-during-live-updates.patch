@@ -1,22 +1,22 @@
-From d75de3d48e0c19abe4937d6a52bc27a1545b084d Mon Sep 17 00:00:00 2001
+From 08ddcadfcf77cc5d00658ed0e35f85cb709fd966 Mon Sep 17 00:00:00 2001
 From: Tyler South <tsouth2@gmail.com>
-Date: Sun, 4 Oct 2026 23:37:28 -0400
-Subject: [PATCH] Pause Hyprland config autoreload while guest packages are
- replaced
+Date: Mon, 5 Oct 2026 00:06:17 -0400
+Subject: [PATCH] Keep live update autoreload hooks best effort
 
 ---
- .../hooks/00-try-omarchy-live-update.hook     |  11 ++
+ .../hooks/00-try-omarchy-live-update.hook     |  10 +
  .../hooks/zz-try-omarchy-live-update.hook     |  10 +
- .../usr/local/lib/try-omarchy/live-update     | 173 ++++++++++++++++++
- guest/scripts/finalize-rootfs.sh              |   5 +-
+ .../usr/local/lib/try-omarchy/live-update     | 193 ++++++++++++++++++
+ guest/scripts/finalize-rootfs.sh              |   6 +-
  guest/tests/test_battery_details.py           |   2 +-
+ guest/tests/test_compositor_health.py         |   2 +-
  guest/tests/test_guest_qol.py                 |   2 +-
- guest/tests/test_live_update.py               |  82 +++++++++
+ guest/tests/test_live_update.py               | 188 +++++++++++++++++
  guest/tests/test_native_nightlight.py         |   2 +-
  guest/tests/test_notification_privacy.py      |   2 +-
  guest/tests/test_windows_volume_sync.py       |   2 +-
  guest/tests/verify.py                         |   2 +-
- 11 files changed, 286 insertions(+), 7 deletions(-)
+ 12 files changed, 413 insertions(+), 8 deletions(-)
  create mode 100644 guest/factory-overlay/etc/pacman.d/hooks/00-try-omarchy-live-update.hook
  create mode 100644 guest/factory-overlay/etc/pacman.d/hooks/zz-try-omarchy-live-update.hook
  create mode 100755 guest/factory-overlay/usr/local/lib/try-omarchy/live-update
@@ -24,10 +24,10 @@ Subject: [PATCH] Pause Hyprland config autoreload while guest packages are
 
 diff --git a/guest/factory-overlay/etc/pacman.d/hooks/00-try-omarchy-live-update.hook b/guest/factory-overlay/etc/pacman.d/hooks/00-try-omarchy-live-update.hook
 new file mode 100644
-index 0000000..b8e4e7f
+index 0000000..a1a1ef5
 --- /dev/null
 +++ b/guest/factory-overlay/etc/pacman.d/hooks/00-try-omarchy-live-update.hook
-@@ -0,0 +1,11 @@
+@@ -0,0 +1,10 @@
 +[Trigger]
 +Operation = Install
 +Operation = Upgrade
@@ -38,7 +38,6 @@ index 0000000..b8e4e7f
 +Description = Pause Hyprland config autoreload
 +When = PreTransaction
 +Exec = /usr/local/lib/try-omarchy/live-update pre
-+AbortOnFail
 diff --git a/guest/factory-overlay/etc/pacman.d/hooks/zz-try-omarchy-live-update.hook b/guest/factory-overlay/etc/pacman.d/hooks/zz-try-omarchy-live-update.hook
 new file mode 100644
 index 0000000..1b298d6
@@ -57,10 +56,10 @@ index 0000000..1b298d6
 +Exec = /usr/local/lib/try-omarchy/live-update post
 diff --git a/guest/factory-overlay/usr/local/lib/try-omarchy/live-update b/guest/factory-overlay/usr/local/lib/try-omarchy/live-update
 new file mode 100755
-index 0000000..539d7e5
+index 0000000..3f4c4b9
 --- /dev/null
 +++ b/guest/factory-overlay/usr/local/lib/try-omarchy/live-update
-@@ -0,0 +1,173 @@
+@@ -0,0 +1,193 @@
 +#!/usr/bin/python3 -I
 +"""Keep every running Hyprland config intact across pacman extraction."""
 +
@@ -169,6 +168,8 @@ index 0000000..539d7e5
 +    signal.signal(signal.SIGINT, stop)
 +    try:
 +        for session in sessions():
++            if stopped or (state / 'finish').exists():
++                return
 +            # Save before changing it, so partial setup failures also restore.
 +            saved.append(session)
 +            set_option(session, True)
@@ -185,13 +186,13 @@ index 0000000..539d7e5
 +        (state / 'done').touch()
 +
 +
-+def wait(state, marker):
-+    deadline = time.monotonic() + 30
++def wait(state, marker, seconds=5):
++    deadline = time.monotonic() + seconds
 +    while time.monotonic() < deadline:
-+        if (state / 'error').exists():
-+            raise RuntimeError((state / 'error').read_text())
 +        if (state / marker).exists():
 +            return
++        if marker != 'done' and (state / 'error').exists():
++            raise RuntimeError((state / 'error').read_text())
 +        if (state / 'done').exists():
 +            raise RuntimeError('autoreload guardian exited before setup')
 +        time.sleep(.05)
@@ -209,6 +210,7 @@ index 0000000..539d7e5
 +        if not sessions():
 +            return
 +        state.mkdir(parents=True, mode=0o700)
++        launched = False
 +        try:
 +            # Outside pacman's process group: killing the updater or pacman
 +            # cannot kill the cleanup worker along with the transaction.
@@ -216,26 +218,43 @@ index 0000000..539d7e5
 +                '--service-type=exec', f'--unit=try-omarchy-live-update-{pid}-{started}',
 +                '/usr/bin/python3', '-I', str(Path(__file__).resolve()),
 +                'watch', str(pid), started, str(state))
++            launched = True
 +            wait(state, 'ready')
++            if (state / 'error').exists():
++                raise RuntimeError((state / 'error').read_text())
 +        except Exception:
++            # Finish also cancels a guardian still discovering/pausing sessions.
++            # Wait for restoration, rather than proceeding with a partial pause.
 +            (state / 'finish').touch()
++            try:
++                if launched:
++                    wait(state, 'done', seconds=30)
++            except Exception as cleanup_error:
++                print(f'Try Omarchy live update: cleanup: {cleanup_error}', file=sys.stderr)
 +            raise
 +    elif sys.argv[1] == 'post':
 +        if state.is_dir():
 +            (state / 'finish').touch()
-+            wait(state, 'done')
++            wait(state, 'done', seconds=30)
++            if (state / 'error').exists():
++                raise RuntimeError((state / 'error').read_text())
 +    else:
 +        raise RuntimeError('expected pre, post or watch')
 +
 +
-+if __name__ == '__main__':
++def cli():
 +    try:
 +        main()
 +    except Exception as error:
-+        print(f'Try Omarchy live update: {error}', file=sys.stderr)
-+        sys.exit(1)
++        print(f'Try Omarchy live update: {error}; package update will continue', file=sys.stderr)
++        return 0 if sys.argv[1:2] in (['pre'], ['post']) else 1
++    return 0
++
++
++if __name__ == '__main__':
++    sys.exit(cli())
 diff --git a/guest/scripts/finalize-rootfs.sh b/guest/scripts/finalize-rootfs.sh
-index 0e08610..48b9d4c 100755
+index aebeca9..5ab94a1 100755
 --- a/guest/scripts/finalize-rootfs.sh
 +++ b/guest/scripts/finalize-rootfs.sh
 @@ -73,6 +73,9 @@ version = subprocess.check_output(["pacman", "-Q", "try-omarchy-runtime"], text=
@@ -248,49 +267,67 @@ index 0e08610..48b9d4c 100755
    usr/local/bin/omarchy-native-nightlight
    usr/local/share/try-omarchy/nightlight.frag
    usr/local/lib/try-omarchy/install-nightlight
-@@ -233,7 +236,7 @@ tar -C / -cf /usr/share/try-omarchy/compat-overlay.tar "${compat_paths[@]}"
- # Revision 50 synchronizes guest volume/mute with the Windows default endpoint.
+@@ -235,7 +238,8 @@ tar -C / -cf /usr/share/try-omarchy/compat-overlay.tar "${compat_paths[@]}"
  # Revision 51 delivers the VM night-light shader and guarded defaults.
  # Revision 52 repairs popup privacy using the private authentication state.
--compat_revision=52
+ # Revision 53 delivers bounded compositor health probes through the agent.
+-compat_revision=53
++# Revision 54 pauses config autoreload during live package updates.
 +compat_revision=54
  printf '%s:%s\n' "$compat_revision" "$kernel_release" >/usr/share/try-omarchy/compat-version
  
  # Fail the build if DKMS or networking modules were not packaged for this kernel.
 diff --git a/guest/tests/test_battery_details.py b/guest/tests/test_battery_details.py
-index 64887d3..2a677db 100644
+index b4beb68..2a677db 100644
 --- a/guest/tests/test_battery_details.py
 +++ b/guest/tests/test_battery_details.py
 @@ -204,7 +204,7 @@ class BatteryDetailsFlowTests(unittest.TestCase):
      def test_compatibility_delivery_and_dkms_version(self):
          overlay = GUEST / "factory-overlay"
          finalize = (GUEST / "scripts/finalize-rootfs.sh").read_text()
--        self.assertIn("compat_revision=52", finalize)
+-        self.assertIn("compat_revision=53", finalize)
 +        self.assertIn("compat_revision=54", finalize)
          self.assertIn("usr/src/try-omarchy-battery-1.1.0", finalize)
          self.assertIn("usr/local/lib/try-omarchy/update-battery-dkms", finalize)
          self.assertIn('PACKAGE_VERSION="1.1.0"', (MODULE_SOURCE.parent / "dkms.conf").read_text())
+diff --git a/guest/tests/test_compositor_health.py b/guest/tests/test_compositor_health.py
+index 3c1411a..f93f9e2 100644
+--- a/guest/tests/test_compositor_health.py
++++ b/guest/tests/test_compositor_health.py
+@@ -34,7 +34,7 @@ class CompositorHealthTests(unittest.TestCase):
+ 
+     def test_existing_disks_receive_health_files(self):
+         finalizer = (GUEST / 'scripts/finalize-rootfs.sh').read_text()
+-        self.assertIn('compat_revision=53', finalizer)
++        self.assertIn('compat_revision=54', finalizer)
+         for name in ['agent', 'compositor-health']:
+             self.assertIn('  usr/local/lib/try-omarchy/' + name, finalizer)
+         self.assertTrue(HELPER.stat().st_mode & 0o111)
 diff --git a/guest/tests/test_guest_qol.py b/guest/tests/test_guest_qol.py
-index b9f55a4..78b36c6 100644
+index f6bbe85..78b36c6 100644
 --- a/guest/tests/test_guest_qol.py
 +++ b/guest/tests/test_guest_qol.py
 @@ -215,7 +215,7 @@ class GuestQolTests(unittest.TestCase):
      def test_compatibility_delivers_guarded_payload_once_per_revision(self):
          finalize = (GUEST / "scripts/finalize-rootfs.sh").read_text()
          paths = finalize.split("compat_paths=(", 1)[1].split(")", 1)[0]
--        self.assertIn("compat_revision=52", finalize)
+-        self.assertIn("compat_revision=53", finalize)
 +        self.assertIn("compat_revision=54", finalize)
          for path in ("usr/local/bin/omarchy-native-screensaver-text", "usr/local/lib/try-omarchy/install-guest-qol", "usr/share/try-omarchy/guest-qol", "usr/local/bin/omarchy-windows-audio-bridge"):
              self.assertIn(path, paths)
          self.assertNotIn("etc/fonts/conf.d/30-try-omarchy.conf", paths)
 diff --git a/guest/tests/test_live_update.py b/guest/tests/test_live_update.py
 new file mode 100644
-index 0000000..24a5e6b
+index 0000000..c8bb26b
 --- /dev/null
 +++ b/guest/tests/test_live_update.py
-@@ -0,0 +1,82 @@
+@@ -0,0 +1,188 @@
 +import importlib.machinery
 +import importlib.util
++import contextlib
++import io
++import subprocess
++import sys
 +from pathlib import Path
 +import tempfile
 +import unittest
@@ -322,7 +359,7 @@ index 0000000..24a5e6b
 +        self.assertEqual(ipc.call_count, 2)
 +        self.assertEqual(setting.call_args_list, [unittest.mock.call(session, session[3]) for session in saved])
 +
-+    def test_partial_setup_failure_restores_before_aborting(self):
++    def test_partial_setup_failure_restores(self):
 +        saved = [['alice', '/run/user/1000', 'one', 0], ['alice', '/run/user/1000', 'two', 1]]
 +        with tempfile.TemporaryDirectory() as directory:
 +            state = Path(directory)
@@ -359,64 +396,166 @@ index 0000000..24a5e6b
 +            live.main()
 +        run.assert_not_called()
 +
-+    def test_delivery_and_fail_closed_hook(self):
++    def test_pre_discovery_and_service_failures_succeed_without_changing_options(self):
++        saved = [['alice', '/run/user/1000', 'one', False]]
++        for failure in ['hyprctl unavailable', 'unexpected Hyprland autoreload value', 'systemd-run failed']:
++            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
++                discovery = patch.object(live, 'sessions', return_value=saved) if failure == 'systemd-run failed' else patch.object(live, 'sessions', side_effect=RuntimeError(failure))
++                output = io.StringIO()
++                with patch.object(live, 'STATE', Path(directory)), patch.object(live, 'transaction', return_value=(99, 'start')), discovery, patch.object(live, 'run', side_effect=RuntimeError(failure)), patch.object(live, 'set_option') as setting, patch.object(live.sys, 'argv', ['helper', 'pre']), contextlib.redirect_stderr(output):
++                    self.assertEqual(live.cli(), 0)
++                setting.assert_not_called()
++                self.assertIn(failure, output.getvalue())
++                self.assertIn('package update will continue', output.getvalue())
++
++    def test_pre_setup_mismatch_succeeds_after_restoring_all_previous_values(self):
++        for previous in [False, True]:
++            with self.subTest(previous=previous), tempfile.TemporaryDirectory() as directory:
++                saved = [['alice', directory, 'one', previous], ['alice', directory, 'two', not previous]]
++                values = dict(one=previous, two=not previous)
++                for session in saved:
++                    socket = Path(directory) / 'hypr' / session[2] / '.socket.sock'
++                    socket.parent.mkdir(parents=True)
++                    socket.touch()
++
++                def ipc(session, *args):
++                    name = session[2]
++                    if args[0] == 'reload':
++                        values[name] = False
++                        return 'ok'
++                    if args[0] == 'eval':
++                        values[name] = 'true' in args[1]
++                        return 'ok'
++                    if name == 'two' and not (state / 'error').exists():
++                        return '{"bool": false}'  # Verification fails after pausing.
++                    return '{"bool": ' + str(values[name]).lower() + '}'
++
++                state = Path(directory) / '99-start'
++                output = io.StringIO()
++                with patch.object(live, 'STATE', Path(directory)), patch.object(live, 'transaction', return_value=(99, 'start')), patch.object(live, 'sessions', return_value=saved), patch.object(live, 'ipc', side_effect=ipc), patch.object(live, 'run', side_effect=lambda *_: live.watch(99, 'start', state)), patch.object(live.sys, 'argv', ['helper', 'pre']), contextlib.redirect_stderr(output):
++                    self.assertEqual(live.cli(), 0)
++                self.assertEqual(values, dict(one=previous, two=not previous))
++                self.assertTrue((state / 'finish').exists())
++                self.assertTrue((state / 'done').exists())
++                self.assertIn('did not apply', output.getvalue())
++
++    def test_pre_timeout_finishes_guardian_and_restores_before_succeeding(self):
++        for previous in [False, True]:
++            with self.subTest(previous=previous), tempfile.TemporaryDirectory() as directory:
++                state = Path(directory) / '99-start'
++                values = [previous]
++                calls = []
++
++                def launch(*_):
++                    values[0] = True
++
++                def wait(state, marker, seconds=5):
++                    calls.append((marker, seconds))
++                    if marker == 'ready':
++                        raise RuntimeError('timed out waiting for autoreload guardian ready')
++                    self.assertTrue((state / 'finish').exists())
++                    values[0] = previous
++                    (state / 'done').touch()
++
++                output = io.StringIO()
++                with patch.object(live, 'STATE', Path(directory)), patch.object(live, 'transaction', return_value=(99, 'start')), patch.object(live, 'sessions', return_value=[['alice', directory, 'one', previous]]), patch.object(live, 'run', side_effect=launch), patch.object(live, 'wait', side_effect=wait), patch.object(live.sys, 'argv', ['helper', 'pre']), contextlib.redirect_stderr(output):
++                    self.assertEqual(live.cli(), 0)
++                self.assertEqual(values, [previous])
++                self.assertEqual(calls, [('ready', 5), ('done', 30)])
++                self.assertIn('timed out', output.getvalue())
++
++    def test_finished_setup_does_not_pause_another_session(self):
++        with tempfile.TemporaryDirectory() as directory:
++            state = Path(directory)
++            (state / 'finish').touch()
++            with patch.object(live, 'sessions', return_value=[['alice', directory, 'one', False]]), patch.object(live, 'set_option') as setting:
++                live.watch(99, 'start', state)
++            setting.assert_not_called()
++            self.assertTrue((state / 'done').exists())
++
++    def test_cleanup_waits_for_done_even_when_setup_error_is_already_recorded(self):
++        with tempfile.TemporaryDirectory() as directory:
++            state = Path(directory)
++            (state / 'error').write_text('setup failed')
++            with patch.object(live.time, 'sleep', side_effect=lambda _: (state / 'done').touch()):
++                live.wait(state, 'done')
++
++    def test_post_failure_succeeds_and_reports_restore_error(self):
++        with tempfile.TemporaryDirectory() as directory:
++            state = Path(directory) / '99-start'
++            state.mkdir()
++            (state / 'done').touch()
++            (state / 'error').write_text('restore IPC failed')
++            output = io.StringIO()
++            with patch.object(live, 'STATE', Path(directory)), patch.object(live, 'transaction', return_value=(99, 'start')), patch.object(live.sys, 'argv', ['helper', 'post']), contextlib.redirect_stderr(output):
++                self.assertEqual(live.cli(), 0)
++            self.assertTrue((state / 'finish').exists())
++            self.assertIn('restore IPC failed', output.getvalue())
++
++    def test_hook_process_failures_exit_zero(self):
++        for action in ['pre', 'post']:
++            result = subprocess.run([sys.executable, '-I', str(HELPER), action], capture_output=True, text=True)
++            self.assertEqual(result.returncode, 0, result.stderr)
++            self.assertIn('not running from a pacman transaction', result.stderr)
++
++    def test_delivery_and_best_effort_hook(self):
 +        finalizer = (GUEST / 'scripts/finalize-rootfs.sh').read_text()
 +        self.assertIn('compat_revision=54', finalizer)
 +        for path in ['usr/local/lib/try-omarchy/live-update', 'etc/pacman.d/hooks/00-try-omarchy-live-update.hook', 'etc/pacman.d/hooks/zz-try-omarchy-live-update.hook']:
 +            self.assertIn(path, finalizer)
 +        pre = (GUEST / 'factory-overlay/etc/pacman.d/hooks/00-try-omarchy-live-update.hook').read_text()
-+        self.assertIn('AbortOnFail', pre)
++        self.assertNotIn('AbortOnFail', pre)
 +        self.assertIn('Target = usr/share/omarchy/*', pre)
 +
 +
 +if __name__ == '__main__':
 +    unittest.main()
 diff --git a/guest/tests/test_native_nightlight.py b/guest/tests/test_native_nightlight.py
-index 8d46f3f..ac34166 100644
+index f9fd719..ac34166 100644
 --- a/guest/tests/test_native_nightlight.py
 +++ b/guest/tests/test_native_nightlight.py
 @@ -214,5 +214,5 @@ class PersistentNightlightTests(unittest.TestCase):
          catch_up = (self.overlay / 'usr/local/lib/try-omarchy/catch-up').read_text()
          for path in ['usr/local/bin/omarchy-native-nightlight', 'usr/local/share/try-omarchy/nightlight.frag', 'usr/local/lib/try-omarchy/install-nightlight', 'usr/share/try-omarchy/nightlight']:
              self.assertIn(path, finalizer)
--        self.assertIn('compat_revision=52', finalizer)
+-        self.assertIn('compat_revision=53', finalizer)
 +        self.assertIn('compat_revision=54', finalizer)
          self.assertIn('previous_revision < 51', catch_up)
 diff --git a/guest/tests/test_notification_privacy.py b/guest/tests/test_notification_privacy.py
-index 8722dc9..a9bab09 100644
+index a167e07..a9bab09 100644
 --- a/guest/tests/test_notification_privacy.py
 +++ b/guest/tests/test_notification_privacy.py
 @@ -116,7 +116,7 @@ for (const state of [null, {screensaverStateKnown:false}, {screensaverStateKnown
      def test_compatibility_overlay_and_catch_up_revision(self):
          finalizer = (GUEST / 'scripts/finalize-rootfs.sh').read_text()
          catch_up = (GUEST / 'factory-overlay/usr/local/lib/try-omarchy/catch-up').read_text()
--        self.assertIn('compat_revision=52', finalizer)
+-        self.assertIn('compat_revision=53', finalizer)
 +        self.assertIn('compat_revision=54', finalizer)
          self.assertIn('usr/share/try-omarchy/notifications', finalizer)
          self.assertIn('usr/local/lib/try-omarchy/install-notifications', finalizer)
          self.assertIn('previous_revision < 52', catch_up)
 diff --git a/guest/tests/test_windows_volume_sync.py b/guest/tests/test_windows_volume_sync.py
-index 73f6769..dd75ab4 100644
+index 6358861..dd75ab4 100644
 --- a/guest/tests/test_windows_volume_sync.py
 +++ b/guest/tests/test_windows_volume_sync.py
 @@ -279,7 +279,7 @@ class VolumeSyncTests(unittest.TestCase):
  
      def test_revision_delivers_bridge_to_existing_disks(self):
          finalize = (Path(__file__).resolve().parents[1] / "scripts/finalize-rootfs.sh").read_text()
--        self.assertIn("compat_revision=52", finalize)
+-        self.assertIn("compat_revision=53", finalize)
 +        self.assertIn("compat_revision=54", finalize)
          self.assertIn("usr/local/bin/omarchy-windows-audio-bridge", finalize)
  
  
 diff --git a/guest/tests/verify.py b/guest/tests/verify.py
-index e3d4145..f73d3c9 100755
+index 7893229..f73d3c9 100755
 --- a/guest/tests/verify.py
 +++ b/guest/tests/verify.py
 @@ -324,7 +324,7 @@ def main() -> None:
          "system services run without watchdogs, which fire after Windows sleeps",
      )
      check(
--        "compat_revision=52" in finalize_rootfs
+-        "compat_revision=53" in finalize_rootfs
 +        "compat_revision=54" in finalize_rootfs
          and "usr/local/bin/mpv" in compat_paths
          and "usr/share/dkms/modules_to_force_install/try-omarchy" in compat_paths
