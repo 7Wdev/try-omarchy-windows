@@ -557,6 +557,7 @@
   "error.snapshots.pending_update": "finish the pending update before rolling back",
   "error.snapshots.close_recovery": "close Omarchy before snapshot recovery: {error}",
   "error.snapshots.close_rollback": "close Omarchy before rolling back: {error}",
+  "error.transfer.clipboard_paths_limit": "Too many or too long file paths to copy. Copy fewer files at once, or use the shared folder.",
   "error.transfer.clipboard_limit": "file selection exceeds the 16 MiB clipboard limit; use the shared folder",
   "error.transfer.file_name": "file name cannot be transferred between Windows and Linux",
   "error.transfer.special_files": "links and special files must be copied through the shared folder",

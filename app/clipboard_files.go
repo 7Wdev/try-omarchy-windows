@@ -107,9 +107,13 @@ func (b *clipboardArchiveBuffer) Write(p []byte) (int, error) {
 }
 
 func packClipboardFiles(paths []string) ([]byte, error) {
+	return packClipboardFilesContext(context.Background(), paths)
+}
+
+func packClipboardFilesContext(ctx context.Context, paths []string) ([]byte, error) {
 	var out clipboardArchiveBuffer
 	limits := fileTransferLimits{Entries: maxClipboardFileEntries, Bytes: maxClipboardFileBytes, ArchiveBytes: maxClipboardArchiveBytes}
-	if err := writeFilesArchive(context.Background(), &out, paths, limits, false, nil); err != nil {
+	if err := writeFilesArchive(ctx, &out, paths, limits, false, nil); err != nil {
 		return nil, err
 	}
 	if _, err := inspectClipboardArchive(out.Bytes()); err != nil {
@@ -236,12 +240,19 @@ func unpackClipboardFiles(data []byte, cache string) (paths []string, err error)
 		if e != nil {
 			return e
 		}
+		if d.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("clipboard cache contains a link")
+		}
+		// Streaming receives and outgoing snapshots have their own budget.
+		if p != cache && filepath.Dir(p) == cache && (d.Name() == "streaming" || strings.HasPrefix(d.Name(), "received-") || strings.HasPrefix(d.Name(), ".transfer-out-")) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
 		count++
 		if count > 16384 {
 			return fmt.Errorf("clipboard cache is full; remove old copies from %s", cache)
-		}
-		if d.Type()&os.ModeSymlink != 0 {
-			return fmt.Errorf("clipboard cache contains a link")
 		}
 		if !d.IsDir() {
 			i, e := d.Info()

@@ -396,24 +396,29 @@ func enforceDisplayWindows(pid uint32, dir string, fullscreen bool, fullscreenDi
 }
 
 func clipboardGetText() (string, bool) {
+	text, status := clipboardReadText()
+	return text, status == clipboardReady
+}
+
+func clipboardReadText() (string, clipboardReadStatus) {
 	if r, _, _ := procIsClipboardFormatAvail.Call(cfUnicodetext); r == 0 {
-		return "", false
+		return "", clipboardUnsupported
 	}
 	if !openClipboard() {
-		return "", false
+		return "", clipboardRetry
 	}
 	defer procCloseClipboard.Call()
 	h, _, _ := procGetClipboardData.Call(cfUnicodetext)
 	if h == 0 {
-		return "", false
+		return "", clipboardRetry
 	}
 	size, _, _ := procGlobalSize.Call(h)
 	if size < 2 || size > uintptr((maxClipboardTextBytes+1)*2) {
-		return "", false
+		return "", clipboardRejected
 	}
 	p, _, _ := procGlobalLock.Call(h)
 	if p == 0 {
-		return "", false
+		return "", clipboardRetry
 	}
 	defer procGlobalUnlock.Call(h)
 	maxChars := int(size / 2)
@@ -422,13 +427,16 @@ func clipboardGetText() (string, bool) {
 		c := *(*uint16)(unsafe.Pointer(p + uintptr(i)*2))
 		if c == 0 {
 			text := syscall.UTF16ToString(chars)
-			return text, clipboardTextAllowed(text)
+			if !clipboardTextAllowed(text) {
+				return "", clipboardRejected
+			}
+			return text, clipboardReady
 		}
 		chars = append(chars, c)
 	}
 	// CF_UNICODETEXT is required to be NUL-terminated. Refuse a malformed
 	// clipboard handle instead of reading beyond its allocation.
-	return "", false
+	return "", clipboardRejected
 }
 
 func clipboardSetText(s string) bool {
@@ -488,65 +496,94 @@ func clipboardSequence() uint32 {
 // clipboardGetItem reads the Windows clipboard as text when text is offered,
 // otherwise as a PNG image from the registered PNG format or a DIB.
 func clipboardGetItem() (clipItem, bool) {
+	item, status := clipboardReadItem()
+	return item, status == clipboardReady
+}
+func clipboardReadItem() (clipItem, clipboardReadStatus) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	if r, _, _ := procIsClipboardFormatAvail.Call(cfHDrop); r != 0 {
-		return clipboardGetFiles()
+		item, status := clipboardReadFiles()
+		if status != clipboardUnsupported {
+			return item, status
+		}
 	}
-	if text, ok := clipboardGetText(); ok {
-		return textItem(text), true
-	}
-	if r, _, _ := procIsClipboardFormatAvail.Call(cfUnicodetext); r != 0 {
-		return clipItem{}, false
+	return clipboardReadNonFileItem()
+}
+
+func clipboardReadNonFileItem() (clipItem, clipboardReadStatus) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	if text, status := clipboardReadText(); status != clipboardUnsupported {
+		return textItem(text), status
 	}
 	hasPNG, _, _ := procIsClipboardFormatAvail.Call(pngClipboardFormat)
 	hasDIB, _, _ := procIsClipboardFormatAvail.Call(cfDib)
-	if hasPNG == 0 && hasDIB == 0 {
-		return clipItem{}, false
+	hasDIBV5, _, _ := procIsClipboardFormatAvail.Call(cfDibV5)
+	if hasPNG == 0 && hasDIB == 0 && hasDIBV5 == 0 {
+		return clipItem{}, clipboardUnsupported
 	}
 	if !openClipboard() {
-		return clipItem{}, false
+		return clipItem{}, clipboardRetry
 	}
 	defer procCloseClipboard.Call()
 	if hasPNG != 0 {
-		if data, ok := clipboardGlobalBytes(pngClipboardFormat, maxClipboardImageBytes); ok {
+		data, status := clipboardGlobalBytesStatus(pngClipboardFormat, maxClipboardImageBytes)
+		if status == clipboardRetry {
+			return clipItem{}, status
+		}
+		if status == clipboardReady {
 			item := pngItem(data)
-			return item, item.allowed()
+			if item.allowed() {
+				return item, clipboardReady
+			}
 		}
 	}
-	format := uintptr(cfDibV5)
-	if r, _, _ := procIsClipboardFormatAvail.Call(cfDibV5); r == 0 {
-		format = cfDib
+	format := uintptr(cfDib)
+	if hasDIBV5 != 0 {
+		format = cfDibV5
+	} else if hasDIB == 0 {
+		return clipItem{}, clipboardRejected
 	}
-	dib, ok := clipboardGlobalBytes(format, 4*maxDIBSide*maxDIBSide+dibV5HeaderSize+1024)
-	if !ok {
-		return clipItem{}, false
+	dib, status := clipboardGlobalBytesStatus(format, maxClipboardDIBBytes)
+	if status != clipboardReady {
+		return clipItem{}, status
 	}
 	data, err := dibToPNG(dib)
 	if err != nil {
-		return clipItem{}, false
+		return clipItem{}, clipboardRejected
 	}
 	item := pngItem(data)
-	return item, item.allowed()
+	if !item.allowed() {
+		return clipItem{}, clipboardRejected
+	}
+	return item, clipboardReady
 }
 
 // clipboardGlobalBytes copies a clipboard handle's memory; the clipboard
 // must already be open.
 func clipboardGlobalBytes(format uintptr, limit int) ([]byte, bool) {
+	data, status := clipboardGlobalBytesStatus(format, limit)
+	return data, status == clipboardReady
+}
+func clipboardGlobalBytesStatus(format uintptr, limit int) ([]byte, clipboardReadStatus) {
 	h, _, _ := procGetClipboardData.Call(format)
 	if h == 0 {
-		return nil, false
+		return nil, clipboardRetry
 	}
 	size, _, _ := procGlobalSize.Call(h)
-	if size == 0 || int(size) > limit {
-		return nil, false
+	if size == 0 {
+		return nil, clipboardUnsupported
+	}
+	if size > uintptr(limit) {
+		return nil, clipboardRejected
 	}
 	p, _, _ := procGlobalLock.Call(h)
 	if p == 0 {
-		return nil, false
+		return nil, clipboardRetry
 	}
 	defer procGlobalUnlock.Call(h)
-	return append([]byte(nil), unsafe.Slice((*byte)(unsafe.Pointer(p)), int(size))...), true
+	return append([]byte(nil), unsafe.Slice((*byte)(unsafe.Pointer(p)), int(size))...), clipboardReady
 }
 
 func clipboardSetItem(item clipItem) bool {
