@@ -49,7 +49,11 @@ func (i clipItem) allowed() bool {
 		_, err := inspectClipboardArchive(i.Data)
 		return err == nil
 	case clipPNG:
-		return len(i.Data) > len(pngSignature) && len(i.Data) <= maxClipboardImageBytes && bytes.HasPrefix(i.Data, pngSignature)
+		if !bytes.HasPrefix(i.Data, pngSignature) {
+			return false
+		}
+		_, err := clipboardPNGConfig(i.Data)
+		return err == nil
 	}
 	return false
 }

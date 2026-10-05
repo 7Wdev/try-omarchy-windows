@@ -42,7 +42,7 @@ func TestStreamingClipboardGuestRoundTrip(t *testing.T) {
 	_, pushPort, _ := net.SplitHostPort(push.Addr().String())
 	delivered := make(chan []string, 1)
 	dropped := make(chan []string, 1)
-	bridge := &clipBridge{transfers: service, setDropPaths: func(paths []string) bool { dropped <- paths; return true }, setPaths: func(paths []string) bool { delivered <- paths; return true }}
+	bridge := &clipBridge{authorizePeer: func(net.Conn) bool { return true }, transfers: service, setDropPaths: func(paths []string) bool { dropped <- paths; return true }, setPaths: func(paths []string) bool { delivered <- paths; return true }}
 	go bridge.acceptPush(push)
 	source := filepath.Join(t.TempDir(), "large file.txt")
 	// Exceed the old 16 MiB clipboard bound with highly compressible contents.
@@ -106,7 +106,7 @@ func TestClipboardTransferNegotiation(t *testing.T) {
 	defer service.Close()
 	source := filepath.Join(t.TempDir(), "file")
 	os.WriteFile(source, []byte("hello"), 0600)
-	bridge := &clipBridge{transfers: service, getPaths: func() ([]string, bool) { return []string{source}, true }, getHost: func() (clipItem, bool) { return textItem("legacy"), true }}
+	bridge := &clipBridge{authorizePeer: func(net.Conn) bool { return true }, transfers: service, getPaths: func() ([]string, bool) { return []string{source}, true }, getHost: func() (clipItem, bool) { return textItem("legacy"), true }}
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -137,7 +137,7 @@ func TestClipboardTransferNegotiation(t *testing.T) {
 		if !ok {
 			t.Fatal("bad frame", strconv.Itoa(index))
 		}
-		if capable && item.Kind != clipTransfer || !capable && item.Kind != clipText {
+		if capable && item.Kind != clipTransfer || !capable && item.Kind != clipFiles {
 			t.Fatal(item.Kind)
 		}
 		conn.Close()

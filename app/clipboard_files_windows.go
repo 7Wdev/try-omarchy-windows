@@ -28,61 +28,49 @@ func clipboardFilesCache() (string, error) {
 }
 
 func clipboardGetFilePaths() ([]string, bool) {
+	paths, status := clipboardReadFilePaths()
+	return paths, status == clipboardReady
+}
+
+func clipboardReadFilePaths() ([]string, clipboardReadStatus) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
+	if r, _, _ := procIsClipboardFormatAvail.Call(cfHDrop); r == 0 {
+		return nil, clipboardUnsupported
+	}
 	if !openClipboard() {
-		return nil, false
+		return nil, clipboardRetry
 	}
-	data, ok := clipboardGlobalBytes(cfHDrop, 1<<20)
+	data, status := clipboardGlobalBytesStatus(cfHDrop, maxClipboardPathBytes)
 	procCloseClipboard.Call()
-	if !ok || len(data) < 22 {
-		return nil, false
+	if status == clipboardRejected {
+		reportTransferError(uiError(uiText("error.transfer.clipboard_paths_limit"), nil))
 	}
-	offset := int(binary.LittleEndian.Uint32(data))
-	if offset < 20 || offset >= len(data)-1 || binary.LittleEndian.Uint32(data[16:20]) != 1 || offset%2 != 0 {
-		return nil, false
+	if status != clipboardReady {
+		return nil, status
 	}
-	var paths []string
-	var chars []uint16
-	terminated := false
-	for pos := offset; pos+1 < len(data); pos += 2 {
-		c := binary.LittleEndian.Uint16(data[pos:])
-		if c != 0 {
-			chars = append(chars, c)
-			continue
-		}
-		if len(chars) == 0 {
-			terminated = true
-			break
-		}
-		p := syscall.UTF16ToString(chars)
-		if !filepath.IsAbs(p) {
-			return nil, false
-		}
-		paths = append(paths, p)
-		chars = nil
-		if len(paths) > clipboardTransferLimits.Entries {
-			return nil, false
-		}
+	paths, status := parseClipboardPaths(data, filepath.IsAbs)
+	if status == clipboardRejected {
+		reportTransferError(uiError(uiText("error.transfer.clipboard_paths_limit"), nil))
 	}
-	if !terminated || len(paths) == 0 {
-		return nil, false
-	}
-	return paths, true
+	return paths, status
 }
 
 func clipboardGetFiles() (clipItem, bool) {
-	paths, ok := clipboardGetFilePaths()
-	if !ok {
-		return clipItem{}, false
+	item, status := clipboardReadFiles()
+	return item, status == clipboardReady
+}
+func clipboardReadFiles() (clipItem, clipboardReadStatus) {
+	paths, status := clipboardReadFilePaths()
+	if status != clipboardReady {
+		return clipItem{}, status
 	}
 	data, err := packClipboardFiles(paths)
 	if err != nil {
-		logf("clipboard files: %v", err)
-		infoBox(uiTextWith("tray.transfer.failed", map[string]string{"error": err.Error()}))
-		return clipItem{}, false
+		reportTransferError(err)
+		return clipItem{}, clipboardRejected
 	}
-	return clipItem{Kind: clipFiles, Data: data}, true
+	return clipItem{Kind: clipFiles, Data: data}, clipboardReady
 }
 
 func clipboardSetFiles(item clipItem) bool {
@@ -92,8 +80,7 @@ func clipboardSetFiles(item clipItem) bool {
 	}
 	paths, err := unpackClipboardFiles(item.Data, cache)
 	if err != nil {
-		logf("clipboard files: %v", err)
-		infoBox(uiTextWith("transfer.from_omarchy_failed", map[string]string{"error": err.Error()}))
+		reportTransferError(uiError(uiTextWith("transfer.from_omarchy_failed", map[string]string{"error": err.Error()}), err))
 		return false
 	}
 	keep := false

@@ -39,18 +39,27 @@ func (b *clipBridge) receiveClipboardTransfer(conn net.Conn, line string) {
 	if err != nil || json.Unmarshal(data, &offer) != nil || !offer.valid(b.transfers.limits) {
 		return
 	}
+	b.clipboardMu.Lock()
 	b.mu.Lock()
-	defer b.mu.Unlock()
+	revision := b.revision
+	b.mu.Unlock()
 	var sequence uint32
 	if b.sequence != nil {
 		sequence = b.sequence()
 	}
+	b.clipboardMu.Unlock()
 	destination := filepath.Join(b.transfers.cache, "received-"+randomTransferToken(16))
 	ticket, err := b.transfers.AcceptReceive(offer, destination)
 	if err != nil {
 		return
 	}
-	defer b.transfers.Cancel(ticket.ID)
+	keep := false
+	defer func() {
+		b.transfers.Cancel(ticket.ID)
+		if !keep {
+			os.RemoveAll(destination)
+		}
+	}()
 	progress := b.progress(uiText("transfer.receiving_from_omarchy"))
 	defer progress.finish()
 	conn.SetDeadline(time.Now().Add(2 * time.Hour))
@@ -68,11 +77,6 @@ func (b *clipBridge) receiveClipboardTransfer(conn net.Conn, line string) {
 	if !ok || status.State != "completed" {
 		return
 	}
-	// A newer Windows selection wins over a transfer that was already underway.
-	if !drop && b.sequence != nil && b.sequence() != sequence {
-		fmt.Fprintln(conn, "superseded")
-		return
-	}
 	entries, err := os.ReadDir(destination)
 	if err != nil || len(entries) == 0 {
 		return
@@ -81,14 +85,30 @@ func (b *clipBridge) receiveClipboardTransfer(conn net.Conn, line string) {
 	for _, entry := range entries {
 		paths = append(paths, filepath.Join(destination, entry.Name()))
 	}
-	if !publish(paths) {
+	b.clipboardMu.Lock()
+	b.mu.Lock()
+	superseded := !drop && (b.revision != revision || b.sequence != nil && b.sequence() != sequence)
+	b.mu.Unlock()
+	if superseded {
+		b.clipboardMu.Unlock()
+		fmt.Fprintln(conn, "superseded")
 		return
 	}
+	if !publish(paths) {
+		b.clipboardMu.Unlock()
+		return
+	}
+	keep = true
 	if !drop {
+		b.mu.Lock()
+		cancel, outgoing := b.invalidatePreparationLocked()
 		b.state = clipboardSyncState{}
 		if b.sequence != nil {
-			b.lastSequence = b.sequence()
+			b.lastSequence, b.lastSequenceKnown = b.sequence(), true
 		}
+		b.mu.Unlock()
+		b.cancelPreparation(cancel, outgoing)
 	}
+	b.clipboardMu.Unlock()
 	fmt.Fprintln(conn, "complete")
 }

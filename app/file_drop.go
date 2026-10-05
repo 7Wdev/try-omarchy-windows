@@ -73,8 +73,10 @@ func sendDroppedFilesAt(paths []string, point []int, cursor [2]int32) error {
 
 func (b *clipBridge) offerDroppedFiles(dropped droppedFiles) error {
 	b.mu.Lock()
-	defer b.mu.Unlock()
-	if b.pullConn == nil || !b.transferEnabled {
+	conn := b.pullConn
+	enabled := b.transferEnabled
+	b.mu.Unlock()
+	if conn == nil || !enabled {
 		return fmt.Errorf("the guest file-transfer service is not connected yet")
 	}
 	progress := b.progress(uiText("transfer.preparing_drop"))
@@ -93,8 +95,18 @@ func (b *clipBridge) offerDroppedFiles(dropped droppedFiles) error {
 	}
 	data, _ := json.Marshal(ticket)
 	frame := encodeClipFrame(clipItem{Kind: clipDrop, Data: data})
-	b.pullConn.SetWriteDeadline(time.Now().Add(20 * time.Second))
-	n, err := b.pullConn.Write([]byte(frame))
+	b.writeMu.Lock()
+	defer b.writeMu.Unlock()
+	b.mu.Lock()
+	current := b.pullConn == conn && b.transferEnabled
+	b.mu.Unlock()
+	if !current {
+		b.transfers.Cancel(ticket.ID)
+		progress.finish()
+		return fmt.Errorf("the guest reconnected before receiving the dropped files")
+	}
+	conn.SetWriteDeadline(time.Now().Add(20 * time.Second))
+	n, err := conn.Write([]byte(frame))
 	if err != nil || n != len(frame) {
 		b.transfers.Cancel(ticket.ID)
 		progress.finish()

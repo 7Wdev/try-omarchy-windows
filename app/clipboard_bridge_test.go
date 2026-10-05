@@ -72,7 +72,7 @@ func TestClipboardReconnectReceivesCurrentHostText(t *testing.T) {
 	}
 	defer listener.Close()
 	const value = "current clipboard\n\n"
-	b := &clipBridge{getHost: func() (clipItem, bool) { return textItem(value), true }}
+	b := &clipBridge{authorizePeer: func(net.Conn) bool { return true }, getHost: func() (clipItem, bool) { return textItem(value), true }}
 	done := make(chan struct{})
 	go func() { b.acceptPull(listener); close(done) }()
 	for i := 0; i < 2; i++ {
@@ -97,7 +97,7 @@ func TestClipboardReconnectReceivesCurrentHostText(t *testing.T) {
 func TestClipboardGuestWriteAndHostPollAreSerialized(t *testing.T) {
 	entered, release := make(chan struct{}), make(chan struct{})
 	current := "old host text"
-	b := &clipBridge{setHost: func(i clipItem) bool { close(entered); <-release; current = string(i.Data); return true }, getHost: func() (clipItem, bool) { return textItem(current), true }}
+	b := &clipBridge{authorizePeer: func(net.Conn) bool { return true }, setHost: func(i clipItem) bool { close(entered); <-release; current = string(i.Data); return true }, getHost: func() (clipItem, bool) { return textItem(current), true }}
 	host, guest := net.Pipe()
 	defer host.Close()
 	defer guest.Close()
@@ -122,7 +122,7 @@ func TestClipboardPushPreservesTextAndRejectsMalformedFrames(t *testing.T) {
 	}
 	defer listener.Close()
 	got := make(chan string, 8)
-	b := &clipBridge{setHost: func(i clipItem) bool { got <- string(i.Data); return true }}
+	b := &clipBridge{authorizePeer: func(net.Conn) bool { return true }, setHost: func(i clipItem) bool { got <- string(i.Data); return true }}
 	done := make(chan struct{})
 	go func() { b.acceptPush(listener); close(done) }()
 	for _, frame := range []string{"not base64\n", base64.StdEncoding.EncodeToString([]byte("no terminator")), base64.StdEncoding.EncodeToString([]byte("a\x00b")) + "\n", base64.StdEncoding.EncodeToString([]byte("valid\n\n")) + "\n"} {
