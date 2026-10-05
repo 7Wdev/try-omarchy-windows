@@ -73,6 +73,8 @@ type config struct {
 	renderMode    string
 	runtimeID     string
 	displayDriver string
+	// venus offers guest Vulkan on the host GPU in GPU mode (venus.go).
+	venus bool
 }
 
 // memoryStarved reports whether the current attempt's QEMU died because the
@@ -701,6 +703,8 @@ func main() {
 		if reason != "" {
 			logf("rendering: %s", reason)
 		}
+		cfg.venus, reason = venusDecision(os.Getenv(venusVariable), cfg.displayDriver)
+		logf("rendering: Venus Vulkan %s - %s", map[bool]string{false: "off", true: "on"}[cfg.venus], reason)
 	} else {
 		cfg.qemu = stockQemu
 	}
@@ -897,8 +901,10 @@ func supervise(cfg *config, cmdline string) bool {
 			return false
 		}
 		mode := "CPU rendering (llvmpipe)"
-		if cfg.useGpu {
+		if cfg.useGpu && cfg.venus {
 			mode = "GPU accelerated (virgl + Venus Vulkan)"
+		} else if cfg.useGpu {
+			mode = "GPU accelerated (virgl)"
 		}
 		logf("booting - %s (attempt %d)", mode, attempt)
 		pendingReboot.Store(false)
