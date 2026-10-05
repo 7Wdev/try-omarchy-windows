@@ -26,23 +26,37 @@ type moveFile struct {
 }
 
 type installationMove struct {
-	ID          string     `json:"id"`
-	Source      string     `json:"source"`
-	Destination string     `json:"destination"`
-	Stage       string     `json:"stage"`
-	Phase       string     `json:"phase"`
-	Default     bool       `json:"default"`
-	Files       []moveFile `json:"files"`
-	Booted      bool       `json:"booted,omitempty"`
+	ID          string              `json:"id"`
+	Source      string              `json:"source"`
+	Destination string              `json:"destination"`
+	Stage       string              `json:"stage"`
+	Phase       string              `json:"phase"`
+	Default     bool                `json:"default"`
+	Files       []moveFile          `json:"files"`
+	Booted      bool                `json:"booted,omitempty"`
+	Volume      *moveVolumeLocation `json:"volume,omitempty"`
 }
+
+type moveVolumeLocation struct {
+	Volume   string `json:"volume"`
+	Relative string `json:"relative"`
+}
+
+var identifyMoveVolume = func(string) (*moveVolumeLocation, error) { return nil, nil }
+var locateMoveVolume = func(location moveVolumeLocation) (string, error) {
+	return "", fmt.Errorf("the moved volume %s is unavailable", location.Volume)
+}
+
+var retireMoveLock = func(guard *os.File) error { return os.Remove(guard.Name()) }
 
 // Host-owned state stays outside both installations. Redirects also cover
 // explicit -dir launches, so retained guest disks cannot silently diverge.
 type moveState struct {
-	Version   int               `json:"version"`
-	Redirects map[string]string `json:"redirects"`
-	Pending   *installationMove `json:"pending,omitempty"`
-	Retained  *installationMove `json:"retained,omitempty"`
+	Version   int                           `json:"version"`
+	Redirects map[string]string             `json:"redirects"`
+	Pending   *installationMove             `json:"pending,omitempty"`
+	Retained  *installationMove             `json:"retained,omitempty"`
+	Locations map[string]moveVolumeLocation `json:"locations,omitempty"`
 }
 
 type moveStore struct{ dir, defaultDir string }
@@ -71,9 +85,17 @@ func (s moveStore) load() (moveState, error) {
 	if state.Redirects == nil {
 		state.Redirects = map[string]string{}
 	}
+	for target, location := range state.Locations {
+		if !filepath.IsAbs(target) || !validMoveVolumeLocation(location) {
+			return state, fmt.Errorf("invalid moved volume location")
+		}
+	}
 	for _, m := range []*installationMove{state.Pending, state.Retained} {
 		if m == nil {
 			continue
+		}
+		if m.Volume != nil && !validMoveVolumeLocation(*m.Volume) {
+			return state, fmt.Errorf("invalid move volume identity")
 		}
 		if len(m.ID) != 32 || !filepath.IsAbs(m.Source) || !filepath.IsAbs(m.Destination) ||
 			pathsOverlap(m.Source, m.Destination) ||
@@ -168,22 +190,182 @@ func validateMovePath(path string) error {
 	}
 }
 
-func resolveMovedDirectory(state moveState, dir string) (string, error) {
+func resolveMovedDirectory(state moveState, dir string, removing ...bool) (string, error) {
+	target := dir
+	redirected := false
 	for source, target := range state.Redirects {
 		if pathsEqual(dir, source) {
-			if !filepath.IsAbs(target) {
-				return "", fmt.Errorf("invalid moved location")
-			}
-			if err := validateMovePath(target); err != nil {
-				return "", err
-			}
-			if _, err := os.Stat(filepath.Join(target, "vm", "disk.raw")); err != nil {
-				return "", fmt.Errorf("the moved installation at %s is unavailable; reconnect its drive: %w", target, err)
-			}
-			return target, nil
+			return resolveMoveTarget(state, target, removing...)
 		}
 	}
-	return dir, nil
+	for known := range state.Locations {
+		if pathsEqual(known, dir) {
+			target, redirected = known, true
+			break
+		}
+	}
+	if redirected {
+		return resolveMoveTarget(state, target, removing...)
+	}
+	return target, nil
+}
+
+func validMoveVolumeLocation(location moveVolumeLocation) bool {
+	if !strings.HasPrefix(location.Volume, `\\?\Volume{`) || !strings.HasSuffix(location.Volume, `}\`) ||
+		len(location.Volume) != 49 || !safeMoveName(location.Relative) {
+		return false
+	}
+	guid := location.Volume[11:47]
+	if guid[8] != '-' || guid[13] != '-' || guid[18] != '-' || guid[23] != '-' {
+		return false
+	}
+	_, err := hex.DecodeString(strings.ReplaceAll(guid, "-", ""))
+	return err == nil
+}
+
+func resolveMoveTarget(state moveState, target string, removing ...bool) (string, error) {
+	if location, ok := state.Locations[target]; ok {
+		if !validMoveVolumeLocation(location) {
+			return "", fmt.Errorf("invalid moved volume location")
+		}
+		resolved, err := locateMoveVolume(location)
+		if err != nil {
+			return "", err
+		}
+		target = resolved
+	}
+	if !filepath.IsAbs(target) {
+		return "", fmt.Errorf("invalid moved location")
+	}
+	if err := validateMovePath(target); err != nil {
+		return "", err
+	}
+	if len(removing) > 0 && removing[0] && validUninstallState(target) {
+		return target, nil
+	}
+	info, err := os.Lstat(filepath.Join(target, "vm", "disk.raw"))
+	if err != nil || !info.Mode().IsRegular() {
+		return "", fmt.Errorf("the moved installation at %s is unavailable; reconnect its drive", target)
+	}
+	if err := validateMovePath(filepath.Join(target, "vm", "disk.raw")); err != nil {
+		return "", err
+	}
+	return target, nil
+}
+
+// Repair only the selected installation. An unrelated disconnected drive must
+// not block this launch, and a failed entry-point repair remains retryable.
+func (s moveStore) relocate(state moveState, dir string, activate func(*installationMove) error, removing ...bool) (moveState, error) {
+	old := dir
+	for source, target := range state.Redirects {
+		if pathsEqual(dir, source) {
+			old = target
+			break
+		}
+	}
+	for known := range state.Locations {
+		if pathsEqual(old, known) {
+			old = known
+			break
+		}
+	}
+	location, ok := state.Locations[old]
+	if !ok {
+		return state, nil
+	}
+	target, err := resolveMoveTarget(state, old, removing...)
+	if err != nil {
+		return state, err
+	}
+	if pathsEqual(old, target) {
+		return state, nil
+	}
+	pointed, found, err := loadDataLocationPointer(s.defaultDir)
+	if err != nil {
+		return state, err
+	}
+	if err := activate(&installationMove{Source: old, Destination: target}); err != nil {
+		return state, err
+	}
+	if found && pathsEqual(pointed, old) {
+		if err := saveDataLocationPointer(s.defaultDir, target); err != nil {
+			return state, err
+		}
+	}
+	for source, destination := range state.Redirects {
+		if pathsEqual(destination, old) {
+			state.Redirects[source] = target
+		}
+	}
+	// Old Apps entries and shortcuts with an explicit -dir also recover.
+	state.Redirects[old] = target
+	delete(state.Locations, old)
+	state.Locations[target] = location
+	if state.Retained != nil && pathsEqual(state.Retained.Destination, old) {
+		state.Retained.Destination = target
+		state.Retained.Stage = filepath.Join(filepath.Dir(target), ".TryOmarchy-move-"+state.Retained.ID)
+	}
+	return state, s.save(state)
+}
+
+// Upgrade reachable histories without guessing a volume from a drive letter
+// after it has already changed. Disconnected legacy moves still fail safely.
+func (s moveStore) rememberVolume(state moveState, dir string, removing ...bool) (moveState, error) {
+	for source, target := range state.Redirects {
+		if !pathsEqual(source, dir) && !pathsEqual(target, dir) {
+			continue
+		}
+		if _, found := state.Locations[target]; found {
+			return state, nil
+		}
+		if _, err := resolveMoveTarget(state, target, removing...); err != nil {
+			return state, err
+		}
+		location, err := identifyMoveVolume(target)
+		if err != nil {
+			return state, err
+		}
+		if location == nil {
+			return state, nil
+		}
+		if state.Locations == nil {
+			state.Locations = map[string]moveVolumeLocation{}
+		}
+		state.Locations[target] = *location
+		if state.Retained != nil && pathsEqual(state.Retained.Destination, target) {
+			state.Retained.Volume = location
+		}
+		return state, s.save(state)
+	}
+	return state, nil
+}
+
+func (s moveStore) relocatePending(state moveState) error {
+	m := state.Pending
+	if m == nil || m.Volume == nil {
+		return nil
+	}
+	target, err := locateMoveVolume(*m.Volume)
+	if err != nil {
+		return err
+	}
+	if pathsEqual(target, m.Destination) {
+		return nil
+	}
+	if !filepath.IsAbs(target) || pathsOverlap(m.Source, target) || pathsOverlap(s.dir, target) {
+		return fmt.Errorf("invalid relocated move path")
+	}
+	stage := filepath.Join(filepath.Dir(target), ".TryOmarchy-move-"+m.ID)
+	if err := validateMovePath(stage); err != nil {
+		return err
+	}
+	if validUninstallStateAt(stage, m.Stage) {
+		if err := saveUninstallState(stage); err != nil {
+			return err
+		}
+	}
+	m.Destination, m.Stage = target, stage
+	return s.save(state)
 }
 
 func moveSourceFile(root string, entry moveFile, disk *os.File) (*os.File, bool, error) {
@@ -412,6 +594,9 @@ func (s moveStore) prepare(source, destination string, report backupProgress) (*
 	if err := validateMovePath(source); err != nil {
 		return nil, err
 	}
+	if err := validateUninstallDirectory(source); err != nil {
+		return nil, err
+	}
 	if err := validateMovePath(destination); err != nil {
 		return nil, err
 	}
@@ -452,6 +637,10 @@ func (s moveStore) prepare(source, destination string, report backupProgress) (*
 		return nil, err
 	}
 	m := &installationMove{ID: hex.EncodeToString(id[:]), Source: source, Destination: destination, Phase: "copying", Files: files}
+	m.Volume, err = identifyMoveVolume(destination)
+	if err != nil {
+		return nil, err
+	}
 	m.Stage = filepath.Join(filepath.Dir(destination), ".TryOmarchy-move-"+m.ID)
 	selected, found, err := loadDataLocationPointer(s.defaultDir)
 	if err != nil {
@@ -463,6 +652,9 @@ func (s moveStore) prepare(source, destination string, report backupProgress) (*
 		return nil, err
 	}
 	if err := os.Mkdir(m.Stage, 0700); err != nil {
+		return nil, err
+	}
+	if err := saveUninstallState(m.Stage); err != nil {
 		return nil, err
 	}
 	for _, entry := range files {
@@ -580,6 +772,10 @@ func (s moveStore) recover(activate func(*installationMove) error) error {
 	if err := activate(m); err != nil {
 		return err
 	}
+	// The private staging receipt does not authorize removal of the active copy.
+	if err := os.Remove(filepath.Join(m.Destination, uninstallStateName)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
 	if m.Default {
 		if pathsEqual(m.Destination, s.defaultDir) {
 			if err := os.Remove(dataLocationPointerPath(s.defaultDir)); err != nil && !os.IsNotExist(err) {
@@ -598,6 +794,13 @@ func (s moveStore) recover(activate func(*installationMove) error) error {
 		}
 	}
 	state.Redirects[m.Source] = m.Destination
+	delete(state.Locations, m.Source)
+	if m.Volume != nil {
+		if state.Locations == nil {
+			state.Locations = map[string]moveVolumeLocation{}
+		}
+		state.Locations[m.Destination] = *m.Volume
+	}
 	m.Phase = "active"
 	state.Pending = nil
 	state.Retained = m
@@ -663,9 +866,23 @@ func removeMoveInventory(root string, files []moveFile, verify bool, lockedDisk 
 	if err := validateMovePath(root); err != nil {
 		return err
 	}
+	if _, err := os.Lstat(root); os.IsNotExist(err) {
+		return nil
+	}
+	if err := validateUninstallDirectory(root); err != nil {
+		return err
+	}
 	if verify {
 		if err := verifyMoveFiles(root, files, true, lockedDisk...); err != nil {
 			return err
+		}
+		if err := saveUninstallState(root); err != nil {
+			return err
+		}
+	}
+	for _, entry := range files {
+		if !safeMoveName(entry.Name) {
+			return fmt.Errorf("invalid move cleanup path")
 		}
 	}
 	for i := len(files) - 1; i >= 0; i-- {
@@ -684,6 +901,14 @@ func removeMoveInventory(root string, files []moveFile, verify bool, lockedDisk 
 			}
 		}
 	}
+	if validUninstallState(root) {
+		if err := validateUninstallDirectory(root); err != nil {
+			return err
+		}
+		if err := os.Remove(filepath.Join(root, uninstallStateName)); err != nil {
+			return err
+		}
+	}
 	if err := os.Remove(root); err != nil && !os.IsNotExist(err) {
 		entries, readErr := os.ReadDir(root)
 		if readErr != nil {
@@ -691,11 +916,79 @@ func removeMoveInventory(root string, files []moveFile, verify bool, lockedDisk 
 		}
 		for _, entry := range entries {
 			if !moveExcluded(entry.Name()) {
+				if receiptErr := saveUninstallState(root); receiptErr != nil {
+					return receiptErr
+				}
 				return err
 			}
 		}
 	}
 	return nil
+}
+
+func (s moveStore) checkUninstall(dir string) (moveState, error) {
+	state, err := s.load()
+	if err != nil {
+		return state, err
+	}
+	if state.Pending != nil {
+		return state, uiError(uiText("error.move.finish_before_uninstall"), nil)
+	}
+	if state.Retained != nil && pathsEqual(state.Retained.Destination, dir) {
+		return state, uiError(uiText("error.move.cleanup_before_uninstall"), nil)
+	}
+	return state, nil
+}
+
+func (s moveStore) forgetInstallation(dir string) error {
+	state, err := s.checkUninstall(dir)
+	if err != nil {
+		return err
+	}
+	for source, target := range state.Redirects {
+		if pathsEqual(target, dir) {
+			delete(state.Redirects, source)
+		}
+	}
+	delete(state.Locations, dir)
+	return s.save(state)
+}
+
+func (s moveStore) pruneEmpty() error {
+	if err := validateMovePath(s.dir); err != nil {
+		return err
+	}
+	guard, err := lockMoveStore(s)
+	if err != nil {
+		return err
+	}
+	defer guard.Close()
+	state, err := s.load()
+	if err != nil {
+		return err
+	}
+	if len(state.Redirects) != 0 || len(state.Locations) != 0 || state.Pending != nil || state.Retained != nil {
+		return nil
+	}
+	if err := validateMovePath(s.dir); err != nil {
+		return err
+	}
+	if err := os.Remove(filepath.Join(s.dir, moveStateName)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	// Never remove arbitrary files or another operation's live lock.
+	if err := retireMoveLock(guard); err != nil {
+		return err
+	}
+	if err := guard.Close(); err != nil {
+		return err
+	}
+	if entries, err := os.ReadDir(s.dir); err != nil {
+		return err
+	} else if len(entries) != 0 {
+		return nil
+	}
+	return os.Remove(s.dir)
 }
 
 func (s moveStore) markBooted(dir string) error {

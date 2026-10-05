@@ -604,6 +604,8 @@
   "error.portable.update_first": "update this installation with the current launcher before creating a portable copy",
   "error.portable.runtime": "install the matching bundled runtime before creating a portable copy",
   "error.portable.filesystem": "portable disks need a filesystem that supports files larger than 4 GiB. Choose an exFAT or NTFS drive instead of FAT32",
+  "error.uninstall.incomplete": "this installation was partly removed. Run Uninstall again to finish before starting Omarchy",
+  "error.uninstall.cleanup": "the data folder was removed, but some installation entries remain: {error}",
   "error.portable.close_first": "close Omarchy before creating a portable copy: {error}",
   "error.disk.close_first": "close Omarchy before changing its disk capacity: {error}",
   "error.reset.no_install": "there is no complete standard installation to reset",
