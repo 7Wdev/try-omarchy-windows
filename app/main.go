@@ -779,6 +779,14 @@ func main() {
 		}
 		fatal(uiTextWith("fatal.disk", map[string]string{"error": err.Error()}))
 	}
+	if unclean, err := previousGuestExitUnclean(cfg.dir); err != nil {
+		logf("could not read previous guest exit: %v", err)
+	} else if unclean && msgBox(uiText("shutdown.unclean_recovery"), mbYesNo|mbIconQuestion|mbDefbutton2) == idYes {
+		if err := runRecoveryUI(cfg.dir, "snapshots"); err != nil {
+			errorBox(err.Error())
+		}
+		return
+	}
 	// From here onward the installation is complete. A last-second cancel may
 	// stop this launch, but must not remove the working VM it just finished.
 	cancelRemovesAll.Store(false)
@@ -875,6 +883,9 @@ func main() {
 	if finishSetupCancellation(cfg, checkSetupCancelled()) {
 		return
 	}
+	if windowsSessionEnding.Load() {
+		return
+	}
 	compactAfterShutdown(cfg)
 	logf("---- exiting ----")
 }
@@ -912,7 +923,7 @@ func supervise(cfg *config, cmdline string) bool {
 	// final 1 GiB memory attempt. Keep a small margin without allowing a loop.
 	const maxLaunchAttempts = 12
 	for attempt := 1; attempt <= maxLaunchAttempts; attempt++ {
-		if setupCancelled() {
+		if setupCancelled() || windowsSessionEnding.Load() {
 			return false
 		}
 		mode := "CPU rendering (llvmpipe)"
@@ -973,6 +984,26 @@ func supervise(cfg *config, cmdline string) bool {
 			proc.Stdout = ef
 			proc.Stderr = ef
 		}
+		guestLaunchInProgress.Store(true)
+		if windowsSessionEnding.Load() {
+			guestLaunchInProgress.Store(false)
+			if ef != nil {
+				ef.Close()
+			}
+			return false
+		}
+		guestRuntimeGeneration.Add(1)
+		guestExitedCleanly.Store(false)
+		if err := recordGuestExit(cfg.dir, false, "running"); err != nil {
+			logf("could not record guest start: %v", err)
+		}
+		if windowsSessionEnding.Load() {
+			guestLaunchInProgress.Store(false)
+			if ef != nil {
+				ef.Close()
+			}
+			return false
+		}
 		err = proc.Start()
 		// QEMU inherits its own handle. Closing ours per attempt keeps retries
 		// and guest reboots from leaking one handle each.
@@ -980,9 +1011,11 @@ func supervise(cfg *config, cmdline string) bool {
 			ef.Close()
 		}
 		if err != nil {
+			guestLaunchInProgress.Store(false)
 			fatal(uiTextWith("fatal.qemu.start", map[string]string{"error": err.Error()}))
 		}
 		qemuPid.Store(uint32(proc.Process.Pid))
+		guestLaunchInProgress.Store(false)
 		exited := make(chan error, 1)
 		go func() {
 			err := proc.Wait()
@@ -1145,6 +1178,7 @@ func watch(cfg *config, qmp *qmpConn, exited <-chan error) bool {
 	logf("supervisor: watching guest lifecycle and file drops")
 	lines := qmp.readLines()
 	reason := ""
+	cleanExit := false
 	silence := qmpSilence{}
 	postReady := false
 	qmpRunning := true
@@ -1287,6 +1321,7 @@ func watch(cfg *config, qmp *qmpConn, exited <-chan error) bool {
 			}
 			if r := shutdownReason(line); r != "" {
 				reason = r
+				cleanExit = cleanGuestShutdown(line)
 			}
 		case <-setupCancelWake:
 			if stopDeadline == nil {
@@ -1375,6 +1410,7 @@ func watch(cfg *config, qmp *qmpConn, exited <-chan error) bool {
 					lines = nil
 				} else if r := shutdownReason(line); r != "" {
 					reason = r
+					cleanExit = cleanGuestShutdown(line)
 				}
 				if reason != "" || lines == nil {
 					goto drained
@@ -1398,6 +1434,13 @@ drained:
 	// lifecycle port before the network goes down.
 	if reason == "" && pendingReboot.Swap(false) {
 		reason = "reboot"
+	}
+	if err := recordGuestExit(cfg.dir, cleanExit, reason); err != nil {
+		logf("could not record guest exit: %v", err)
+	}
+	guestExitedCleanly.Store(cleanExit)
+	if windowsSessionEnding.Load() {
+		return false
 	}
 	if reason == "reboot" {
 		logf("guest rebooted - relaunching")

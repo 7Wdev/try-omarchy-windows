@@ -278,25 +278,13 @@ func (a *guestAgent) run(l net.Listener, resumed <-chan struct{}) {
 	batteryTicker := time.NewTicker(agentBatteryInterval)
 	defer timeTicker.Stop()
 	defer batteryTicker.Stop()
-	for {
-		select {
-		case <-timeTicker.C:
-			a.sendTime("")
-		case <-batteryTicker.C:
-			a.sendBattery()
-			a.sendApprovedApps()
-		case <-resumed:
-			// Windows may take a moment to bring the clock and network back;
-			// send now and again shortly after.
-			a.sendTime("resume")
-			a.sendBattery()
-			a.sendApprovedApps()
-			time.Sleep(5 * time.Second)
-			a.sendTime("resume")
-			a.sendBattery()
-			a.sendApprovedApps()
-		}
-	}
+	retry := time.NewTimer(time.Hour)
+	retry.Stop()
+	// Retry after Windows settles without blocking periodic work.
+	runAgentUpdates(timeTicker.C, batteryTicker.C, resumed, nil, retry.C, retry, func(reason string) { a.sendTime(reason) }, func() {
+		a.sendBattery()
+		a.sendApprovedApps()
+	})
 }
 
 // Zero-filling free blocks that were never written grows disk.raw on the
