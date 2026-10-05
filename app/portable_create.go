@@ -37,6 +37,9 @@ func createPortableCopyUsingTool(dir, destination, launcher, tool string, report
 	if _, err := os.Lstat(destination); !os.IsNotExist(err) {
 		return uiError(uiText("error.portable.new_folder"), nil)
 	}
+	if err := requirePortableFilesystem(destination); err != nil {
+		return err
+	}
 	sums, err := parseVerifiedSums(defaultSums, defaultSumsSHA256)
 	if err != nil {
 		return err
@@ -89,6 +92,9 @@ func createPortableCopyUsingTool(dir, destination, launcher, tool string, report
 }
 
 func makeRestoredDiskPortable(data, tool string, report backupProgress) error {
+	if err := requirePortableFilesystem(data); err != nil {
+		return err
+	}
 	raw := filepath.Join(data, "vm", "disk.raw")
 	info, err := os.Stat(raw)
 	if err != nil {

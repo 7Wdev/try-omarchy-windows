@@ -205,7 +205,7 @@ func inventoryMove(source string, disk *os.File, report backupProgress) ([]moveF
 	return inventoryMoveFiltered(source, disk, report, func(name string) bool { return !moveExcluded(name) })
 }
 
-func inventoryMoveFiltered(source string, disk *os.File, report backupProgress, include func(string) bool) ([]moveFile, int64, error) {
+func inventoryMoveFiltered(source string, disk *os.File, report backupProgress, include func(string) bool, fullFiles ...bool) ([]moveFile, int64, error) {
 	var files []moveFile
 	var required int64 = diskSpaceReserve
 	err := filepath.WalkDir(source, func(path string, d os.DirEntry, walkErr error) error {
@@ -240,6 +240,16 @@ func inventoryMoveFiltered(source string, disk *os.File, report backupProgress, 
 		}
 		entry := moveFile{Name: name, Size: info.Size(), ModTime: info.ModTime().UnixNano(), Directory: info.IsDir()}
 		if !entry.Directory {
+			fullAllocation := len(fullFiles) > 0 && fullFiles[0] && name != filepath.Join("vm", "disk.raw")
+			if fullAllocation {
+				if entry.Size > backupMaxBytes {
+					return fmt.Errorf("installation exceeds supported size")
+				}
+				required += (entry.Size + moveBlockSize - 1) / moveBlockSize * moveBlockSize
+				if required > backupMaxBytes {
+					return fmt.Errorf("installation exceeds supported size")
+				}
+			}
 			f, closeFile, err := moveSourceFile(source, entry, disk)
 			if err != nil {
 				return err
@@ -258,7 +268,7 @@ func inventoryMoveFiltered(source string, disk *os.File, report backupProgress, 
 				if n > 0 {
 					size += int64(n)
 					h.Write(buf[:n])
-					if !zeroBytes(buf[:n]) {
+					if !fullAllocation && !zeroBytes(buf[:n]) {
 						required += moveBlockSize
 					}
 					if required > backupMaxBytes {

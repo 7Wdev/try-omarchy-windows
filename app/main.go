@@ -319,6 +319,9 @@ func main() {
 		root := filepath.Dir(self)
 		cfg.dir = filepath.Join(root, "data")
 		cfg.payloadDir = filepath.Join(root, "payload")
+		if err := requirePortableFilesystem(root); err != nil {
+			fatal(err.Error())
+		}
 		removeDataOnCancel, err = dataDirectoryEmpty(cfg.dir)
 		if err != nil {
 			fatal(uiTextWith("fatal.location.portable_inspect", map[string]string{"error": err.Error()}))

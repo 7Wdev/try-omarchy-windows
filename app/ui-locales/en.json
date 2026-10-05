@@ -603,6 +603,7 @@
   "error.portable.new_folder": "choose a new folder for the portable copy",
   "error.portable.update_first": "update this installation with the current launcher before creating a portable copy",
   "error.portable.runtime": "install the matching bundled runtime before creating a portable copy",
+  "error.portable.filesystem": "portable disks need a filesystem that supports files larger than 4 GiB. Choose an exFAT or NTFS drive instead of FAT32",
   "error.portable.close_first": "close Omarchy before creating a portable copy: {error}",
   "error.disk.close_first": "close Omarchy before changing its disk capacity: {error}",
   "error.reset.no_install": "there is no complete standard installation to reset",
