@@ -81,7 +81,11 @@ func authenticateUpdateManifest(data, sigText []byte, publicKey ed25519.PublicKe
 }
 
 func fetchSmallFile(client *http.Client, source string, limit int64) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(setupContext(), 20*time.Second)
+	return fetchSmallFileContext(setupContext(), client, source, limit)
+}
+
+func fetchSmallFileContext(ctx context.Context, client *http.Client, source string, limit int64) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, source, nil)
 	if err != nil {

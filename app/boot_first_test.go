@@ -283,3 +283,37 @@ func TestSystemProxySelection(t *testing.T) {
 		}
 	}
 }
+
+func TestUpdateMetadataAndHeadersAreBounded(t *testing.T) {
+	configureSetupCancellation(false)
+	for _, phase := range []string{"headers", "body"} {
+		t.Run(phase, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if phase == "body" {
+					w.WriteHeader(200)
+					w.(http.Flusher).Flush()
+				}
+				<-r.Context().Done()
+			}))
+			defer server.Close()
+			client := newDownloadClient()
+			if client.Timeout != 0 {
+				t.Fatal("large transfers have a total timeout")
+			}
+			transport := client.Transport.(*http.Transport)
+			if transport.ResponseHeaderTimeout <= 0 || transport.IdleConnTimeout <= 0 || transport.TLSHandshakeTimeout <= 0 {
+				t.Fatal("unbounded transport")
+			}
+			defer client.CloseIdleConnections()
+			ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+			defer cancel()
+			started := time.Now()
+			if _, err := fetchSmallFileContext(ctx, client, server.URL, 1024); err == nil {
+				t.Fatal("stalled metadata was accepted")
+			}
+			if elapsed := time.Since(started); elapsed > time.Second {
+				t.Fatalf("cancellation took %s", elapsed)
+			}
+		})
+	}
+}

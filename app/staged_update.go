@@ -59,11 +59,11 @@ func readStagedManifest(dir, version string, key ed25519.PublicKey) (*updateMani
 }
 
 func stageSignedUpdate(ctx context.Context, client *http.Client, feed, dir, payloadRoot, installedVersion, installedDigest string, key ed25519.PublicKey) (*updateManifest, error) {
-	data, err := fetchSmallFile(client, feed, maxUpdateManifestLen)
+	data, err := fetchSmallFileContext(ctx, client, feed, maxUpdateManifestLen)
 	if err != nil {
 		return nil, err
 	}
-	sig, err := fetchSmallFile(client, feed+".sig", maxUpdateSignatureLen)
+	sig, err := fetchSmallFileContext(ctx, client, feed+".sig", maxUpdateSignatureLen)
 	if err != nil {
 		return nil, err
 	}
