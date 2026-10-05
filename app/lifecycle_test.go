@@ -3,6 +3,7 @@ package main
 import (
 	"net"
 	"testing"
+	"time"
 )
 
 func TestLifecycleRefusesForeignPeers(t *testing.T) {
@@ -47,4 +48,21 @@ func TestLifecyclePendingPID(t *testing.T) {
 	if lifecyclePeerMatches(42, func() uint32 { return 0 }, func() bool { return false }) {
 		t.Fatal("unpublished peer accepted")
 	}
+}
+
+func TestLifecycleChecksPeerBeforeReading(t *testing.T) {
+	host, peer := net.Pipe()
+	checked, done := make(chan struct{}), make(chan struct{})
+	go func() {
+		serveLifecycle(host, func(net.Conn) bool { close(checked); return true }, func(string, net.Conn) {})
+		close(done)
+	}()
+	select {
+	case <-checked:
+	case <-time.After(time.Second):
+		t.Fatal("ownership lookup waited for the guest to send and close")
+	}
+	peer.Write([]byte("ready\n"))
+	peer.Close()
+	<-done
 }

@@ -12,13 +12,15 @@ import (
 func serveLifecycle(c net.Conn, fromQEMU func(net.Conn) bool, handle func(string, net.Conn)) {
 	defer c.Close()
 	c.SetReadDeadline(time.Now().Add(3 * time.Second))
+	// Capture ownership before reading: the guest sends one line and closes.
+	trustedPeer := fromQEMU(c)
 	line, err := bufio.NewReader(io.LimitReader(c, 64)).ReadString('\n')
 	if err != nil {
 		return
 	}
 	switch line {
 	case "ready\n", "reboot\n", "shutdown\n":
-		if !fromQEMU(c) {
+		if !trustedPeer {
 			return
 		}
 	case "reclaim\n":
