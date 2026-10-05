@@ -33,3 +33,14 @@ func (s *clipboardSyncState) shouldSendHost(item clipItem) bool {
 func (s *clipboardSyncState) markHostSent(item clipItem) {
 	s.lastSeen = item.key()
 }
+
+// Retry means clipboard contention or delayed rendering; unsupported permits
+// fallback to another format, rejected is a handled resource/transfer error.
+type clipboardReadStatus uint8
+
+const (
+	clipboardUnsupported clipboardReadStatus = iota
+	clipboardRetry
+	clipboardReady
+	clipboardRejected
+)

@@ -3,9 +3,11 @@ package main
 import (
 	"bytes"
 	"encoding/binary"
+	"hash/crc32"
 	"image"
 	"image/color"
 	"image/png"
+	"strings"
 	"testing"
 )
 
@@ -175,5 +177,89 @@ func TestClipFramesCarryTextAndImages(t *testing.T) {
 	}
 	if textItem("a").key() == pngItem(data).key() || pngItem(data).key() != pngItem(append([]byte(nil), data...)).key() {
 		t.Fatal("keys must identify content by kind and bytes")
+	}
+}
+
+func TestClipboardImageBudgetBeforeDecode(t *testing.T) {
+	data, _ := samplePNG(t)
+	binary.BigEndian.PutUint32(data[16:20], 16384)
+	binary.BigEndian.PutUint32(data[20:24], 16384)
+	binary.BigEndian.PutUint32(data[29:33], crc32.ChecksumIEEE(data[12:29]))
+	if _, err := png.DecodeConfig(bytes.NewReader(data)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pngToDIB(data); err == nil || !strings.Contains(err.Error(), "image size") {
+		t.Fatalf("budget not checked before pixels: %v", err)
+	}
+	if pngItem(data).allowed() {
+		t.Fatal("bomb accepted by bridge")
+	}
+	for _, size := range [][2]int{{4096, 4096}, {7680, 4320}, {1920, 16384}, {16384, 1}} {
+		if !clipboardImageSizeAllowed(size[0], size[1]) {
+			t.Fatal("bounded image rejected", size)
+		}
+	}
+	for _, size := range [][2]int{{8192, 4097}, {16384, 16384}, {1, 16385}, {0, 1}} {
+		if clipboardImageSizeAllowed(size[0], size[1]) {
+			t.Fatal("unbounded image accepted", size)
+		}
+	}
+	dib := make([]byte, 40)
+	binary.LittleEndian.PutUint32(dib, 40)
+	binary.LittleEndian.PutUint32(dib[4:], 16384)
+	binary.LittleEndian.PutUint32(dib[8:], 16384)
+	if _, err := dibToPNG(dib); err == nil || !strings.Contains(err.Error(), "bitmap size") {
+		t.Fatal(err)
+	}
+}
+
+func TestDIBPackedDepthsAndOptionalColorTables(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		bits        uint16
+		compression uint32
+		masks       []uint32
+		table       []byte
+		colors      uint32
+		pixels      []byte
+		want        color.NRGBA
+	}{
+		{"one bit", 1, biRGB, nil, []byte{0, 0, 0, 0, 0, 0, 255, 0}, 2, []byte{0x80, 0, 0, 0}, color.NRGBA{255, 0, 0, 255}},
+		{"four bit", 4, biRGB, nil, []byte{0, 0, 0, 0, 255, 0, 0, 0}, 2, []byte{0x10, 0, 0, 0}, color.NRGBA{0, 0, 255, 255}},
+		{"RGB 555", 16, biRGB, nil, nil, 0, []byte{0, 0x7c, 0, 0}, color.NRGBA{255, 0, 0, 255}},
+		{"RGB 565", 16, biBitfields, []uint32{0xf800, 0x7e0, 0x1f}, nil, 0, []byte{0xe0, 7, 0, 0}, color.NRGBA{0, 255, 0, 255}},
+		{"24 table", 24, biRGB, nil, []byte{0, 0, 0, 0}, 1, []byte{0x30, 0x20, 0x10, 0}, color.NRGBA{0x10, 0x20, 0x30, 255}},
+		{"32 table", 32, biRGB, nil, []byte{0, 0, 0, 0}, 1, []byte{0x30, 0x20, 0x10, 0}, color.NRGBA{0x10, 0x20, 0x30, 255}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dib := make([]byte, 40)
+			binary.LittleEndian.PutUint32(dib, 40)
+			binary.LittleEndian.PutUint32(dib[4:], 1)
+			binary.LittleEndian.PutUint32(dib[8:], 1)
+			binary.LittleEndian.PutUint16(dib[12:], 1)
+			binary.LittleEndian.PutUint16(dib[14:], tc.bits)
+			binary.LittleEndian.PutUint32(dib[16:], tc.compression)
+			binary.LittleEndian.PutUint32(dib[32:], tc.colors)
+			for _, mask := range tc.masks {
+				dib = binary.LittleEndian.AppendUint32(dib, mask)
+			}
+			dib = append(dib, tc.table...)
+			dib = append(dib, tc.pixels...)
+			out, err := dibToPNG(dib)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := decodeNRGBA(t, out).NRGBAAt(0, 0); got != tc.want {
+				t.Fatalf("%v != %v", got, tc.want)
+			}
+			if _, err := dibToPNG(dib[:len(dib)-1]); err == nil {
+				t.Fatal("truncated pixels accepted")
+			}
+		})
+	}
+	for _, masks := range [][4]uint32{{0, 0xff00, 0xff, 0}, {0xff0000, 0xff0000, 0xff, 0}, {0x00f000f0, 0xff00, 0xff000000, 0}} {
+		if validDIBMasks(masks[0], masks[1], masks[2], masks[3], 32) {
+			t.Fatal("bad masks accepted", masks)
+		}
 	}
 }
