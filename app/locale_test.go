@@ -156,3 +156,24 @@ func TestReadPreferredUILanguage(t *testing.T) {
 		}
 	}
 }
+
+func TestGuestLocaleForWindowsRegionalFallback(t *testing.T) {
+	for _, tt := range []struct {
+		ui, regional, locale, source string
+	}{
+		{"fr", "fr-CA", "fr_CA", "regional format matching UI language"},
+		{"en-US", "de-DE", "en_US", "UI language"},
+		{"", "de-DE", "de_DE", "regional format"},
+		{"fr", "de-DE", "de_DE", "regional format"},
+		{"sr-Latn-RS", "sr-RS", "sr_RS", "regional format matching UI language"},
+		{"invalid", "de-DE", "de_DE", "regional format"},
+		{"fr", "", "", "regional format"},
+	} {
+		t.Run(tt.ui+"/"+tt.regional, func(t *testing.T) {
+			locale, source := guestLocaleForWindows(tt.ui, tt.regional)
+			if locale != tt.locale || source != tt.source {
+				t.Fatalf("got %q from %q, want %q from %q", locale, source, tt.locale, tt.source)
+			}
+		})
+	}
+}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"sync"
 	"syscall"
 	"unsafe"
 )
@@ -37,6 +38,17 @@ func hostKeyboardLayoutID() string {
 }
 
 var procGetUserPreferredUILanguages = kernel32.NewProc("GetUserPreferredUILanguages")
+var procGetUserDefaultLocaleName = kernel32.NewProc("GetUserDefaultLocaleName")
+var hostLocaleSourceLog sync.Once
+
+func hostRegionalLocaleName() string {
+	var buf [85]uint16
+	n, _, _ := procGetUserDefaultLocaleName.Call(uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)))
+	if n == 0 {
+		return ""
+	}
+	return syscall.UTF16ToString(buf[:])
+}
 
 // hostLocaleName reads the preferred UI language, independently of regional formats.
 func hostLocaleName() string {
@@ -56,13 +68,12 @@ func hostLocaleName() string {
 func hostLocale(zoneOverride, keyboardOverride, localeOverride string) (zone, layout, variant, locale string) {
 	switch localeOverride {
 	case "":
-		name := hostLocaleName()
-		locale = posixLocaleForWindows(name)
-		if locale == "" {
-			logf("host UI language %q has no locale mapping; keeping guest locale", name)
-		} else if name == "en-150" || name == "es-419" {
-			logf("host UI language %q uses guest locale fallback %s", name, locale)
-		}
+		ui, regional := hostLocaleName(), hostRegionalLocaleName()
+		var source string
+		locale, source = guestLocaleForWindows(ui, regional)
+		hostLocaleSourceLog.Do(func() {
+			logf("host locale uses %s: UI=%q regional=%q guest=%q", source, ui, regional, locale)
+		})
 	case "keep":
 	default:
 		locale = localeOverride

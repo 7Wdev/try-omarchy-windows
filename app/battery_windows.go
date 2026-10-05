@@ -21,7 +21,10 @@ func hostBatteryLine() (string, error) {
 		return "", fmt.Errorf("GetSystemPowerStatus: %w", err)
 	}
 	snapshot := windowsBatteryPresence.snapshot(status)
-	line, err := encodeBatterySnapshot(snapshot)
+	if snapshot == nil {
+		return "", nil
+	}
+	line, err := encodeBatterySnapshot(*snapshot)
 	if err != nil {
 		return "", err
 	}

@@ -60,6 +60,10 @@ func encodeBatteryLine(s systemPowerStatus) (string, error) {
 }
 
 func encodeBatterySnapshot(snapshot batterySnapshot) (string, error) {
+	// Incomplete Windows readings must leave the guest's last good state alone.
+	if snapshot.Present && (snapshot.Percentage == nil || *snapshot.Percentage < 0 || *snapshot.Percentage > 100) {
+		return "", nil
+	}
 	data, err := json.Marshal(snapshot)
 	if err != nil {
 		return "", fmt.Errorf("encode battery: %w", err)
@@ -67,20 +71,42 @@ func encodeBatterySnapshot(snapshot batterySnapshot) (string, error) {
 	return "battery " + string(data) + "\n", nil
 }
 
-// Only known flags update presence; unknown charge never removes a battery.
+// Unknown readings reuse the last valid state until Windows reports one again.
 type batteryPresenceCache struct {
-	mu      sync.Mutex
-	present bool
+	mu   sync.Mutex
+	last *batterySnapshot
 }
 
-func (c *batteryPresenceCache) snapshot(s systemPowerStatus) batterySnapshot {
+func (c *batteryPresenceCache) snapshot(s systemPowerStatus) *batterySnapshot {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	b := batteryFromWindows(s)
-	if s.BatteryFlag == 0xff {
-		b.Present = c.present
-	} else {
-		c.present = b.Present
+	if s.BatteryFlag == 0xff || (b.Present && b.Percentage == nil) {
+		if c.last == nil || (s.BatteryFlag != 0xff && !c.last.Present) {
+			return nil
+		}
+		previous := *c.last
+		if s.ACLineStatus <= 1 {
+			previous.ACConnected = b.ACConnected
+			if previous.Present {
+				switch {
+				case b.State != "unknown":
+					previous.State = b.State
+				case s.ACLineStatus == 0:
+					previous.State = "discharging"
+				case previous.State == "discharging":
+					previous.State = "not-charging"
+				}
+			}
+		}
+		if s.BatteryFlag != 0xff && b.State != "unknown" && previous.Present {
+			previous.State = b.State
+		}
+		b = previous
+	} else if s.ACLineStatus > 1 && c.last != nil {
+		b.ACConnected = c.last.ACConnected
 	}
-	return b
+	c.last = &b
+	result := b
+	return &result
 }

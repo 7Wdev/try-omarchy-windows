@@ -323,3 +323,15 @@ func readPreferredUILanguage(query func(count, size *uint32, buf []uint16) bool)
 	}
 	return preferredUILanguage(buf[:size])
 }
+
+// guestLocaleForWindows prefers a mapped UI language, then the regional format.
+func guestLocaleForWindows(ui, regional string) (locale, source string) {
+	if locale = posixLocaleForWindows(ui); locale != "" {
+		return locale, "UI language"
+	}
+	locale = posixLocaleForWindows(regional)
+	if ui != "" && strings.EqualFold(strings.Split(strings.TrimSpace(ui), "-")[0], strings.Split(strings.TrimSpace(regional), "-")[0]) {
+		return locale, "regional format matching UI language"
+	}
+	return locale, "regional format"
+}
