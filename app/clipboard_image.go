@@ -109,8 +109,17 @@ func dibToPNG(dib []byte) ([]byte, error) {
 	}
 	offset += int(count * 4)
 	stride := (int(width)*int(bits) + 31) / 32 * 4
-	if len(dib) < offset+stride*int(height) {
+	imageBytes := stride * int(height)
+	if imageBytes > len(dib)-offset {
 		return nil, fmt.Errorf("bitmap pixels truncated")
+	}
+	// Windows can synthesize CF_DIBV5 with another three bitfield masks
+	// after the V5 header, even though that header already contains them.
+	// Packed clipboard DIBs end with the uncompressed pixel rows. Locate
+	// those rows from their bounded size rather than decoding extra metadata
+	// as pixels. The check above keeps them beyond the header and palette.
+	if endOffset := len(dib) - imageBytes; endOffset != offset {
+		offset = endOffset
 	}
 	img := image.NewNRGBA(image.Rect(0, 0, int(width), int(height)))
 	anyAlpha := false
