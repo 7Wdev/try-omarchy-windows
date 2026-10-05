@@ -82,6 +82,7 @@ const (
 	keySideNone  keySide = iota // up, or its press predates the hook
 	keySideHost                 // Windows saw the press
 	keySideGuest                // the guest saw the press
+	keySideDetached             // the guest saw the press, then focus left
 )
 
 type routedKey struct {
@@ -98,6 +99,8 @@ func (k *routedKey) route(focused, hostHeld, down bool) (keys []forwardedKey, sw
 		switch side {
 		case keySideGuest:
 			return []forwardedKey{{qcode: k.qcode, down: false}}, true
+		case keySideDetached:
+			return nil, true // already let go in the guest
 		case keySideHost:
 			return nil, false
 		}
@@ -109,9 +112,17 @@ func (k *routedKey) route(focused, hostHeld, down bool) (keys []forwardedKey, sw
 		if focused {
 			return nil, true // autorepeat
 		}
-		// Focus left mid-press: let go in the guest; Windows gets a new press.
-		k.side = keySideHost
-		return []forwardedKey{{qcode: k.qcode, down: false}}, false
+		// Focus left mid-press: let go in the guest, but keep the rest of
+		// the press away from Windows, or its release pops Start.
+		k.side = keySideDetached
+		return []forwardedKey{{qcode: k.qcode, down: false}}, true
+	case keySideDetached:
+		if !focused {
+			return nil, true // autorepeat
+		}
+		// Back on the VM with the key still held.
+		k.side = keySideGuest
+		return []forwardedKey{{qcode: k.qcode, down: true}}, true
 	case keySideHost:
 		if !focused || hostHeld {
 			return nil, false // autorepeat stays with Windows

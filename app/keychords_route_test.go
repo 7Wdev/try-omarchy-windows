@@ -61,12 +61,24 @@ func TestRoutedKeyReleaseAfterFocusLeavesGoesToGuest(t *testing.T) {
 	})
 }
 
-func TestRoutedKeyRepeatAfterFocusLeavesMovesToWindows(t *testing.T) {
+// Hold Super in the VM, click a Windows app, let go: the guest releases on
+// the first repeat and Windows never sees the press, so Start stays shut.
+func TestRoutedKeyRepeatAfterFocusLeavesStaysOffWindows(t *testing.T) {
 	runRoute(t, &routedKey{qcode: "meta_l"}, []routeStep{
 		{focused: true, down: true, wantKeys: []forwardedKey{{"meta_l", true}}, wantSwallow: true},
-		{down: true, wantKeys: []forwardedKey{{"meta_l", false}}}, // released in the guest, pressed in Windows
-		{hostHeld: true, down: true},
-		{hostHeld: true},
+		{down: true, wantKeys: []forwardedKey{{"meta_l", false}}, wantSwallow: true},
+		{down: true, wantSwallow: true},
+		{wantSwallow: true},
+	})
+}
+
+// Focus leaves and comes back while the key is still held.
+func TestRoutedKeyFocusReturnsWhileHeld(t *testing.T) {
+	runRoute(t, &routedKey{qcode: "meta_l"}, []routeStep{
+		{focused: true, down: true, wantKeys: []forwardedKey{{"meta_l", true}}, wantSwallow: true},
+		{down: true, wantKeys: []forwardedKey{{"meta_l", false}}, wantSwallow: true},
+		{focused: true, down: true, wantKeys: []forwardedKey{{"meta_l", true}}, wantSwallow: true},
+		{focused: true, wantKeys: []forwardedKey{{"meta_l", false}}, wantSwallow: true},
 	})
 }
 
