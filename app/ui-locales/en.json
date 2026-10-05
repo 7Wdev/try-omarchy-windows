@@ -666,5 +666,12 @@
   "recovery.gpu.settings_failed": "Could not save CPU rendering in Settings: {error}",
   "recovery.display.body": "The virtual machine has stopped answering. It is still running. You can keep this session or restart it. Restarting may lose unsaved work.",
   "recovery.compositor.body": "Omarchy’s desktop has not answered health checks for about a minute, while the virtual machine still responds. You can keep this session or restart it. Restarting may lose unsaved work.",
-  "recovery.cpu.restart": "Restart"
+  "recovery.cpu.restart": "Restart",
+  "tray.menu.resume": "Resume Omarchy",
+  "tray.power.paused_title": "Omarchy paused after sleep",
+  "tray.power.paused": "Omarchy could not confirm that the VM resumed. It may still be paused. Choose Resume Omarchy from the tray menu to try again. A diagnostics snapshot is being saved.",
+  "tray.power.snapshot": "Choose Resume Omarchy from the tray menu to try again. Diagnostics saved to:\n{path}",
+  "tray.power.snapshot_failed": "Choose Resume Omarchy from the tray menu to try again. Could not save automatic diagnostics: {error}",
+  "shutdown.windows_reason": "Shutting down Omarchy safely",
+  "shutdown.unclean_recovery": "Omarchy did not shut down cleanly last time, for example because Windows restarted before it finished. Open the snapshot recovery tools before starting Omarchy? Choose No to start normally."
 }

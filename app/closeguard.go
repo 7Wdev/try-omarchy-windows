@@ -19,11 +19,66 @@ import (
 // GRACEFUL guest shutdown over QMP - autologin makes the next start seamless.
 
 var (
-	qemuHwnd            atomic.Uintptr // current VM window, set by the title enforcer
-	confirmQuit         = make(chan struct{}, 1)
-	confirmOpen         atomic.Bool
-	procWindowFromPoint = user32.NewProc("WindowFromPoint")
+	qemuHwnd              atomic.Uintptr // current VM window, set by the title enforcer
+	confirmQuit           = make(chan struct{}, 1)
+	confirmOpen           atomic.Bool
+	procWindowFromPoint   = user32.NewProc("WindowFromPoint")
+	windowsSessionEnding  atomic.Bool
+	guestExitedCleanly    atomic.Bool
+	guestLaunchInProgress atomic.Bool
 )
+
+// WM_QUERYENDSESSION only registers the reason. Powering off is deferred until
+// WM_ENDSESSION confirms that sign-out/restart was not canceled by another app.
+func queryEndSession(hwnd uintptr) {
+	reason, _ := syscall.UTF16PtrFromString(uiText("shutdown.windows_reason"))
+	if ok, _, err := user32.NewProc("ShutdownBlockReasonCreate").Call(hwnd, uintptr(unsafe.Pointer(reason))); ok == 0 {
+		logf("session: could not register shutdown reason: %v", err)
+	}
+}
+
+func finishEndSession(hwnd uintptr, ending bool) {
+	defer user32.NewProc("ShutdownBlockReasonDestroy").Call(hwnd)
+	if !ending || windowsSessionEnding.Swap(true) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), endSessionBudget)
+	defer cancel()
+	launchPending := guestLaunchInProgress.Load()
+	noGuest := qemuPid.Load() == 0 && !launchPending
+	clean := endGuestSession(ctx, func(ctx context.Context) error {
+		for guestLaunchInProgress.Load() {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(10 * time.Millisecond):
+			}
+		}
+		if qemuPid.Load() == 0 {
+			if launchPending {
+				noGuest = true
+			}
+			return nil
+		}
+		c, err := dialQMPControl(ctx, qmpToolsPort)
+		if err != nil {
+			return err
+		}
+		defer c.Close()
+		var state vmRuntimeStatus
+		if err = c.Call(ctx, "query-status", nil, &state); err != nil {
+			return err
+		}
+		// A paused CPU cannot process the ACPI power button.
+		if state.Status == "paused" {
+			if err = c.Call(ctx, "cont", nil, nil); err != nil {
+				return err
+			}
+		}
+		return c.Call(ctx, "system_powerdown", nil, nil)
+	}, func() bool { return noGuest || guestExitedCleanly.Load() })
+	logf("session: Windows end-session shutdown finished: clean=%t", clean)
+}
 
 const (
 	whMouseLL       = 14

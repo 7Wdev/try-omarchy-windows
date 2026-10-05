@@ -16,19 +16,46 @@ A pre-existing manual pause, shutdown, restore or guest suspend is preserved.
 Manual STOP/RESUME events during the interval relinquish automatic ownership.
 A replacement VM cannot inherit an old connection's resume obligation.
 
-Commands have a two-second budget per transition. A disconnected connection,
-lost command reply or unconfirmed pause leaves automatic ownership cleared;
-the VM may stay paused and the log asks for manual resume. A rejected resume
-command can be retried on a subsequent resume notification while the original
-connection still proves ownership. Tray shutdown closes that connection and
-unregisters once. Early startup retains the supervisor's QMP quiet period:
-if guest controls are not ready at suspend, no pause is attempted.
+Each QMP step has its own two-second budget. A failed stop acknowledgement,
+pause confirmation, or resume confirmation retains a recovery obligation for
+that runtime. An interrupted monitor cannot prove intervening manual changes,
+so the launcher does not automatically resume over a replacement connection.
+Instead the tray shows **Omarchy paused after sleep**, offers **Resume Omarchy**,
+and automatically saves diagnostics under the installation's `diagnostics`
+folder. The notice includes the snapshot path, or explains a snapshot failure.
+Resume inspects the same runtime before continuing it and confirms it is running.
+A replacement VM never inherits this action. Tray shutdown cancels outstanding
+power commands and unregisters once. Early startup retains the supervisor's QMP
+quiet period: if guest controls are not ready at suspend, no pause is attempted.
+
+A resume broadcast corrects the guest clock even when the suspend broadcast was
+missed. Paired resume notifications are coalesced, and the follow-up clock,
+battery and app-catalog retry uses a timer without blocking periodic updates.
+
+## Windows restart and sign-out
+
+The tray registers a short shutdown-block reason when Windows asks whether the
+session may end, then responds immediately. Only a confirmed `WM_ENDSESSION`
+requests guest poweroff. Negotiation, resuming a paused CPU, the ACPI power button
+and waiting for a clean guest shutdown share one ten-second deadline. The block
+reason stays registered throughout that wait. This allows margin above measured
+KVM shutdown times for slower WHPX hosts and stays below the 25-second cap.
+Windows may force termination sooner if the user chooses Shut down anyway;
+sign-out is never held indefinitely. A canceled end-session query leaves the
+guest running. An already exited guest returns immediately.
+
+The launcher records an unclean marker before each VM start and only records a
+clean exit after a guest-originated QMP shutdown event and process exit. On the
+next launch after an unclean exit, it offers the existing snapshot recovery UI.
+Declining the offer boots normally so the guest can check its disk. A power-button
+acknowledgement alone is not a clean-exit record.
 
 ## Verification limits
 
-The focused Windows tests cover duplicate and repeated transitions, manual
-pause, non-running states, manual changes during sleep, missing controls,
-startup/shutdown, replacement runtimes, rejected commands, lost replies and
+The pure state-machine tests run on Linux and Windows and cover duplicate and
+repeated transitions, manual pause, non-running states, manual changes during
+sleep, replacement runtimes, rejected commands, lost replies and per-step
+timeouts. Windows-only tests cover startup/shutdown, missing controls and
 registration/cleanup failures. A diskless Windows QEMU fixture checks actual
 `prelaunch`, `running` and `paused` states, independent tools access while
 paused, and intervening manual state changes. A hidden native receiver checks the
