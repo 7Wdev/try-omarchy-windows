@@ -31,7 +31,8 @@ func lockMoveStore(s moveStore) (*os.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	h, err := syscall.CreateFile(ptr, syscall.GENERIC_READ|syscall.GENERIC_WRITE, 0, nil, syscall.OPEN_ALWAYS, syscall.FILE_ATTRIBUTE_NORMAL, 0)
+	const deleteAccess = 0x00010000
+	h, err := syscall.CreateFile(ptr, syscall.GENERIC_READ|syscall.GENERIC_WRITE|deleteAccess, 0, nil, syscall.OPEN_ALWAYS, syscall.FILE_ATTRIBUTE_NORMAL, 0)
 	if err != nil {
 		return nil, fmt.Errorf("another settings or move operation is in progress; try again when it finishes: %w", err)
 	}
@@ -91,7 +92,7 @@ func publishWindowsMoveWith(from, to string, rename func(string, string) error, 
 // Resolve before first-run selection or any maintenance action, including
 // explicit -dir and update helpers. Settings can read but cannot recover a move
 // because its process deliberately does not own the lifecycle listener.
-func prepareMovedLocation(dir string, recover bool) (string, error) {
+func prepareMovedLocation(dir string, recover bool, removing ...bool) (string, error) {
 	s := hostMoveStore()
 	lock, err := lockMoveStore(s)
 	if err != nil {
@@ -106,6 +107,9 @@ func prepareMovedLocation(dir string, recover bool) (string, error) {
 		if !recover {
 			return "", uiError(uiText("error.move.needs_recovery"), nil)
 		}
+		if err := s.relocatePending(state); err != nil {
+			return "", err
+		}
 		if err := s.recover(activateMovedInstallation); err != nil {
 			return "", err
 		}
@@ -114,12 +118,23 @@ func prepareMovedLocation(dir string, recover bool) (string, error) {
 			return "", err
 		}
 	}
-	return resolveMovedDirectory(state, dir)
+	state, err = s.rememberVolume(state, dir, removing...)
+	if err != nil {
+		return "", err
+	}
+	state, err = s.relocate(state, dir, activateMovedInstallation, removing...)
+	if err != nil {
+		return "", err
+	}
+	return resolveMovedDirectory(state, dir, removing...)
 }
 
 // Called while holding the host mutation lock. Saves from older Settings
 // windows must not recreate files at a source path after its move commits.
 func checkMovedSettings(dir string) error {
+	if validUninstallState(dir) {
+		return uiError(uiText("error.uninstall.incomplete"), nil)
+	}
 	state, err := hostMoveStore().load()
 	if err != nil {
 		return err
@@ -328,6 +343,11 @@ func rejectMoveStreams(path string) error {
 	}
 }
 
+func checkMovedUninstall(dir string) error {
+	_, err := hostMoveStore().checkUninstall(dir)
+	return err
+}
+
 func forgetMovedInstallation(dir string) error {
 	s := hostMoveStore()
 	guard, err := lockMoveStore(s)
@@ -335,20 +355,11 @@ func forgetMovedInstallation(dir string) error {
 		return err
 	}
 	defer guard.Close()
-	state, err := s.load()
-	if err != nil {
+	if err := s.forgetInstallation(dir); err != nil {
 		return err
 	}
-	if state.Pending != nil {
-		return uiError(uiText("error.move.finish_before_uninstall"), nil)
+	if err := guard.Close(); err != nil {
+		return err
 	}
-	if state.Retained != nil && pathsEqual(state.Retained.Destination, dir) {
-		return uiError(uiText("error.move.cleanup_before_uninstall"), nil)
-	}
-	for source, target := range state.Redirects {
-		if pathsEqual(target, dir) {
-			delete(state.Redirects, source)
-		}
-	}
-	return s.save(state)
+	return s.pruneEmpty()
 }

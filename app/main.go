@@ -302,7 +302,7 @@ func main() {
 		runLifecycleListener()
 	}
 	if !cfg.portable {
-		resolved, moveErr := prepareMovedLocation(cfg.dir, !*openSettings && !*diagnostics && !*applyLauncherUpdateFlag && !*applyLauncherRollbackFlag && !installWalkthrough)
+		resolved, moveErr := prepareMovedLocation(cfg.dir, !*openSettings && !*diagnostics && !*applyLauncherUpdateFlag && !*applyLauncherRollbackFlag && !installWalkthrough, *uninstall || *recoveryAction == "uninstall")
 		if moveErr != nil {
 			fatal(uiTextWith("fatal.move.resolve", map[string]string{"error": moveErr.Error()}))
 		}
@@ -319,6 +319,9 @@ func main() {
 		root := filepath.Dir(self)
 		cfg.dir = filepath.Join(root, "data")
 		cfg.payloadDir = filepath.Join(root, "payload")
+		if err := requirePortableStartupFilesystem(root); err != nil {
+			fatal(err.Error())
+		}
 		removeDataOnCancel, err = dataDirectoryEmpty(cfg.dir)
 		if err != nil {
 			fatal(uiTextWith("fatal.location.portable_inspect", map[string]string{"error": err.Error()}))
@@ -355,6 +358,9 @@ func main() {
 			}
 			return
 		}
+	}
+	if validUninstallState(cfg.dir) && !*uninstall && *recoveryAction != "uninstall" {
+		fatal(uiText("error.uninstall.incomplete"))
 	}
 	// The install walkthrough can inspect a running guest and ask its owner to
 	// shut down. It must not take over lifecycle or interrupted-update recovery.

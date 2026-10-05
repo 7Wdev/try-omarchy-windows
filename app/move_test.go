@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -25,6 +26,70 @@ func prepareFixtureMove(t *testing.T, s moveStore, source, destination string) *
 		t.Fatal(err)
 	}
 	return m
+}
+
+func TestMoveVolumeIdentificationErrorKeepsLaunching(t *testing.T) {
+	s, source, destination := moveFixture(t)
+	prepareFixtureMove(t, s, source, destination)
+	if err := s.recover(func(*installationMove) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	state, err := s.load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.Locations = nil
+	state.Retained.Volume = nil
+	if err := s.save(state); err != nil {
+		t.Fatal(err)
+	}
+	original := identifyMoveVolume
+	t.Cleanup(func() { identifyMoveVolume = original })
+	calls := 0
+	identifyMoveVolume = func(path string) (*moveVolumeLocation, error) {
+		calls++
+		if path != destination {
+			t.Fatalf("identified %q instead of existing destination", path)
+		}
+		return nil, errors.New("volume GUID unavailable")
+	}
+	state, err = s.rememberVolume(state, source)
+	if err != nil || calls != 1 {
+		t.Fatalf("identity upgrade blocked startup: calls=%d err=%v", calls, err)
+	}
+	state, err = s.relocate(state, source, func(*installationMove) error {
+		t.Fatal("attempted to relocate without volume identity")
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved, err := resolveMovedDirectory(state, source); err != nil || resolved != destination {
+		t.Fatalf("launch redirect=%q err=%v", resolved, err)
+	}
+	saved, err := s.load()
+	if err != nil || saved.Redirects[source] != destination || len(saved.Locations) != 0 || saved.Retained.Volume != nil {
+		t.Fatalf("existing history changed: %+v err=%v", saved, err)
+	}
+}
+
+func TestMoveVolumeIdentificationFailureHasRecoveryGuidance(t *testing.T) {
+	s, source, destination := moveFixture(t)
+	if err := os.MkdirAll(filepath.Dir(destination), 0700); err != nil {
+		t.Fatal(err)
+	}
+	original := identifyMoveVolume
+	t.Cleanup(func() { identifyMoveVolume = original })
+	failure := errors.New("volume GUID unavailable")
+	identifyMoveVolume = func(string) (*moveVolumeLocation, error) { return nil, failure }
+	_, err := s.prepare(source, destination, nil)
+	if !errors.Is(err, failure) || !strings.Contains(err.Error(), destination) || !strings.Contains(err.Error(), "another local drive") {
+		t.Fatalf("missing move recovery guidance: %v", err)
+	}
+	state, err := s.load()
+	if err != nil || state.Pending != nil {
+		t.Fatalf("failed identification started a move: %+v err=%v", state, err)
+	}
 }
 
 func TestMovePreservesContentsCapacityTimestampsAndRedirects(t *testing.T) {
@@ -343,5 +408,251 @@ func TestMoveRejectsLinksAndRetainsUnexpectedStagingFiles(t *testing.T) {
 	}
 	if data, err := os.ReadFile(foreign); err != nil || string(data) != "keep" {
 		t.Fatal("lost unexpected file")
+	}
+}
+
+func TestMoveVolumeRecoveryRepairsOnlySelectedInstallation(t *testing.T) {
+	s, source, destination := moveFixture(t)
+	prepareFixtureMove(t, s, source, destination)
+	if err := s.recover(func(*installationMove) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	state, _ := s.load()
+	location := moveVolumeLocation{Volume: `\\?\Volume{12345678-1234-1234-1234-123456789abc}\`, Relative: "TryOmarchy"}
+	state.Locations = map[string]moveVolumeLocation{destination: location}
+	otherSource, otherTarget := filepath.Join(t.TempDir(), "other-source"), filepath.Join(t.TempDir(), "other-target")
+	state.Redirects[otherSource] = otherTarget
+	if err := s.save(state); err != nil {
+		t.Fatal(err)
+	}
+	relocated := filepath.Join(t.TempDir(), "TryOmarchy")
+	if err := os.Rename(destination, relocated); err != nil {
+		t.Fatal(err)
+	}
+	original := locateMoveVolume
+	t.Cleanup(func() { locateMoveVolume = original })
+	locateMoveVolume = func(got moveVolumeLocation) (string, error) {
+		if got != location {
+			t.Fatalf("wrong volume: %+v", got)
+		}
+		return relocated, nil
+	}
+	for _, requested := range []string{source, destination} {
+		got, err := resolveMovedDirectory(state, requested)
+		if err != nil || got != relocated {
+			t.Fatalf("resolve %s = %q %v", requested, got, err)
+		}
+	}
+	calls := 0
+	repaired, err := s.relocate(state, source, func(m *installationMove) error {
+		calls++
+		if m.Source != destination || m.Destination != relocated {
+			t.Fatalf("wrong repair: %+v", m)
+		}
+		return nil
+	})
+	if err != nil || calls != 1 {
+		t.Fatalf("repair: calls=%d err=%v", calls, err)
+	}
+	if repaired.Redirects[source] != relocated || repaired.Redirects[destination] != relocated || repaired.Redirects[otherSource] != otherTarget {
+		t.Fatal("incorrect redirects", repaired.Redirects)
+	}
+	if repaired.Retained.Destination != relocated {
+		t.Fatal("retained cleanup still points at old letter")
+	}
+	pointed, found, err := loadDataLocationPointer(s.defaultDir)
+	if err != nil || !found || pointed != relocated {
+		t.Fatalf("pointer = %q %v %v", pointed, found, err)
+	}
+	if _, err := s.load(); err != nil {
+		t.Fatal("repaired journal is invalid", err)
+	}
+}
+
+func TestMoveVolumeRecoveryRefusesWrongMissingAndLinkedVolumes(t *testing.T) {
+	s, source, destination := moveFixture(t)
+	prepareFixtureMove(t, s, source, destination)
+	if err := s.recover(func(*installationMove) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	state, _ := s.load()
+	state.Locations = map[string]moveVolumeLocation{destination: {Volume: `\\?\Volume{12345678-1234-1234-1234-123456789abc}\`, Relative: "TryOmarchy"}}
+	if err := s.save(state); err != nil {
+		t.Fatal(err)
+	}
+	original := locateMoveVolume
+	t.Cleanup(func() { locateMoveVolume = original })
+	unavailable := errors.New("volume identity does not match")
+	locateMoveVolume = func(moveVolumeLocation) (string, error) { return "", unavailable }
+	// Even an intact disk at the old letter cannot override the saved identity.
+	if _, err := resolveMovedDirectory(state, source); !errors.Is(err, unavailable) {
+		t.Fatalf("fell back to old letter: %v", err)
+	}
+	before, _ := os.ReadFile(filepath.Join(s.dir, moveStateName))
+	if _, err := s.relocate(state, source, func(*installationMove) error { t.Fatal("activated wrong volume"); return nil }); !errors.Is(err, unavailable) {
+		t.Fatal(err)
+	}
+	after, _ := os.ReadFile(filepath.Join(s.dir, moveStateName))
+	if !bytes.Equal(before, after) {
+		t.Fatal("changed history on refusal")
+	}
+	locateMoveVolume = func(moveVolumeLocation) (string, error) { return filepath.Join(t.TempDir(), "missing"), nil }
+	if _, err := resolveMovedDirectory(state, source); err == nil {
+		t.Fatal("accepted missing disk")
+	}
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(destination, link); err == nil {
+		locateMoveVolume = func(moveVolumeLocation) (string, error) { return link, nil }
+		if _, err := resolveMovedDirectory(state, source); err == nil {
+			t.Fatal("accepted linked recovered target")
+		}
+	}
+	locateMoveVolume = func(moveVolumeLocation) (string, error) { return destination, nil }
+	failure := errors.New("shortcut repair failed")
+	// Force a real relocated path, so entrypoint repair is required.
+	relocated := filepath.Join(t.TempDir(), "TryOmarchy")
+	if err := os.Rename(destination, relocated); err != nil {
+		t.Fatal(err)
+	}
+	locateMoveVolume = func(moveVolumeLocation) (string, error) { return relocated, nil }
+	if _, err := s.relocate(state, source, func(*installationMove) error { return failure }); !errors.Is(err, failure) {
+		t.Fatal(err)
+	}
+	after, _ = os.ReadFile(filepath.Join(s.dir, moveStateName))
+	if !bytes.Equal(before, after) {
+		t.Fatal("lost retry history on repair failure")
+	}
+}
+
+func TestMoveHostPruningPreservesOtherInstallations(t *testing.T) {
+	s, source, destination := moveFixture(t)
+	otherSource, otherTarget := filepath.Join(t.TempDir(), "source"), filepath.Join(t.TempDir(), "target")
+	if err := s.save(moveState{Version: 1, Redirects: map[string]string{source: destination, otherSource: otherTarget}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.forgetInstallation(destination); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.pruneEmpty(); err != nil {
+		t.Fatal(err)
+	}
+	state, err := s.load()
+	if err != nil || state.Redirects[otherSource] != otherTarget {
+		t.Fatal("lost other install", err)
+	}
+	if err := s.forgetInstallation(otherTarget); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.pruneEmpty(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(s.dir); !os.IsNotExist(err) {
+		t.Fatalf("empty host store remains: %v", err)
+	}
+}
+
+func TestMoveCleanupRefusesUnownedDirectory(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "notes.txt")
+	if err := os.WriteFile(path, []byte("keep"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	entry := moveFile{Name: "notes.txt", Size: 4, SHA256: testSHA256([]byte("keep"))}
+	for _, verify := range []bool{false, true} {
+		if err := removeMoveInventory(dir, []moveFile{entry}, verify); err == nil {
+			t.Fatal("removed unowned directory")
+		}
+		if data, err := os.ReadFile(path); err != nil || string(data) != "keep" {
+			t.Fatal("lost unrelated data")
+		}
+	}
+}
+
+func TestMoveRecordsReachableLegacyVolume(t *testing.T) {
+	s, source, destination := moveFixture(t)
+	prepareFixtureMove(t, s, source, destination)
+	if err := s.recover(func(*installationMove) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	state, _ := s.load()
+	state.Locations = nil
+	state.Retained.Volume = nil
+	if err := s.save(state); err != nil {
+		t.Fatal(err)
+	}
+	original := identifyMoveVolume
+	t.Cleanup(func() { identifyMoveVolume = original })
+	location := moveVolumeLocation{Volume: `\\?\Volume{12345678-1234-1234-1234-123456789abc}\`, Relative: "TryOmarchy"}
+	identifyMoveVolume = func(path string) (*moveVolumeLocation, error) {
+		if path != destination {
+			t.Fatal("recorded wrong installation", path)
+		}
+		return &location, nil
+	}
+	updated, err := s.rememberVolume(state, source)
+	if err != nil || updated.Locations[destination] != location {
+		t.Fatalf("upgrade=%+v err=%v", updated.Locations, err)
+	}
+	if updated.Retained.Volume == nil || *updated.Retained.Volume != location {
+		t.Fatal("retained history not upgraded")
+	}
+	if _, err := s.load(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMovedUninstallReceiptAllowsOnlyRemovalRetry(t *testing.T) {
+	s, source, destination := moveFixture(t)
+	prepareFixtureMove(t, s, source, destination)
+	if err := s.recover(func(*installationMove) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	state, _ := s.load()
+	if err := saveUninstallState(destination); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(destination, "vm")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolveMovedDirectory(state, source); err == nil {
+		t.Fatal("normal launch accepted half-removed disk")
+	}
+	got, err := resolveMovedDirectory(state, source, true)
+	if err != nil || got != destination {
+		t.Fatalf("uninstall retry=%q err=%v", got, err)
+	}
+}
+
+func TestInterruptedMoveRebasesGuardedStagingAfterVolumeChange(t *testing.T) {
+	s, source, destination := moveFixture(t)
+	m := prepareFixtureMove(t, s, source, destination)
+	state, _ := s.load()
+	state.Pending.Phase = "copying"
+	state.Pending.Volume = &moveVolumeLocation{Volume: `\\?\Volume{12345678-1234-1234-1234-123456789abc}\`, Relative: "TryOmarchy"}
+	if err := s.save(state); err != nil {
+		t.Fatal(err)
+	}
+	newDestination := filepath.Join(t.TempDir(), "TryOmarchy")
+	newStage := filepath.Join(filepath.Dir(newDestination), ".TryOmarchy-move-"+m.ID)
+	if err := os.Rename(m.Stage, newStage); err != nil {
+		t.Fatal(err)
+	}
+	original := locateMoveVolume
+	t.Cleanup(func() { locateMoveVolume = original })
+	locateMoveVolume = func(moveVolumeLocation) (string, error) { return newDestination, nil }
+	if err := s.relocatePending(state); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateUninstallDirectory(newStage); err != nil {
+		t.Fatal("lost private cleanup guard", err)
+	}
+	if err := s.recover(func(*installationMove) error { t.Fatal("activated interrupted move"); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(newStage); !os.IsNotExist(err) {
+		t.Fatalf("staging remains: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(source, "vm", "disk.raw")); err != nil {
+		t.Fatal("lost source", err)
 	}
 }

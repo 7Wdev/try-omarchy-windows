@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -113,8 +114,7 @@ func removeLauncherShortcuts(target string) error {
 }
 
 // runUninstall removes a stopped standard installation: an optional backup
-// first, then shortcuts, the Apps & features entry, the data-location
-// pointer, and the data folder itself.
+// first, then guarded data removal, followed by entry-point cleanup.
 func runUninstall(dir string) error {
 	dir, err := filepath.Abs(dir)
 	if err != nil {
@@ -158,23 +158,8 @@ func runUninstall(dir string) error {
 			logf("uninstall: remove the Windows Firewall rules in group TryOmarchy-%s by hand", id)
 		}
 	}
-	if err := forgetMovedInstallation(dir); err != nil {
+	if err := checkMovedUninstall(dir); err != nil {
 		return err
-	}
-	target := filepath.Join(dir, stableLauncherName)
-	if err := syncSignInShortcut(target, dir, false); err != nil {
-		logf("uninstall: %v", err)
-	}
-	if err := removeLauncherShortcuts(target); err != nil {
-		logf("uninstall: %v", err)
-	}
-	if err := unregisterUninstallEntry(dir); err != nil {
-		logf("uninstall: %v", err)
-	}
-	defaultDir := defaultDataDirectory()
-	if pointed, ok, _ := loadDataLocationPointer(defaultDir); ok && pathsEqual(pointed, dir) {
-		os.Remove(dataLocationPointerPath(defaultDir))
-		os.Remove(defaultDir)
 	}
 	self, err := os.Executable()
 	if err != nil {
@@ -193,7 +178,7 @@ func runUninstall(dir string) error {
 		}
 		return nil
 	}
-	if err := removeAllWithRetry(dir); err != nil {
+	if err := completeUninstall(dir); err != nil {
 		return err
 	}
 	infoBox(uiText("uninstall.done"))
@@ -211,7 +196,7 @@ func finishUninstall(dir string, waitPID int) int {
 		err = validateUninstallDirectory(dir)
 	}
 	if err == nil {
-		err = removeAllWithRetry(dir)
+		err = completeUninstall(dir)
 	}
 	code := 0
 	if err != nil {
@@ -235,4 +220,43 @@ func finishUninstall(dir string, waitPID int) int {
 func fileExists(path string) bool {
 	info, err := os.Lstat(path)
 	return err == nil && info.Mode().IsRegular()
+}
+
+// Entry points remain available until guarded data removal has succeeded.
+func completeUninstall(dir string) error {
+	s := hostMoveStore()
+	guard, err := lockMoveStore(s)
+	if err != nil {
+		return err
+	}
+	defer guard.Close()
+	if _, err := s.checkUninstall(dir); err != nil {
+		return err
+	}
+	if err := removeUninstallDirectory(dir, removeAllWithRetry); err != nil {
+		return err
+	}
+	var residue []error
+	for _, cleanup := range []func() error{
+		func() error { return s.forgetInstallation(dir) },
+		func() error { return syncSignInShortcut(filepath.Join(dir, stableLauncherName), dir, false) },
+		func() error { return removeLauncherShortcuts(filepath.Join(dir, stableLauncherName)) },
+		func() error { return unregisterUninstallEntry(dir) },
+		func() error { return cleanupUninstallBootstrap(defaultDataDirectory(), dir) },
+	} {
+		if err := cleanup(); err != nil {
+			logf("uninstall: data removed, but cleanup needs attention: %v", err)
+			residue = append(residue, err)
+		}
+	}
+	if err := guard.Close(); err != nil {
+		residue = append(residue, err)
+	}
+	if err := s.pruneEmpty(); err != nil {
+		residue = append(residue, err)
+	}
+	if err := errors.Join(residue...); err != nil {
+		return uiError(uiTextWith("error.uninstall.cleanup", map[string]string{"error": err.Error()}), err)
+	}
+	return nil
 }

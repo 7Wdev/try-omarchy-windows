@@ -24,6 +24,10 @@ func stagePortableData(dir, data, tool string, report backupProgress) error {
 }
 
 func stageDirectPortableData(dir, data string, disk installationDisk, tool string, report backupProgress) error {
+	capability, err := portableFilesystemCapability(data)
+	if err != nil {
+		return err
+	}
 	source, err := openBackupDisk(disk.Path)
 	if err != nil {
 		return uiError(uiTextWith("error.portable.close_first", map[string]string{"error": err.Error()}), err)
@@ -60,11 +64,12 @@ func stageDirectPortableData(dir, data string, disk installationDisk, tool strin
 	inputName := "json:" + string(descriptor)
 	// Use the backup allowlist, excluding checkpoints, retained recovery disks,
 	// host-specific state and unrelated files. The inventory hashes every file
-	// and budgets nonzero 64 KiB blocks rather than virtual disk capacity.
+	// and budgets nonzero 64 KiB blocks for the converted disk. Copied files
+	// need their full logical allocation on filesystems such as exFAT.
 	files, required, err := inventoryMoveFiltered(dir, source, report, func(name string) bool {
 		name = filepath.ToSlash(name)
 		return name == "guest" || name == "runtime" || name == "vm" || backupNameAllowed(name)
-	})
+	}, !capability.SparseFiles)
 	if err != nil {
 		return err
 	}

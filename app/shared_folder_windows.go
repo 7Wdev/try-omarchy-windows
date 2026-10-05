@@ -12,6 +12,7 @@ import (
 )
 
 var procGetFileAttributesW = kernel32.NewProc("GetFileAttributesW")
+var sharedFolderIsLocal = dataLocationIsLocal
 
 const (
 	fileAttributeReparsePoint = 0x400
@@ -46,6 +47,9 @@ func configureRecommendedSharedFolder(cfg *config, s *settings, settingsFile, ho
 }
 
 func validateWindowsSharedFolder(path, dataDir, home string) (string, error) {
+	if strings.TrimSpace(home) == "" || !filepath.IsAbs(home) {
+		return "", uiError(uiText("error.share.home_unavailable"), nil)
+	}
 	path = strings.TrimSpace(path)
 	if path == "" || !filepath.IsAbs(path) {
 		return "", uiError(uiText("error.share.absolute"), nil)
@@ -89,6 +93,9 @@ func validateWindowsSharedFolder(path, dataDir, home string) (string, error) {
 	canonical, err = filepath.Abs(canonical)
 	if err != nil {
 		return "", fmt.Errorf("resolving the shared folder: %w", err)
+	}
+	if !sharedFolderIsLocal(canonical) {
+		return "", uiError(uiText("error.share.network"), nil)
 	}
 	if filepath.Dir(canonical) == canonical {
 		return "", uiError(uiText("error.share.drive"), nil)
@@ -176,6 +183,9 @@ func sameWindowsPath(a, b string) bool {
 }
 
 func canonicalWindowsComparisonPath(path string) (string, bool) {
+	if strings.TrimSpace(path) == "" || !filepath.IsAbs(path) {
+		return "", false
+	}
 	path, err := filepath.Abs(path)
 	if err != nil {
 		return "", false
