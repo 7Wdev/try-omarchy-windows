@@ -33,23 +33,25 @@ func existingDiskPath(path string) (string, error) {
 }
 
 func platformDiskFreeBytes(path string) (int64, error) {
+	space, err := platformDiskVolumeSpace(path)
+	return space.available, err
+}
+
+func platformDiskVolumeSpace(path string) (diskVolumeSpace, error) {
 	existing, err := existingDiskPath(path)
 	if err != nil {
-		return 0, err
+		return diskVolumeSpace{}, err
 	}
 	ptr, err := syscall.UTF16PtrFromString(existing)
 	if err != nil {
-		return 0, err
+		return diskVolumeSpace{}, err
 	}
-	var available uint64
-	r1, _, callErr := procGetDiskFreeSpaceExW.Call(uintptr(unsafe.Pointer(ptr)), uintptr(unsafe.Pointer(&available)), 0, 0)
+	var available, total uint64
+	r1, _, callErr := procGetDiskFreeSpaceExW.Call(uintptr(unsafe.Pointer(ptr)), uintptr(unsafe.Pointer(&available)), uintptr(unsafe.Pointer(&total)), 0)
 	if r1 == 0 {
-		return 0, callErr
+		return diskVolumeSpace{}, callErr
 	}
-	if available > uint64(1<<63-1) {
-		return 1<<63 - 1, nil
-	}
-	return int64(available), nil
+	return diskVolumeSpace{available: boundedDiskBytes(available), total: boundedDiskBytes(total)}, nil
 }
 
 func platformAllocatedFileBytes(path string) (int64, error) {

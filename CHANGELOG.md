@@ -19,6 +19,8 @@
 - Night light now warms the VM display from the existing menu and keyboard shortcut.
 - Omarchy starts when a saved LAN adapter is unavailable, pauses only its
   forwards for that launch, and resumes them on a later launch when it returns.
+- The launcher warns when Omarchy's Windows drive is running low or almost
+  full, with guidance for Reclaim and moving the data in Settings.
 
 ## v0.9.0 - 2026-10-04
 
