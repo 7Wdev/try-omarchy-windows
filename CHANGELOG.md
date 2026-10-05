@@ -13,6 +13,10 @@
 - The camera and audio bridges accept only Omarchy's own connection, the LAN
   firewall helper only adds rules for Omarchy's QEMU, and uninstall refuses a
   folder that is not a Try Omarchy data folder.
+- Volume and mute stay in sync between Omarchy and Windows, including Windows
+  playback device changes. Turn off **Sync volume with Windows** in Settings to
+  control them independently.
+- Night light now warms the VM display from the existing menu and keyboard shortcut.
 - Omarchy starts when a saved LAN adapter is unavailable, pauses only its
   forwards for that launch, and resumes them on a later launch when it returns.
 

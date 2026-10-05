@@ -21,6 +21,7 @@ type desktopPreferences struct {
 	CameraID                 string `json:"cameraID,omitempty"`
 	MicrophoneDisabled       bool   `json:"microphoneDisabled"`
 	AutomaticUpdatesDisabled bool   `json:"automaticUpdatesDisabled"`
+	VolumeSyncDisabled       bool   `json:"volumeSyncDisabled,omitempty"`
 }
 
 func loadDesktopPreferences(dir string) (desktopPreferences, error) {

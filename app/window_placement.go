@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 )
 
@@ -33,8 +34,8 @@ type screenRect struct{ Left, Top, Right, Bottom int32 }
 
 type windowPlacement struct {
 	Schema int `json:"schema"`
-	// Normal is the window's restored (non-maximized) rectangle in screen
-	// coordinates, the way Windows keeps it in WINDOWPLACEMENT.
+	// Normal uses WINDOWPLACEMENT workspace coordinates, which exclude
+	// taskbars at the top or left of the monitor.
 	Normal    screenRect `json:"normal"`
 	Maximized bool       `json:"maximized"`
 	SavedAt   time.Time  `json:"savedAt"`
@@ -101,7 +102,7 @@ func (p *windowPlacement) usable(monitors []screenRect) bool {
 	for _, m := range monitors {
 		left, top := max(r.Left, m.Left), max(r.Top, m.Top)
 		right, bottom := min(r.Right, m.Right), min(r.Bottom, m.Bottom)
-		if right-left >= minimumVisibleWidth && bottom-top >= minimumVisibleHeight {
+		if right-left >= minimumVisibleWidth && bottom-top >= minimumVisibleHeight && r.Top >= m.Top && r.Top+windowFrameHeight <= m.Bottom {
 			return true
 		}
 	}
@@ -148,6 +149,113 @@ func (p *windowPlacement) fittedTo(works []screenRect) *windowPlacement {
 	fitted := *p
 	fitted.Normal = screenRect{left, top, left + width, top + height}
 	return &fitted
+}
+
+type hostMonitor struct {
+	Name    string
+	Bounds  screenRect
+	Primary bool
+	Work    screenRect
+}
+
+func primaryFirstMonitors(monitors []hostMonitor) []hostMonitor {
+	monitors = slices.Clone(monitors)
+	slices.SortStableFunc(monitors, func(a, b hostMonitor) int {
+		if a.Primary == b.Primary {
+			return 0
+		}
+		if a.Primary {
+			return -1
+		}
+		return 1
+	})
+	return monitors
+}
+
+func (r screenRect) offset(x, y int32) screenRect {
+	return screenRect{r.Left + x, r.Top + y, r.Right + x, r.Bottom + y}
+}
+
+func placementMonitor(r screenRect, monitors []hostMonitor) hostMonitor {
+	var best hostMonitor
+	bestArea := int64(-1)
+	for _, m := range monitors {
+		width := max(0, min(r.Right, m.Bounds.Right)-max(r.Left, m.Bounds.Left))
+		height := max(0, min(r.Bottom, m.Bounds.Bottom)-max(r.Top, m.Bounds.Top))
+		if area := int64(width) * int64(height); area > bestArea {
+			best, bestArea = m, area
+		}
+	}
+	return best
+}
+
+func (p *windowPlacement) screenPlacement(monitors []hostMonitor) *windowPlacement {
+	if p == nil {
+		return nil
+	}
+	m := placementMonitor(p.Normal, monitors)
+	screen := *p
+	screen.Normal = p.Normal.offset(m.Work.Left-m.Bounds.Left, m.Work.Top-m.Bounds.Top)
+	return &screen
+}
+
+func (p *windowPlacement) workspacePlacement(monitors []hostMonitor) *windowPlacement {
+	if p == nil {
+		return nil
+	}
+	m := placementMonitor(p.Normal, monitors)
+	workspace := *p
+	workspace.Normal = p.Normal.offset(m.Bounds.Left-m.Work.Left, m.Bounds.Top-m.Work.Top)
+	return &workspace
+}
+
+func workAreas(monitors []hostMonitor) []screenRect {
+	areas := make([]screenRect, 0, len(monitors))
+	for _, monitor := range monitors {
+		areas = append(areas, monitor.Work)
+	}
+	return areas
+}
+
+func usablePlacement(p *windowPlacement, monitors []hostMonitor) bool {
+	return p.screenPlacement(monitors).usable(workAreas(monitors))
+}
+
+func fitPlacement(p *windowPlacement, monitors []hostMonitor) *windowPlacement {
+	return p.screenPlacement(monitors).fittedTo(workAreas(monitors)).workspacePlacement(monitors)
+}
+
+func displayPlacement(dir string, index int, monitors []hostMonitor) *windowPlacement {
+	p, err := loadDisplayPlacement(dir, index)
+	if err != nil || !usablePlacement(p, monitors) {
+		p = initialDisplayPlacement(index, workAreas(monitors)).workspacePlacement(monitors)
+	}
+	return fitPlacement(p, monitors)
+}
+
+func windowedConsoleSize(p *windowPlacement, monitors []hostMonitor) (int, int) {
+	if p == nil {
+		return 1280, 800
+	}
+	if !p.Maximized {
+		return p.consoleSize()
+	}
+	monitor := placementMonitor(p.screenPlacement(monitors).Normal, monitors)
+	return int(monitor.Work.width()), int(monitor.Work.height()) - (windowFrameHeight - windowFrameWidth/2)
+}
+
+// repairDisplayPlacement is deferred until a minimized window is restored or
+// a user finishes dragging it. Preserve its current maximized state.
+func repairDisplayPlacement(now *windowPlacement, index int, monitors []hostMonitor) *windowPlacement {
+	if now == nil || len(monitors) == 0 {
+		return nil
+	}
+	if !usablePlacement(now, monitors) {
+		p := initialDisplayPlacement(index, workAreas(monitors)).workspacePlacement(monitors)
+		p.Maximized = now.Maximized
+		return fitPlacement(p, monitors)
+	}
+	return fitPlacement(now, monitors)
 }
 
 type placementStep int

@@ -123,13 +123,43 @@ The read-only `probe-audio-sessions.exe QEMU_PID` helper now reports both sessio
 and endpoint volume/mute when their APIs succeed. Missing fields mean the API
 was unavailable, not unity gain.
 
-Guest master, Windows per-app session, and Windows endpoint controls remain
-independent, as they are on Mac. Mirroring the guest's already applied gain into
-the host session would attenuate twice. Replacing guest gain would need reliable
-bidirectional ownership across remaps, apps, mute, restart and route changes;
-the current bridge only transports route selections. Changing the system endpoint
-volume would also affect other Windows applications. This change therefore does
-not synchronize the sliders or override Windows session preferences.
+**Sync volume with Windows** is on by default in Settings. Omarchy's output
+slider, volume keys and mute control change the Windows default playback
+endpoint's master controls. Windows flyout, keyboard and application changes
+update Omarchy's slider and OSD. This also changes loudness for other Windows
+applications on that endpoint. The control follows Windows' default playback
+device, even when Try Omarchy has a separately selected audio route. Per-app
+volumes, including the QEMU Windows session volume, keep their own settings.
+
+The audio bridge on port 4454 carries a separate sequenced volume state after
+the guest requests it. Windows uses `IAudioEndpointVolumeCallback` and
+`IMMNotificationClient` notifications for volume, mute and default-device
+changes, without polling the controls. A guest request includes the endpoint ID,
+the observed state sequence and its origin; stale requests are rejected. A
+40 ms debounce and 0.001 scalar epsilon suppress bursts and echoes. On connect
+or re-enable, the current Windows state initializes the guest controls.
+
+Guest patch 0128 uses null sinks with `monitor.channel-volumes=false`. Their
+raw monitor streams feed the virtio sink at unity, bypassing the visible sinks'
+volume and mute. Windows applies those controls once. The feed stream names do
+not make Omarchy's DSP resolver skip the visible controls. The transport is
+unmuted while sync owns it; orderly shutdown or disabling sync restores its
+previous mute when it is still unmuted. Patch 0120's transport-volume capture
+and restoration remain in place. Disabling sync restores the original remap
+graph and independent guest gain/mute at the last visible level, leaving
+Windows unchanged. Revision 50 delivers this bridge to existing disks.
+
+If the audio bridge disconnects, the guest immediately restores independent
+controls at the current guest volume and mute. Ten seconds without a host volume
+state has the same effect. Sync resumes after a capable host sends enabled state.
+The launcher sends disabled state when Windows playback controls are unavailable
+and retries them every three seconds. While sync is on, Omarchy volume above 100%
+is clamped to Windows' 100% master range.
+
+Older guests keep their independent controls because they do not request volume
+state. The updated guest can also use an older launcher by falling back to its
+catalog-only remap graph. Missing preferences enable sync; the off choice is
+saved in `desktop-preferences.json` and included in backups.
 
 This establishes and fixes a hidden transport gain in the source path, but does
 not prove that it was the reporter's saved state in

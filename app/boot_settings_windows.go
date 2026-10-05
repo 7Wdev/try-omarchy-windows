@@ -163,9 +163,8 @@ func bootCmdline(cfg *config, plan *bootPlan) string {
 		conW, conH = fullscreenTargetSize(cfg.fullscreenDisplay)
 	}
 	if !cfg.fullscreen {
-		if p := rememberedWindow(cfg.dir); p != nil && !p.Maximized {
-			conW, conH = p.consoleSize()
-		}
+		monitors := hostMonitors()
+		conW, conH = windowedConsoleSize(displayPlacement(cfg.dir, 0, monitors), monitors)
 	}
 	cfg.displayWidth, cfg.displayHeight = conW, conH
 	share := cfg.share

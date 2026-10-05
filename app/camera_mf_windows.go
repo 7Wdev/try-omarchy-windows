@@ -458,18 +458,51 @@ func (s *mfCameraSource) configure() error {
 		return fmt.Errorf("the camera stream could not be selected (0x%08x)", uint32(hr))
 	}
 
-	var current unsafe.Pointer
-	if hr := mfCall(s.reader, 6, mfSourceReaderFirstVideoStream, uintptr(unsafe.Pointer(&current))); hr >= 0 { // GetCurrentMediaType
-		if stride := int(getUint32(current, &guidDefaultStride)); stride > 0 {
-			s.stride = stride
-		}
-		mfRelease(&current)
-	}
-	if s.stride < cameraWidth {
-		s.stride = cameraWidth
-	}
 	mfRelease(&media)
+	if err := s.refreshFormat(); err != nil {
+		return uiError(uiText("error.camera.format"), err)
+	}
 	return nil
+}
+
+// The wire format has fixed dimensions. Accept padding, but never reinterpret
+// a changed subtype, size or bottom-up stride as our top-down NV12 frames.
+func (s *mfCameraSource) refreshFormat() error {
+	var current unsafe.Pointer
+	if hr := mfCall(s.reader, 6, mfSourceReaderFirstVideoStream, uintptr(unsafe.Pointer(&current))); hr < 0 {
+		return fmt.Errorf("reading camera format failed (0x%08x)", uint32(hr))
+	}
+	defer mfRelease(&current)
+	var subtype comGUID
+	var size uint64
+	if mfCall(current, 10, uintptr(unsafe.Pointer(&guidSubtype)), uintptr(unsafe.Pointer(&subtype))) < 0 || subtype != guidVideoFormatNV12 {
+		return errors.New("camera format is not NV12")
+	}
+	if mfCall(current, 8, uintptr(unsafe.Pointer(&guidFrameSize)), uintptr(unsafe.Pointer(&size))) < 0 || size != packUint32Pair(cameraWidth, cameraHeight) {
+		return errors.New("camera frame dimensions changed")
+	}
+	stride := uint32(cameraWidth)
+	// MF_E_ATTRIBUTENOTFOUND permits tightly packed NV12 as the default.
+	hr := mfCall(current, 7, uintptr(unsafe.Pointer(&guidDefaultStride)), uintptr(unsafe.Pointer(&stride)))
+	if uint32(hr) == 0xc00d36e6 {
+		stride = cameraWidth
+	} else if hr < 0 {
+		return fmt.Errorf("reading camera stride failed (0x%08x)", uint32(hr))
+	}
+	if _, ok := cameraNV12Length(int64(int32(stride))); !ok {
+		return errors.New("camera NV12 stride is invalid")
+	}
+	s.stride = int(int32(stride))
+	return nil
+}
+
+func cameraNV12Length(stride int64) (int, bool) {
+	// Bound the slice even on 32-bit builds and avoid narrowing a DWORD-sized
+	// buffer requirement. No supported camera needs a multi-gigabyte frame.
+	if stride < cameraWidth || stride > (1<<31-1)/(cameraHeight*3/2) {
+		return 0, false
+	}
+	return int(stride * (cameraHeight * 3 / 2)), true
 }
 
 func (s *mfCameraSource) handleSample(callback *cameraCallback, status hresult, flags uint32, sample uintptr) {
@@ -480,10 +513,17 @@ func (s *mfCameraSource) handleSample(callback *cameraCallback, status hresult, 
 	if s.callback != callback || s.stopped || s.ended || s.reader == nil {
 		return
 	}
-	if status < 0 || flags&(1|2|32) != 0 {
-		logf("camera: capture ended or format changed (status=0x%08x flags=0x%x)", uint32(status), flags)
+	if status < 0 || flags&(1|2) != 0 {
+		logf("camera: capture ended (status=0x%08x flags=0x%x)", uint32(status), flags)
 		s.endFramesLocked()
 		return
+	}
+	if flags&0x20 != 0 {
+		if err := s.refreshFormat(); err != nil {
+			logf("camera: unsupported format change: %v", err)
+			s.endFramesLocked()
+			return
+		}
 	}
 	if sample != 0 {
 		if frame := s.copyFrame(sample); frame != nil && s.frames != nil {
@@ -517,12 +557,13 @@ func (s *mfCameraSource) copyFrame(sample uintptr) []byte {
 	}
 	defer mfCall(buffer, 4) // Unlock
 
-	if data == nil || currentLength < uint32(s.stride*cameraHeight*3/2) {
+	length, valid := cameraNV12Length(int64(s.stride))
+	if !valid || data == nil || currentLength > maxLength || uint64(currentLength) < uint64(length) {
 		return nil
 	}
 
 	frame := make([]byte, cameraFrameBytes)
-	rows := unsafe.Slice((*byte)(data), int(currentLength))
+	rows := unsafe.Slice((*byte)(data), length)
 	luma := cameraWidth * cameraHeight
 	for row := 0; row < cameraHeight; row++ {
 		copy(frame[row*cameraWidth:(row+1)*cameraWidth], rows[row*s.stride:row*s.stride+cameraWidth])

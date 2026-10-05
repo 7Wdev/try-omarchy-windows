@@ -42,7 +42,8 @@ func TestWindowPlacementUsableOnlyOnAPresentDisplay(t *testing.T) {
 		{"on second monitor gone", &windowPlacement{Normal: screenRect{2000, 100, 3200, 900}}, []screenRect{primary}, false},
 		{"mostly off screen", &windowPlacement{Normal: screenRect{1800, 1000, 3000, 1800}}, []screenRect{primary}, false},
 		{"too small", &windowPlacement{Normal: screenRect{0, 0, 300, 200}}, []screenRect{primary}, false},
-		{"partly off the edge", &windowPlacement{Normal: screenRect{-200, -50, 1000, 700}}, []screenRect{primary}, true},
+		{"caption above the screen", &windowPlacement{Normal: screenRect{-200, -50, 1000, 700}}, []screenRect{primary}, false},
+		{"partly off the left edge", &windowPlacement{Normal: screenRect{-200, 50, 1000, 700}}, []screenRect{primary}, true},
 	}
 	for _, c := range cases {
 		if got := c.p.usable(c.mons); got != c.usable {
@@ -101,5 +102,78 @@ func TestRememberedWindowsAreFittedToTheirDisplay(t *testing.T) {
 	}
 	if (*windowPlacement)(nil).fittedTo([]screenRect{laptop}) != nil {
 		t.Fatal("nil placement")
+	}
+}
+
+func TestConsoleAndPlacementUseTheSameMonitor(t *testing.T) {
+	secondary := hostMonitor{Name: "secondary", Bounds: screenRect{-2560, 0, 0, 1440}, Work: screenRect{-2560, 0, 0, 1400}}
+	primary := hostMonitor{Name: "primary", Primary: true, Bounds: screenRect{0, 0, 1920, 1080}, Work: screenRect{0, 0, 1920, 1040}}
+	input := []hostMonitor{secondary, primary}
+	monitors := primaryFirstMonitors(input)
+	if monitors[0] != primary || input[0] != secondary {
+		t.Fatal("primary ordering must not mutate the enumeration")
+	}
+	dir := t.TempDir()
+	p := displayPlacement(dir, 0, monitors)
+	if !p.Maximized || placementMonitor(p.screenPlacement(monitors).Normal, monitors) != primary {
+		t.Fatalf("default placement: %+v", p)
+	}
+	if w, h := windowedConsoleSize(p, monitors); w != 1920 || h != 1009 {
+		t.Fatalf("primary console: %dx%d", w, h)
+	}
+	p = &windowPlacement{Normal: screenRect{-2400, 100, -1000, 1000}, Maximized: true}
+	if err := saveWindowPlacement(dir, *p); err != nil {
+		t.Fatal(err)
+	}
+	p = displayPlacement(dir, 0, monitors)
+	if w, h := windowedConsoleSize(p, monitors); w != 2560 || h != 1369 {
+		t.Fatalf("remembered maximized secondary console: %dx%d", w, h)
+	}
+	p.Maximized = false
+	if w, h := windowedConsoleSize(p, monitors); w != 1384 || h != 861 {
+		t.Fatalf("remembered restored console: %dx%d", w, h)
+	}
+}
+
+func TestPlacementCaptionUsesWorkAreaCoordinates(t *testing.T) {
+	monitors := []hostMonitor{{Bounds: screenRect{-1920, -1080, 0, 0}, Work: screenRect{-1880, -1040, 0, 0}}}
+	p := &windowPlacement{Normal: screenRect{-1800, -1000, -600, -200}}
+	screen := p.screenPlacement(monitors)
+	if screen.Normal != (screenRect{-1760, -960, -560, -160}) || !usablePlacement(p, monitors) {
+		t.Fatalf("workspace to screen: %+v", screen)
+	}
+	if !screen.workspacePlacement(monitors).sameAs(p) {
+		t.Fatal("workspace conversion failed to round trip")
+	}
+	p.Normal = screenRect{-1800, -1100, -600, -300}
+	if usablePlacement(p, monitors) {
+		t.Fatal("accepted an inaccessible caption above the work area")
+	}
+	fitted := fitPlacement(p, monitors)
+	if !usablePlacement(fitted, monitors) || fitted.screenPlacement(monitors).Normal.Top != -1040 {
+		t.Fatalf("caption did not fit: %+v", fitted)
+	}
+	if !fitPlacement(fitted, monitors).sameAs(fitted) {
+		t.Fatal("fitting caused taskbar coordinate creep")
+	}
+}
+
+func TestLivePlacementRepairAfterWorkAreaChanges(t *testing.T) {
+	monitors := []hostMonitor{{Bounds: screenRect{0, 0, 1920, 1080}, Work: screenRect{0, 0, 1920, 960}}}
+	now := &windowPlacement{Normal: screenRect{100, 100, 1800, 1040}}
+	repaired := repairDisplayPlacement(now, 0, monitors)
+	if repaired.Normal.Bottom != 968 || repaired.Maximized {
+		t.Fatalf("work area repair: %+v", repaired)
+	}
+	offscreen := &windowPlacement{Normal: screenRect{2000, 100, 3200, 900}}
+	for _, maximized := range []bool{false, true} {
+		offscreen.Maximized = maximized
+		repaired = repairDisplayPlacement(offscreen, 0, monitors)
+		if repaired.Maximized != maximized || !usablePlacement(repaired, monitors) {
+			t.Fatalf("removed monitor repair changed state: %+v", repaired)
+		}
+	}
+	if repairDisplayPlacement(nil, 0, monitors) != nil || repairDisplayPlacement(now, 0, nil) != nil {
+		t.Fatal("repaired an unavailable window or desktop")
 	}
 }

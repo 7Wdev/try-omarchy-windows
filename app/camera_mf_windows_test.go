@@ -94,6 +94,11 @@ func TestCameraCopiesNativeMediaSample(t *testing.T) {
 	if hr := mfCall(sample, 42, uintptr(buffer)); hr < 0 { // AddBuffer
 		t.Fatalf("add buffer: %#x", uint32(hr))
 	}
+	for _, invalid := range []int{-cameraWidth, 0, 1 << 30} {
+		if frame := (&mfCameraSource{stride: invalid}).copyFrame(uintptr(sample)); frame != nil {
+			t.Fatalf("unsafe stride %d copied a frame", invalid)
+		}
+	}
 	source := &mfCameraSource{stride: stride}
 	frame := source.copyFrame(uintptr(sample))
 	if len(frame) != cameraFrameBytes {
@@ -165,4 +170,102 @@ func TestSelectedMissingCameraDoesNotFallBack(t *testing.T) {
 	if _, err := source.start(); err == nil || !strings.Contains(err.Error(), "selected camera is disconnected") {
 		t.Fatalf("missing selected camera silently fell back: %v", err)
 	}
+}
+
+func TestCameraNV12MetadataBounds(t *testing.T) {
+	for _, stride := range []int64{-cameraWidth, 0, cameraWidth - 1, 1 << 31, (1<<31-1)/(cameraHeight*3/2) + 1} {
+		if length, ok := cameraNV12Length(stride); ok {
+			t.Fatalf("unsafe stride %d accepted with length %d", stride, length)
+		}
+	}
+	for _, stride := range []int64{cameraWidth, cameraWidth + 32} {
+		length, ok := cameraNV12Length(stride)
+		if !ok || int64(length) != stride*(cameraHeight*3/2) {
+			t.Fatalf("valid stride %d: length=%d ok=%v", stride, length, ok)
+		}
+	}
+}
+
+func TestCameraCallbacksReuseAddressesAcrossStarts(t *testing.T) {
+	first := newCameraCallback(&mfCameraSource{})
+	want := *first.vtable
+	callbackRelease(uintptr(unsafe.Pointer(first)))
+	for cycle := 0; cycle < 400; cycle++ {
+		callback := newCameraCallback(&mfCameraSource{})
+		if *callback.vtable != want {
+			t.Fatal("callback trampolines were not reused")
+		}
+		callbackRelease(uintptr(unsafe.Pointer(callback)))
+		if _, retained := cameraCallbacks.Load(callback); retained {
+			t.Fatal("released callback remains retained")
+		}
+	}
+}
+
+func TestCameraMediaTypeChanges(t *testing.T) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	if hr := procCall(procCoInitializeEx, 0, coInitMultithreaded); hr < 0 {
+		t.Fatalf("COM init: %#x", uint32(hr))
+	}
+	defer procCoUninitialize.Call()
+	if err := startMediaFoundation(); err != nil {
+		t.Fatal(err)
+	}
+	api, err := mediaFoundation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var media unsafe.Pointer
+	if hr := procCall(api.createMediaType, uintptr(unsafe.Pointer(&media))); hr < 0 {
+		t.Fatalf("media type: %#x", uint32(hr))
+	}
+	defer mfRelease(&media)
+	var reads int
+	var vtable [10]uintptr
+	vtable[6] = syscall.NewCallback(func(this, stream, out uintptr) uintptr {
+		mfCall(media, 1) // GetCurrentMediaType transfers a reference.
+		*(*unsafe.Pointer)(unsafe.Pointer(out)) = media
+		return 0
+	})
+	vtable[9] = syscall.NewCallback(func(this, stream, flags, index, resultFlags, timestamp, sample uintptr) uintptr {
+		reads++
+		return 0
+	})
+	reader := struct{ vtable *[10]uintptr }{&vtable}
+	for _, tc := range []struct {
+		name    string
+		flags   uint32
+		subtype comGUID
+		size    uint64
+		stride  uint32
+		ended   bool
+	}{
+		{"supported change", 32, guidVideoFormatNV12, packUint32Pair(cameraWidth, cameraHeight), cameraWidth + 32, false},
+		{"wrong subtype", 32, guidMediaTypeVideo, packUint32Pair(cameraWidth, cameraHeight), cameraWidth, true},
+		{"wrong size", 32, guidVideoFormatNV12, packUint32Pair(cameraWidth+2, cameraHeight), cameraWidth + 2, true},
+		{"negative stride", 32, guidVideoFormatNV12, packUint32Pair(cameraWidth, cameraHeight), 0xfffffd80, true},
+		{"huge stride", 32, guidVideoFormatNV12, packUint32Pair(cameraWidth, cameraHeight), 0x7fffffff, true},
+		{"EOS wins over change", 34, guidVideoFormatNV12, packUint32Pair(cameraWidth, cameraHeight), cameraWidth, true},
+		{"error wins over change", 33, guidVideoFormatNV12, packUint32Pair(cameraWidth, cameraHeight), cameraWidth, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			setGUID(media, &guidSubtype, &tc.subtype)
+			setUint64(media, &guidFrameSize, tc.size)
+			setUint32(media, &guidDefaultStride, tc.stride)
+			source := &mfCameraSource{reader: unsafe.Pointer(&reader), frames: make(chan []byte, 1)}
+			callback := &cameraCallback{source: source}
+			source.callback = callback
+			reads = 0
+			source.handleSample(callback, sOK, tc.flags, 0)
+			if source.ended != tc.ended || (reads == 1) == tc.ended {
+				t.Fatalf("ended=%v reads=%d", source.ended, reads)
+			}
+			if !tc.ended && source.stride != int(tc.stride) {
+				t.Fatalf("stride=%d", source.stride)
+			}
+		})
+	}
+	runtime.KeepAlive(reader)
+	runtime.KeepAlive(vtable)
 }

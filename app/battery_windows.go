@@ -12,6 +12,7 @@ import (
 var procGetSystemPowerStatus = syscall.NewLazyDLL("kernel32.dll").NewProc("GetSystemPowerStatus")
 
 var windowsBatteryDetails batteryDetailsCache
+var windowsBatteryPresence batteryPresenceCache
 
 func hostBatteryLine() (string, error) {
 	var status systemPowerStatus
@@ -19,14 +20,18 @@ func hostBatteryLine() (string, error) {
 	if ok == 0 {
 		return "", fmt.Errorf("GetSystemPowerStatus: %w", err)
 	}
-	line, err := encodeBatteryLine(status)
+	snapshot := windowsBatteryPresence.snapshot(status)
+	if snapshot == nil {
+		return "", nil
+	}
+	line, err := encodeBatterySnapshot(*snapshot)
 	if err != nil {
 		return "", err
 	}
 	details := batteryDetails{}
-	if batteryFromWindows(status).Present {
+	if snapshot.Present {
 		details = windowsBatteryDetails.get(time.Now(), queryWindowsBatteryDetails)
-	} else {
+	} else if status.BatteryFlag != 0xff {
 		windowsBatteryDetails.clear()
 	}
 	return line + encodeBatteryDetailsLine(details), nil
