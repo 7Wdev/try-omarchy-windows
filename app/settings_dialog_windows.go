@@ -756,6 +756,7 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 		h, _, _ := procCreateWindowExW.Call(0, uintptr(unsafe.Pointer(c)), uintptr(unsafe.Pointer(t)),
 			wsChild|wsVisible|style, uintptr(x), uintptr(positionY), uintptr(cx), uintptr(cy), parent, id, hInst, 0)
 		brand.control(h, class, style)
+		guardWheel(h, class, style)
 		if bodyControls {
 			brand.panelControls[h] = true
 		}
