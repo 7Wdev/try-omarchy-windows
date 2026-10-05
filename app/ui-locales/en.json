@@ -290,6 +290,7 @@
   "status.starting_launcher": "Starting Try Omarchy...",
   "status.measuring_resources": "Measuring available resources...",
   "status.starting_omarchy": "Starting Omarchy...",
+  "status.preparing_runtime": "Preparing Omarchy's runtime...",
   "status.starting_desktop": "Starting the desktop...",
   "status.slow_start": "Omarchy is taking longer than usual to start...",
   "status.preparing_disk": "Preparing your Omarchy disk...",

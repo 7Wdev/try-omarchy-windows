@@ -2,6 +2,7 @@
 
 ## v0.10.0 - 2026-10-05
 
+- Slow first starts after runtime updates no longer spend the QEMU startup timeout loading the runtime.
 - On NVIDIA graphics, GPU mode no longer freezes when Media Player opens, and
   GTK4 apps such as Files open instead of crashing. Guest Vulkan apps use
   OpenGL there (#276).
