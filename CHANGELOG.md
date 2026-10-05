@@ -21,6 +21,45 @@
   forwards for that launch, and resumes them on a later launch when it returns.
 - The launcher warns when Omarchy's Windows drive is running low or almost
   full, with guidance for Reclaim and moving the data in Settings.
+- Notification popups appear in Omarchy again. They stay hidden while the
+  screen is locked or the screensaver is up (#298).
+- When the Omarchy desktop stops responding, the launcher saves diagnostics and
+  offers to restart, in CPU mode if GPU rendering froze. Your session stays
+  open until you choose (#303).
+- After Windows sleep, Omarchy resumes, or shows **Resume Omarchy** in the tray
+  with diagnostics saved if it cannot. Restarting or signing out of Windows
+  shuts Omarchy down cleanly first, and the next start offers recovery if that
+  did not finish (#304, #216).
+- An occupied port pauses only that forward, and a declined firewall prompt
+  pauses only LAN forwards, instead of stopping the launch. Portable installs
+  keep their firewall rules between launches and clean up rules left by
+  installs that are gone (#302).
+- Clipboard sync stays responsive during large file copies, retries copies made
+  while Windows is busy, handles more image formats, and rejects images too
+  large to convert safely. Only Omarchy's QEMU can connect to it (#299).
+- Dropping files works when the launcher runs as administrator, rejected drops
+  explain why, received files open without taking focus, Transfers opens once,
+  and the tray icon returns when Explorer starts late (#301).
+- Moved installations keep working after a drive letter change, an interrupted
+  uninstall can be finished safely, portable copies refuse FAT32 drives up
+  front, and the shared folder is refused when your Windows home folder is
+  unavailable (#300).
+- VM windows open on the right monitor at the right size, return on screen
+  after a monitor is unplugged, and no longer take focus during boot and
+  shutdown (#297).
+- Omarchy follows your Windows display language, Dvorak, US-International and
+  Turkish F layouts, and reports battery state more reliably, including
+  multiple batteries (#296).
+- Cameras keep working through format changes, one unreadable audio device no
+  longer hides the others, and changing audio devices during playback no
+  longer shows a save error (#295).
+- Keys can no longer stay held in Omarchy after a dropped connection,
+  AltGr+End no longer sends Ctrl+Alt+Delete, and both Win keys work
+  independently (#294).
+- **Update > Omarchy** no longer flashes a configuration error banner while it
+  installs (#305).
+- CPU rendering mode now really limits the processor features Omarchy sees,
+  and PowerToys and AutoHotkey can see the Win key while Omarchy runs (#306).
 
 ## v0.9.0 - 2026-10-04
 
