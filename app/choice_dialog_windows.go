@@ -10,23 +10,6 @@ import (
 	"unsafe"
 )
 
-// An owned dialog stays above QEMU, but a minimized owner would hide it.
-// Validate the cached handle against the current child to avoid owning a
-// stale/reused window during restart.
-func choiceDialogOwner() uintptr {
-	hwnd := qemuHwnd.Load()
-	if hwnd == 0 || !isQemuDisplayWindow(hwnd, qemuPid.Load()) {
-		return 0
-	}
-	hwnd, _, _ = user32.NewProc("GetAncestor").Call(hwnd, 2) // GA_ROOT
-	visible, _, _ := procIsWindowVisible.Call(hwnd)
-	minimized, _, _ := user32.NewProc("IsIconic").Call(hwnd)
-	if visible == 0 || minimized != 0 {
-		return 0
-	}
-	return hwnd
-}
-
 // chooseAction uses ordinary, labelled Windows buttons instead of assigning
 // unrelated actions to Yes/No. Zero means close/Escape; actions are one-based.
 // It runs on its own UI thread and is used before setup or from the About process.
@@ -54,18 +37,11 @@ func chooseActionCancelable(cancel <-chan struct{}, title, body string, textHeig
 		defer func() { done <- result{selected, dialogErr} }()
 		instance, _, _ := procGetModuleHandleW.Call(0)
 		class, _ := syscall.UTF16PtrFromString("TryOmarchyChoice")
-		owner := choiceDialogOwner()
-		fallbackTopmost := owner == 0
 		callback := syscall.NewCallback(func(h, message, w, l uintptr) uintptr {
 			if result, handled := brand.handle(h, message, w, l); handled {
 				return result
 			}
 			switch message {
-			case 0x0006: // WM_ACTIVATE
-				if fallbackTopmost && w&0xffff != 0 { // not WA_INACTIVE
-					procSetWindowPos.Call(h, ^uintptr(1), 0, 0, 0, 0, swpNoMove|swpNoSize|0x0010) // HWND_NOTOPMOST, SWP_NOACTIVATE
-					fallbackTopmost = false
-				}
 			case wmCommand:
 				id := int(w & 0xffff)
 				if id >= 3001 && id <= 3000+len(labels) {
@@ -115,21 +91,11 @@ func chooseActionCancelable(cancel <-chan struct{}, title, body string, textHeig
 		height := bodyHeight + 24 + int32(40*len(labels))
 		w, h := width+frame[2]-frame[0], height+frame[3]-frame[1]
 		titlePtr, _ := syscall.UTF16PtrFromString(title)
-		create := func(owner uintptr) (uintptr, error) {
-			exStyle := uintptr(0)
-			if fallbackTopmost {
-				exStyle = 0x00000008 // WS_EX_TOPMOST until activated
-			}
-			hwnd, _, err := procCreateWindowExW.Call(exStyle, uintptr(unsafe.Pointer(class)), uintptr(unsafe.Pointer(titlePtr)),
-				style, uintptr(work[0]+(work[2]-work[0]-w)/2), uintptr(work[1]+(work[3]-work[1]-h)/2), uintptr(w), uintptr(h), owner, 0, instance, 0)
-			return hwnd, err
-		}
-		hwnd, err := create(owner)
-		if hwnd == 0 && owner != 0 {
-			// QEMU may have exited between validation and window creation.
-			fallbackTopmost = true
-			hwnd, err = create(0)
-		}
+		// Stay above a maximized QEMU window until answered. The dialog is
+		// deliberately not owned by QEMU: a cross-process owner attaches the
+		// input queues, so a hung QEMU window could hang this recovery prompt.
+		hwnd, _, err := procCreateWindowExW.Call(0x00000008, uintptr(unsafe.Pointer(class)), uintptr(unsafe.Pointer(titlePtr)), // WS_EX_TOPMOST
+			style, uintptr(work[0]+(work[2]-work[0]-w)/2), uintptr(work[1]+(work[3]-work[1]-h)/2), uintptr(w), uintptr(h), 0, 0, instance, 0)
 		if hwnd == 0 {
 			dialogErr = fmt.Errorf("create choice window: %w", err)
 			return
