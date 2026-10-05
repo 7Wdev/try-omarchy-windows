@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"runtime"
@@ -46,28 +47,28 @@ const (
 	trayCommandClipboardFiles = 3009
 	trayCommandDevices        = 3010
 	trayCommandTransfers      = 3011
+	trayCommandResume         = 3012
+	trayPowerStateMessage     = 0x8005
 
-	nimAdd                = 0
-	nimDelete             = 2
-	nimSetVersion         = 4
-	nifMessage            = 0x1
-	nifIcon               = 0x2
-	nifTip                = 0x4
-	nifShowTip            = 0x80
-	notifyVersion         = 4
-	mfString              = 0
-	mfGray                = 0x1
-	mfSeparator           = 0x800
-	tpmRightButton        = 0x2
-	tpmReturnCmd          = 0x100
-	wmContextMenu         = 0x007B
-	wmPowerbroadcast      = 0x0218
-	pbtApmResumeSuspend   = 0x0007
-	pbtApmResumeAutomatic = 0x0012
-	wmNull                = 0x0000
-	wmLButtonDblClk       = 0x0203
-	wmRButtonUp           = 0x0205
-	swRestore             = 9
+	nimAdd           = 0
+	nimDelete        = 2
+	nimSetVersion    = 4
+	nifMessage       = 0x1
+	nifIcon          = 0x2
+	nifTip           = 0x4
+	nifShowTip       = 0x80
+	notifyVersion    = 4
+	mfString         = 0
+	mfGray           = 0x1
+	mfSeparator      = 0x800
+	tpmRightButton   = 0x2
+	tpmReturnCmd     = 0x100
+	wmContextMenu    = 0x007B
+	wmPowerbroadcast = 0x0218
+	wmNull           = 0x0000
+	wmLButtonDblClk  = 0x0203
+	wmRButtonUp      = 0x0205
+	swRestore        = 9
 )
 
 type trayGUID struct {
@@ -207,7 +208,11 @@ func runTray(cfg trayLaunchConfig, ready chan<- uintptr, done chan<- struct{}) {
 	runtime.LockOSThread()
 	defer close(done)
 	power := newGuestPowerState()
-	defer power.close()
+	powerCtx, cancelPower := context.WithCancel(context.Background())
+	defer cancelPower()
+	power.ctx = powerCtx
+	powerEvents := make(chan uintptr, 8)
+	const manualPowerResume = 0xffff
 
 	hInst, _, _ := procGetModuleHandleW.Call(0)
 	className, _ := syscall.UTF16PtrFromString("TryOmarchyTray")
@@ -325,6 +330,9 @@ func runTray(cfg trayLaunchConfig, ready chan<- uintptr, done chan<- struct{}) {
 		appendItem(mfString, trayCommandAbout, uiText("tray.menu.about"))
 		appendItem(mfString, trayCommandHelp, uiText("tray.menu.help"))
 		appendItem(mfSeparator, 0, "")
+		if HostPowerState().Phase == "recovery" {
+			appendItem(mfString, trayCommandResume, uiText("tray.menu.resume"))
+		}
 		appendItem(mfString, trayCommandShutdown, uiText("tray.menu.shutdown"))
 
 		var point struct{ x, y int32 }
@@ -380,6 +388,11 @@ func runTray(cfg trayLaunchConfig, ready chan<- uintptr, done chan<- struct{}) {
 						_ = cmd.Process.Release()
 					}
 				}
+			}
+		case trayCommandResume:
+			select {
+			case powerEvents <- manualPowerResume:
+			default:
 			}
 		case trayCommandShutdown:
 			if qemuHwnd.Load() == 0 {
@@ -442,8 +455,32 @@ func runTray(cfg trayLaunchConfig, ready chan<- uintptr, done chan<- struct{}) {
 				showMenu()
 			}
 			return 0
+		case trayPowerStateMessage:
+			nid.tip = [128]uint16{}
+			tip := appTitle
+			if HostPowerState().Phase == "recovery" {
+				tip = uiText("tray.power.paused_title")
+			}
+			notificationText(nid.tip[:], tip)
+			notice := nid
+			notice.flags = nifTip
+			procShellNotifyIconW.Call(1, uintptr(unsafe.Pointer(&notice)))
+			return 0
+		case 0x0011: // WM_QUERYENDSESSION
+			queryEndSession(window)
+			return 1
+		case 0x0016: // WM_ENDSESSION
+			if wParam != 0 {
+				cancelPower()
+			}
+			finishEndSession(window, wParam != 0)
+			return 0
 		case wmPowerbroadcast:
-			power.handle(wParam)
+			select {
+			case powerEvents <- wParam:
+			default:
+				logf("power: notification queue full")
+			}
 			return 1
 		case trayStopMessage:
 			procDestroyWindow.Call(window)
@@ -508,6 +545,43 @@ func runTray(cfg trayLaunchConfig, ready chan<- uintptr, done chan<- struct{}) {
 	copy(nid.tip[:], syscall.StringToUTF16(appTitle))
 	retryAdd()
 	trayWindow.Store(hwnd)
+	powerChanged := power.changed
+	power.changed = func(phase string) {
+		powerChanged(phase)
+		procPostMessageW.Call(hwnd, trayPowerStateMessage, 0, 0)
+	}
+	power.onRecovery = func(err error) {
+		if powerCtx.Err() != nil {
+			return
+		}
+		showTrayNotice(uiText("tray.power.paused_title"), uiText("tray.power.paused"))
+		go func() {
+			bundle, snapshotErr := writeDiagnostics(cfg.dataDir, map[string]string{"event": "host-resume-failed", "power-error": err.Error(), "power-state": HostPowerState().Phase})
+			if snapshotErr != nil {
+				logf("power: automatic diagnostics failed: %v", snapshotErr)
+				showTrayNotice(uiText("tray.power.paused_title"), uiTextWith("tray.power.snapshot_failed", map[string]string{"error": snapshotErr.Error()}))
+			} else {
+				logf("power: automatic diagnostics: %s", bundle)
+				showTrayNotice(uiText("tray.power.paused_title"), uiTextWith("tray.power.snapshot", map[string]string{"path": bundle}))
+			}
+		}()
+	}
+	go func() {
+		defer power.close()
+		for {
+			select {
+			case <-powerCtx.Done():
+				return
+			case event := <-powerEvents:
+				if event == manualPowerResume {
+					power.manualResume()
+				} else {
+					power.handle(event)
+				}
+			}
+		}
+	}()
+
 	logf("tray: ready")
 	ready <- hwnd
 

@@ -111,6 +111,9 @@ func requestOmarchyShutdown(dir string) error {
 		return err
 	}
 	err = c.Call(ctx, "system_powerdown", nil, nil)
+	if err == nil {
+		guestCompositorHealth.stop()
+	}
 	c.Close()
 	if err != nil {
 		return err

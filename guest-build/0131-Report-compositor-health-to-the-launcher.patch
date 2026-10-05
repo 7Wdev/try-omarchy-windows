@@ -1,0 +1,261 @@
+From 4a208a5c921d71e4cd3be71983a93fbe8f8bf89c Mon Sep 17 00:00:00 2001
+From: Tyler South <tsouth2@gmail.com>
+Date: Sun, 4 Oct 2026 23:38:14 -0400
+Subject: [PATCH] Report compositor health to the launcher
+
+---
+ .../usr/local/lib/try-omarchy/agent           | 14 +++++-
+ .../local/lib/try-omarchy/compositor-health   | 35 +++++++++++++++
+ .../usr/local/lib/try-omarchy/reboot-notify   |  5 ++-
+ guest/scripts/finalize-rootfs.sh              |  4 +-
+ guest/tests/test_battery_details.py           |  2 +-
+ guest/tests/test_compositor_health.py         | 43 +++++++++++++++++++
+ guest/tests/test_guest_qol.py                 |  2 +-
+ guest/tests/test_native_nightlight.py         |  2 +-
+ guest/tests/test_notification_privacy.py      |  2 +-
+ guest/tests/test_windows_volume_sync.py       |  2 +-
+ guest/tests/verify.py                         |  2 +-
+ 11 files changed, 103 insertions(+), 10 deletions(-)
+ create mode 100755 guest/factory-overlay/usr/local/lib/try-omarchy/compositor-health
+ create mode 100644 guest/tests/test_compositor_health.py
+
+diff --git a/guest/factory-overlay/usr/local/lib/try-omarchy/agent b/guest/factory-overlay/usr/local/lib/try-omarchy/agent
+index 3d897fa..127e893 100755
+--- a/guest/factory-overlay/usr/local/lib/try-omarchy/agent
++++ b/guest/factory-overlay/usr/local/lib/try-omarchy/agent
+@@ -11,7 +11,8 @@ host=${TRY_OMARCHY_AGENT_HOST:-10.0.2.2}
+ port=${TRY_OMARCHY_AGENT_PORT:-4451}
+ set_time=${TRY_OMARCHY_SET_TIME:-date -s}
+ fill_dir=${TRY_OMARCHY_FILL_DIR:-/var/tmp}
+-version=4
++version=5
++health_probe=${TRY_OMARCHY_HEALTH_PROBE:-/usr/local/lib/try-omarchy/compositor-health}
+ app_sync=${TRY_OMARCHY_APP_SYNC:-/usr/local/lib/try-omarchy/approved-apps-sync}
+ max_drift=2
+ # Space left free while zero-filling, so running programs keep working.
+@@ -105,9 +106,20 @@ fi
+ while :; do
+   exec 3<>"/dev/tcp/$host/$port" 2>/dev/null || { sleep 10; continue; }
+   printf 'hello %s\n' "$version" >&3
++  # Probe separately so clock/app handling and disk reclaim cannot hold up
++  # health reports. The helper bounds Hyprland IPC to two seconds.
++  (
++    while :; do
++      "$health_probe" >&3
++      sleep 5
++    done
++  ) &
++  health_pid=$!
+   while IFS= read -r line <&3; do
+     handle "${line%$'\r'}"
+   done
++  kill "$health_pid" 2>/dev/null || true
++  wait "$health_pid" 2>/dev/null || true
+   /usr/local/lib/try-omarchy/battery-apply --offline || true
+   exec 3>&-
+   sleep 5
+diff --git a/guest/factory-overlay/usr/local/lib/try-omarchy/compositor-health b/guest/factory-overlay/usr/local/lib/try-omarchy/compositor-health
+new file mode 100755
+index 0000000..e38adfc
+--- /dev/null
++++ b/guest/factory-overlay/usr/local/lib/try-omarchy/compositor-health
+@@ -0,0 +1,35 @@
++#!/usr/bin/env python3
++"""Report compositor IPC health, never claiming that pixels were presented."""
++import glob
++import json
++import os
++import pathlib
++import pwd
++import subprocess
++
++
++def probe(runtime_root="/run/user", run=subprocess.run):
++    for socket in sorted(glob.glob(f"{runtime_root}/*/hypr/*/.socket.sock")):
++        path = pathlib.Path(socket)
++        try:
++            uid = int(path.parents[2].name)
++            user = pwd.getpwuid(uid).pw_name
++            if path.stat().st_uid != uid:
++                continue
++            result = run(["runuser", "-u", user, "--", "env",
++                          f"XDG_RUNTIME_DIR={path.parents[2]}",
++                          f"HYPRLAND_INSTANCE_SIGNATURE={path.parent.name}",
++                          "hyprctl", "-j", "monitors"],
++                         capture_output=True, text=True, timeout=2, check=True)
++            monitors = json.loads(result.stdout)
++            if isinstance(monitors, list) and monitors:
++                return "ok"
++        except (OSError, ValueError, KeyError, subprocess.SubprocessError):
++            pass
++        return "unresponsive"
++    # Login/logout is not a freeze. The next compositor heartbeat arms again.
++    return "inactive"
++
++
++if __name__ == "__main__":
++    print("compositor " + probe())
+diff --git a/guest/factory-overlay/usr/local/lib/try-omarchy/reboot-notify b/guest/factory-overlay/usr/local/lib/try-omarchy/reboot-notify
+index 3a206e9..9f0962f 100755
+--- a/guest/factory-overlay/usr/local/lib/try-omarchy/reboot-notify
++++ b/guest/factory-overlay/usr/local/lib/try-omarchy/reboot-notify
+@@ -3,6 +3,7 @@
+ # guest is REBOOTING (not powering off), tell the host shell on the lifecycle
+ # port so it relaunches QEMU - a QEMU wedged during guest reset under stock
+ # WHPX delivers no SHUTDOWN event, so QMP alone cannot tell the two apart.
+-systemctl list-jobs 2>/dev/null | grep -q 'reboot.target.*start' || exit 0
+-printf 'reboot\n' | socat -u - TCP:10.0.2.2:4450,connect-timeout=2 2>/dev/null || true
++intent=shutdown
++systemctl list-jobs 2>/dev/null | grep -q 'reboot.target.*start' && intent=reboot
++printf '%s\n' "$intent" | socat -u - TCP:10.0.2.2:4450,connect-timeout=2 2>/dev/null || true
+ exit 0
+diff --git a/guest/scripts/finalize-rootfs.sh b/guest/scripts/finalize-rootfs.sh
+index 0e08610..aebeca9 100755
+--- a/guest/scripts/finalize-rootfs.sh
++++ b/guest/scripts/finalize-rootfs.sh
+@@ -172,6 +172,7 @@ compat_paths=(
+   usr/local/bin/try-omarchy-export
+   usr/local/lib/try-omarchy/try-omarchy-import.pyz
+   usr/local/lib/try-omarchy/agent
++  usr/local/lib/try-omarchy/compositor-health
+   usr/local/lib/try-omarchy/update-battery-dkms
+   usr/local/lib/try-omarchy/battery-apply
+   usr/local/lib/try-omarchy/apply-host-locale
+@@ -233,7 +234,8 @@ tar -C / -cf /usr/share/try-omarchy/compat-overlay.tar "${compat_paths[@]}"
+ # Revision 50 synchronizes guest volume/mute with the Windows default endpoint.
+ # Revision 51 delivers the VM night-light shader and guarded defaults.
+ # Revision 52 repairs popup privacy using the private authentication state.
+-compat_revision=52
++# Revision 53 delivers bounded compositor health probes through the agent.
++compat_revision=53
+ printf '%s:%s\n' "$compat_revision" "$kernel_release" >/usr/share/try-omarchy/compat-version
+ 
+ # Fail the build if DKMS or networking modules were not packaged for this kernel.
+diff --git a/guest/tests/test_battery_details.py b/guest/tests/test_battery_details.py
+index 64887d3..b4beb68 100644
+--- a/guest/tests/test_battery_details.py
++++ b/guest/tests/test_battery_details.py
+@@ -204,7 +204,7 @@ class BatteryDetailsFlowTests(unittest.TestCase):
+     def test_compatibility_delivery_and_dkms_version(self):
+         overlay = GUEST / "factory-overlay"
+         finalize = (GUEST / "scripts/finalize-rootfs.sh").read_text()
+-        self.assertIn("compat_revision=52", finalize)
++        self.assertIn("compat_revision=53", finalize)
+         self.assertIn("usr/src/try-omarchy-battery-1.1.0", finalize)
+         self.assertIn("usr/local/lib/try-omarchy/update-battery-dkms", finalize)
+         self.assertIn('PACKAGE_VERSION="1.1.0"', (MODULE_SOURCE.parent / "dkms.conf").read_text())
+diff --git a/guest/tests/test_compositor_health.py b/guest/tests/test_compositor_health.py
+new file mode 100644
+index 0000000..3c1411a
+--- /dev/null
++++ b/guest/tests/test_compositor_health.py
+@@ -0,0 +1,43 @@
++import importlib.machinery
++import json
++import os
++from pathlib import Path
++import subprocess
++import tempfile
++import unittest
++from unittest.mock import patch
++
++GUEST = Path(__file__).resolve().parents[1]
++HELPER = GUEST / 'factory-overlay/usr/local/lib/try-omarchy/compositor-health'
++health = importlib.machinery.SourceFileLoader('compositor_health', str(HELPER)).load_module()
++
++class CompositorHealthTests(unittest.TestCase):
++    def test_no_session_is_inactive(self):
++        with tempfile.TemporaryDirectory() as root:
++            self.assertEqual(health.probe(root), 'inactive')
++
++    def test_ipc_success_timeout_and_invalid_reply(self):
++        with tempfile.TemporaryDirectory() as root:
++            socket = Path(root) / str(os.getuid()) / 'hypr' / 'test' / '.socket.sock'
++            socket.parent.mkdir(parents=True)
++            socket.touch()
++            def run(args, **kw):
++                self.assertEqual(kw['timeout'], 2)
++                self.assertIn('HYPRLAND_INSTANCE_SIGNATURE=test', args)
++                self.assertEqual(args[-3:], ['hyprctl', '-j', 'monitors'])
++                return subprocess.CompletedProcess(args, 0, '[{"name":"Virtual-1"}]')
++            self.assertEqual(health.probe(root, run), 'ok')
++            for output in ['[]', 'null', 'error', '{}']:
++                self.assertEqual(health.probe(root, lambda *a, **kw: subprocess.CompletedProcess(a,0,output)), 'unresponsive')
++            def timeout(*a, **kw): raise subprocess.TimeoutExpired(a, 2)
++            self.assertEqual(health.probe(root, timeout), 'unresponsive')
++
++    def test_existing_disks_receive_health_files(self):
++        finalizer = (GUEST / 'scripts/finalize-rootfs.sh').read_text()
++        self.assertIn('compat_revision=53', finalizer)
++        for name in ['agent', 'compositor-health']:
++            self.assertIn('  usr/local/lib/try-omarchy/' + name, finalizer)
++        self.assertTrue(HELPER.stat().st_mode & 0o111)
++        agent = (HELPER.parent / 'agent').read_text()
++        self.assertIn('health_pid=$!', agent)
++        self.assertIn('kill "$health_pid"', agent)
+diff --git a/guest/tests/test_guest_qol.py b/guest/tests/test_guest_qol.py
+index b9f55a4..f6bbe85 100644
+--- a/guest/tests/test_guest_qol.py
++++ b/guest/tests/test_guest_qol.py
+@@ -215,7 +215,7 @@ class GuestQolTests(unittest.TestCase):
+     def test_compatibility_delivers_guarded_payload_once_per_revision(self):
+         finalize = (GUEST / "scripts/finalize-rootfs.sh").read_text()
+         paths = finalize.split("compat_paths=(", 1)[1].split(")", 1)[0]
+-        self.assertIn("compat_revision=52", finalize)
++        self.assertIn("compat_revision=53", finalize)
+         for path in ("usr/local/bin/omarchy-native-screensaver-text", "usr/local/lib/try-omarchy/install-guest-qol", "usr/share/try-omarchy/guest-qol", "usr/local/bin/omarchy-windows-audio-bridge"):
+             self.assertIn(path, paths)
+         self.assertNotIn("etc/fonts/conf.d/30-try-omarchy.conf", paths)
+diff --git a/guest/tests/test_native_nightlight.py b/guest/tests/test_native_nightlight.py
+index 8d46f3f..f9fd719 100644
+--- a/guest/tests/test_native_nightlight.py
++++ b/guest/tests/test_native_nightlight.py
+@@ -214,5 +214,5 @@ class PersistentNightlightTests(unittest.TestCase):
+         catch_up = (self.overlay / 'usr/local/lib/try-omarchy/catch-up').read_text()
+         for path in ['usr/local/bin/omarchy-native-nightlight', 'usr/local/share/try-omarchy/nightlight.frag', 'usr/local/lib/try-omarchy/install-nightlight', 'usr/share/try-omarchy/nightlight']:
+             self.assertIn(path, finalizer)
+-        self.assertIn('compat_revision=52', finalizer)
++        self.assertIn('compat_revision=53', finalizer)
+         self.assertIn('previous_revision < 51', catch_up)
+diff --git a/guest/tests/test_notification_privacy.py b/guest/tests/test_notification_privacy.py
+index 8722dc9..a167e07 100644
+--- a/guest/tests/test_notification_privacy.py
++++ b/guest/tests/test_notification_privacy.py
+@@ -116,7 +116,7 @@ for (const state of [null, {screensaverStateKnown:false}, {screensaverStateKnown
+     def test_compatibility_overlay_and_catch_up_revision(self):
+         finalizer = (GUEST / 'scripts/finalize-rootfs.sh').read_text()
+         catch_up = (GUEST / 'factory-overlay/usr/local/lib/try-omarchy/catch-up').read_text()
+-        self.assertIn('compat_revision=52', finalizer)
++        self.assertIn('compat_revision=53', finalizer)
+         self.assertIn('usr/share/try-omarchy/notifications', finalizer)
+         self.assertIn('usr/local/lib/try-omarchy/install-notifications', finalizer)
+         self.assertIn('previous_revision < 52', catch_up)
+diff --git a/guest/tests/test_windows_volume_sync.py b/guest/tests/test_windows_volume_sync.py
+index 73f6769..6358861 100644
+--- a/guest/tests/test_windows_volume_sync.py
++++ b/guest/tests/test_windows_volume_sync.py
+@@ -279,7 +279,7 @@ class VolumeSyncTests(unittest.TestCase):
+ 
+     def test_revision_delivers_bridge_to_existing_disks(self):
+         finalize = (Path(__file__).resolve().parents[1] / "scripts/finalize-rootfs.sh").read_text()
+-        self.assertIn("compat_revision=52", finalize)
++        self.assertIn("compat_revision=53", finalize)
+         self.assertIn("usr/local/bin/omarchy-windows-audio-bridge", finalize)
+ 
+ 
+diff --git a/guest/tests/verify.py b/guest/tests/verify.py
+index e3d4145..7893229 100755
+--- a/guest/tests/verify.py
++++ b/guest/tests/verify.py
+@@ -324,7 +324,7 @@ def main() -> None:
+         "system services run without watchdogs, which fire after Windows sleeps",
+     )
+     check(
+-        "compat_revision=52" in finalize_rootfs
++        "compat_revision=53" in finalize_rootfs
+         and "usr/local/bin/mpv" in compat_paths
+         and "usr/share/dkms/modules_to_force_install/try-omarchy" in compat_paths
+         and "usr/local/lib/try-omarchy/try-omarchy-import.pyz" in compat_paths
+-- 
+2.43.0
+

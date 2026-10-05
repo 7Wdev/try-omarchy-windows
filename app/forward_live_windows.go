@@ -50,7 +50,7 @@ func runLiveForwardWatcher(dir string, launched []portForward) {
 			logf("forwards: saved list is invalid, keeping the current forwards: %v", invalid)
 			continue
 		}
-		plan := planLiveForwards(active, desired)
+		plan := planLiveForwards(active, filterPausedLaunchForwards(desired))
 		for _, f := range plan.deferred {
 			logf("forwards: %s changes at the next launch", f)
 		}

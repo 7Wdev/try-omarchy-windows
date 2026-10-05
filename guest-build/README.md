@@ -51,6 +51,14 @@ screensaver activity. Compatibility revision 52 delivers the matching shell
 files to existing disks, preserving custom and linked files. Runtime `4.0.4-5`
 includes the fix for the next **Update > Omarchy**.
 
+Patch 0132 pauses Hyprland config autoreload while pacman replaces Omarchy
+files, preventing a temporary missing-bootstrap error banner during live updates.
+Compatibility revision 54 delivers the hooks and transaction guardian to existing
+disks before login. The guardian restores each session's previous setting after
+one explicit reload, including failed or interrupted transactions. It does not
+change user config files or enable a service on the next boot. Hook failures
+print a diagnostic and let the package update continue.
+
 Patch 0091 adds a Windows audio endpoint mirror to the guest PipeWire picker.
 The bridge talks over a dedicated virtio serial port, and compatibility
 revision 33 delivers its user service to existing persistent disks. It needs
@@ -307,3 +315,10 @@ guest volume and mute survive fallback; a capable host can enable sync again.
 Compatibility revision 50 delivers the updated bridge to existing disks.
 
 Patch 0129 ports the manual night-light shader from [Mac PR #251](https://github.com/omacom/try-omarchy/pull/251). The existing night-light menu and Super + Ctrl + N use the same serialized backend on `omarchy.qemu=1`, since virtio GPU lacks DRM CTM. It refuses to replace custom screen shaders and reads status from Hyprland. A config reload clears the manual tint and refreshes the indicator. Compatibility revision 51 updates only known command and service defaults on existing disks, preserving customized or linked files. Runtime package 4.0.4-4 owns the command, helper and shader.
+
+Patch 0131 reports compositor IPC health over the guest agent channel every five
+seconds. Each probe gives Hyprland two seconds to answer. Compatibility revision
+53 delivers the agent and helper to existing disks on their next boot. Login and
+logout report an inactive compositor. Launchers without health monitoring ignore
+these messages; guests without heartbeats do not trigger compositor warnings.
+IPC health does not certify that a frame reached the physical display.

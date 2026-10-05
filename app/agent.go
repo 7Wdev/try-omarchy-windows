@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"fmt"
-	"io"
 	"net"
 	"strings"
 	"sync"
@@ -17,6 +16,7 @@ import (
 //   host -> guest: "time <unix seconds>"   set the guest clock when it drifts
 //   host -> guest: "zero-fill <MiB>"       write up to MiB of zeros over free space, then delete them
 //   guest -> host: "hello <version>"       the agent connected
+//   guest -> host: "compositor ok|unresponsive|inactive" bounded Hyprland IPC probe
 //   guest -> host: "zero-fill done|failed" the fill finished
 //   guest -> host: "open-settings"     one-shot request on a separate connection
 //   guest -> host: "launch-app <approved ID>" one-shot allowlisted Windows app request
@@ -36,6 +36,8 @@ type guestAgent struct {
 	appsDir       string
 	launchApp     func(string) error
 	dropDrag      func(id string, x, y int) error
+	peerAllowed   func(net.Conn) bool
+	health        *compositorHealth
 	lastAppLaunch time.Time
 	// zeroFilled is set when the guest reports that it zero-filled its free
 	// space, so the launcher compacts disk.raw after the guest powers off.
@@ -71,9 +73,12 @@ func (a *guestAgent) accept(l net.Listener) {
 
 func (a *guestAgent) serve(c net.Conn) {
 	defer c.Close()
-	r := bufio.NewReader(io.LimitReader(c, 64<<10))
+	if a.peerAllowed != nil && !a.peerAllowed(c) {
+		return
+	}
+	r := bufio.NewReaderSize(c, 16<<10)
 	_ = c.SetReadDeadline(time.Now().Add(3 * time.Second))
-	first, err := r.ReadString('\n')
+	first, err := readAgentLine(r)
 	_ = c.SetReadDeadline(time.Time{})
 	if err != nil {
 		return
@@ -117,6 +122,9 @@ func (a *guestAgent) serve(c net.Conn) {
 		a.conn.Close()
 	}
 	a.conn = c
+	if a.health != nil {
+		a.health.connect(a.now())
+	}
 	if a.zeroFillPending {
 		a.zeroFillPending = false
 		a.zeroFillStatus = uiText("reclaim.status.reconnected")
@@ -159,11 +167,23 @@ func (a *guestAgent) sendApprovedApps() bool {
 
 func (a *guestAgent) read(c net.Conn, r *bufio.Reader) {
 	for {
-		line, err := r.ReadString('\n')
+		line, err := readAgentLine(r)
 		if err != nil {
 			break
 		}
 		switch {
+		case line == "compositor inactive\n":
+			a.mu.Lock()
+			if a.conn == c && a.health != nil {
+				a.health.inactive()
+			}
+			a.mu.Unlock()
+		case line == "compositor ok\n" || line == "compositor unresponsive\n":
+			a.mu.Lock()
+			if a.conn == c && a.health != nil {
+				a.health.heartbeat(a.now(), line == "compositor ok\n")
+			}
+			a.mu.Unlock()
 		case strings.HasPrefix(line, "hello"):
 			logf("agent: guest agent connected (%s)", strings.TrimSpace(strings.TrimPrefix(line, "hello")))
 		case strings.TrimSpace(line) == "zero-fill done":
@@ -193,6 +213,9 @@ func (a *guestAgent) read(c net.Conn, r *bufio.Reader) {
 			a.zeroFillPending = false
 		}
 		a.conn = nil
+		if a.health != nil {
+			a.health.disconnect(a.now())
+		}
 	}
 	a.mu.Unlock()
 	if current {
@@ -237,6 +260,9 @@ func (a *guestAgent) sendLine(line string) bool {
 	if n, err := a.conn.Write([]byte(line)); err != nil || n != len(line) {
 		a.conn.Close()
 		a.conn = nil
+		if a.health != nil {
+			a.health.disconnect(a.now())
+		}
 		if a.zeroFillPending {
 			a.zeroFillPending = false
 			a.zeroFillStatus = uiText("reclaim.status.interrupted")
@@ -252,25 +278,13 @@ func (a *guestAgent) run(l net.Listener, resumed <-chan struct{}) {
 	batteryTicker := time.NewTicker(agentBatteryInterval)
 	defer timeTicker.Stop()
 	defer batteryTicker.Stop()
-	for {
-		select {
-		case <-timeTicker.C:
-			a.sendTime("")
-		case <-batteryTicker.C:
-			a.sendBattery()
-			a.sendApprovedApps()
-		case <-resumed:
-			// Windows may take a moment to bring the clock and network back;
-			// send now and again shortly after.
-			a.sendTime("resume")
-			a.sendBattery()
-			a.sendApprovedApps()
-			time.Sleep(5 * time.Second)
-			a.sendTime("resume")
-			a.sendBattery()
-			a.sendApprovedApps()
-		}
-	}
+	retry := time.NewTimer(time.Hour)
+	retry.Stop()
+	// Retry after Windows settles without blocking periodic work.
+	runAgentUpdates(timeTicker.C, batteryTicker.C, resumed, nil, retry.C, retry, func(reason string) { a.sendTime(reason) }, func() {
+		a.sendBattery()
+		a.sendApprovedApps()
+	})
 }
 
 // Zero-filling free blocks that were never written grows disk.raw on the
@@ -307,6 +321,9 @@ func (a *guestAgent) requestZeroFill(budgetMiB int64) bool {
 	if n, err := a.conn.Write([]byte(line)); err != nil || n != len(line) {
 		a.conn.Close()
 		a.conn = nil
+		if a.health != nil {
+			a.health.disconnect(a.now())
+		}
 		a.zeroFillStatus = uiText("reclaim.status.send_failed")
 		return false
 	}
@@ -332,4 +349,10 @@ func (a *guestAgent) compactPending() bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.zeroFilled
+}
+
+// Bound each line without exhausting the long-lived heartbeat stream.
+func readAgentLine(r *bufio.Reader) (string, error) {
+	line, err := r.ReadSlice('\n')
+	return string(line), err
 }
