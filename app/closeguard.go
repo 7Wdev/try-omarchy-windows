@@ -42,6 +42,8 @@ func finishEndSession(hwnd uintptr, ending bool) {
 	if !ending || windowsSessionEnding.Swap(true) {
 		return
 	}
+	intentionalUpdateQuit.Store(true)
+	cancelBackgroundUpdate()
 	ctx, cancel := context.WithTimeout(context.Background(), endSessionBudget)
 	defer cancel()
 	launchPending := guestLaunchInProgress.Load()
