@@ -2,9 +2,13 @@ package main
 
 import (
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"syscall"
+	"time"
 )
 
 const audioLiveRoutingPatch = "patches/qemu/0016-live-sdl-audio-routes.patch"
@@ -49,7 +53,7 @@ func writeAudioRoute(dir, direction, name string) error {
 	if err = f.Close(); err != nil {
 		return err
 	}
-	return os.Rename(f.Name(), filepath.Join(dir, direction))
+	return renameAudioRoute(f.Name(), filepath.Join(dir, direction), os.Rename, time.Sleep)
 }
 
 func publishAudioRoutes(dir string, p audioPreferences, microphoneDisabled bool) error {
@@ -78,4 +82,14 @@ func publishSavedAudioRoutes(dataDir string, p audioPreferences, microphoneDisab
 		return fmt.Errorf("audio control path is not a directory")
 	}
 	return publishAudioRoutes(dir, p, microphoneDisabled)
+}
+
+func renameAudioRoute(from, to string, rename func(string, string) error, sleep func(time.Duration)) error {
+	for attempt := 0; ; attempt++ {
+		err := rename(from, to)
+		if err == nil || runtime.GOOS != "windows" || (!errors.Is(err, syscall.Errno(32)) && !errors.Is(err, syscall.Errno(33))) || attempt == 9 {
+			return err
+		}
+		sleep(20 * time.Millisecond)
+	}
 }
