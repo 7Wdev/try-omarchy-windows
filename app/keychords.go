@@ -79,10 +79,10 @@ func classifyCtrlAltEnd(focused, ctrl, alt, sent, down bool) ctrlAltEndAction {
 type keySide int
 
 const (
-	keySideNone  keySide = iota // up, or its press predates the hook
-	keySideHost                 // Windows saw the press
-	keySideGuest                // the guest saw the press
-	keySideDetached             // the guest saw the press, then focus left
+	keySideNone     keySide = iota // up, or its press predates the hook
+	keySideHost                    // Windows saw the press
+	keySideGuest                   // the guest saw the press
+	keySideDetached                // the guest saw the press, then focus left
 )
 
 type routedKey struct {
@@ -105,7 +105,13 @@ func (k *routedKey) route(focused, hostHeld, down bool) (keys []forwardedKey, sw
 			return nil, false
 		}
 		// An unpaired release goes to Windows if it might hold the key.
-		return nil, focused && !hostHeld
+		// Otherwise the guest gets it: QEMU's own hook can take a press while
+		// it sits in front of ours between rehooks, and a release the guest
+		// does not hold changes nothing.
+		if focused && !hostHeld {
+			return []forwardedKey{{qcode: k.qcode, down: false}}, true
+		}
+		return nil, false
 	}
 	switch k.side {
 	case keySideGuest:

@@ -107,7 +107,7 @@ func TestRoutedKeyRecoversFromLostWindowsRelease(t *testing.T) {
 func TestRoutedKeyUnpairedRelease(t *testing.T) {
 	runRoute(t, &routedKey{qcode: "meta_l"}, []routeStep{
 		{focused: true, hostHeld: true}, // Windows holds it: let it go there
-		{focused: true, wantSwallow: true},
+		{focused: true, wantKeys: []forwardedKey{{"meta_l", false}}, wantSwallow: true},
 		{},
 	})
 }

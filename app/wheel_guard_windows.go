@@ -17,6 +17,7 @@ const (
 var (
 	wheelGuardComboCallback  = syscall.NewCallback(wheelGuardComboProc)
 	wheelGuardScrollCallback = syscall.NewCallback(wheelGuardScrollProc)
+	procDefSubclassProc      = comctl32.NewProc("DefSubclassProc")
 )
 
 // A closed drop-down list changes its selection on WM_MOUSEWHEEL, so a page
@@ -29,7 +30,7 @@ func wheelGuardComboProc(hwnd, message, w, l, id, data uintptr) uintptr {
 			return 0
 		}
 	}
-	result, _, _ := comctl32.NewProc("DefSubclassProc").Call(hwnd, message, w, l)
+	result, _, _ := procDefSubclassProc.Call(hwnd, message, w, l)
 	return result
 }
 
@@ -40,7 +41,7 @@ func wheelGuardScrollProc(hwnd, message, w, l, id, data uintptr) uintptr {
 		wheelGuardForward(hwnd, w, l)
 		return 0
 	}
-	result, _, _ := comctl32.NewProc("DefSubclassProc").Call(hwnd, message, w, l)
+	result, _, _ := procDefSubclassProc.Call(hwnd, message, w, l)
 	return result
 }
 
