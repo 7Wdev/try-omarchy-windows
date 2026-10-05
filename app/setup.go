@@ -233,6 +233,10 @@ func ensureRuntime(cfg *config, release, sumsSHA256 string) (string, error) {
 		return "", err
 	}
 	root := filepath.Join(cfg.dir, "runtime")
+	// A matching installed receipt needs no checksum request at boot.
+	if receipt, ok := readRuntimeReceipt(root); ok && runtimeReceiptMatches(root, release, sumsSHA256, receipt.ArchiveSHA256) {
+		return root, nil
+	}
 	ui := getUI()
 	client := newDownloadClient()
 	sums, err := releaseSumsForConfig(cfg, client, release, sumsSHA256)
@@ -273,10 +277,14 @@ func ensureRuntime(cfg *config, release, sumsSHA256 string) (string, error) {
 	updating := executableErr == nil
 	zipPath := filepath.Join(cfg.dir, runtimeZip)
 	removeZip := true
-	if cfg.portable {
+	if cfg.portable || cfg.localPayload {
 		zipPath = filepath.Join(portablePayloadDirectory(cfg.payloadDir, sumsSHA256), runtimeZip)
 		removeZip = false
-		ui.setStatus("%s", uiText("status.checking_portable_runtime"))
+		if cfg.portable {
+			ui.setStatus("%s", uiText("status.checking_portable_runtime"))
+		} else {
+			ui.setStatus("%s", uiTextWith("status.checking_cached_file", map[string]string{"file": runtimeZip}))
+		}
 		ok, err := verifyFileSHA256(zipPath, sums[runtimeZip], ui.setProgress)
 		if err != nil {
 			return "", fmt.Errorf("checking %s: %w", runtimeZip, err)
@@ -313,7 +321,9 @@ func ensureRuntime(cfg *config, release, sumsSHA256 string) (string, error) {
 			// before failing. Recovery reconciles it on the next launch.
 			return "", err
 		}
-		os.Remove(zipPath)
+		if removeZip {
+			os.Remove(zipPath)
+		}
 		return root, nil
 	}
 	os.RemoveAll(root)
@@ -352,6 +362,15 @@ func unzipTree(src, dest string, ui *progressUI) error {
 			return err
 		}
 		total += int64(f.UncompressedSize64)
+	}
+	if total <= 0 || total > maxGuestArtifactBytes {
+		return fmt.Errorf("unsupported runtime unpack size")
+	}
+	if err := os.MkdirAll(dest, 0700); err != nil {
+		return err
+	}
+	if err := requireDiskSpace(dest, total+diskSpaceReserve); err != nil {
+		return err
 	}
 	for _, f := range r.File {
 		name := filepath.Clean(f.Name)

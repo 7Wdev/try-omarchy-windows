@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -210,6 +211,10 @@ func invalidateInstallReceipt(dir string) error {
 // hashes. A file changed during the read is rejected even if its digest happened
 // to match the expected value observed at the start.
 func verifyFileSHA256(path, want string, progress func(done, total int64)) (bool, error) {
+	return verifyFileSHA256Context(setupContext(), path, want, progress)
+}
+
+func verifyFileSHA256Context(ctx context.Context, path, want string, progress func(done, total int64)) (bool, error) {
 	want = normalizedSHA256(want)
 	if !validSHA256(want) {
 		return false, fmt.Errorf("expected digest is not a valid SHA256")
@@ -233,7 +238,7 @@ func verifyFileSHA256(path, want string, progress func(done, total int64)) (bool
 	buf := make([]byte, 1<<20)
 	var done int64
 	for {
-		if err := checkSetupCancelled(); err != nil {
+		if err := downloadContextError(ctx); err != nil {
 			return false, err
 		}
 		n, readErr := f.Read(buf)

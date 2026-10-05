@@ -92,7 +92,7 @@ func TestPortablePayloadCancellationKeepsPreviousVersion(t *testing.T) {
 		t.Fatal("cancelled payload was published")
 	}
 	entries, err := os.ReadDir(root)
-	if err != nil || len(entries) != 1 || entries[0].Name() != "SHA256SUMS" {
+	if err != nil || len(entries) != 2 || entries[1].Name() != "SHA256SUMS" || !strings.HasPrefix(entries[0].Name(), ".payload-staging-") {
 		t.Fatalf("unexpected staged files: %v %v", entries, err)
 	}
 	got, err := os.ReadFile(filepath.Join(root, "SHA256SUMS"))

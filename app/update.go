@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/hex"
@@ -13,6 +14,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const (
@@ -52,6 +54,10 @@ func fetchUpdateManifest(client *http.Client, manifestURL string, publicKey ed25
 	if err != nil {
 		return nil, fmt.Errorf("downloading update signature: %w", err)
 	}
+	return authenticateUpdateManifest(data, sigText, publicKey)
+}
+
+func authenticateUpdateManifest(data, sigText []byte, publicKey ed25519.PublicKey) (*updateManifest, error) {
 	sig, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(sigText)))
 	if err != nil || len(sig) != ed25519.SignatureSize {
 		return nil, fmt.Errorf("update signature is invalid")
@@ -75,7 +81,13 @@ func fetchUpdateManifest(client *http.Client, manifestURL string, publicKey ed25
 }
 
 func fetchSmallFile(client *http.Client, source string, limit int64) ([]byte, error) {
-	resp, err := getWithSetupRetry(client, source, 2)
+	ctx, cancel := context.WithTimeout(setupContext(), 20*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, source, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}

@@ -18,12 +18,14 @@ const (
 )
 
 type launcherUpdateState struct {
-	Schema      int    `json:"schema"`
-	Version     string `json:"version"`
-	SHA256      string `json:"sha256"`
-	Started     bool   `json:"started"`
-	HasPrevious bool   `json:"hasPrevious"`
-	Portable    bool   `json:"portable,omitempty"`
+	Schema         int    `json:"schema"`
+	Version        string `json:"version"`
+	SHA256         string `json:"sha256"`
+	Interrupted    bool   `json:"interrupted,omitempty"`
+	ManifestSHA256 string `json:"manifestSHA256,omitempty"`
+	Started        bool   `json:"started"`
+	HasPrevious    bool   `json:"hasPrevious"`
+	Portable       bool   `json:"portable,omitempty"`
 }
 
 func readLauncherUpdateState(dir string) (*launcherUpdateState, error) {

@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -25,6 +27,7 @@ const (
 type downloadProgress func(phase string, done, total int64)
 
 type downloadOptions struct {
+	ctx         context.Context
 	maxAttempts int
 	idleTimeout time.Duration
 	retryDelay  func(attempt int) time.Duration
@@ -44,7 +47,10 @@ func defaultDownloadOptions() downloadOptions {
 // imposing a total deadline on multi-gigabyte payload transfers.
 func newDownloadClient() *http.Client {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.ResponseHeaderTimeout = 30 * time.Second
+	transport.Proxy = downloadProxy
+	transport.DialContext = (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext
+	transport.ResponseHeaderTimeout = 15 * time.Second
+	transport.IdleConnTimeout = 30 * time.Second
 	transport.TLSHandshakeTimeout = 15 * time.Second
 	return &http.Client{Transport: transport}
 }
@@ -66,10 +72,13 @@ func downloadVerifiedWithOptions(client *http.Client, url, dest, wantSum string,
 	if opts.maxAttempts < 1 {
 		opts.maxAttempts = 1
 	}
+	if opts.ctx == nil {
+		opts.ctx = setupContext()
+	}
 	var lastErr error
 	cleanRestartUsed := false
 	for attempt := 1; attempt <= opts.maxAttempts; {
-		retry, cleanRestart, err := downloadAttempt(client, url, dest, wantSum, progress, opts.idleTimeout)
+		retry, cleanRestart, err := downloadAttemptContext(opts.ctx, client, url, dest, wantSum, progress, opts.idleTimeout)
 		if err == nil {
 			return nil
 		}
@@ -86,7 +95,7 @@ func downloadVerifiedWithOptions(client *http.Client, url, dest, wantSum string,
 		}
 		lastErr = err
 		if attempt < opts.maxAttempts && opts.retryDelay != nil {
-			if err := sleepDuringSetup(opts.retryDelay(attempt)); err != nil {
+			if err := sleepWithContext(opts.ctx, opts.retryDelay(attempt)); err != nil {
 				return err
 			}
 		}
@@ -97,7 +106,7 @@ func downloadVerifiedWithOptions(client *http.Client, url, dest, wantSum string,
 	// is currently unavailable. Hash only once, after retries, so incomplete
 	// multi-gigabyte downloads do not get rehashed on every network failure.
 	if size, err := partialFileSize(dest + ".part"); err == nil && size > 0 {
-		ok, err := verifyAndCommitPart(dest+".part", dest, wantSum, progress)
+		ok, err := verifyAndCommitPartContext(opts.ctx, dest+".part", dest, wantSum, progress)
 		if err != nil {
 			return err
 		}
@@ -109,7 +118,11 @@ func downloadVerifiedWithOptions(client *http.Client, url, dest, wantSum string,
 }
 
 func downloadAttempt(client *http.Client, url, dest, wantSum string, progress downloadProgress, idleTimeout time.Duration) (retry, cleanRestart bool, resultErr error) {
-	if err := checkSetupCancelled(); err != nil {
+	return downloadAttemptContext(setupContext(), client, url, dest, wantSum, progress, idleTimeout)
+}
+
+func downloadAttemptContext(ctx context.Context, client *http.Client, url, dest, wantSum string, progress downloadProgress, idleTimeout time.Duration) (retry, cleanRestart bool, resultErr error) {
+	if err := downloadContextError(ctx); err != nil {
 		return false, false, err
 	}
 	tmp := dest + ".part"
@@ -117,7 +130,7 @@ func downloadAttempt(client *http.Client, url, dest, wantSum string, progress do
 	if err != nil {
 		return false, false, err
 	}
-	req, err := http.NewRequestWithContext(setupContext(), http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return false, false, err
 	}
@@ -127,7 +140,7 @@ func downloadAttempt(client *http.Client, url, dest, wantSum string, progress do
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		if cancelErr := checkSetupCancelled(); cancelErr != nil {
+		if cancelErr := downloadContextError(ctx); cancelErr != nil {
 			return false, false, cancelErr
 		}
 		return true, false, err
@@ -142,7 +155,7 @@ func downloadAttempt(client *http.Client, url, dest, wantSum string, progress do
 		// A complete cached transfer needs verification, not another download,
 		// even when the server ignores Range. A wrong hash still restarts below.
 		if offset > 0 && offset == resp.ContentLength {
-			ok, err := verifyAndCommitPart(tmp, dest, wantSum, progress)
+			ok, err := verifyAndCommitPartContext(ctx, tmp, dest, wantSum, progress)
 			if err != nil {
 				return false, false, err
 			}
@@ -173,7 +186,7 @@ func downloadAttempt(client *http.Client, url, dest, wantSum string, progress do
 		if offset == 0 {
 			return false, false, fmt.Errorf("HTTP %d", resp.StatusCode)
 		}
-		ok, err := verifyAndCommitPart(tmp, dest, wantSum, progress)
+		ok, err := verifyAndCommitPartContext(ctx, tmp, dest, wantSum, progress)
 		if err != nil {
 			return false, false, err
 		}
@@ -192,7 +205,7 @@ func downloadAttempt(client *http.Client, url, dest, wantSum string, progress do
 		// so recover an authenticated cache here as well. Invalid partials
 		// stay available for a later attempt and never replace the target.
 		if !retry && offset > 0 {
-			ok, err := verifyAndCommitPart(tmp, dest, wantSum, progress)
+			ok, err := verifyAndCommitPartContext(ctx, tmp, dest, wantSum, progress)
 			if err != nil {
 				return false, false, err
 			}
@@ -227,7 +240,7 @@ func downloadAttempt(client *http.Client, url, dest, wantSum string, progress do
 	if progress != nil {
 		progress(downloadPhaseTransfer, offset, total)
 	}
-	written, retry, copyErr := copyDownloadBody(resp.Body, f, offset, total, progress, idleTimeout)
+	written, retry, copyErr := copyDownloadBodyContext(ctx, resp.Body, f, offset, total, progress, idleTimeout)
 	syncErr := f.Sync()
 	closeErr := f.Close()
 	if syncErr != nil {
@@ -254,7 +267,7 @@ func downloadAttempt(client *http.Client, url, dest, wantSum string, progress do
 		}
 		return true, false, fmt.Errorf("partial download is %d bytes; expected %d", info.Size(), total)
 	}
-	ok, err := verifyAndCommitPart(tmp, dest, wantSum, progress)
+	ok, err := verifyAndCommitPartContext(ctx, tmp, dest, wantSum, progress)
 	if err != nil {
 		return false, false, err
 	}
@@ -294,7 +307,11 @@ func resetPartialFile(path string) error {
 }
 
 func verifyAndCommitPart(tmp, dest, wantSum string, progress downloadProgress) (bool, error) {
-	ok, err := verifyFileSHA256(tmp, wantSum, func(done, total int64) {
+	return verifyAndCommitPartContext(setupContext(), tmp, dest, wantSum, progress)
+}
+
+func verifyAndCommitPartContext(ctx context.Context, tmp, dest, wantSum string, progress downloadProgress) (bool, error) {
+	ok, err := verifyFileSHA256Context(ctx, tmp, wantSum, func(done, total int64) {
 		if progress != nil {
 			progress(downloadPhaseVerify, done, total)
 		}
@@ -302,7 +319,7 @@ func verifyAndCommitPart(tmp, dest, wantSum string, progress downloadProgress) (
 	if err != nil || !ok {
 		return ok, err
 	}
-	if err := renameDownloadedPart(tmp, dest, os.Rename, retryableRenameError, sleepDuringSetup); err != nil {
+	if err := renameDownloadedPart(tmp, dest, os.Rename, retryableRenameError, func(d time.Duration) error { return sleepWithContext(ctx, d) }); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -341,10 +358,13 @@ func retryableWindowsRenameError(err error) bool {
 }
 
 func copyDownloadBody(body io.ReadCloser, dst io.Writer, offset, total int64, progress downloadProgress, idleTimeout time.Duration) (int64, bool, error) {
+	return copyDownloadBodyContext(setupContext(), body, dst, offset, total, progress, idleTimeout)
+}
+
+func copyDownloadBodyContext(ctx context.Context, body io.ReadCloser, dst io.Writer, offset, total int64, progress downloadProgress, idleTimeout time.Duration) (int64, bool, error) {
 	var timedOut atomic.Bool
 	var activity chan struct{}
 	var done chan struct{}
-	ctx := setupContext()
 	if idleTimeout > 0 {
 		activity = make(chan struct{}, 1)
 		done = make(chan struct{})
@@ -378,7 +398,7 @@ func copyDownloadBody(body io.ReadCloser, dst io.Writer, offset, total int64, pr
 	buf := make([]byte, 1<<20)
 	var written int64
 	for {
-		if err := checkSetupCancelled(); err != nil {
+		if err := downloadContextError(ctx); err != nil {
 			return written, false, err
 		}
 		n, readErr := body.Read(buf)
@@ -408,7 +428,7 @@ func copyDownloadBody(body io.ReadCloser, dst io.Writer, offset, total int64, pr
 			return written, false, nil
 		}
 		if readErr != nil {
-			if err := checkSetupCancelled(); err != nil {
+			if err := downloadContextError(ctx); err != nil {
 				return written, false, err
 			}
 			if timedOut.Load() {
@@ -444,4 +464,22 @@ func parseContentRange(value string) (start, end, total int64, ok bool) {
 		return 0, 0, 0, false
 	}
 	return start, end, total, true
+}
+
+func sleepWithContext(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return downloadContextError(ctx)
+	case <-timer.C:
+		return nil
+	}
+}
+
+func downloadContextError(ctx context.Context) error {
+	if err := checkSetupCancelled(); err != nil {
+		return err
+	}
+	return ctx.Err()
 }

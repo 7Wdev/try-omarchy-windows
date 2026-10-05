@@ -137,6 +137,8 @@ func runCloseGuard() {
 			if err == nil {
 				err = c.Call(ctx, "system_powerdown", nil, nil)
 				if err == nil {
+					intentionalUpdateQuit.Store(true)
+					cancelBackgroundUpdate()
 					guestCompositorHealth.stop()
 				}
 				c.Close()

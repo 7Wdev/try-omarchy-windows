@@ -23,7 +23,7 @@ func automaticUpdatesEnabled(cfg *config, noUpdate bool, release, sumsSHA256 str
 }
 
 func releaseSumsForConfig(cfg *config, client *http.Client, release, expectedSHA256 string) (map[string]string, error) {
-	if !cfg.portable {
+	if !cfg.portable && !cfg.localPayload {
 		return releaseSums(client, release, expectedSHA256)
 	}
 	return readPortableManifest(filepath.Join(portablePayloadDirectory(cfg.payloadDir, expectedSHA256), "SHA256SUMS"), expectedSHA256)

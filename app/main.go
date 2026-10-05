@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -42,6 +43,7 @@ type config struct {
 	disablePinch, guestPinch    bool
 	lanPublic                   bool
 	instant, portable           bool
+	localPayload                bool
 	guestDir, vmDir, disk       string
 	qmpDir                      string
 	followHostTimeZone          bool
@@ -187,9 +189,13 @@ func main() {
 	disableFastStartupFlag := flag.Bool("disable-fast-startup", false, "internal: elevated helper that turns off Windows Fast Startup before installing Omarchy next to Windows")
 	applyLauncherUpdateFlag := flag.Bool("apply-launcher-update", false, "internal: apply a staged launcher update")
 	applyLauncherRollbackFlag := flag.Bool("apply-launcher-rollback", false, "internal: restore the previous launcher")
+	restartWaitPID := flag.Int("restart-update-wait-pid", 0, "internal: wait for the stopped guest launcher before restarting")
 	updateWaitPID := flag.Int("update-wait-pid", 0, "internal: process to wait for before replacing the launcher")
 	updateRestartArgs := flag.String("update-restart-args", "", "internal: encoded launcher restart arguments")
 	flag.Parse()
+	if *restartWaitPID > 0 {
+		waitForProcess(*restartWaitPID)
+	}
 	if *openAbout {
 		runAbout()
 		return
@@ -625,22 +631,75 @@ func main() {
 	// previous run must not be mistaken for this one's.
 	os.Remove(filepath.Join(cfg.vmDir, "qemu-stderr.log"))
 
-	if !snapshotRecovery && !cfg.desktop.AutomaticUpdatesDisabled && automaticUpdatesEnabled(cfg, *noUpdate, *release, *sumsSHA256) {
-		checkDue := *updateURL != defaultUpdateURL || updateCheckDue(cfg.dir, time.Now())
-		if checkDue {
-			_ = recordUpdateCheck(cfg.dir, time.Now())
-			if updating, updateErr := maybeStartLauncherUpdate(cfg, *updateURL, os.Args[1:]); updateErr != nil {
-				logf("update check skipped: %v", updateErr)
-			} else if updating {
-				logf("starting authenticated launcher update")
-				uiDone()
-				if logFile != nil {
-					logFile.Close()
-				}
-				return
+	updatesEnabled := !snapshotRecovery && !cfg.desktop.AutomaticUpdatesDisabled && automaticUpdatesEnabled(cfg, *noUpdate, *release, *sumsSHA256)
+	// A new launcher can boot the installed image without upgrading it online.
+	// Explicit payload pins, reset and checkpoint recovery retain their meaning.
+	if completeAtStart && !cfg.fresh && !snapshotRecovery && !payloadsRolledBack {
+		if !explicitFlags["release"] && !explicitFlags["sums-sha256"] {
+			if r, digest, ok := installReceiptIdentity(cfg.guestDir); ok {
+				*release, *sumsSHA256 = r, digest
+			}
+		}
+		if !explicitFlags["runtime-release"] && !explicitFlags["runtime-sums-sha256"] {
+			if r, digest, ok := runtimeReceiptIdentity(filepath.Join(cfg.dir, "runtime")); ok {
+				*runtimeRelease, *runtimeSumsSHA256 = r, digest
 			}
 		}
 	}
+	payloadRoot := updatePayloadRoot(cfg.dir, cfg.payloadDir, cfg.portable)
+	state, _ := readLauncherUpdateState(cfg.dir)
+	version := ""
+	activeUpdate := state != nil && state.Version == currentVersion && state.ManifestSHA256 != ""
+	if activeUpdate {
+		version = state.Version
+	} else if updatesEnabled && !payloadsRolledBack {
+		data, _ := os.ReadFile(filepath.Join(launcherUpdateDir(cfg.dir), stagedUpdateFilename))
+		version = string(data)
+	}
+	if version != "" && !snapshotRecovery {
+		key, keyErr := updatePublicKey()
+		var manifest *updateManifest
+		var stageErr error
+		if keyErr != nil {
+			stageErr = keyErr
+		} else {
+			manifest, stageErr = verifiedStagedUpdate(setupContext(), cfg.dir, payloadRoot, version, key)
+		}
+		if stageErr != nil {
+			if setupCancelled() {
+				return
+			}
+			logf("discarding staged update: %v", stageErr)
+			discardStagedUpdate(cfg.dir, payloadRoot, version)
+			if activeUpdate {
+				fatal(uiTextWith("fatal.update.recover", map[string]string{"error": stageErr.Error()}))
+			}
+		} else if failedUpdateVersion(cfg.dir) != version && (activeUpdate || version == currentVersion || updateIsNewer(version, currentVersion)) {
+			if version != currentVersion {
+				if started, err := startStagedLauncherUpdate(cfg, manifest, os.Args[1:]); err != nil {
+					logf("staged update deferred: %v", err)
+				} else if started {
+					uiDone()
+					return
+				}
+			} else {
+				*release, *sumsSHA256 = manifest.Release, manifest.ManifestSHA256
+				*runtimeRelease, *runtimeSumsSHA256 = manifest.Release, manifest.ManifestSHA256
+				if !cfg.portable {
+					cfg.payloadDir, cfg.localPayload = payloadRoot, true
+				}
+			}
+		}
+	}
+	stopUpdates := configureBackgroundUpdates(cfg, *updateURL, updatesEnabled && !payloadsRolledBack)
+	defer stopUpdates()
+	defer func() {
+		if (setupCancelled() || intentionalUpdateQuit.Load()) && !bootAnnouncedReady.Load() {
+			if err := interruptPendingUpdates(cfg.dir); err != nil {
+				logf("recording interrupted update: %v", err)
+			}
+		}
+	}()
 
 	if err := preparePortablePayloadTransition(cfg, *release, *sumsSHA256); err != nil {
 		if finishSetupCancellation(cfg, err) {
@@ -880,13 +939,31 @@ func main() {
 		bootLine = bootCmdline(cfg, plan)
 	}
 	stopDiskMonitor()
-	if finishSetupCancellation(cfg, checkSetupCancelled()) {
+	if (setupCancelled() || intentionalUpdateQuit.Load()) && !bootAnnouncedReady.Load() {
+		if err := interruptPendingUpdates(cfg.dir); err != nil {
+			logf("recording interrupted update: %v", err)
+		}
+	}
+	if !restartForUpdate.Load() && finishSetupCancellation(cfg, checkSetupCancelled()) {
 		return
 	}
+	stopUpdates()
 	if windowsSessionEnding.Load() {
 		return
 	}
+
 	compactAfterShutdown(cfg)
+	if restartForUpdate.Load() {
+		self, err := os.Executable()
+		if err == nil {
+			cmd := exec.Command(self, append(os.Args[1:], "-restart-update-wait-pid", strconv.Itoa(os.Getpid()))...)
+			if err := cmd.Start(); err != nil {
+				logf("restart to update: %v", err)
+			} else {
+				_ = cmd.Process.Release()
+			}
+		}
+	}
 	logf("---- exiting ----")
 }
 
@@ -1039,6 +1116,7 @@ func supervise(cfg *config, cmdline string) bool {
 		for qmp == nil && time.Now().Before(deadline) {
 			select {
 			case <-setupCancelWake:
+				cancelBackgroundUpdate()
 				proc.Process.Kill()
 				<-exited
 				qemuPid.Store(0)
@@ -1263,9 +1341,14 @@ func watch(cfg *config, qmp *qmpConn, exited <-chan error) bool {
 			if cfg.useGpu {
 				recordGPURuntimeReport(cfg.dir, cfg.vmDir)
 			}
+			pendingPayload, _ := readPayloadUpdateState(cfg.dir)
 			commitLauncherUpdate(cfg.dir)
 			commitPayloadUpdates(cfg.dir)
 			commitCheckpointBoot(cfg.dir)
+			if pendingPayload != nil {
+				pruneCommittedUpdatePayloads(cfg)
+			}
+			startReadyUpdateCheck()
 			recordRenderResult(cfg)
 			movedBootPending = true
 		}
@@ -1327,6 +1410,7 @@ func watch(cfg *config, qmp *qmpConn, exited <-chan error) bool {
 				cleanExit = cleanGuestShutdown(line)
 			}
 		case <-setupCancelWake:
+			cancelBackgroundUpdate()
 			if stopDeadline == nil {
 				guestCompositorHealth.stop()
 				logf("startup cancelled - shutting the guest down")
@@ -1424,6 +1508,11 @@ func watch(cfg *config, qmp *qmpConn, exited <-chan error) bool {
 		}
 	}
 drained:
+	if !postReady && (setupCancelled() || intentionalUpdateQuit.Load()) {
+		if err := interruptPendingUpdates(cfg.dir); err != nil {
+			logf("recording interrupted first boot: %v", err)
+		}
+	}
 	if !procDown {
 		waitExit(exited, 15*time.Second, cfg)
 	}

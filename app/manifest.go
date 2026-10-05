@@ -7,7 +7,6 @@ import (
 	_ "embed"
 	"encoding/hex"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 )
@@ -47,20 +46,9 @@ func fetchSums(client *http.Client, release, expectedSHA256 string) (map[string]
 	if !validSHA256(normalizedSHA256(expectedSHA256)) {
 		return nil, fmt.Errorf("trusted SHA256SUMS digest is not a valid SHA256")
 	}
-	resp, err := getWithSetupRetry(client, release+"/SHA256SUMS", 5)
+	data, err := fetchSmallFile(client, release+"/SHA256SUMS", maxSumsBytes)
 	if err != nil {
 		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
-	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxSumsBytes+1))
-	if err != nil {
-		return nil, err
-	}
-	if len(data) > maxSumsBytes {
-		return nil, fmt.Errorf("SHA256SUMS exceeds %d bytes", maxSumsBytes)
 	}
 	return parseVerifiedSums(data, expectedSHA256)
 }
