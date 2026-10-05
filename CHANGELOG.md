@@ -16,6 +16,7 @@
 - Volume and mute stay in sync between Omarchy and Windows, including Windows
   playback device changes. Turn off **Sync volume with Windows** in Settings to
   control them independently.
+- Night light now warms the VM display from the existing menu and keyboard shortcut.
 
 ## v0.9.0 - 2026-10-04
 
