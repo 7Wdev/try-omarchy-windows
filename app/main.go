@@ -1149,13 +1149,15 @@ func watch(cfg *config, qmp *qmpConn, exited <-chan error) bool {
 		result := make(chan gpuRecoveryDecision, 1)
 		recovery = result
 		snapshotCfg := *cfg
+		snapshotPID, snapshotMisses := qemuPid.Load(), silence.misses
 		dialogContext, cancel := context.WithCancel(context.Background())
 		cancelRecovery = cancel
 		go func() {
 			facts := launcherFacts(&snapshotCfg)
 			facts["display.freeze.trigger"] = trigger
-			facts["display.freeze.qemuPID"] = fmt.Sprint(qemuPid.Load())
-			facts["display.freeze.qmpMisses"] = fmt.Sprint(qmpHangMisses)
+			facts["display.freeze.qemuPID"] = fmt.Sprint(snapshotPID)
+			facts["display.freeze.qmpMisses"] = fmt.Sprint(snapshotMisses)
+			facts["display.freeze.qmpHangThresholdProbes"] = fmt.Sprint(qmpHangMisses)
 			if snapshotCfg.useGpu {
 				recordGPURuntimeReport(snapshotCfg.dir, snapshotCfg.vmDir)
 			}
