@@ -78,7 +78,7 @@
              reg_names[reg_count++] = WHvX64RegisterRdx;
  
              /* Advance RIP past the CPUID instruction */
-@@ -2092,6 +2112,108 @@
+@@ -2092,6 +2112,155 @@
      }
  }
  
@@ -184,10 +184,57 @@
 +    return -EINVAL;
 +}
 +
++static int whpx_setup_host(void)
++{
++    struct whpx_state *whpx = &whpx_global;
++    WHV_PROCESSOR_FEATURES_BANKS banks = { .BanksCount = 2 };
++    WHV_PARTITION_PROPERTY prop;
++    HRESULT hr;
++    hr = whp_dispatch.WHvGetCapability(
++        WHvCapabilityCodeProcessorFeaturesBanks, &banks, sizeof(banks), NULL);
++    if (FAILED(hr)) {
++        goto fail;
++    }
++    if (!whpx_model_cpuid && whpx_irqchip_in_kernel() &&
++        banks.Bank1.NestedVirtSupport) {
++        memset(&prop, 0, sizeof(WHV_PARTITION_PROPERTY));
++        prop.NestedVirtualization = 1;
++        hr = whp_dispatch.WHvSetPartitionProperty(
++            whpx->partition,
++            WHvPartitionPropertyCodeNestedVirtualization,
++            &prop,
++            sizeof(WHV_PARTITION_PROPERTY));
++        if (FAILED(hr)) {
++            /*
++             * Some hosts advertise NestedVirtSupport but refuse to delegate
++             * it to a WHP partition (hr=0x80370302 on Meteor Lake laptops
++             * and on machines running the full Hyper-V feature set). The
++             * guest never needs nested virtualization, so keep the kernel
++             * irqchip and carry on without it instead of failing to start.
++             */
++            warn_report("WHPX: nested virtualization unavailable (hr=%08lx), "
++                        "continuing without it", hr);
++        }
++    }
++
++
++    hr = whp_dispatch.WHvSetupPartition(whpx->partition);
++    if (FAILED(hr)) {
++        goto fail;
++    }
++    whpx_partition_ready = true;
++    whpx_memory_init();
++    whpx_init_emu();
++    return 0;
++fail:
++    error_report("WHPX: Failed to setup host partition, hr=%08lx", hr);
++    return -EINVAL;
++}
++
  int whpx_init_vcpu(CPUState *cpu)
  {
      HRESULT hr;
-@@ -2114,6 +2236,13 @@
+@@ -2114,6 +2283,19 @@
          if (migrate_add_blocker(&whpx_migration_blocker, &local_error) < 0) {
              error_report_err(local_error);
              ret = -EINVAL;
@@ -196,45 +243,61 @@
 +    }
 +
 +    if (!whpx_partition_ready) {
-+        ret = whpx_setup_model(env);
++        whpx_model_cpuid = !strcmp(object_get_typename(OBJECT(x86_cpu)),
++                                  "qemu64-x86_64-cpu");
++        if (whpx_model_cpuid) {
++            ret = whpx_setup_model(env);
++        } else {
++            ret = whpx_setup_host();
++        }
 +        if (ret < 0) {
              goto error;
          }
      }
-@@ -2301,6 +2430,8 @@
-         }
-     }
- 
-+    whpx_model_cpuid = strcmp(ms->cpu_type, "qemu64-x86_64-cpu") == 0;
-+
-     /* Set all the supported features, to follow the MSHV example */
-     memset(&processor_features, 0, sizeof(WHV_PROCESSOR_FEATURES_BANKS));
-     processor_features.BanksCount = 2;
-@@ -2314,7 +2445,8 @@
+@@ -2312,27 +2494,6 @@
+         error_report("WHPX: Failed to get processor features, hr=%08lx", hr);
+         ret = -ENOSPC;
          goto error;
-     }
- 
+-    }
+-
 -    if (whpx_irqchip_in_kernel() && processor_features.Bank1.NestedVirtSupport) {
-+    if (!whpx_model_cpuid && whpx_irqchip_in_kernel() &&
-+        processor_features.Bank1.NestedVirtSupport) {
-         memset(&prop, 0, sizeof(WHV_PARTITION_PROPERTY));
-         prop.NestedVirtualization = 1;
-         hr = whp_dispatch.WHvSetPartitionProperty(
-@@ -2481,6 +2613,9 @@
+-        memset(&prop, 0, sizeof(WHV_PARTITION_PROPERTY));
+-        prop.NestedVirtualization = 1;
+-        hr = whp_dispatch.WHvSetPartitionProperty(
+-            whpx->partition,
+-            WHvPartitionPropertyCodeNestedVirtualization,
+-            &prop,
+-            sizeof(WHV_PARTITION_PROPERTY));
+-        if (FAILED(hr)) {
+-            /*
+-             * Some hosts advertise NestedVirtSupport but refuse to delegate
+-             * it to a WHP partition (hr=0x80370302 on Meteor Lake laptops
+-             * and on machines running the full Hyper-V feature set). The
+-             * guest never needs nested virtualization, so keep the kernel
+-             * irqchip and carry on without it instead of failing to start.
+-             */
+-            warn_report("WHPX: nested virtualization unavailable (hr=%08lx), "
+-                        "continuing without it", hr);
+-        }
+     }
+ 
+     hr = whp_dispatch.WHvSetPartitionProperty(
+@@ -2481,16 +2642,8 @@
          goto error;
      }
  
-+    if (whpx_model_cpuid) {
-+        return 0;
-+    }
-     hr = whp_dispatch.WHvSetupPartition(whpx->partition);
-     if (FAILED(hr)) {
-         error_report("WHPX: Failed to setup partition, hr=%08lx", hr);
-@@ -2488,6 +2623,7 @@
-         goto error;
-     }
+-    hr = whp_dispatch.WHvSetupPartition(whpx->partition);
+-    if (FAILED(hr)) {
+-        error_report("WHPX: Failed to setup partition, hr=%08lx", hr);
+-        ret = -EINVAL;
+-        goto error;
+-    }
+-
+-    whpx_memory_init();
+-    whpx_init_emu();
+-
++    /* CPU options have not been parsed yet. Complete partition setup at
++     * the first realized vCPU, before registering memory mappings. */
+     return 0;
  
-+    whpx_partition_ready = true;
-     whpx_memory_init();
-     whpx_init_emu();
- 
+ error:

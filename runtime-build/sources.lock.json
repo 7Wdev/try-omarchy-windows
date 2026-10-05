@@ -84,7 +84,7 @@
       },
       {
         "file": "patches/qemu/0019-honor-whpx-cpu-model.patch",
-        "sha256": "fbb25e99b501c25c9c6d957b65312a46ddf75551279ec8a4e4a0c821a012cbb0"
+        "sha256": "264a2fea4309e2b8f445a4cf590d87333c5c232b3dcdc5d5506ace9e71a18cc2"
       },
       {
         "file": "patches/qemu/0020-allow-external-sdl-keyboard-hook.patch",

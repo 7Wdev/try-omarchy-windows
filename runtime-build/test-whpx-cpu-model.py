@@ -11,7 +11,7 @@ parser.add_argument('source', type=Path)
 args = parser.parse_args()
 source = (args.source / 'target/i386/whpx/whpx-all.c').read_text()
 start = source.index('static int whpx_setup_model(')
-body = source[start:source.index('\nint whpx_init_vcpu(', start)]
+body = source[start:source.index('\nstatic int whpx_setup_host(', start)]
 fields = re.findall(r'MODEL_FEATURE\((\w+),', body)[1:]
 fixture = r'''
 #include <assert.h>
