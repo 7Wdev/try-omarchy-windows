@@ -24,3 +24,31 @@ func TestBatteryFromWindows(t *testing.T) {
 		})
 	}
 }
+
+func TestBatteryUnknownReadingsPreservePresence(t *testing.T) {
+	var cache batteryPresenceCache
+	unknown := systemPowerStatus{ACLineStatus: 255, BatteryFlag: 255, BatteryLifePercent: 255, BatteryLifeTime: ^uint32(0)}
+	if cache.snapshot(unknown).Present {
+		t.Fatal("invented initial presence")
+	}
+	known := systemPowerStatus{ACLineStatus: 0, BatteryFlag: 0, BatteryLifePercent: 57, BatteryLifeTime: 8100}
+	if !cache.snapshot(known).Present {
+		t.Fatal("known present")
+	}
+	got := cache.snapshot(unknown)
+	if !got.Present || got.Percentage != nil || got.State != "unknown" || got.TimeToEmptySeconds != nil || got.ACConnected {
+		t.Fatalf("unknown: %+v", got)
+	}
+	known.BatteryLifePercent = 255
+	if got := cache.snapshot(known); !got.Present || got.Percentage != nil {
+		t.Fatalf("unknown percent: %+v", got)
+	}
+	absent := systemPowerStatus{ACLineStatus: 1, BatteryFlag: 128, BatteryLifePercent: 255}
+	if cache.snapshot(absent).Present || cache.snapshot(unknown).Present {
+		t.Fatal("known absence not retained")
+	}
+	known.BatteryLifePercent = 80
+	if got := cache.snapshot(known); !got.Present || *got.Percentage != 80 {
+		t.Fatal("recovery", got)
+	}
+}
