@@ -106,8 +106,8 @@ func TestPayloadUpdateComponentsCanCommitIndependently(t *testing.T) {
 	}
 
 	commitRuntimePayloadUpdate(root)
-	if _, err := os.Stat(filepath.Join(root, "runtime.previous")); !os.IsNotExist(err) {
-		t.Fatalf("runtime rollback tree remains after runtime commit: %v", err)
+	if _, err := os.Stat(filepath.Join(root, "runtime.previous")); err != nil {
+		t.Fatalf("runtime rollback tree not retained after commit: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(root, "guest.previous")); err != nil {
 		t.Fatalf("guest rollback tree removed before userspace readiness: %v", err)
@@ -118,8 +118,8 @@ func TestPayloadUpdateComponentsCanCommitIndependently(t *testing.T) {
 	}
 
 	commitGuestPayloadUpdate(root)
-	if _, err := os.Stat(filepath.Join(root, "guest.previous")); !os.IsNotExist(err) {
-		t.Fatalf("guest rollback tree remains after userspace readiness: %v", err)
+	if _, err := os.Stat(filepath.Join(root, "guest.previous")); err != nil {
+		t.Fatalf("guest rollback tree not retained after readiness: %v", err)
 	}
 	if state, err := readPayloadUpdateState(root); err != nil || state != nil {
 		t.Fatalf("state after guest commit = %+v, %v", state, err)

@@ -3,13 +3,16 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
-	"net"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -17,73 +20,135 @@ var procOpenProcess = kernel32.NewProc("OpenProcess")
 
 const synchronizeProcess = 0x00100000
 
-func maybeStartLauncherUpdate(cfg *config, updateURL string, restartArgs []string) (bool, error) {
-	key, err := updatePublicKey()
-	if err != nil {
-		return false, err
+var (
+	updateAvailable       atomic.Bool
+	restartForUpdate      atomic.Bool
+	intentionalUpdateQuit atomic.Bool
+	backgroundUpdates     struct {
+		sync.Mutex
+		start  func()
+		cancel context.CancelFunc
 	}
-	metadataClient := &http.Client{
-		Transport: &http.Transport{
-			Proxy:                 http.ProxyFromEnvironment,
-			DialContext:           (&net.Dialer{Timeout: 4 * time.Second}).DialContext,
-			TLSHandshakeTimeout:   4 * time.Second,
-			ResponseHeaderTimeout: 4 * time.Second,
-		},
-		Timeout: 10 * time.Second,
-	}
-	manifest, err := fetchUpdateManifest(metadataClient, updateURL, key)
-	if err != nil {
-		return false, err
-	}
-	if !updateIsNewer(manifest.Version, currentVersion) {
-		return false, nil
-	}
-	ui := getUI()
-	ui.setStatus("%s", uiTextWith("status.updating_launcher", map[string]string{"version": manifest.Version}))
-	staged := stagedLauncherPath(cfg.dir, manifest.Version)
-	if err := os.MkdirAll(filepath.Dir(staged), 0o755); err != nil {
-		return false, err
-	}
-	downloadClient := &http.Client{Timeout: 0}
-	if _, err := releaseSums(downloadClient, manifest.Release, manifest.ManifestSHA256); err != nil {
-		return false, fmt.Errorf("authenticating updated guest manifest: %w", err)
-	}
-	if cfg.portable {
-		if err := preparePortablePayloadTransition(cfg, manifest.Release, manifest.ManifestSHA256); err != nil {
-			return false, err
+)
+
+// Installed users do no network work until the guest's readiness message has
+// committed any prior transaction. Only one background job runs per launch.
+func configureBackgroundUpdates(cfg *config, feed string, enabled bool, ownPayload *pinnedPayloadUpdate) func() {
+	ctx, cancel := context.WithCancel(setupContext())
+	snapshot := *cfg
+	var once sync.Once
+	start := func() {
+		if !enabled && ownPayload == nil {
+			return
 		}
-		if err := stagePortablePayload(cfg.payloadDir, manifest.Release, manifest.ManifestSHA256, downloadClient, func(_ string, done, total int64) {
-			ui.setStatus("%s", uiText("status.preparing_portable_update"))
-			ui.setProgress(done, total)
-		}); err != nil {
-			return false, err
-		}
+		once.Do(func() {
+			go func() {
+				runtime.LockOSThread()
+				defer runtime.UnlockOSThread()
+				thread, _, _ := kernel32.NewProc("GetCurrentThread").Call()
+				priority := kernel32.NewProc("SetThreadPriority")
+				if ok, _, _ := priority.Call(thread, 0x10000); ok != 0 {
+					defer priority.Call(thread, 0x20000)
+				}
+				client := newDownloadClient()
+				client.Transport = backgroundUpdateTransport{ctx: ctx, base: client.Transport}
+				defer client.CloseIdleConnections()
+				if ownPayload != nil {
+					err := stagePinnedPayloadUpdate(ctx, client, snapshot.dir,
+						updatePayloadRoot(snapshot.dir, snapshot.payloadDir, snapshot.portable), *ownPayload)
+					if err != nil {
+						if ctx.Err() == nil {
+							logf("launcher payload staging skipped: %v", err)
+							if errors.Is(err, errInsufficientDiskSpace) {
+								showTrayNotice(uiText("update.notice.title"), uiTextWith("update.notice.space", map[string]string{"error": err.Error()}))
+							}
+						}
+					} else if failedUpdateVersion(snapshot.dir) != currentVersion {
+						updateAvailable.Store(true)
+						showTrayNotice(uiText("update.notice.title"), uiTextWith("update.notice.ready", map[string]string{"version": currentVersion}))
+						logf("launcher payload %s verified and staged for the next start", currentVersion)
+					}
+					return
+				}
+				if feed == defaultUpdateURL && !updateCheckDue(snapshot.dir, time.Now()) {
+					return
+				}
+				// Settings may have disabled automatic updates since this launch started.
+				prefs, err := loadDesktopPreferences(snapshot.dir)
+				if err != nil || prefs.AutomaticUpdatesDisabled || ctx.Err() != nil {
+					return
+				}
+				_ = recordUpdateCheck(snapshot.dir, time.Now())
+				key, err := updatePublicKey()
+				if err != nil {
+					logf("update check skipped: %v", err)
+					return
+				}
+				_, digest, _ := installReceiptIdentity(snapshot.guestDir)
+				if snapshot.portable {
+					logf("%s", uiText("status.preparing_portable_update"))
+				}
+				manifest, err := stageSignedUpdate(ctx, client, feed, snapshot.dir,
+					updatePayloadRoot(snapshot.dir, snapshot.payloadDir, snapshot.portable), currentVersion, digest, key)
+				if err != nil {
+					if ctx.Err() == nil {
+						logf("background update skipped: %v", err)
+						if errors.Is(err, errInsufficientDiskSpace) {
+							showTrayNotice(uiText("update.notice.title"), uiTextWith("update.notice.space", map[string]string{"error": err.Error()}))
+						}
+					}
+					return
+				}
+				if manifest != nil {
+					updateAvailable.Store(true)
+					showTrayNotice(uiText("update.notice.title"), uiTextWith("update.notice.ready", map[string]string{"version": manifest.Version}))
+					logf("update %s verified and staged for the next start", manifest.Version)
+				}
+			}()
+		})
 	}
-	launcherURL := normalizedRelease(manifest.Release) + "/" + manifest.Launcher.Name
-	if err := ensureVerifiedDownload(downloadClient, launcherURL, staged, manifest.Launcher.SHA256,
-		uiText("status.downloading_launcher"), ui); err != nil {
-		return false, err
+	backgroundUpdates.Lock()
+	backgroundUpdates.start, backgroundUpdates.cancel = start, cancel
+	backgroundUpdates.Unlock()
+	return cancel
+}
+
+func startReadyUpdateCheck() {
+	backgroundUpdates.Lock()
+	start := backgroundUpdates.start
+	backgroundUpdates.Unlock()
+	if start != nil {
+		start()
 	}
+}
+
+func cancelBackgroundUpdate() {
+	backgroundUpdates.Lock()
+	cancel := backgroundUpdates.cancel
+	backgroundUpdates.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+func startStagedLauncherUpdate(cfg *config, manifest *updateManifest, restartArgs []string) (bool, error) {
+	getUI().setStatus("%s", uiTextWith("status.updating_launcher", map[string]string{"version": manifest.Version}))
 	encodedArgs, err := encodeRestartArgs(restartArgs)
 	if err != nil {
 		return false, err
 	}
-	state := &launcherUpdateState{
-		Schema: updateStateVersion, Version: manifest.Version,
-		SHA256: manifest.Launcher.SHA256, Portable: cfg.portable,
-	}
+	state := &launcherUpdateState{Schema: updateStateVersion, Version: manifest.Version,
+		SHA256: manifest.Launcher.SHA256, Portable: cfg.portable, ManifestSHA256: manifest.ManifestSHA256}
 	if err := writeLauncherUpdateState(cfg.dir, state); err != nil {
 		return false, err
 	}
-	cmd := exec.Command(staged,
-		"-dir", cfg.dir,
-		"-apply-launcher-update",
-		"-update-wait-pid", strconv.Itoa(os.Getpid()),
-		"-update-restart-args", encodedArgs,
-	)
+	cmd := exec.Command(stagedLauncherPath(cfg.dir, manifest.Version), "-dir", cfg.dir,
+		"-apply-launcher-update", "-update-wait-pid", strconv.Itoa(os.Getpid()), "-update-restart-args", encodedArgs)
 	if err := cmd.Start(); err != nil {
+		_ = clearLauncherUpdateMarker(cfg.dir)
 		return false, err
 	}
+	_ = cmd.Process.Release()
 	return true, nil
 }
 
@@ -174,14 +239,17 @@ func recoverLauncherUpdate(dir, encodedArgs string) (bool, error) {
 	if state == nil || state.Version != currentVersion {
 		return false, nil
 	}
-	if !state.Started {
+	if !state.Started || state.Interrupted {
 		state.Started = true
+		state.Interrupted = false
 		return false, writeLauncherUpdateState(dir, state)
 	}
 	if !state.HasPrevious {
 		_ = clearLauncherUpdateState(dir)
 		return false, nil
 	}
+	recordFailedUpdate(dir, state.Version)
+	_ = removeUpdateFile(filepath.Join(launcherUpdateDir(dir), stagedUpdateFilename))
 	previous := previousLauncherPath(dir)
 	cmd := exec.Command(previous,
 		"-dir", dir,
@@ -200,10 +268,11 @@ func commitLauncherUpdate(dir string) {
 	if err != nil || state == nil || state.Version != currentVersion {
 		return
 	}
-	if err := clearLauncherUpdateState(dir); err != nil {
+	if err := clearLauncherUpdateMarker(dir); err != nil {
 		logf("clearing successful launcher update: %v", err)
 		return
 	}
+	_ = removeUpdateFile(filepath.Join(launcherUpdateDir(dir), stagedUpdateFilename))
 	_ = os.RemoveAll(filepath.Join(launcherUpdateDir(dir), currentVersion))
 	logf("launcher update %s confirmed after healthy boot", currentVersion)
 }
@@ -216,4 +285,24 @@ func waitForProcess(pid int) {
 	}
 	defer procCloseHandle.Call(handle)
 	procWaitForSingleObject.Call(handle, uintptr(0xFFFFFFFF))
+}
+
+func pruneCommittedUpdatePayloads(cfg *config) {
+	if state, err := readPayloadUpdateState(cfg.dir); err != nil || state != nil {
+		return
+	}
+	_, active, ok := installReceiptIdentity(cfg.guestDir)
+	if !ok {
+		return
+	}
+	_, previous, _ := installReceiptIdentity(filepath.Join(cfg.dir, "guest.previous"))
+	_, runtimeActive, _ := runtimeReceiptIdentity(filepath.Join(cfg.dir, "runtime"))
+	_, runtimePrevious, _ := runtimeReceiptIdentity(filepath.Join(cfg.dir, "runtime.previous"))
+	if err := pruneUpdatePayloads(updatePayloadRoot(cfg.dir, cfg.payloadDir, cfg.portable), active, previous, runtimeActive, runtimePrevious); err != nil {
+		logf("pruning superseded update payloads: %v", err)
+	}
+	// Payload-only updates use the same ready marker but need no launcher helper.
+	if data, err := os.ReadFile(filepath.Join(launcherUpdateDir(cfg.dir), stagedUpdateFilename)); err == nil && string(data) == currentVersion {
+		_ = removeUpdateFile(filepath.Join(launcherUpdateDir(cfg.dir), stagedUpdateFilename))
+	}
 }

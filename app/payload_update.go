@@ -19,6 +19,7 @@ type payloadUpdateState struct {
 	Version        string `json:"version"`
 	GuestPending   bool   `json:"guestPending"`
 	RuntimePending bool   `json:"runtimePending"`
+	Interrupted    bool   `json:"interrupted,omitempty"`
 	Started        bool   `json:"started"`
 }
 
@@ -151,6 +152,7 @@ func recordPayloadUpdate(dir, version string, guest, runtime bool) error {
 	state.GuestPending = state.GuestPending || guest
 	state.RuntimePending = state.RuntimePending || runtime
 	state.Started = true
+	state.Interrupted = false
 	return writePayloadUpdateState(dir, state)
 }
 
@@ -162,10 +164,12 @@ func rollbackPendingPayloadUpdates(dir string) (bool, error) {
 	if state == nil {
 		return false, nil
 	}
-	if !state.Started {
+	if !state.Started || state.Interrupted {
 		state.Started = true
+		state.Interrupted = false
 		return false, writePayloadUpdateState(dir, state)
 	}
+	recordFailedUpdate(dir, state.Version)
 	rolledBack := false
 	if state.GuestPending {
 		if err := rollbackDirectoryUpdate(filepath.Join(dir, "guest"), filepath.Join(dir, "guest.previous"), filepath.Join(dir, "guest.failed")); err != nil {
@@ -207,7 +211,6 @@ func commitGuestPayloadUpdate(dir string) {
 	if err != nil || state == nil || !state.GuestPending {
 		return
 	}
-	_ = os.RemoveAll(filepath.Join(dir, "guest.previous"))
 	state.GuestPending = false
 	if state.RuntimePending {
 		if err := writePayloadUpdateState(dir, state); err != nil {
@@ -227,7 +230,6 @@ func commitRuntimePayloadUpdate(dir string) {
 	if err != nil || state == nil || !state.RuntimePending {
 		return
 	}
-	_ = os.RemoveAll(filepath.Join(dir, "runtime.previous"))
 	state.RuntimePending = false
 	if state.GuestPending {
 		if err := writePayloadUpdateState(dir, state); err != nil {
@@ -262,4 +264,28 @@ func rollbackPendingRuntimeUpdate(dir string) (bool, error) {
 		return true, os.Remove(filepath.Join(dir, payloadUpdateStateFilename))
 	}
 	return true, writePayloadUpdateState(dir, state)
+}
+
+// An orderly pre-ready stop retries the same published transaction. A missing
+// stop marker still means a crash and follows the existing rollback path.
+func interruptPendingUpdates(dir string) error {
+	launcher, err := readLauncherUpdateState(dir)
+	if err != nil {
+		return err
+	}
+	if launcher != nil {
+		launcher.Interrupted = true
+		if err := writeLauncherUpdateState(dir, launcher); err != nil {
+			return err
+		}
+	}
+	payload, err := readPayloadUpdateState(dir)
+	if err != nil {
+		return err
+	}
+	if payload != nil {
+		payload.Interrupted = true
+		return writePayloadUpdateState(dir, payload)
+	}
+	return nil
 }

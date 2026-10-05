@@ -49,6 +49,7 @@ const (
 	trayCommandTransfers      = 3011
 	trayCommandResume         = 3012
 	trayPowerStateMessage     = 0x8005
+	trayCommandRestartUpdate  = 3022
 
 	nimAdd           = 0
 	nimDelete        = 2
@@ -328,6 +329,9 @@ func runTray(cfg trayLaunchConfig, ready chan<- uintptr, done chan<- struct{}) {
 		appendItem(reclaimFlags, trayCommandReclaimStatus, uiText("tray.menu.reclaim_status"))
 		appendItem(mfString, trayCommandClipboardFiles, uiText("tray.menu.received_files"))
 		appendItem(mfString, trayCommandAbout, uiText("tray.menu.about"))
+		if updateAvailable.Load() {
+			appendItem(mfString, trayCommandRestartUpdate, uiText("tray.menu.restart_update"))
+		}
 		appendItem(mfString, trayCommandHelp, uiText("tray.menu.help"))
 		appendItem(mfSeparator, 0, "")
 		if HostPowerState().Phase == "recovery" {
@@ -393,6 +397,13 @@ func runTray(cfg trayLaunchConfig, ready chan<- uintptr, done chan<- struct{}) {
 			select {
 			case powerEvents <- manualPowerResume:
 			default:
+			}
+		case trayCommandRestartUpdate:
+			if msgBox(uiText("update.restart.confirm"), mbYesNo|mbIconQuestion|mbDefbutton2) == idYes {
+				restartForUpdate.Store(true)
+				intentionalUpdateQuit.Store(true)
+				cancelBackgroundUpdate()
+				requestSetupCancel()
 			}
 		case trayCommandShutdown:
 			if qemuHwnd.Load() == 0 {

@@ -98,10 +98,11 @@ After the manifest pin is pushed:
 
 Confirm that the existing desktop and files survive, the new external kernel
 boots, reboot and poweroff work, and a second launch does not repeat the guest
-compatibility repair. For the rollback check, stop the first candidate boot
-before userspace reports ready, then start the candidate again. The copied
-install must restore its previous guest and runtime without downloading the
-failed payload again.
+compatibility repair. For the interruption check, quit normally before the first
+candidate boot reports ready, then launch again. The copied install must retry the candidate
+without reverting or downloading it again. For the rollback check, terminate
+QEMU unexpectedly before readiness and launch again. The copied install must
+restore its previous guest and runtime without downloading the failed payload.
 
 Keep the release as a draft until the GPU, idle CPU, audio, input, resize, and
 fullscreen checks in `docs/RUNTIME-VALIDATION.md` pass on physical hardware.
@@ -132,9 +133,32 @@ If public verification fails, the release stays published but does not replace
 the previous `Latest` release.
 
 The updater accepts only a correctly signed manifest, a newer supported version,
-the expected repository release URL, and matching SHA256 values. It stages the
-launcher and payload directories atomically. Launcher, runtime, and guest
-updates stay rollback-capable until the guest's userspace readiness service
+the expected repository release URL, and matching SHA256 values. Installed users
+boot their receipt-pinned guest and runtime before any network check. After userspace reports ready, a cancellable background job checks the
+signed feed and downloads to a stable resumable cache. The next launch
+reauthenticates the signed metadata and cached files before applying them.
+Restart to update in the tray requests a graceful shutdown; an update never
+restarts a running guest on its own. Disabled automatic updates, explicit
+payload pins and checkpoint recovery retain their existing meanings.
+
+A launcher also completes its own embedded guest and runtime pins, independently
+of the feed. For a v0.9.0 user updating to v0.10, the released launcher first
+performs its existing launcher update hop. The v0.10 launcher's first start
+boots the installed v0.9.0 guest and runtime quickly. Userspace readiness commits
+the pending launcher hop, then the v0.10 payload downloads in the background.
+The tray offers "Restart to update" once that payload is verified and staged.
+The next start applies it locally, and readiness commits the guest and runtime
+transactions. An already staged matching payload can be applied immediately.
+
+Turning automatic updates off, including `-no-update`, stops feed checks for
+newer releases; it still completes the installed launcher's own payloads.
+Explicit command-line payload pins, checkpoint recovery, a failed-version
+rollback, and offline portable mode skip this convergence. Both hops retain
+their prior files until readiness, and an interrupted first boot retries while
+an unexpected failure restores the previous payloads.
+
+It stages the launcher and payload directories atomically. Launcher, runtime,
+and guest updates stay rollback-capable until the guest's userspace readiness service
 reaches the launcher after networking starts, so QMP responding during a
 kernel panic cannot commit a bad update. The writable disk is
 preserved, and the updated initramfs installs the small matching launcher

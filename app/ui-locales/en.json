@@ -1,4 +1,9 @@
 {
+  "tray.menu.restart_update": "Restart to update",
+  "update.notice.title": "Try Omarchy update",
+  "update.notice.ready": "{version} is ready. Choose Restart to update, or it will be applied the next time you start Omarchy.",
+  "update.notice.space": "Update download paused. Free some space and try again on your next launch.\n\n{error}",
+  "update.restart.confirm": "Shut down Omarchy and restart to apply the verified update? Save your work first.",
   "about.title": "About Try Omarchy",
   "about.body": "Try Omarchy {version}\n\nRun the Omarchy desktop on Windows. Your files persist between sessions.\n\nOriginally created by @martiano. Maintained under Omacom.\n\nWebsite: {website}\nSource, help and issue reporting: {source}\n\nOpen source under the MIT License. Built with Omarchy, Arch Linux and QEMU.\n\nLauncher updates and Linux updates are separate. For Linux packages and Omarchy, use Update > Omarchy inside the desktop.",
   "about.check_updates": "Check for launcher updates",

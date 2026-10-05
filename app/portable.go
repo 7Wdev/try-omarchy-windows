@@ -23,7 +23,7 @@ func automaticUpdatesEnabled(cfg *config, noUpdate bool, release, sumsSHA256 str
 }
 
 func releaseSumsForConfig(cfg *config, client *http.Client, release, expectedSHA256 string) (map[string]string, error) {
-	if !cfg.portable {
+	if !payloadIsLocal(cfg, expectedSHA256) {
 		return releaseSums(client, release, expectedSHA256)
 	}
 	return readPortableManifest(filepath.Join(portablePayloadDirectory(cfg.payloadDir, expectedSHA256), "SHA256SUMS"), expectedSHA256)
@@ -196,4 +196,9 @@ func portableRecoveryAllowed(action, backup, restore string) bool {
 	}
 	return action == "backup" || action == "restore" || action == "snapshots" || action == "portable-create" ||
 		action == "install-omarchy" || action == "" && backup != ""
+}
+
+func payloadIsLocal(cfg *config, digest string) bool {
+	return cfg.portable || cfg.localPayload && (normalizedSHA256(digest) == cfg.localPayloadSHA256 ||
+		validSHA256(cfg.localRuntimePayloadSHA256) && normalizedSHA256(digest) == cfg.localRuntimePayloadSHA256)
 }

@@ -28,6 +28,9 @@ type config struct {
 	disablePinch, guestPinch    bool
 	lanPublic                   bool
 	instant, portable           bool
+	localPayload                bool
+	localPayloadSHA256          string
+	localRuntimePayloadSHA256   string
 	guestDir, vmDir, disk       string
 	qmpDir                      string
 	followHostTimeZone          bool

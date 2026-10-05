@@ -42,6 +42,8 @@ func finishEndSession(hwnd uintptr, ending bool) {
 	if !ending || windowsSessionEnding.Swap(true) {
 		return
 	}
+	intentionalUpdateQuit.Store(true)
+	cancelBackgroundUpdate()
 	ctx, cancel := context.WithTimeout(context.Background(), endSessionBudget)
 	defer cancel()
 	launchPending := guestLaunchInProgress.Load()
@@ -137,6 +139,8 @@ func runCloseGuard() {
 			if err == nil {
 				err = c.Call(ctx, "system_powerdown", nil, nil)
 				if err == nil {
+					intentionalUpdateQuit.Store(true)
+					cancelBackgroundUpdate()
 					guestCompositorHealth.stop()
 				}
 				c.Close()
