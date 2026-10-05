@@ -98,7 +98,6 @@ type notifyIconData struct {
 type trayLaunchConfig struct {
 	dataDir  string
 	portable bool
-	share    string
 	winqEmu  string
 }
 
@@ -163,7 +162,7 @@ func notificationText(dst []uint16, text string) {
 func startTray(cfg *config) func() {
 	ready := make(chan uintptr, 1)
 	done := make(chan struct{})
-	trayCfg := trayLaunchConfig{dataDir: cfg.dir, portable: cfg.portable, share: cfg.share, winqEmu: cfg.winqEmu}
+	trayCfg := trayLaunchConfig{dataDir: cfg.dir, portable: cfg.portable, winqEmu: cfg.winqEmu}
 	go runTray(trayCfg, ready, done)
 	hwnd := <-ready
 	if hwnd == 0 {
@@ -248,11 +247,13 @@ func runTray(cfg trayLaunchConfig, ready chan<- uintptr, done chan<- struct{}) {
 		}()
 	}
 
+	// A guest reboot can change the shared folder (boot_settings_windows.go).
 	openSharedFolder := func() {
-		if cfg.share == "" {
+		share := currentShare()
+		if share == "" {
 			return
 		}
-		cmd := exec.Command("explorer.exe", cfg.share)
+		cmd := exec.Command("explorer.exe", share)
 		cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: createNoWindow}
 		if err := cmd.Start(); err != nil {
 			errorBox(uiTextWith("tray.error.open_share", map[string]string{"error": err.Error()}))
@@ -273,7 +274,7 @@ func runTray(cfg trayLaunchConfig, ready chan<- uintptr, done chan<- struct{}) {
 		}
 		appendItem(mfString, trayCommandShow, uiText("tray.menu.open"))
 		shareFlags := uintptr(mfString)
-		if cfg.share == "" {
+		if currentShare() == "" {
 			shareFlags |= mfGray
 		}
 		appendItem(shareFlags, trayCommandShare, uiText("tray.menu.share"))
