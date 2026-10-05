@@ -2,6 +2,8 @@
 
 ## v0.10.0 - 2026-10-05
 
+- Recovery choices stay above the Omarchy window when its desktop freezes.
+
 - Images copied from Windows keep their exact pixels when pasted into Omarchy.
 
 - On NVIDIA graphics, GPU mode no longer freezes when Media Player opens, and
