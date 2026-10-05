@@ -44,6 +44,7 @@ type config struct {
 	lanPublic                   bool
 	instant, portable           bool
 	localPayload                bool
+	localPayloadSHA256          string
 	guestDir, vmDir, disk       string
 	qmpDir                      string
 	followHostTimeZone          bool
@@ -684,9 +685,12 @@ func main() {
 				}
 			} else {
 				*release, *sumsSHA256 = manifest.Release, manifest.ManifestSHA256
-				*runtimeRelease, *runtimeSumsSHA256 = manifest.Release, manifest.ManifestSHA256
+				if !explicitFlags["runtime-release"] && !explicitFlags["runtime-sums-sha256"] {
+					*runtimeRelease, *runtimeSumsSHA256 = manifest.Release, manifest.ManifestSHA256
+				}
 				if !cfg.portable {
 					cfg.payloadDir, cfg.localPayload = payloadRoot, true
+					cfg.localPayloadSHA256 = manifest.ManifestSHA256
 				}
 			}
 		}

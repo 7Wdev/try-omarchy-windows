@@ -99,7 +99,7 @@ func ensureGuestFiles(cfg *config, release, sumsSHA256 string) error {
 		dest := filepath.Join(cfg.guestDir, name)
 		status := uiTextWith("status.downloading_omarchy", map[string]string{"part": fmt.Sprint(i + 1), "total": fmt.Sprint(len(downloadedGuestArtifacts) + 1)})
 		var installErr error
-		if cfg.portable || cfg.localPayload {
+		if payloadIsLocal(cfg, sumsSHA256) {
 			status = uiTextWith("status.checking_cached_file", map[string]string{"file": name})
 			installErr = ensureVerifiedPortableCopy(filepath.Join(portablePayloadDirectory(cfg.payloadDir, sumsSHA256), name), dest, sums[name], status, ui)
 		} else {
@@ -116,7 +116,7 @@ func ensureGuestFiles(cfg *config, release, sumsSHA256 string) error {
 
 	zst := filepath.Join(cfg.guestDir, "rootfs.ext4.zst")
 	removeZst := true
-	if cfg.portable || cfg.localPayload {
+	if payloadIsLocal(cfg, sumsSHA256) {
 		zst = filepath.Join(portablePayloadDirectory(cfg.payloadDir, sumsSHA256), "rootfs.ext4.zst")
 		removeZst = false
 	}
@@ -143,7 +143,7 @@ func ensureGuestFiles(cfg *config, release, sumsSHA256 string) error {
 		if err := requireDiskSpace(cfg.guestDir, required); err != nil {
 			return fmt.Errorf("preflighting Omarchy storage: %w", err)
 		}
-		if cfg.portable || cfg.localPayload {
+		if payloadIsLocal(cfg, sumsSHA256) {
 			if cfg.portable {
 				ui.setStatus("%s", uiText("status.checking_portable_system"))
 			} else {

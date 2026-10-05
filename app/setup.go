@@ -277,7 +277,7 @@ func ensureRuntime(cfg *config, release, sumsSHA256 string) (string, error) {
 	updating := executableErr == nil
 	zipPath := filepath.Join(cfg.dir, runtimeZip)
 	removeZip := true
-	if cfg.portable || cfg.localPayload {
+	if payloadIsLocal(cfg, sumsSHA256) {
 		zipPath = filepath.Join(portablePayloadDirectory(cfg.payloadDir, sumsSHA256), runtimeZip)
 		removeZip = false
 		if cfg.portable {

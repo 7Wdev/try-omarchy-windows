@@ -317,3 +317,26 @@ func TestUpdateMetadataAndHeadersAreBounded(t *testing.T) {
 		})
 	}
 }
+
+func TestExplicitRuntimePinKeepsItsOwnTrustRoot(t *testing.T) {
+	configureSetupCancellation(false)
+	data := []byte(testSHA256([]byte("custom runtime")) + "  " + runtimeZip + "\n")
+	sum := testSHA256(data)
+	var requested atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { requested.Store(true); w.Write(data) }))
+	defer server.Close()
+	cfg := &config{localPayload: true, localPayloadSHA256: testSHA256([]byte("different guest update")), payloadDir: t.TempDir()}
+	sums, err := releaseSumsForConfig(cfg, server.Client(), server.URL, sum)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !requested.Load() || sums[runtimeZip] != testSHA256([]byte("custom runtime")) {
+		t.Fatal("explicit runtime pin was replaced by another payload cache")
+	}
+	if payloadIsLocal(cfg, sum) {
+		t.Fatal("different trust root selected local cache")
+	}
+	if !payloadIsLocal(cfg, cfg.localPayloadSHA256) {
+		t.Fatal("matching signed update failed to select local cache")
+	}
+}

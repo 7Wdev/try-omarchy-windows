@@ -29,6 +29,7 @@ type config struct {
 	lanPublic                   bool
 	instant, portable           bool
 	localPayload                bool
+	localPayloadSHA256          string
 	guestDir, vmDir, disk       string
 	qmpDir                      string
 	followHostTimeZone          bool
