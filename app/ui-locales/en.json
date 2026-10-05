@@ -673,5 +673,5 @@
   "tray.power.snapshot": "Choose Resume Omarchy from the tray menu to try again. Diagnostics saved to:\n{path}",
   "tray.power.snapshot_failed": "Choose Resume Omarchy from the tray menu to try again. Could not save automatic diagnostics: {error}",
   "shutdown.windows_reason": "Shutting down Omarchy safely",
-  "shutdown.unclean_recovery": "Omarchy did not shut down cleanly last time. Open the existing snapshot recovery tools before starting it? Choose No to boot normally and let the guest check its disk."
+  "shutdown.unclean_recovery": "Omarchy did not shut down cleanly last time, for example because Windows restarted before it finished. Open the snapshot recovery tools before starting Omarchy? Choose No to start normally."
 }

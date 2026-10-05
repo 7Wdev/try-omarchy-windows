@@ -37,9 +37,12 @@ battery and app-catalog retry uses a timer without blocking periodic updates.
 The tray registers a short shutdown-block reason when Windows asks whether the
 session may end, then responds immediately. Only a confirmed `WM_ENDSESSION`
 requests guest poweroff. Negotiation, resuming a paused CPU, the ACPI power button
-and waiting for a clean guest shutdown share one four-second deadline. Windows
-may force termination sooner; sign-out is never held indefinitely. A canceled
-end-session query leaves the guest running.
+and waiting for a clean guest shutdown share one ten-second deadline. The block
+reason stays registered throughout that wait. This allows margin above measured
+KVM shutdown times for slower WHPX hosts and stays below the 25-second cap.
+Windows may force termination sooner if the user chooses Shut down anyway;
+sign-out is never held indefinitely. A canceled end-session query leaves the
+guest running. An already exited guest returns immediately.
 
 The launcher records an unclean marker before each VM start and only records a
 clean exit after a guest-originated QMP shutdown event and process exit. On the

@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-const endSessionBudget = 4 * time.Second
+const endSessionBudget = 10 * time.Second
 const guestExitFilename = "guest-exit.json"
 
 type guestExitRecord struct {

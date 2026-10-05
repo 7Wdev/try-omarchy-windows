@@ -545,8 +545,9 @@ func runTray(cfg trayLaunchConfig, ready chan<- uintptr, done chan<- struct{}) {
 	copy(nid.tip[:], syscall.StringToUTF16(appTitle))
 	retryAdd()
 	trayWindow.Store(hwnd)
+	powerChanged := power.changed
 	power.changed = func(phase string) {
-		setHostPowerTransition(phase)
+		powerChanged(phase)
 		procPostMessageW.Call(hwnd, trayPowerStateMessage, 0, 0)
 	}
 	power.onRecovery = func(err error) {

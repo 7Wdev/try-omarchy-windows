@@ -25,7 +25,20 @@ func TestPowerStartupAndShutdown(t *testing.T) {
 	qemuPid.Store(123)
 	p := newGuestPowerState()
 	p.handle(pbtApmSuspend)
+	guestCompositorHealth.mu.Lock()
+	suspended := guestCompositorHealth.suspended
+	guestCompositorHealth.mu.Unlock()
+	if !suspended {
+		t.Fatal("compositor health did not observe host suspension")
+	}
 	p.handle(pbtApmResumeAutomatic)
+	guestCompositorHealth.mu.Lock()
+	suspended = guestCompositorHealth.suspended
+	grace := guestCompositorHealth.grace
+	guestCompositorHealth.mu.Unlock()
+	if suspended || !grace.After(time.Now()) {
+		t.Fatal("compositor health did not receive resume grace")
+	}
 	if p.client != nil || p.owned {
 		t.Fatal("contacted early-boot guest")
 	}

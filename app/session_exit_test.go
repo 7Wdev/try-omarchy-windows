@@ -8,8 +8,8 @@ import (
 )
 
 func TestEndSessionSingleBudget(t *testing.T) {
-	if endSessionBudget >= 5*time.Second {
-		t.Fatal("budget exceeds Windows response allowance")
+	if endSessionBudget <= 4*time.Second || endSessionBudget > 25*time.Second {
+		t.Fatal("budget must allow guest shutdown and stay within 25 seconds")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
 	defer cancel()
@@ -40,7 +40,9 @@ func TestEndSessionCleanAndFailure(t *testing.T) {
 		t.Fatal("failed request recorded clean")
 	}
 	clean = true
-	if !endGuestSession(context.Background(), func(context.Context) error { t.Fatal("powered down an absent guest"); return nil }, func() bool { return clean }) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if !endGuestSession(ctx, func(context.Context) error { t.Fatal("powered down an absent guest"); return nil }, func() bool { return clean }) {
 		t.Fatal("missing already clean exit")
 	}
 }
