@@ -3,6 +3,7 @@ package main
 import (
 	"regexp"
 	"strings"
+	"unicode/utf16"
 )
 
 // windowsZoneToIANA maps Windows time zone key names to the IANA zone the
@@ -170,6 +171,7 @@ var keyboardLayoutForKLID = map[string][2]string{
 	"00010405": {"cz", "qwerty"},
 	"00010415": {"pl", "qwertz"},
 	"00010419": {"ru", "typewriter"},
+	"0001041f": {"tr", "f"},
 }
 
 var keyboardLayoutForLanguage = map[string][2]string{
@@ -197,6 +199,7 @@ var keyboardLayoutForLanguage = map[string][2]string{
 }
 
 var (
+	validKLID        = regexp.MustCompile(`^[0-9a-f]{8}$`)
 	validLocaleName  = regexp.MustCompile(`^[a-z]{2,3}_[A-Z]{2}$`)
 	validZoneName    = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_+./-]{0,63}$`)
 	validLayoutName  = regexp.MustCompile(`^[a-z]{2,8}$`)
@@ -217,7 +220,7 @@ func ianaZoneForWindows(key string) string {
 // identifier, or "" when the identifier is unknown.
 func xkbForKLID(klid string) (string, string) {
 	klid = strings.ToLower(strings.TrimSpace(klid))
-	if len(klid) != 8 {
+	if !validKLID.MatchString(klid) {
 		return "", ""
 	}
 	if m, ok := keyboardLayoutForKLID[klid]; ok {
@@ -234,7 +237,15 @@ func xkbForKLID(klid string) (string, string) {
 // region, or with script tags such as "sr-Latn-RS", yield "" and the guest
 // keeps its default.
 func posixLocaleForWindows(name string) string {
-	parts := strings.Split(strings.TrimSpace(name), "-")
+	name = strings.TrimSpace(name)
+	// These Windows macroregions have no corresponding installed glibc locale.
+	switch strings.ToLower(name) {
+	case "en-150":
+		return "en_GB"
+	case "es-419":
+		return "es_MX"
+	}
+	parts := strings.Split(name, "-")
 	if len(parts) != 2 {
 		return ""
 	}
@@ -270,4 +281,57 @@ func hostLocaleCmdline(zone, layout, variant, locale string) string {
 func splitKeyboardSpec(spec string) (string, string) {
 	layout, variant, _ := strings.Cut(strings.TrimSpace(spec), ":")
 	return layout, variant
+}
+
+// resolveKeyboardSubstitute follows HKCU Keyboard Layout\Substitutes aliases.
+// Invalid values and cycles leave the guest keyboard unchanged.
+func resolveKeyboardSubstitute(klid string, lookup func(string) string) string {
+	seen := map[string]bool{}
+	for i := 0; i < 16; i++ {
+		klid = strings.ToLower(strings.TrimSpace(klid))
+		if !validKLID.MatchString(klid) || seen[klid] {
+			return ""
+		}
+		seen[klid] = true
+		next := lookup(klid)
+		if next == "" {
+			return klid
+		}
+		klid = next
+	}
+	return ""
+}
+
+// preferredUILanguage decodes the first entry of Windows' ordered MULTI_SZ.
+func preferredUILanguage(buf []uint16) string {
+	for i, c := range buf {
+		if c == 0 {
+			return string(utf16.Decode(buf[:i]))
+		}
+	}
+	return ""
+}
+
+func readPreferredUILanguage(query func(count, size *uint32, buf []uint16) bool) string {
+	var count, size uint32
+	if !query(&count, &size, nil) || size < 2 || size > 65536 {
+		return ""
+	}
+	buf := make([]uint16, size)
+	if !query(&count, &size, buf) || count == 0 || size > uint32(len(buf)) {
+		return ""
+	}
+	return preferredUILanguage(buf[:size])
+}
+
+// guestLocaleForWindows prefers a mapped UI language, then the regional format.
+func guestLocaleForWindows(ui, regional string) (locale, source string) {
+	if locale = posixLocaleForWindows(ui); locale != "" {
+		return locale, "UI language"
+	}
+	locale = posixLocaleForWindows(regional)
+	if ui != "" && strings.EqualFold(strings.Split(strings.TrimSpace(ui), "-")[0], strings.Split(strings.TrimSpace(regional), "-")[0]) {
+		return locale, "regional format matching UI language"
+	}
+	return locale, "regional format"
 }

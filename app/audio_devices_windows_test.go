@@ -191,3 +191,37 @@ func TestAudioSettingsNative(t *testing.T) {
 		}
 	}
 }
+
+func TestSDLAudioEnumerationSerializesLifetime(t *testing.T) {
+	entered, release := make(chan struct{}), make(chan struct{})
+	secondEntered, done := make(chan struct{}), make(chan struct{}, 2)
+	go func() {
+		withSDLAudioEnumeration(func() (audioDeviceCatalog, error) {
+			close(entered)
+			<-release
+			return audioDeviceCatalog{}, nil
+		})
+		done <- struct{}{}
+	}()
+	<-entered
+	go func() {
+		withSDLAudioEnumeration(func() (audioDeviceCatalog, error) {
+			close(secondEntered)
+			return audioDeviceCatalog{}, nil
+		})
+		done <- struct{}{}
+	}()
+	select {
+	case <-secondEntered:
+		t.Error("second SDL lifecycle overlapped the first")
+	case <-time.After(30 * time.Millisecond):
+	}
+	close(release)
+	for i := 0; i < 2; i++ {
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatal("enumeration mutex was not released")
+		}
+	}
+}

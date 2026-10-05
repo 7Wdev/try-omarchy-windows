@@ -23,6 +23,7 @@ type audioBridgeDevice struct {
 
 type audioBridgeCatalog struct {
 	Type              string              `json:"type"`
+	VolumeSync        bool                `json:"volumeSync,omitempty"`
 	Outputs           []audioBridgeDevice `json:"outputs"`
 	Inputs            []audioBridgeDevice `json:"inputs"`
 	SelectedOutputUID *string             `json:"selectedOutputUID"`
@@ -30,9 +31,14 @@ type audioBridgeCatalog struct {
 }
 
 type audioBridgeRequest struct {
-	Type      string  `json:"type"`
-	Direction string  `json:"direction,omitempty"`
-	UID       *string `json:"deviceUID"`
+	Type       string   `json:"type"`
+	Direction  string   `json:"direction,omitempty"`
+	UID        *string  `json:"deviceUID"`
+	EndpointID string   `json:"endpointID,omitempty"`
+	Volume     *float64 `json:"volume,omitempty"`
+	Muted      *bool    `json:"muted,omitempty"`
+	Origin     string   `json:"origin,omitempty"`
+	Sequence   uint64   `json:"sequence,omitempty"`
 }
 
 func audioBridgeDevices(endpoints []audioEndpointInfo, sdlNames []string) []audioBridgeDevice {
@@ -75,7 +81,7 @@ func audioBridgeSelected(id, name string, devices []audioBridgeDevice) *string {
 }
 
 func currentAudioBridgeCatalog(dataDir, qemu string, microphoneDisabledAtBoot bool) (audioBridgeCatalog, error) {
-	catalog := audioBridgeCatalog{Type: "catalog", Outputs: []audioBridgeDevice{}, Inputs: []audioBridgeDevice{}}
+	catalog := audioBridgeCatalog{Type: "catalog", VolumeSync: true, Outputs: []audioBridgeDevice{}, Inputs: []audioBridgeDevice{}}
 	names, err := loadAudioPreferences(dataDir)
 	if err != nil {
 		return catalog, err
@@ -116,6 +122,14 @@ func parseAudioBridgeRequest(line []byte) (audioBridgeRequest, error) {
 		return request, fmt.Errorf("trailing audio bridge data")
 	}
 	switch request.Type {
+	case "get-volume":
+		if request.Direction != "" || request.UID != nil || request.EndpointID != "" || request.Volume != nil || request.Muted != nil || request.Origin != "" || request.Sequence != 0 {
+			return request, fmt.Errorf("invalid volume request")
+		}
+	case "set-volume":
+		if request.Direction != "" || request.UID != nil || request.Volume == nil || request.Muted == nil || request.Origin != "guest" || request.Sequence == 0 || !(endpointVolume{request.EndpointID, *request.Volume, *request.Muted}).valid() {
+			return request, fmt.Errorf("invalid volume state")
+		}
 	case "get-catalog":
 		if request.Direction != "" || request.UID != nil {
 			return request, fmt.Errorf("invalid catalog request")
@@ -129,6 +143,11 @@ func parseAudioBridgeRequest(line []byte) (audioBridgeRequest, error) {
 		}
 	default:
 		return request, fmt.Errorf("unknown audio bridge request")
+	}
+	if request.Type == "get-catalog" || request.Type == "select" {
+		if request.EndpointID != "" || request.Volume != nil || request.Muted != nil || request.Origin != "" || request.Sequence != 0 {
+			return request, fmt.Errorf("volume fields in route request")
+		}
 	}
 	return request, nil
 }
@@ -178,7 +197,7 @@ func applyAudioBridgeSelection(dataDir string, catalog audioBridgeCatalog, reque
 	return publishSavedAudioRoutes(dataDir, names, desktop.MicrophoneDisabled)
 }
 
-func writeAudioBridgeCatalog(conn net.Conn, catalog audioBridgeCatalog) ([]byte, error) {
+func writeAudioBridgeCatalog(conn net.Conn, catalog any) ([]byte, error) {
 	message, err := json.Marshal(catalog)
 	if err != nil {
 		return nil, err
@@ -238,12 +257,77 @@ func serveAudioBridge(conn net.Conn, dataDir, qemu string, microphoneDisabledAtB
 	if err := refresh(true); err != nil {
 		return err
 	}
+	var volume *windowsVolumeEndpoint
+	var volumeChanges <-chan endpointVolume
+	var sync volumeSync
+	var debounce *time.Timer
+	var due <-chan time.Time
+	defer func() {
+		if debounce != nil {
+			debounce.Stop()
+		}
+		if volume != nil {
+			volume.close()
+		}
+	}()
+	publishVolume := func() error {
+		_, err := writeAudioBridgeCatalog(conn, sync.message)
+		return err
+	}
+	volumeEnabled := func() bool {
+		prefs, err := loadDesktopPreferences(dataDir)
+		return err == nil && !prefs.VolumeSyncDisabled && volume != nil
+	}
+	startVolume := func() {
+		var initial endpointVolume
+		var err error
+		volume, initial, err = startWindowsVolumeEndpoint()
+		if err != nil {
+			logf("audio bridge: volume: %v", err)
+			initial = endpointVolume{}
+		}
+		if volume != nil {
+			volumeChanges = volume.changes
+		}
+		sync.observe(initial, volumeEnabled(), "windows")
+	}
 	for {
 		select {
 		case line := <-lines:
 			request, err := parseAudioBridgeRequest(line)
 			if err != nil {
 				return err
+			}
+			if request.Type == "get-volume" {
+				if sync.message.Sequence == 0 {
+					startVolume()
+				}
+				if err := publishVolume(); err != nil {
+					return err
+				}
+				continue
+			}
+			if request.Type == "set-volume" {
+				if sync.message.Sequence == 0 {
+					return fmt.Errorf("volume handshake required")
+				}
+				if sync.request(volumeSyncRequest{request.Origin, request.Sequence, endpointVolume{request.EndpointID, *request.Volume, *request.Muted}}) {
+					if debounce == nil {
+						debounce = time.NewTimer(volumeSyncDebounce)
+					} else {
+						if !debounce.Stop() {
+							select {
+							case <-debounce.C:
+							default:
+							}
+						}
+						debounce.Reset(volumeSyncDebounce)
+					}
+					due = debounce.C
+				} else if err := publishVolume(); err != nil {
+					return err
+				}
+				continue
 			}
 			if request.Type == "select" {
 				catalog, err := currentAudioBridgeCatalog(dataDir, qemu, microphoneDisabledAtBoot)
@@ -260,6 +344,43 @@ func serveAudioBridge(conn net.Conn, dataDir, qemu string, microphoneDisabledAtB
 		case <-ticker.C:
 			if err := refresh(false); err != nil {
 				logf("audio bridge: catalog refresh: %v", err)
+			}
+			if sync.message.Sequence != 0 {
+				if volume == nil {
+					startVolume()
+				} else {
+					sync.observe(sync.message.endpointVolume, volumeEnabled(), "windows")
+				}
+				// Heartbeats keep an idle guest from retaining bypassed controls
+				// after the launcher or its bridge disappears.
+				if err := publishVolume(); err != nil {
+					return err
+				}
+			}
+		case value := <-volumeChanges:
+			if sync.observe(value, volumeEnabled(), "windows") {
+				if err := publishVolume(); err != nil {
+					return err
+				}
+			}
+		case <-due:
+			due = nil
+			if !volumeEnabled() {
+				sync.observe(sync.message.endpointVolume, false, "windows")
+			}
+			if value, apply := sync.take(); apply && volume != nil {
+				actual, err := volume.set(value, sync.message.endpointVolume)
+				if err != nil {
+					logf("audio bridge: volume: %v", err)
+				}
+				origin := "guest"
+				if err != nil || !actual.equal(value) {
+					origin = "windows"
+				}
+				sync.acknowledge(actual, volumeEnabled(), origin)
+			}
+			if err := publishVolume(); err != nil {
+				return err
 			}
 		case err := <-readErr:
 			if err == nil || errors.Is(err, io.EOF) {
