@@ -44,6 +44,29 @@ func TestDesktopPreferencesRejectCorruption(t *testing.T) {
 		}
 	}
 }
+
+func TestVolumeSyncPreferenceDefaultsAndPersists(t *testing.T) {
+	dir := t.TempDir()
+	for _, legacy := range []string{"", `{"schemaVersion":1,"microphoneDisabled":true}`} {
+		if legacy != "" {
+			if err := os.WriteFile(filepath.Join(dir, desktopPreferencesFilename), []byte(legacy), 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		prefs, err := loadDesktopPreferences(dir)
+		if err != nil || prefs.VolumeSyncDisabled {
+			t.Fatalf("sync did not default on: %+v %v", prefs, err)
+		}
+	}
+	prefs := desktopPreferences{VolumeSyncDisabled: true, MicrophoneDisabled: true}
+	if err := saveDesktopPreferences(dir, prefs); err != nil {
+		t.Fatal(err)
+	}
+	got, err := loadDesktopPreferences(dir)
+	if err != nil || !got.VolumeSyncDisabled || !got.MicrophoneDisabled {
+		t.Fatalf("toggle lost: %+v %v", got, err)
+	}
+}
 func TestMicrophoneOffKeepsPlayback(t *testing.T) {
 	for backend, want := range map[string]string{
 		"sdl":    "sdl,id=snd,out.frequency=48000,in.voices=0",

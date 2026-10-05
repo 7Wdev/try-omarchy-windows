@@ -290,3 +290,11 @@ Patch 0126 allows Media Player to use Mesa software rendering when the launcher
 boots with CPU rendering. GPU mode retains mpv defaults, and explicit command-line
 options take precedence. Compatibility revision 49 delivers the wrapper to existing
 guest disks.
+
+Patch 0128 synchronizes the visible output volume and mute with the Windows
+default playback endpoint through the existing audio port. While enabled, raw
+null-sink monitors feed the unity-gain virtio transport so only Windows applies
+master gain and mute. The original remap graph returns when sync is disabled,
+the bridge disconnects or host volume state is absent for ten seconds. The current
+guest volume and mute survive fallback; a capable host can enable sync again.
+Compatibility revision 50 delivers the updated bridge to existing disks.
