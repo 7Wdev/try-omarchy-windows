@@ -941,13 +941,19 @@ func supervise(cfg *config, cmdline string) bool {
 		proc.Env = pinchEnvironment(proc.Env, pinch)
 		// The w-binary's startup errors (bad args, SDL init) only ever reach
 		// stderr; without this they vanish and a dead QEMU is undebuggable.
-		if ef, err := os.OpenFile(filepath.Join(cfg.vmDir, "qemu-stderr.log"),
-			os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644); err == nil { // per-attempt: the memory ladder sniffs it
+		ef, err := os.OpenFile(filepath.Join(cfg.vmDir, "qemu-stderr.log"),
+			os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644) // per-attempt: the memory ladder sniffs it
+		if err == nil {
 			proc.Stdout = ef
 			proc.Stderr = ef
-			defer ef.Close()
 		}
-		if err := proc.Start(); err != nil {
+		err = proc.Start()
+		// QEMU inherits its own handle. Closing ours per attempt keeps retries
+		// and guest reboots from leaking one handle each.
+		if ef != nil {
+			ef.Close()
+		}
+		if err != nil {
 			fatal(uiTextWith("fatal.qemu.start", map[string]string{"error": err.Error()}))
 		}
 		qemuPid.Store(uint32(proc.Process.Pid))
