@@ -28,9 +28,10 @@ import (
 
 var (
 	procSetWinEventHook = user32.NewProc("SetWinEventHook")
-	retitledDisplays    sync.Map // window handle -> guest display index
+	retitledDisplays    sync.Map // window handle -> recordedDisplay
 	draggedWindows      sync.Map // window handle -> the user is moving or resizing it
 	userMovedWindows    sync.Map // window handle -> the user moved or resized it
+	destroyedWindows    sync.Map // handles whose enforcer state must be discarded
 	qemuWindowChanged   = make(chan struct{}, 1)
 )
 
@@ -38,6 +39,7 @@ const (
 	eventSystemMoveSizeStart  = 0x000A
 	eventSystemMoveSizeEnd    = 0x000B
 	eventObjectCreate         = 0x8000
+	eventObjectDestroy        = 0x8001
 	eventObjectShow           = 0x8002
 	eventObjectLocationChange = 0x800B
 	eventObjectNameChange     = 0x800C
@@ -46,8 +48,55 @@ const (
 	objidWindow               = 0
 )
 
-func qemuWindowEvent(_, event, hwnd, idObject, _, _, _ uintptr) uintptr {
-	if hwnd == 0 || int32(idObject) != objidWindow || !isQemuDisplayWindow(hwnd, qemuPid.Load()) {
+type recordedDisplay struct {
+	pid   uint32
+	index int
+}
+
+func clearWindowEventState(hwnd uintptr) {
+	retitledDisplays.Delete(hwnd)
+	draggedWindows.Delete(hwnd)
+	userMovedWindows.Delete(hwnd)
+}
+
+func pruneWindowEventState(pid uint32, live func(uintptr, uint32) bool) {
+	for _, states := range []*sync.Map{&retitledDisplays, &draggedWindows, &userMovedWindows} {
+		states.Range(func(key, value any) bool {
+			hwnd := key.(uintptr)
+			owner := uint32(0)
+			if display, ok := value.(recordedDisplay); ok {
+				owner = display.pid
+			} else {
+				owner = value.(uint32)
+			}
+			if owner != pid || !live(hwnd, pid) {
+				states.CompareAndDelete(key, value)
+			}
+			return true
+		})
+	}
+}
+
+func qemuWindowEvent(_, event, hwnd, idObject, idChild, _, _ uintptr) uintptr {
+	if hwnd == 0 || int32(idObject) != objidWindow || idChild != 0 {
+		return 0
+	}
+	// A destroyed HWND no longer has a live PID/class to filter against.
+	if event == eventObjectDestroy {
+		_, titled := retitledDisplays.Load(hwnd)
+		_, dragged := draggedWindows.Load(hwnd)
+		_, moved := userMovedWindows.Load(hwnd)
+		if titled || dragged || moved {
+			clearWindowEventState(hwnd)
+			destroyedWindows.Store(hwnd, true)
+			select {
+			case qemuWindowChanged <- struct{}{}:
+			default:
+			}
+		}
+		return 0
+	}
+	if !isQemuDisplayWindow(hwnd, qemuPid.Load()) {
 		return 0
 	}
 	switch event {
@@ -56,10 +105,10 @@ func qemuWindowEvent(_, event, hwnd, idObject, _, _, _ uintptr) uintptr {
 	case eventObjectNameChange:
 		restoreDisplayTitle(hwnd)
 	case eventSystemMoveSizeStart:
-		draggedWindows.Store(hwnd, true)
+		draggedWindows.Store(hwnd, qemuPid.Load())
 	case eventSystemMoveSizeEnd:
 		draggedWindows.Delete(hwnd)
-		userMovedWindows.Store(hwnd, true)
+		userMovedWindows.Store(hwnd, qemuPid.Load())
 	}
 	select {
 	case qemuWindowChanged <- struct{}{}:
@@ -76,7 +125,7 @@ func restoreDisplayTitle(hwnd uintptr) {
 	if !ok {
 		return
 	}
-	retitledDisplays.Store(hwnd, index)
+	retitledDisplays.Store(hwnd, recordedDisplay{qemuPid.Load(), index})
 	value, _ := syscall.UTF16PtrFromString(displayWindowTitle(index))
 	procSetWindowTextW.Call(hwnd, uintptr(unsafe.Pointer(value)))
 }
@@ -87,18 +136,19 @@ func recordedDisplayIndex(hwnd uintptr) (int, bool) {
 	if !ok {
 		return 0, false
 	}
-	return value.(int), true
+	display := value.(recordedDisplay)
+	return display.index, display.pid == qemuPid.Load()
 }
 
 // takeUserMoved reports, once, that the user moved or resized the window.
 func takeUserMoved(hwnd uintptr) bool {
-	_, moved := userMovedWindows.LoadAndDelete(hwnd)
-	return moved
+	pid, moved := userMovedWindows.LoadAndDelete(hwnd)
+	return moved && pid.(uint32) == qemuPid.Load()
 }
 
 func beingDragged(hwnd uintptr) bool {
-	_, dragging := draggedWindows.Load(hwnd)
-	return dragging
+	pid, dragging := draggedWindows.Load(hwnd)
+	return dragging && pid.(uint32) == qemuPid.Load()
 }
 
 // installQemuWindowHooks must run on a thread that pumps messages:

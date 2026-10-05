@@ -217,11 +217,25 @@ func releaseQemuCursor() {
 // variables; only runTitleEnforcer's goroutine calls enforceDisplayWindows, so the
 // handoff needs no locking.
 type displayWindowState struct {
-	index     int
-	last      *windowPlacement // the placement remembered for the window
-	target    *windowPlacement // where the window belongs (see nextPlacementStep)
-	themeSet  bool             // the title bar theme below was applied or refused
-	darkTitle bool
+	index          int
+	last           *windowPlacement // the placement remembered for the window
+	target         *windowPlacement // where the window belongs (see nextPlacementStep)
+	themeSet       bool             // the title bar theme below was applied or refused
+	darkTitle      bool
+	topologyRepair bool // retained while minimized or being dragged
+}
+
+func (state *displayWindowState) repairTopology(now *windowPlacement, dragging bool, monitors []hostMonitor, apply func(*windowPlacement) bool) *windowPlacement {
+	if !state.topologyRepair || now == nil || dragging {
+		return nil
+	}
+	restored := repairDisplayPlacement(now, state.index, monitors)
+	if restored == nil || !restored.sameAs(now) && !apply(restored) {
+		return nil
+	}
+	state.topologyRepair = false
+	state.target = restored
+	return restored
 }
 
 var (
@@ -275,12 +289,7 @@ func enumTitleProc(hwnd, _ uintptr) uintptr {
 		state = &displayWindowState{index: index}
 		enumTitleWindows[hwnd] = state
 		if !enumTitleFullscreen {
-			monitors := enumTitleMonitors
-			placement, err := loadDisplayPlacement(enumTitleDir, index)
-			if err != nil || !placement.usable(monitors) {
-				placement = initialDisplayPlacement(index, monitors)
-			}
-			placement = placement.fittedTo(workAreas(enumTitleMonitorDetails))
+			placement := displayPlacement(enumTitleDir, index, enumTitleMonitorDetails)
 			if placement == nil || !applyPlacement(hwnd, placement) {
 				procShowWindow.Call(hwnd, swShowMaximized)
 			}
@@ -296,6 +305,7 @@ func enumTitleProc(hwnd, _ uintptr) uintptr {
 		}
 		setTaskbarIdentity(hwnd)
 	}
+	retitledDisplays.Store(hwnd, recordedDisplay{enumTitlePid, state.index})
 	if curtainUp.Load() {
 		concealForCurtain(hwnd)
 		curtainTaskbar(hwnd)
@@ -316,26 +326,30 @@ func enumTitleProc(hwnd, _ uintptr) uintptr {
 		}
 		state.themeSet, state.darkTitle = true, enumTitleDark
 	}
-	if enumTitleTopologyChanged && !enumTitleFullscreen {
-		if now := capturePlacement(hwnd); now != nil && !now.usable(enumTitleMonitors) {
-			if restored := initialDisplayPlacement(state.index, enumTitleMonitors); restored != nil {
-				applyPlacement(hwnd, restored)
-				state.target = restored
-				restored.SavedAt = time.Now()
-				if saveDisplayPlacement(enumTitleDir, state.index, *restored) == nil {
-					state.last = restored
-				}
+	if enumTitleTopologyChanged {
+		state.topologyRepair = true
+	}
+	if !enumTitleFullscreen {
+		if restored := state.repairTopology(capturePlacement(hwnd), beingDragged(hwnd), enumTitleMonitorDetails, func(p *windowPlacement) bool {
+			return correctPlacement(hwnd, p)
+		}); restored != nil {
+			restored.SavedAt = time.Now()
+			if saveDisplayPlacement(enumTitleDir, state.index, *restored) == nil {
+				state.last = restored
 			}
 		}
 	}
-	if enumTitleTopologyChanged && enumTitleFullscreen && len(enumTitleMonitors) > 0 {
+	if state.topologyRepair && enumTitleFullscreen && len(enumTitleMonitors) > 0 && capturePlacement(hwnd) != nil {
 		var bounds screenRect
 		if result, _, _ := procGetWindowRect.Call(hwnd, uintptr(unsafe.Pointer(&bounds))); result != 0 {
 			if current := (&windowPlacement{Normal: bounds}); !current.usable(enumTitleMonitors) {
 				first, _ := selectedHostMonitor(enumTitleFullscreenDisplay, enumTitleMonitorDetails)
 				m := enumTitleMonitorDetails[(first+state.index)%len(enumTitleMonitorDetails)].Bounds
-				procSetWindowPos.Call(hwnd, 0, uintptr(m.Left), uintptr(m.Top), uintptr(m.width()), uintptr(m.height()), 0x0004|0x0010)
+				if ok, _, _ := procSetWindowPos.Call(hwnd, 0, uintptr(m.Left), uintptr(m.Top), uintptr(m.width()), uintptr(m.height()), 0x0004|0x0010); ok == 0 {
+					return 1
+				}
 			}
+			state.topologyRepair = false
 		}
 	}
 	if !enumTitleFullscreen {
@@ -348,7 +362,7 @@ func enumTitleProc(hwnd, _ uintptr) uintptr {
 			}
 			state.target = now
 		case placementRestore:
-			applyPlacement(hwnd, state.target)
+			correctPlacement(hwnd, state.target)
 		}
 	}
 	return 1
@@ -358,7 +372,14 @@ func enforceDisplayWindows(pid uint32, dir string, fullscreen bool, fullscreenDi
 	if pid != enumTitlePid {
 		enumTitleWindows = map[uintptr]*displayWindowState{}
 		enumTitleMonitors = nil
+		enumTitleMonitorDetails = nil
 	}
+	pruneWindowEventState(pid, isQemuDisplayWindow)
+	destroyedWindows.Range(func(key, _ any) bool {
+		delete(enumTitleWindows, key.(uintptr))
+		destroyedWindows.Delete(key)
+		return true
+	})
 	enumTitlePid, enumTitleDir, enumTitleFullscreen, enumTitleFullscreenDisplay, enumTitleIcon = pid, dir, fullscreen, fullscreenDisplay, icon
 	enumTitleSeen = map[uintptr]bool{}
 	details := hostMonitors()
@@ -366,7 +387,7 @@ func enforceDisplayWindows(pid uint32, dir string, fullscreen bool, fullscreenDi
 	for _, monitor := range details {
 		monitors = append(monitors, monitor.Bounds)
 	}
-	enumTitleTopologyChanged = !slices.Equal(enumTitleMonitors, monitors)
+	enumTitleTopologyChanged = !slices.Equal(enumTitleMonitors, monitors) || !slices.Equal(enumTitleMonitorDetails, details)
 	enumTitleMonitors = monitors
 	enumTitleMonitorDetails = details
 	enumTitleDark = windowsAppsUseDarkTheme()
