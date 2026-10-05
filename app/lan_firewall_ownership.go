@@ -74,10 +74,17 @@ func loadPortableFirewallOwners(root string) ([]portableFirewallOwner, error) {
 	if err := validateMovePath(root); err != nil {
 		return nil, err
 	}
-	entries, err := os.ReadDir(root)
+	info, err := os.Lstat(root)
 	if os.IsNotExist(err) {
 		return nil, nil
 	}
+	if err != nil {
+		return nil, err
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("firewall host inventory must be a directory")
+	}
+	entries, err := os.ReadDir(root)
 	if err != nil {
 		return nil, err
 	}
