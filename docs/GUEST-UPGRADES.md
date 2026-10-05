@@ -57,6 +57,14 @@ without requiring **Update > Omarchy** or a kernel change. Fresh images include
 the same bridge. Runtime `4.0.4-7` advances the package release for subsequent
 runtime updates.
 
+Compatibility revision 57 delivers a guest-specific `install/config/snapper.sh`
+before login. The guest uses ext4 and has neither Snapper nor a Limine bootloader,
+so this setup step prints a message and completes without changing snapshot
+configuration or services. Omarchy migration `1781984677` can then finish even
+on disks where its completion marker is missing. Other migrations still fail
+normally on errors. Runtime `4.0.4-8` includes the same setup step for fresh
+installations and subsequent updates. Resetting the disk is not required.
+
 If repository publication fails, inspect:
 
 ```sh

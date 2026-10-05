@@ -154,6 +154,13 @@ migration with a step that only prints a message. The rest of the release is
 installer and hardware files the guest does not use. The runtime package becomes
 `4.0.4-1`, so Update > Omarchy brings existing guests to it.
 
+Patch 0138 skips Omarchy's Snapper setup on the ext4 guest. Migration
+`1781984677` invokes that setup when snapshot services are missing, but the guest
+has no Snapper or Limine bootloader. Compatibility revision 57 delivers the
+same no-op setup to existing disks before login, and runtime `4.0.4-8` carries
+it through package updates. The migration runner and unrelated failures remain
+unchanged.
+
 Patch 0116 stops the launcher's initramfs from copying `vdso/` into
 `/usr/lib/modules/<version>` on the disk. `linux-headers` owns that directory,
 and an unowned copy made pacman refuse the next `linux-headers` upgrade, which
