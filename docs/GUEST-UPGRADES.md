@@ -22,6 +22,21 @@ handling, so local edits can be retained with a `.pacnew` file for review.
 Personal files stay on the existing disk. The launcher continues to supply the
 external kernel and matching modules; the guest's linux package stays held.
 
+Compatibility revision 54 installs pacman hooks before the desktop starts on
+existing disks. When a transaction replaces Omarchy files, the pre-transaction
+hook pauses config autoreload in every running Hyprland instance. A temporary
+systemd service records each instance's previous value and watches pacman's
+process identity. The post-transaction hook asks it to reload the completed
+config once, then restore the recorded values. If pacman fails or is killed,
+the service restores them when the process exits, even though pacman skips
+post-transaction hooks on failure. State lives only under `/run`, and no service
+is enabled for the next boot. Headless transactions need no running compositor.
+
+The hooks protect **Update > Omarchy**, its conflict retries, and direct pacman
+transactions. They prevent the config watcher from loading a temporarily absent
+`bootstrap.lua` while pacman replaces the runtime. An instance that already had
+autoreload disabled keeps that setting after the explicit reload.
+
 If repository publication fails, inspect:
 
 ```sh
