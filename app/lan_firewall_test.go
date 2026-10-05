@@ -3,12 +3,13 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
 func TestLANFirewallPlanOwnershipAndScope(t *testing.T) {
 	dir := t.TempDir()
-	program := filepath.Join(dir, "qemu.exe")
+	program := filepath.Join(dir, "runtime", "bin", "qemu-system-x86_64w.exe")
 	local, _ := parseForward("tcp:8080:80")
 	lan, _ := parseForward("tcp:192.168.1.5:9000:80")
 	empty, err := makeLANFirewallPlan(dir, program, false, []portForward{local})
@@ -35,5 +36,35 @@ func TestLANFirewallPlanOwnershipAndScope(t *testing.T) {
 	}
 	if _, err := makeLANFirewallPlan(dir, program, false, nil); err == nil {
 		t.Fatal("accepted malformed ownership")
+	}
+}
+
+func TestLANFirewallPlanOnlyAdmitsQEMU(t *testing.T) {
+	root := t.TempDir()
+	lan, _ := parseForward("tcp:192.168.1.5:9000:80")
+	for _, program := range []string{
+		filepath.Join(root, "runtime", "bin", "qemu-system-x86_64w.exe"),
+		filepath.Join(root, "WINQ-EMU", "BIN", "QEMU-SYSTEM-X86_64W.EXE"),
+	} {
+		if _, err := makeLANFirewallPlan(t.TempDir(), program, false, []portForward{lan}); err != nil {
+			t.Errorf("%s: %v", program, err)
+		}
+	}
+	for _, program := range []string{
+		"",
+		"qemu-system-x86_64w.exe",
+		filepath.Join("runtime", "bin", "qemu-system-x86_64w.exe"),
+		filepath.Join(root, "runtime", "bin", "evil.exe"),
+		filepath.Join(root, "runtime", "qemu-system-x86_64w.exe"),
+		strings.Join([]string{root, "runtime", "bin", "..", "bin", "qemu-system-x86_64w.exe"}, string(filepath.Separator)),
+		filepath.Join(root, "runtime", "bin", "qemu-system-x86_64w.exe") + string(filepath.Separator),
+	} {
+		if _, err := makeLANFirewallPlan(t.TempDir(), program, false, []portForward{lan}); err == nil {
+			t.Errorf("accepted firewall program %q", program)
+		}
+	}
+	// Removing every rule needs no program, as uninstall does.
+	if _, err := makeLANFirewallPlan(t.TempDir(), "", false, nil); err != nil {
+		t.Fatal(err)
 	}
 }

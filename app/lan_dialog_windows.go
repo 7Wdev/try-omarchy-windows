@@ -59,6 +59,8 @@ func lanDialogWindowProc(hwnd, message, w, l uintptr) uintptr {
 			procDestroyWindow.Call(hwnd)
 			return 0
 		}
+	case 0x020A: // WM_MOUSEWHEEL: this dialog does not scroll, and must not scroll the disabled Settings page.
+		return 0
 	case wmClose:
 		procDestroyWindow.Call(hwnd)
 		return 0
@@ -118,6 +120,7 @@ func chooseLANForward(parent uintptr) (lanForwardChoice, error) {
 			controlErr = err
 		}
 		procSendMessageW.Call(h, wmSetfont, font, 1)
+		guardWheel(h, class, style)
 		return h
 	}
 	control("STATIC", uiText("lan.adapter"), 16, 16, 398, 22, ssNoprefix, 0)

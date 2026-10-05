@@ -276,18 +276,12 @@ func runAudioBridge(dataDir, qemu string, microphoneDisabledAtBoot bool) {
 		fatal(uiTextWith("fatal.port.audio", map[string]string{"port": fmt.Sprint(audioBridgePort)}))
 	}
 	logf("audio: bridge listening on %d", audioBridgePort)
-	go func() {
-		for {
-			conn, err := listener.Accept()
-			if err != nil {
-				logf("audio bridge: accept: %v", err)
-				return
-			}
-			go func() {
-				if err := serveAudioBridge(conn, dataDir, qemu, microphoneDisabledAtBoot); err != nil {
-					logf("audio bridge: %v", err)
-				}
-			}()
+	// Only this launcher's QEMU may read or change audio devices. Each
+	// connection polls the device catalog, so the slots stay few: QEMU's own
+	// and one for a reconnect while the old connection closes.
+	go acceptQEMUBridge(listener, "audio bridge", 2, func(conn net.Conn) {
+		if err := serveAudioBridge(conn, dataDir, qemu, microphoneDisabledAtBoot); err != nil {
+			logf("audio bridge: %v", err)
 		}
-	}()
+	})
 }

@@ -16,10 +16,16 @@ func guestDisplayCount(count int) int {
 	return count
 }
 
+// displayDevice describes the guest GPU. Blob resources and hostmem stay on
+// without Venus: virgl maps host-visible buffers through the same window.
 func displayDevice(cfg *config, hostmem uint64) string {
 	if guestDisplayCount(cfg.displays) == 1 {
 		if cfg.useGpu {
-			return "virtio-vga-gl,blob=on,hostmem=" + strconv.FormatUint(hostmem, 10) + ",venus=on"
+			device := "virtio-vga-gl,blob=on,hostmem=" + strconv.FormatUint(hostmem, 10)
+			if cfg.venus {
+				device += ",venus=on"
+			}
+			return device
 		}
 		return "virtio-gpu-pci,id=gpu0"
 	}
@@ -39,7 +45,9 @@ func displayDevice(cfg *config, hostmem uint64) string {
 		device["driver"] = "virtio-vga-gl"
 		device["blob"] = true
 		device["hostmem"] = hostmem
-		device["venus"] = true
+		if cfg.venus {
+			device["venus"] = true
+		}
 	}
 	data, _ := json.Marshal(device)
 	return string(data)
