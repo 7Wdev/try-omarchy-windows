@@ -1267,35 +1267,38 @@ func runLifecycleListener() {
 		fatal(uiTextWith("fatal.port.lifecycle", map[string]string{"port": fmt.Sprint(lifecyclePort)}))
 	}
 	go func() {
+		gate := make(chan struct{}, 4)
 		for {
 			c, err := l.Accept()
 			if err != nil {
 				return
 			}
-			go func(c net.Conn) {
-				defer c.Close()
-				c.SetReadDeadline(time.Now().Add(3 * time.Second))
-				line, err := bufio.NewReader(io.LimitReader(c, 64)).ReadString('\n')
-				if err != nil {
-					return
-				}
-				switch strings.TrimSpace(line) {
-				case "reboot":
-					logf("guest announced reboot")
-					pendingReboot.Store(true)
-				case "ready":
-					logf("guest userspace announced ready")
-					guestReady.Store(true)
-					guestDesktopReady()
-				case "reclaim":
-					c.SetWriteDeadline(time.Now().Add(3 * time.Second))
-					if err := requestReclaimError(); err != nil {
-						fmt.Fprintln(c, "error: "+err.Error())
-					} else {
-						fmt.Fprintln(c, "ok: Preparing free space. Check Reclaim status in the tray before shutting down.")
-					}
-				}
-			}(c)
+			select {
+			case gate <- struct{}{}:
+				go func() {
+					defer func() { <-gate }()
+					serveLifecycle(c, lifecycleConnectionFromQEMU, func(line string, c net.Conn) {
+						switch line {
+						case "reboot":
+							logf("guest announced reboot")
+							pendingReboot.Store(true)
+						case "ready":
+							logf("guest userspace announced ready")
+							guestReady.Store(true)
+							guestDesktopReady()
+						case "reclaim":
+							c.SetWriteDeadline(time.Now().Add(3 * time.Second))
+							if err := requestReclaimError(); err != nil {
+								fmt.Fprintln(c, "error: "+err.Error())
+							} else {
+								fmt.Fprintln(c, "ok: Preparing free space. Check Reclaim status in the tray before shutting down.")
+							}
+						}
+					})
+				}()
+			default:
+				c.Close()
+			}
 		}
 	}()
 }

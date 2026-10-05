@@ -74,3 +74,35 @@ func isTimeout(err error) bool {
 	ne, ok := err.(net.Error)
 	return ok && ne.Timeout()
 }
+
+func TestLifecycleConnectionWaitsForPublishedQEMUPID(t *testing.T) {
+	previous := qemuPid.Load()
+	defer qemuPid.Store(previous)
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	peer, err := net.Dial("tcp", l.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer peer.Close()
+	conn, err := l.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	qemuPid.Store(0)
+	result := make(chan bool, 1)
+	go func() { result <- lifecycleConnectionFromQEMU(conn) }()
+	time.Sleep(20 * time.Millisecond)
+	qemuPid.Store(uint32(os.Getpid()))
+	if !<-result {
+		t.Fatal("early QEMU connection refused")
+	}
+	qemuPid.Store(uint32(os.Getpid()) + 1)
+	if lifecycleConnectionFromQEMU(conn) {
+		t.Fatal("foreign connection accepted")
+	}
+}
