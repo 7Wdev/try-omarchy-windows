@@ -1,0 +1,240 @@
+--- a/target/i386/whpx/whpx-all.c
++++ b/target/i386/whpx/whpx-all.c
+@@ -264,6 +264,8 @@
+ 
+ static uint32_t max_vcpu_index;
+ static WHV_PROCESSOR_XSAVE_FEATURES whpx_xsave_cap;
++static bool whpx_model_cpuid;
++static bool whpx_partition_ready;
+ 
+ static bool whpx_has_xsave(void)
+ {
+@@ -1745,6 +1747,7 @@
+     HRESULT hr;
+     struct whpx_state *whpx = &whpx_global;
+     AccelCPUState *vcpu = cpu->accel;
++    CPUX86State *env = cpu_env(cpu);
+     struct whpx_breakpoint *stepped_over_bp = NULL;
+     WhpxStepMode exclusive_step_mode = WHPX_STEP_NONE;
+     int ret;
+@@ -1910,26 +1913,43 @@
+             WHV_REGISTER_NAME reg_names[5];
+             UINT32 reg_count = 0;
+ 
+-            /*
+-             * Use the default CPUID results provided by WHPX. These
+-             * reflect the host CPU filtered through the hypervisor.
+-             * For most leaves this is correct. Specific leaves can be
+-             * overridden here if needed (e.g., topology adjustments).
+-             */
+-            reg_values[reg_count].Reg64 =
+-                vcpu->exit_ctx.CpuidAccess.DefaultResultRax;
++            uint32_t eax, ebx, ecx, edx;
++            uint32_t leaf = vcpu->exit_ctx.CpuidAccess.Rax;
++
++            if (whpx_model_cpuid &&
++                !(leaf >= 0x40000000 && leaf < 0x40010000)) {
++                /* OSXSAVE and leaf D depend on the live CR4/XCR0. */
++                WHV_REGISTER_NAME names[] = {
++                    WHvX64RegisterCr4, WHvX64RegisterXCr0,
++                };
++                WHV_REGISTER_VALUE values[2];
++                hr = whp_dispatch.WHvGetVirtualProcessorRegisters(
++                    whpx->partition, cpu->cpu_index, names,
++                    whpx_has_xsave() ? 2 : 1, values);
++                if (FAILED(hr)) {
++                    error_report("WHPX: Failed to read CPUID state, hr=%08lx", hr);
++                    ret = -EINVAL;
++                    break;
++                }
++                env->cr[4] = values[0].Reg64;
++                if (whpx_has_xsave()) {
++                    env->xcr0 = values[1].Reg64;
++                }
++                cpu_x86_cpuid(env, leaf, vcpu->exit_ctx.CpuidAccess.Rcx,
++                              &eax, &ebx, &ecx, &edx);
++            } else {
++                eax = vcpu->exit_ctx.CpuidAccess.DefaultResultRax;
++                ebx = vcpu->exit_ctx.CpuidAccess.DefaultResultRbx;
++                ecx = vcpu->exit_ctx.CpuidAccess.DefaultResultRcx;
++                edx = vcpu->exit_ctx.CpuidAccess.DefaultResultRdx;
++            }
++            reg_values[reg_count].Reg64 = eax;
+             reg_names[reg_count++] = WHvX64RegisterRax;
+-
+-            reg_values[reg_count].Reg64 =
+-                vcpu->exit_ctx.CpuidAccess.DefaultResultRbx;
++            reg_values[reg_count].Reg64 = ebx;
+             reg_names[reg_count++] = WHvX64RegisterRbx;
+-
+-            reg_values[reg_count].Reg64 =
+-                vcpu->exit_ctx.CpuidAccess.DefaultResultRcx;
++            reg_values[reg_count].Reg64 = ecx;
+             reg_names[reg_count++] = WHvX64RegisterRcx;
+-
+-            reg_values[reg_count].Reg64 =
+-                vcpu->exit_ctx.CpuidAccess.DefaultResultRdx;
++            reg_values[reg_count].Reg64 = edx;
+             reg_names[reg_count++] = WHvX64RegisterRdx;
+ 
+             /* Advance RIP past the CPUID instruction */
+@@ -2092,6 +2112,108 @@
+     }
+ }
+ 
++/* The model is realized after accelerator initialization. Delay qemu64
++ * partition setup until its feature and XSTATE masks are available. */
++static int whpx_setup_model(CPUX86State *env)
++{
++    struct whpx_state *whpx = &whpx_global;
++    WHV_PROCESSOR_FEATURES_BANKS banks = { .BanksCount = 2 };
++    WHV_PROCESSOR_XSAVE_FEATURES xsave = {0};
++    uint32_t a, b, d, c1, b7, c7, d7, ce, de;
++    HRESULT hr;
++
++    cpu_x86_cpuid(env, 1, 0, &a, &b, &c1, &d);
++    b7 = c7 = d7 = 0;
++    if (env->cpuid_level >= 7) {
++        cpu_x86_cpuid(env, 7, 0, &a, &b7, &c7, &d7);
++    }
++    cpu_x86_cpuid(env, 0x80000001, 0, &a, &b, &ce, &de);
++    hr = whp_dispatch.WHvGetCapability(
++        WHvCapabilityCodeProcessorFeaturesBanks, &banks, sizeof(banks), NULL);
++    if (FAILED(hr)) {
++        goto fail;
++    }
++#define MODEL_FEATURE(field, value, bit) \
++    banks.Bank0.field &= !!((value) & (1U << (bit)))
++    MODEL_FEATURE(Sse3Support, c1, 0);
++    MODEL_FEATURE(LahfSahfSupport, ce, 0);
++    MODEL_FEATURE(Ssse3Support, c1, 9);
++    MODEL_FEATURE(Sse4_1Support, c1, 19);
++    MODEL_FEATURE(Sse4_2Support, c1, 20);
++    MODEL_FEATURE(Sse4aSupport, ce, 6);
++    MODEL_FEATURE(XopSupport, ce, 11);
++    MODEL_FEATURE(PopCntSupport, c1, 23);
++    MODEL_FEATURE(Cmpxchg16bSupport, c1, 13);
++    MODEL_FEATURE(Altmovcr8Support, ce, 4);
++    MODEL_FEATURE(LzcntSupport, ce, 5);
++    MODEL_FEATURE(MisAlignSseSupport, ce, 7);
++    MODEL_FEATURE(MmxExtSupport, de, 22);
++    MODEL_FEATURE(Amd3DNowSupport, de, 31);
++    MODEL_FEATURE(ExtendedAmd3DNowSupport, de, 30);
++    MODEL_FEATURE(Page1GbSupport, de, 26);
++    MODEL_FEATURE(AesSupport, c1, 25);
++    MODEL_FEATURE(PclmulqdqSupport, c1, 1);
++    MODEL_FEATURE(PcidSupport, c1, 17);
++    MODEL_FEATURE(Fma4Support, ce, 16);
++    MODEL_FEATURE(F16CSupport, c1, 29);
++    MODEL_FEATURE(RdRandSupport, c1, 30);
++    MODEL_FEATURE(RdWrFsGsSupport, b7, 0);
++    MODEL_FEATURE(SmepSupport, b7, 7);
++    MODEL_FEATURE(EnhancedFastStringSupport, b7, 9);
++    MODEL_FEATURE(Bmi1Support, b7, 3);
++    MODEL_FEATURE(Bmi2Support, b7, 8);
++    MODEL_FEATURE(MovbeSupport, c1, 22);
++    MODEL_FEATURE(RdSeedSupport, b7, 18);
++    MODEL_FEATURE(AdxSupport, b7, 19);
++    MODEL_FEATURE(SmapSupport, b7, 20);
++    MODEL_FEATURE(HleSupport, b7, 4);
++    MODEL_FEATURE(RtmSupport, b7, 11);
++    MODEL_FEATURE(RdtscpSupport, de, 27);
++    MODEL_FEATURE(ClflushoptSupport, b7, 23);
++    MODEL_FEATURE(ClwbSupport, b7, 24);
++    MODEL_FEATURE(ShaSupport, b7, 29);
++    MODEL_FEATURE(InvpcidSupport, b7, 10);
++    MODEL_FEATURE(RdPidSupport, c7, 22);
++    MODEL_FEATURE(UmipSupport, c7, 2);
++#undef MODEL_FEATURE
++    /* Bank 1 contains newer instructions and nested virtualization, which the
++     * qemu64 baseline does not expose. */
++    banks.Bank1.AsUINT64 = 0;
++    hr = whp_dispatch.WHvSetPartitionProperty(
++        whpx->partition, WHvPartitionPropertyCodeProcessorFeaturesBanks,
++        &banks, sizeof(banks));
++    if (FAILED(hr)) {
++        goto fail;
++    }
++
++    /* qemu64 is the non-XSAVE recovery model. Refuse custom XSAVE additions
++     * instead of advertising an XSTATE layout the partition cannot honor.
++     * The host model keeps WHP's feature banks and native XSAVE layout. */
++    if ((c1 & ((1U << 26) | (1U << 28) | (1U << 12) | (1U << 29))) ||
++        (ce & ((1U << 11) | (1U << 16)))) {
++        error_report("WHPX: qemu64 XSAVE additions are unsupported; use -cpu host");
++        return -EINVAL;
++    }
++    hr = whp_dispatch.WHvSetPartitionProperty(
++        whpx->partition, WHvPartitionPropertyCodeProcessorXsaveFeatures,
++        &xsave, sizeof(xsave));
++    if (FAILED(hr)) {
++        goto fail;
++    }
++    whpx_xsave_cap = xsave;
++    hr = whp_dispatch.WHvSetupPartition(whpx->partition);
++    if (FAILED(hr)) {
++        goto fail;
++    }
++    whpx_partition_ready = true;
++    whpx_memory_init();
++    whpx_init_emu();
++    return 0;
++fail:
++    error_report("WHPX: Failed to configure requested CPU model, hr=%08lx", hr);
++    return -EINVAL;
++}
++
+ int whpx_init_vcpu(CPUState *cpu)
+ {
+     HRESULT hr;
+@@ -2114,6 +2236,13 @@
+         if (migrate_add_blocker(&whpx_migration_blocker, &local_error) < 0) {
+             error_report_err(local_error);
+             ret = -EINVAL;
++            goto error;
++        }
++    }
++
++    if (!whpx_partition_ready) {
++        ret = whpx_setup_model(env);
++        if (ret < 0) {
+             goto error;
+         }
+     }
+@@ -2301,6 +2430,8 @@
+         }
+     }
+ 
++    whpx_model_cpuid = strcmp(ms->cpu_type, "qemu64-x86_64-cpu") == 0;
++
+     /* Set all the supported features, to follow the MSHV example */
+     memset(&processor_features, 0, sizeof(WHV_PROCESSOR_FEATURES_BANKS));
+     processor_features.BanksCount = 2;
+@@ -2314,7 +2445,8 @@
+         goto error;
+     }
+ 
+-    if (whpx_irqchip_in_kernel() && processor_features.Bank1.NestedVirtSupport) {
++    if (!whpx_model_cpuid && whpx_irqchip_in_kernel() &&
++        processor_features.Bank1.NestedVirtSupport) {
+         memset(&prop, 0, sizeof(WHV_PARTITION_PROPERTY));
+         prop.NestedVirtualization = 1;
+         hr = whp_dispatch.WHvSetPartitionProperty(
+@@ -2481,6 +2613,9 @@
+         goto error;
+     }
+ 
++    if (whpx_model_cpuid) {
++        return 0;
++    }
+     hr = whp_dispatch.WHvSetupPartition(whpx->partition);
+     if (FAILED(hr)) {
+         error_report("WHPX: Failed to setup partition, hr=%08lx", hr);
+@@ -2488,6 +2623,7 @@
+         goto error;
+     }
+ 
++    whpx_partition_ready = true;
+     whpx_memory_init();
+     whpx_init_emu();
+ 

@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "name": "winq-emu-alpha10-source-r20c-precise-scroll",
+  "name": "winq-emu-alpha10-source-r22",
   "sourceDateEpoch": 1777269494,
   "qemu": {
     "repository": "https://github.com/cmspam/winq-emu-qemu.git",
@@ -81,6 +81,14 @@
       {
         "file": "patches/qemu/0018-preserve-precise-sdl-scroll.patch",
         "sha256": "ef1400c2cd50f6898b33bae4676cf0aad20eca577f3b2146b956da4339f17496"
+      },
+      {
+        "file": "patches/qemu/0019-honor-whpx-cpu-model.patch",
+        "sha256": "fbb25e99b501c25c9c6d957b65312a46ddf75551279ec8a4e4a0c821a012cbb0"
+      },
+      {
+        "file": "patches/qemu/0020-allow-external-sdl-keyboard-hook.patch",
+        "sha256": "6040a630c9961a1c70c7686aa8bb943e4f1c1c4ed04f64e41d73e92882050788"
       }
     ]
   },

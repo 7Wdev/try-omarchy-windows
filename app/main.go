@@ -953,6 +953,9 @@ func supervise(cfg *config, cmdline string) bool {
 		pinch := pinchEnabled(cfg)
 		logf("touchpad pinch forwarding: %v (guest declares device: %v)", pinch, cfg.guestPinch)
 		proc.Env = pinchEnvironment(proc.Env, pinch)
+		externalHook := keyboardRuntimeSupportsExternalHook(cfg.qemu)
+		qemuExternalKeyboardHook.Store(externalHook)
+		proc.Env = keyboardEnvironment(proc.Env, externalHook)
 		// The w-binary's startup errors (bad args, SDL init) only ever reach
 		// stderr; without this they vanish and a dead QEMU is undebuggable.
 		ef, err := os.OpenFile(filepath.Join(cfg.vmDir, "qemu-stderr.log"),
