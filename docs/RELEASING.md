@@ -141,6 +141,22 @@ Restart to update in the tray requests a graceful shutdown; an update never
 restarts a running guest on its own. Disabled automatic updates, explicit
 payload pins and checkpoint recovery retain their existing meanings.
 
+A launcher also completes its own embedded guest and runtime pins, independently
+of the feed. For a v0.9.0 user updating to v0.10, the released launcher first
+performs its existing launcher update hop. The v0.10 launcher's first start
+boots the installed v0.9.0 guest and runtime quickly. Userspace readiness commits
+the pending launcher hop, then the v0.10 payload downloads in the background.
+The tray offers "Restart to update" once that payload is verified and staged.
+The next start applies it locally, and readiness commits the guest and runtime
+transactions. An already staged matching payload can be applied immediately.
+
+Turning automatic updates off, including `-no-update`, stops feed checks for
+newer releases; it still completes the installed launcher's own payloads.
+Explicit command-line payload pins, checkpoint recovery, a failed-version
+rollback, and offline portable mode skip this convergence. Both hops retain
+their prior files until readiness, and an interrupted first boot retries while
+an unexpected failure restores the previous payloads.
+
 It stages the launcher and payload directories atomically. Launcher, runtime,
 and guest updates stay rollback-capable until the guest's userspace readiness service
 reaches the launcher after networking starts, so QMP responding during a

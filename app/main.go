@@ -45,6 +45,7 @@ type config struct {
 	instant, portable           bool
 	localPayload                bool
 	localPayloadSHA256          string
+	localRuntimePayloadSHA256   string
 	guestDir, vmDir, disk       string
 	qmpDir                      string
 	followHostTimeZone          bool
@@ -176,7 +177,7 @@ func main() {
 	startImmediately := flag.Bool("start", false, "start Omarchy immediately without the launcher window")
 	diagnostics := flag.Bool("diagnostics", false, "write a zip of logs, settings, and machine facts for a bug report, then exit")
 	sshKeyPath := flag.String("ssh-key", "", "public key to authorize for the Omarchy account (default: your ~/.ssh/id_*.pub when -ssh is used)")
-	noUpdate := flag.Bool("no-update", false, "do not check for launcher or guest updates")
+	noUpdate := flag.Bool("no-update", false, "do not check the feed for newer releases")
 	updateURL := flag.String("update-url", defaultUpdateURL, "authenticated update manifest URL")
 	release := flag.String("release", defaultReleaseURL,
 		"base URL the guest image is downloaded from on first run")
@@ -253,6 +254,7 @@ func main() {
 	if strings.TrimSpace(*runtimeSumsSHA256) == "" {
 		*runtimeSumsSHA256 = *sumsSHA256
 	}
+	launcherPins := pinnedPayloadUpdate{*release, *sumsSHA256, *runtimeRelease, *runtimeSumsSHA256}
 
 	// The elevated relaunch does exactly one thing and reports back via exit
 	// code (see setup.go); it must not touch the single-instance port.
@@ -633,6 +635,7 @@ func main() {
 	os.Remove(filepath.Join(cfg.vmDir, "qemu-stderr.log"))
 
 	updatesEnabled := !snapshotRecovery && !cfg.desktop.AutomaticUpdatesDisabled && automaticUpdatesEnabled(cfg, *noUpdate, *release, *sumsSHA256)
+	ownPayload := ownPayloadUpdate(cfg, completeAtStart, snapshotRecovery || payloadsRolledBack, explicitFlags, launcherPins)
 	// A new launcher can boot the installed image without upgrading it online.
 	// Explicit payload pins, reset and checkpoint recovery retain their meaning.
 	if completeAtStart && !cfg.fresh && !snapshotRecovery && !payloadsRolledBack {
@@ -648,14 +651,38 @@ func main() {
 		}
 	}
 	payloadRoot := updatePayloadRoot(cfg.dir, cfg.payloadDir, cfg.portable)
+	appliedOwnPayload := false
+	if ownPayload != nil {
+		key, _ := updatePublicKey()
+		if err := verifiedLauncherPayloadUpdate(setupContext(), cfg.dir, payloadRoot, *ownPayload, key); err == nil {
+			*release, *sumsSHA256 = ownPayload.Release, ownPayload.Digest
+			*runtimeRelease, *runtimeSumsSHA256 = ownPayload.RuntimeRelease, ownPayload.RuntimeDigest
+			cfg.payloadDir, cfg.localPayload = payloadRoot, true
+			cfg.localPayloadSHA256, cfg.localRuntimePayloadSHA256 = ownPayload.Digest, ownPayload.RuntimeDigest
+			appliedOwnPayload = true
+			ownPayload = nil
+		} else if marker, e := os.ReadFile(filepath.Join(launcherUpdateDir(cfg.dir), stagedUpdateFilename)); e == nil && string(marker) == currentVersion {
+			if setupCancelled() {
+				return
+			}
+			if _, e := os.Stat(filepath.Join(launcherUpdateDir(cfg.dir), currentVersion, pinnedPayloadFilename)); e == nil {
+				logf("discarding staged launcher payload: %v", err)
+				_ = removeUpdateFile(filepath.Join(launcherUpdateDir(cfg.dir), stagedUpdateFilename))
+				_ = removeUpdateFile(filepath.Join(launcherUpdateDir(cfg.dir), currentVersion, pinnedPayloadFilename))
+			}
+		}
+	}
 	state, _ := readLauncherUpdateState(cfg.dir)
 	version := ""
 	activeUpdate := state != nil && state.Version == currentVersion && state.ManifestSHA256 != ""
 	if activeUpdate {
 		version = state.Version
-	} else if updatesEnabled && !payloadsRolledBack {
+	} else if updatesEnabled && !payloadsRolledBack && !appliedOwnPayload {
 		data, _ := os.ReadFile(filepath.Join(launcherUpdateDir(cfg.dir), stagedUpdateFilename))
 		version = string(data)
+		if version == currentVersion && ownPayload != nil {
+			version = ""
+		}
 	}
 	if version != "" && !snapshotRecovery {
 		key, keyErr := updatePublicKey()
@@ -695,7 +722,7 @@ func main() {
 			}
 		}
 	}
-	stopUpdates := configureBackgroundUpdates(cfg, *updateURL, updatesEnabled && !payloadsRolledBack)
+	stopUpdates := configureBackgroundUpdates(cfg, *updateURL, updatesEnabled && !payloadsRolledBack, ownPayload)
 	defer stopUpdates()
 	defer func() {
 		if (setupCancelled() || intentionalUpdateQuit.Load()) && !bootAnnouncedReady.Load() {

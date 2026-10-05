@@ -33,12 +33,12 @@ var (
 
 // Installed users do no network work until the guest's readiness message has
 // committed any prior transaction. Only one background job runs per launch.
-func configureBackgroundUpdates(cfg *config, feed string, enabled bool) func() {
+func configureBackgroundUpdates(cfg *config, feed string, enabled bool, ownPayload *pinnedPayloadUpdate) func() {
 	ctx, cancel := context.WithCancel(setupContext())
 	snapshot := *cfg
 	var once sync.Once
 	start := func() {
-		if !enabled {
+		if !enabled && ownPayload == nil {
 			return
 		}
 		once.Do(func() {
@@ -49,6 +49,26 @@ func configureBackgroundUpdates(cfg *config, feed string, enabled bool) func() {
 				priority := kernel32.NewProc("SetThreadPriority")
 				if ok, _, _ := priority.Call(thread, 0x10000); ok != 0 {
 					defer priority.Call(thread, 0x20000)
+				}
+				client := newDownloadClient()
+				client.Transport = backgroundUpdateTransport{ctx: ctx, base: client.Transport}
+				defer client.CloseIdleConnections()
+				if ownPayload != nil {
+					err := stagePinnedPayloadUpdate(ctx, client, snapshot.dir,
+						updatePayloadRoot(snapshot.dir, snapshot.payloadDir, snapshot.portable), *ownPayload)
+					if err != nil {
+						if ctx.Err() == nil {
+							logf("launcher payload staging skipped: %v", err)
+							if errors.Is(err, errInsufficientDiskSpace) {
+								showTrayNotice(uiText("update.notice.title"), uiTextWith("update.notice.space", map[string]string{"error": err.Error()}))
+							}
+						}
+					} else if failedUpdateVersion(snapshot.dir) != currentVersion {
+						updateAvailable.Store(true)
+						showTrayNotice(uiText("update.notice.title"), uiTextWith("update.notice.ready", map[string]string{"version": currentVersion}))
+						logf("launcher payload %s verified and staged for the next start", currentVersion)
+					}
+					return
 				}
 				if feed == defaultUpdateURL && !updateCheckDue(snapshot.dir, time.Now()) {
 					return
@@ -65,9 +85,6 @@ func configureBackgroundUpdates(cfg *config, feed string, enabled bool) func() {
 					return
 				}
 				_, digest, _ := installReceiptIdentity(snapshot.guestDir)
-				client := newDownloadClient()
-				client.Transport = backgroundUpdateTransport{ctx: ctx, base: client.Transport}
-				defer client.CloseIdleConnections()
 				if snapshot.portable {
 					logf("%s", uiText("status.preparing_portable_update"))
 				}

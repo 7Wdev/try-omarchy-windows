@@ -199,5 +199,6 @@ func portableRecoveryAllowed(action, backup, restore string) bool {
 }
 
 func payloadIsLocal(cfg *config, digest string) bool {
-	return cfg.portable || cfg.localPayload && normalizedSHA256(digest) == cfg.localPayloadSHA256
+	return cfg.portable || cfg.localPayload && (normalizedSHA256(digest) == cfg.localPayloadSHA256 ||
+		validSHA256(cfg.localRuntimePayloadSHA256) && normalizedSHA256(digest) == cfg.localRuntimePayloadSHA256)
 }

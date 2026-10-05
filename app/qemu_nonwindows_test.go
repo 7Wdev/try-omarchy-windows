@@ -30,6 +30,7 @@ type config struct {
 	instant, portable           bool
 	localPayload                bool
 	localPayloadSHA256          string
+	localRuntimePayloadSHA256   string
 	guestDir, vmDir, disk       string
 	qmpDir                      string
 	followHostTimeZone          bool

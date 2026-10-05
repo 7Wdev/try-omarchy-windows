@@ -28,6 +28,10 @@ func updatePayloadNames() []string {
 }
 
 func verifyUpdatePayload(ctx context.Context, root, digest string) error {
+	return verifyPayloadArtifacts(ctx, root, digest, updatePayloadNames())
+}
+
+func verifyPayloadArtifacts(ctx context.Context, root, digest string, names []string) error {
 	if err := validateMovePath(root); err != nil {
 		return err
 	}
@@ -35,7 +39,7 @@ func verifyUpdatePayload(ctx context.Context, root, digest string) error {
 	if err != nil {
 		return err
 	}
-	for _, name := range updatePayloadNames() {
+	for _, name := range names {
 		ok, err := verifyFileSHA256Context(ctx, filepath.Join(root, name), sums[name], nil)
 		if err != nil {
 			return err
@@ -44,8 +48,13 @@ func verifyUpdatePayload(ctx context.Context, root, digest string) error {
 			return fmt.Errorf("stored update payload is damaged: %s", name)
 		}
 	}
-	_, err = readGuestArtifactSizes(filepath.Join(root, "guest-manifest.json"), sums)
-	return err
+	for _, name := range names {
+		if name == "guest-manifest.json" {
+			_, err = readGuestArtifactSizes(filepath.Join(root, name), sums)
+			return err
+		}
+	}
+	return nil
 }
 
 func stagePortablePayload(root, release, digest string, client *http.Client, report downloadProgress) error {
@@ -53,6 +62,10 @@ func stagePortablePayload(root, release, digest string, client *http.Client, rep
 }
 
 func stageUpdatePayload(ctx context.Context, root, release, digest string, client *http.Client, report downloadProgress) error {
+	return stagePayloadArtifacts(ctx, root, release, digest, client, report, updatePayloadNames())
+}
+
+func stagePayloadArtifacts(ctx context.Context, root, release, digest string, client *http.Client, report downloadProgress, names []string) error {
 	digest = normalizedSHA256(digest)
 	if !validSHA256(digest) {
 		return fmt.Errorf("invalid update payload identity")
@@ -65,7 +78,7 @@ func stageUpdatePayload(ctx context.Context, root, release, digest string, clien
 	}
 	final := filepath.Join(root, digest)
 	if _, err := os.Lstat(final); err == nil {
-		if err := verifyUpdatePayload(ctx, final, digest); err != nil {
+		if err := verifyPayloadArtifacts(ctx, final, digest, names); err != nil {
 			if ctx.Err() == nil {
 				_ = os.RemoveAll(final)
 			}
@@ -107,22 +120,27 @@ func stageUpdatePayload(ctx context.Context, root, release, digest string, clien
 		_ = os.RemoveAll(stage)
 		return err
 	}
-	for _, name := range updatePayloadNames() {
+	for _, name := range names {
 		if !validSHA256(sums[name]) {
 			return fmt.Errorf("update is missing %s", name)
 		}
 	}
 	// This small authenticated file gives the rootfs sizes before the large transfer.
-	if err := ensure("guest-manifest.json", sums["guest-manifest.json"]); err != nil {
-		return err
-	}
-	sizes, err := readGuestArtifactSizes(filepath.Join(stage, "guest-manifest.json"), sums)
-	if err != nil {
-		_ = os.RemoveAll(stage)
-		return err
+	sizes := map[string]int64{}
+	for _, name := range names {
+		if name == "guest-manifest.json" {
+			if err := ensure(name, sums[name]); err != nil {
+				return err
+			}
+			sizes, err = readGuestArtifactSizes(filepath.Join(stage, name), sums)
+			if err != nil {
+				_ = os.RemoveAll(stage)
+				return err
+			}
+		}
 	}
 	required := diskSpaceReserve
-	for _, name := range updatePayloadNames() {
+	for _, name := range names {
 		if name == "guest-manifest.json" {
 			continue
 		}
@@ -138,7 +156,7 @@ func stageUpdatePayload(ctx context.Context, root, release, digest string, clien
 	if err := requireDiskSpace(stage, required); err != nil {
 		return err
 	}
-	for _, name := range updatePayloadNames() {
+	for _, name := range names {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
