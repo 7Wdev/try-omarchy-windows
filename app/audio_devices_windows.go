@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"syscall"
 	"unsafe"
 )
@@ -30,7 +31,21 @@ func listAudioDevices(qemu string) (audioDeviceCatalog, error) {
 	return r.catalog, r.err
 }
 
+var sdlAudioEnumerationMu sync.Mutex
+
 func enumerateSDLAudio(path string) (audioDeviceCatalog, error) {
+	return withSDLAudioEnumeration(func() (audioDeviceCatalog, error) {
+		return enumerateSDLAudioLocked(path)
+	})
+}
+
+func withSDLAudioEnumeration(enumerate func() (audioDeviceCatalog, error)) (audioDeviceCatalog, error) {
+	sdlAudioEnumerationMu.Lock()
+	defer sdlAudioEnumerationMu.Unlock()
+	return enumerate()
+}
+
+func enumerateSDLAudioLocked(path string) (audioDeviceCatalog, error) {
 	var catalog audioDeviceCatalog
 	full, err := filepath.Abs(path)
 	if err != nil {

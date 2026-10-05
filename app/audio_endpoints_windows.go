@@ -163,30 +163,43 @@ func enumerateMMAudioEndpoints() (mmDeviceList, error) {
 		if count > 64 {
 			count = 64
 		}
-		for i := uint32(0); i < count; i++ {
+		*out = append(*out, collectMMAudioEndpoints(count, func(i uint32) (audioEndpointInfo, error) {
 			var device uintptr
 			if int32(mmVCall(collection, 4, uintptr(i), uintptr(unsafe.Pointer(&device)), 0, 0)) < 0 || device == 0 {
-				continue
+				return audioEndpointInfo{}, fmt.Errorf("audio endpoint is unavailable")
 			}
+			defer mmVCall(device, 2, 0, 0, 0, 0)
 			var idPtr uintptr
-			if int32(mmVCall(device, 5, uintptr(unsafe.Pointer(&idPtr)), 0, 0, 0)) >= 0 && idPtr != 0 {
-				id := mmWideString(idPtr)
-				procMMCoTaskMemFree.Call(idPtr)
-				name, nameErr := mmFriendlyName(device, &pkeyValue)
-				if nameErr != nil {
-					mmVCall(device, 2, 0, 0, 0, 0)
-					mmVCall(collection, 2, 0, 0, 0, 0)
-					return list, nameErr
-				}
-				if id != "" {
-					*out = append(*out, audioEndpointInfo{ID: id, Name: name, SampleRate: mmAudioSampleRate(device)})
-				}
+			if int32(mmVCall(device, 5, uintptr(unsafe.Pointer(&idPtr)), 0, 0, 0)) < 0 || idPtr == 0 {
+				return audioEndpointInfo{}, fmt.Errorf("audio endpoint ID is unavailable")
 			}
-			mmVCall(device, 2, 0, 0, 0, 0)
-		}
+			id := mmWideString(idPtr)
+			procMMCoTaskMemFree.Call(idPtr)
+			name, err := mmFriendlyName(device, &pkeyValue)
+			if err != nil {
+				return audioEndpointInfo{}, err
+			}
+			return audioEndpointInfo{ID: id, Name: name, SampleRate: mmAudioSampleRate(device)}, nil
+		})...)
+
 		mmVCall(collection, 2, 0, 0, 0, 0)
 	}
 	return list, nil
+}
+
+func collectMMAudioEndpoints(count uint32, read func(uint32) (audioEndpointInfo, error)) []audioEndpointInfo {
+	var endpoints []audioEndpointInfo
+	for i := uint32(0); i < count; i++ {
+		endpoint, err := read(i)
+		if err != nil {
+			logf("audio: skipping unavailable endpoint: %v", err)
+			continue
+		}
+		if endpoint.ID != "" {
+			endpoints = append(endpoints, endpoint)
+		}
+	}
+	return endpoints
 }
 
 func mmFriendlyName(device uintptr, pkey *mmPropertyKey) (string, error) {
