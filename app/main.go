@@ -51,6 +51,7 @@ type config struct {
 	followHostTimeZone          bool
 	diskFormat                  string
 	qemu                        string
+	runtimeLoader               runtimeLoaderPreflight
 	useGpu                      bool
 	supportsSharing             bool
 	audio                       string
@@ -1034,6 +1035,13 @@ func supervise(cfg *config, cmdline string) bool {
 		if setupCancelled() || windowsSessionEnding.Load() {
 			return false
 		}
+		ran, preflightErr := cfg.runtimeLoader.run(setupContext(), attempt, cfg.qemu, runtimeLoaderTimeout, loadRuntime)
+		if setupCancelled() || windowsSessionEnding.Load() {
+			return false
+		}
+		if ran && preflightErr != nil {
+			logf("runtime loader preflight did not complete: %v; continuing with normal QEMU startup", preflightErr)
+		}
 		mode := "CPU rendering (llvmpipe)"
 		if cfg.useGpu && cfg.venus {
 			mode = "GPU accelerated (virgl + Venus Vulkan)"
@@ -1271,7 +1279,7 @@ func supervise(cfg *config, cmdline string) bool {
 		}
 		qemuPid.Store(0)
 		if !startupDead {
-			logf("QEMU is not answering (known WHPX launch wedge) - killing and retrying")
+			logf("QEMU did not answer QMP within the startup timeout - killing and retrying")
 			proc.Process.Kill()
 			<-exited
 		}
