@@ -4,6 +4,17 @@ Releases use a two-phase GitHub Actions workflow so the signed launcher can pin
 the guest manifest produced for that same release without rewriting source code
 inside CI.
 
+## When to release
+
+Ship a substantial release about every two weeks, built around what is ready
+and with every CHANGELOG entry's user check passed. Fixes keep merging to
+`master` in between; only publishing waits.
+
+Cut a patch release between them only when users cannot start or boot
+Omarchy, lose data, are exposed to a security issue, or hit a regression from
+the last release that affects many people. Everything else waits for the next
+substantial release.
+
 ## One-time setup
 
 The `release` GitHub environment is restricted to the `master` branch. Its
