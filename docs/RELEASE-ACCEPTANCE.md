@@ -29,6 +29,8 @@ release. Downloads are not a count of unique active installations.
    vertically and horizontally, paste Unicode text in both directions, play a
    familiar clip, and record/play back a short microphone sample. Resize the VM
    and confirm the desktop remains usable. Record actual observations.
+   Then run the user check for every entry in the release's CHANGELOG section,
+   as described in [User checks](#user-checks).
 5. Cleanly shut down and relaunch the upgraded copy. Repeat the guest check and
    inspect new launcher logs for failed repair, rollback, repeated payload
    downloads or errors. Verify the expected desktop and seeded data again.
@@ -42,6 +44,25 @@ If a check fails, retain evidence, fix the cause and repeat the affected checks
 on the corrected candidate. Do not publish a known regression or record a
 timeout, skip or incomplete test as a pass. One AMD laptop cannot establish
 Intel/NVIDIA, other Windows versions, mixed-DPI or Modern Standby coverage.
+
+## User checks
+
+Every CHANGELOG entry is something a user will try, so each one gets a check
+done the way that user would do it, on physical Windows with the exact
+candidate. Unit tests, guest contract tests, signal meters and logs support a
+check but do not replace it.
+
+- Write the check in the PR's **User check** section when it merges: the steps
+  a user takes and what they should see. When a feature mirrors Windows, compare
+  both sides: change it on each side and confirm the other shows the same
+  value. For example, volume sync means moving the Windows volume slider and
+  reading Omarchy's Audio menu, then the reverse, plus mute and a playback
+  device change.
+- Before the release leaves draft, list every entry of the new CHANGELOG
+  section with its check, the result and a screenshot or recording. A check
+  that fails blocks the release like any other regression.
+- If a check needs hardware we do not have, ask the maintainer before
+  publishing instead of skipping it.
 
 ## Guest preservation and health check
 

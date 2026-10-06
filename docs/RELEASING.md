@@ -107,7 +107,8 @@ QEMU unexpectedly before readiness and launch again. The copied install must
 restore its previous guest and runtime without downloading the failed payload.
 
 Keep the release as a draft until the GPU, idle CPU, audio, input, resize, and
-fullscreen checks in `docs/RUNTIME-VALIDATION.md` pass on physical hardware.
+fullscreen checks in `docs/RUNTIME-VALIDATION.md` pass on physical hardware,
+and every CHANGELOG entry's user check in `docs/RELEASE-ACCEPTANCE.md` passes.
 
 The guest builder base is fixed in `guest-build/source.lock.json`. The runtime
 build inputs are fixed in `runtime-build/sources.lock.json`, and the Runtime
