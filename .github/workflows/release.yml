@@ -371,7 +371,11 @@ jobs:
       - name: Upload launcher and release notes
         shell: pwsh
         run: |
-          python scripts/release/release-notes.py $env:RELEASE_TAG | Out-File release-notes.md -Encoding utf8
+          python scripts/release/release-notes.py $env:RELEASE_TAG --output release-notes.md
+          if ($LASTEXITCODE -ne 0) { throw 'Release note generation failed' }
+          if (!(Test-Path release-notes.md) -or [string]::IsNullOrWhiteSpace((Get-Content release-notes.md -Raw -Encoding utf8))) {
+            throw 'Release notes are empty'
+          }
           gh release upload $env:RELEASE_TAG `
             release/TryOmarchy.exe `
             release/TryOmarchy.exe.sha256 `
@@ -380,7 +384,9 @@ jobs:
             release/update-v2.json `
             release/update-v2.json.sig `
             --clobber
+          if ($LASTEXITCODE -ne 0) { throw 'Release asset upload failed' }
           gh release edit $env:RELEASE_TAG --target $env:GITHUB_SHA --title $env:RELEASE_TAG --notes-file release-notes.md
+          if ($LASTEXITCODE -ne 0) { throw 'Release note upload failed' }
 
       - name: Publish without changing Latest
         shell: pwsh

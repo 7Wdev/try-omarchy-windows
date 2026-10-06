@@ -65,6 +65,13 @@ on disks where its completion marker is missing. Other migrations still fail
 normally on errors. Runtime `4.0.4-8` includes the same setup step for fresh
 installations and subsequent updates. Resetting the disk is not required.
 
+Compatibility revision 58 delivers the clipboard bridge before login on existing
+disks, including revision-57 installations. Large Windows clipboard images use
+fixed-length frame checks and stream through the base64 decoder instead of
+stalling in shell suffix matching. Fresh images carry the same bridge. The bridge
+is supplied by the compatibility overlay, so no runtime package bump or
+**Update > Omarchy** is required. Resetting the disk is not required.
+
 If repository publication fails, inspect:
 
 ```sh

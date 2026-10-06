@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Large images copied from Windows reach Omarchy without stalling.
+
 ## v0.10.0 - 2026-10-05
 
 - On NVIDIA graphics, GPU mode no longer freezes when Media Player opens, and

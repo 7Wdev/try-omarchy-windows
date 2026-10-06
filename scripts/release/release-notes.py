@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 
@@ -11,6 +12,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("tag")
     parser.add_argument("--notes-dir", type=Path, default=Path(".github/release-notes"))
+    parser.add_argument("--output", type=Path, help="write release notes as UTF-8")
     args = parser.parse_args()
 
     if Path(args.tag).name != args.tag:
@@ -24,7 +26,11 @@ def main() -> None:
     body = notes.read_text(encoding="utf-8").strip()
     if not body:
         raise SystemExit(f"{notes} is empty")
-    print(body)
+    if args.output is not None:
+        args.output.write_text(body + "\n", encoding="utf-8", newline="\n")
+    else:
+        sys.stdout.reconfigure(encoding="utf-8")
+        print(body)
 
 
 if __name__ == "__main__":

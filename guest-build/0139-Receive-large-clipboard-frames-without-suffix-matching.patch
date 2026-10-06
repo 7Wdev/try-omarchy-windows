@@ -1,0 +1,264 @@
+From adfc2cd75459bd2bc57c050c9033c55781d2d6a5 Mon Sep 17 00:00:00 2001
+From: Brandon South <tsouth2@gmail.com>
+Date: Mon, 5 Oct 2026 22:19:49 -0400
+Subject: [PATCH] Receive large clipboard frames without suffix matching
+
+---
+ .../usr/local/bin/clipboard-bridge            | 16 ++--
+ guest/scripts/finalize-rootfs.sh              |  4 +-
+ guest/tests/test_battery_details.py           |  2 +-
+ guest/tests/test_clipboard_pull.py            | 74 +++++++++++++++++++
+ guest/tests/test_compositor_health.py         |  2 +-
+ guest/tests/test_guest_qol.py                 |  2 +-
+ guest/tests/test_live_update.py               |  2 +-
+ guest/tests/test_native_nightlight.py         |  2 +-
+ guest/tests/test_notification_privacy.py      |  2 +-
+ guest/tests/test_snapper_guest.py             |  2 +-
+ guest/tests/test_windows_volume_sync.py       |  2 +-
+ guest/tests/verify.py                         |  2 +-
+ 12 files changed, 95 insertions(+), 17 deletions(-)
+ create mode 100644 guest/tests/test_clipboard_pull.py
+
+diff --git a/guest/factory-overlay/usr/local/bin/clipboard-bridge b/guest/factory-overlay/usr/local/bin/clipboard-bridge
+index 8db5ec7..8235d0a 100755
+--- a/guest/factory-overlay/usr/local/bin/clipboard-bridge
++++ b/guest/factory-overlay/usr/local/bin/clipboard-bridge
+@@ -1,4 +1,4 @@
+-#!/bin/sh
++#!/bin/bash
+ # Clipboard bridge (guest side) for two-way text and image sync with the
+ # Windows host. It waits for the active Wayland session and restarts both
+ # directions if the compositor is replaced. 10.0.2.2 is the host under QEMU
+@@ -146,13 +146,15 @@ while :; do
+       # Keep socat directly connected to read. An extra pipe stage buffers
+       # small clipboard payloads and makes ordinary text appear stuck.
+       file-transfer clipboard-pull 2>/dev/null | while IFS= read -r line; do
+-        line=${line%"$(printf '\r')"}
++        # A suffix pattern scans huge LF-only frames quadratically in Bash.
++        # Inspect fixed-length slices and keep decoding in the base64 process.
++        if [[ ${line: -1} == $'\r' ]]; then line=${line:0:-1}; fi
+         receive=--receive
+-        case $line in
+-        png:*) receive=--receive-image; line=${line#png:} ;;
+-        files:*) receive=--receive-files; line=${line#files:} ;;
+-        transfer:*) receive=--receive-transfer; line=${line#transfer:} ;;
+-        drop:*) receive=--receive-drop; line=${line#drop:} ;;
++        case ${line:0:9} in
++        png:*) receive=--receive-image; line=${line:4} ;;
++        files:*) receive=--receive-files; line=${line:6} ;;
++        transfer:*) receive=--receive-transfer; line=${line:9} ;;
++        drop:*) receive=--receive-drop; line=${line:5} ;;
+         esac
+         printf '%s' "$line" | base64 -d > "$STATE/incoming" 2>/dev/null || continue
+         "$0" $receive < "$STATE/incoming" || break
+diff --git a/guest/scripts/finalize-rootfs.sh b/guest/scripts/finalize-rootfs.sh
+index d3c5580..acf0d4b 100755
+--- a/guest/scripts/finalize-rootfs.sh
++++ b/guest/scripts/finalize-rootfs.sh
+@@ -242,7 +242,9 @@ tar -C / -cf /usr/share/try-omarchy/compat-overlay.tar "${compat_paths[@]}"
+ # Revision 54 pauses config autoreload during live package updates.
+ # Revision 55 lets pacman adopt the catch-up night-light backend on update.
+ # Revision 56 retries the startup audio catalog until PipeWire is ready.
+-compat_revision=57
++# Revision 57 skips Snapper setup on the ext4 guest.
++# Revision 58 receives large clipboard frames without suffix-pattern stalls.
++compat_revision=58
+ printf '%s:%s\n' "$compat_revision" "$kernel_release" >/usr/share/try-omarchy/compat-version
+ 
+ # Fail the build if DKMS or networking modules were not packaged for this kernel.
+diff --git a/guest/tests/test_battery_details.py b/guest/tests/test_battery_details.py
+index f60324f..726945f 100644
+--- a/guest/tests/test_battery_details.py
++++ b/guest/tests/test_battery_details.py
+@@ -204,7 +204,7 @@ class BatteryDetailsFlowTests(unittest.TestCase):
+     def test_compatibility_delivery_and_dkms_version(self):
+         overlay = GUEST / "factory-overlay"
+         finalize = (GUEST / "scripts/finalize-rootfs.sh").read_text()
+-        self.assertIn("compat_revision=57", finalize)
++        self.assertIn("compat_revision=58", finalize)
+         self.assertIn("usr/src/try-omarchy-battery-1.1.0", finalize)
+         self.assertIn("usr/local/lib/try-omarchy/update-battery-dkms", finalize)
+         self.assertIn('PACKAGE_VERSION="1.1.0"', (MODULE_SOURCE.parent / "dkms.conf").read_text())
+diff --git a/guest/tests/test_clipboard_pull.py b/guest/tests/test_clipboard_pull.py
+new file mode 100644
+index 0000000..277b2fa
+--- /dev/null
++++ b/guest/tests/test_clipboard_pull.py
+@@ -0,0 +1,74 @@
++"""Exercise host frames through the bridge's receive loop without a desktop."""
++import base64
++import os
++from pathlib import Path
++import subprocess
++import signal
++import tempfile
++import time
++import unittest
++
++GUEST = Path(__file__).resolve().parents[1]
++BRIDGE = GUEST / 'factory-overlay/usr/local/bin/clipboard-bridge'
++
++
++class ClipboardPullTests(unittest.TestCase):
++    def run_frame(self, payload, prefix=b'', ending=b'\n', deliver=None):
++        # Run the production loop, with a finite transport and clipboard stub.
++        source = BRIDGE.read_text()
++        start = source.index('      file-transfer clipboard-pull')
++        end = source.index('\n      sleep 2', start)
++        with tempfile.TemporaryDirectory() as directory:
++            root = Path(directory)
++            frame = root / 'frame'
++            frame.write_bytes(prefix + base64.b64encode(payload) + ending)
++            capture = root / 'copied'
++            for name, body in (
++                ('file-transfer', 'cat "$FRAME"'),
++                ('wl-copy', 'printf "%s\\n" "$*" > "$CAPTURE.args"; cat > "$CAPTURE"'),
++                ('deliver', 'printf "%s\\n" "$*" > "$CAPTURE.args"; cat > "$CAPTURE"'),
++            ):
++                tool = root / name
++                tool.write_text('#!/bin/sh\n' + body + '\n')
++                tool.chmod(0o755)
++            env = dict(os.environ, PATH=f'{root}:' + os.environ['PATH'],
++                       XDG_RUNTIME_DIR=str(root), STATE=str(root),
++                       FRAME=str(frame), CAPTURE=str(capture), BASH_ENV='/dev/null')
++            started = time.monotonic()
++            process = subprocess.Popen(['bash', '-c', source[start:end],
++                                        str(BRIDGE if deliver is None else root / 'deliver')],
++                                       env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
++                                       start_new_session=True)
++            try:
++                stdout, stderr = process.communicate(timeout=5)
++            except subprocess.TimeoutExpired:
++                os.killpg(process.pid, signal.SIGKILL)
++                process.communicate()
++                self.fail('clipboard frame did not complete within 5 seconds')
++            elapsed = time.monotonic() - started
++            self.assertEqual(process.returncode, 0, stderr)
++            self.assertEqual(capture.read_bytes(), payload)
++            return Path(str(capture) + '.args').read_text().strip(), elapsed
++
++    def test_multi_megabyte_png_frame_decodes_exactly_with_lf_and_crlf(self):
++        png = b'\x89PNG\r\n\x1a\n' + bytes(range(256)) * 11836
++        for ending in (b'\n', b'\r\n'):
++            with self.subTest(ending=ending):
++                args, elapsed = self.run_frame(png, b'png:', ending)
++                self.assertEqual(args, '--type image/png')
++                self.assertLess(elapsed, 5)
++
++    def test_frame_prefixes_and_text_preserve_decoded_content(self):
++        for prefix, receive in ((b'', '--receive'), (b'png:', '--receive-image'),
++                                (b'files:', '--receive-files'),
++                                (b'transfer:', '--receive-transfer'), (b'drop:', '--receive-drop')):
++            for ending in (b'\n', b'\r\n'):
++                with self.subTest(prefix=prefix, ending=ending):
++                    args, _ = self.run_frame('こんにちは\n\n'.encode(), prefix, ending, deliver=True)
++                    self.assertEqual(args, receive)
++
++    def test_compatibility_overlay_delivers_the_bridge_to_existing_disks(self):
++        finalizer = (GUEST / 'scripts/finalize-rootfs.sh').read_text()
++        paths = finalizer.split('compat_paths=(', 1)[1].split(')', 1)[0]
++        self.assertIn('usr/local/bin/clipboard-bridge', paths)
++        self.assertIn('compat_revision=58', finalizer)
+diff --git a/guest/tests/test_compositor_health.py b/guest/tests/test_compositor_health.py
+index 9641b59..9bbb0e9 100644
+--- a/guest/tests/test_compositor_health.py
++++ b/guest/tests/test_compositor_health.py
+@@ -34,7 +34,7 @@ class CompositorHealthTests(unittest.TestCase):
+ 
+     def test_existing_disks_receive_health_files(self):
+         finalizer = (GUEST / 'scripts/finalize-rootfs.sh').read_text()
+-        self.assertIn('compat_revision=57', finalizer)
++        self.assertIn('compat_revision=58', finalizer)
+         for name in ['agent', 'compositor-health']:
+             self.assertIn('  usr/local/lib/try-omarchy/' + name, finalizer)
+         self.assertTrue(HELPER.stat().st_mode & 0o111)
+diff --git a/guest/tests/test_guest_qol.py b/guest/tests/test_guest_qol.py
+index 4440fbc..2c851e2 100644
+--- a/guest/tests/test_guest_qol.py
++++ b/guest/tests/test_guest_qol.py
+@@ -215,7 +215,7 @@ class GuestQolTests(unittest.TestCase):
+     def test_compatibility_delivers_guarded_payload_once_per_revision(self):
+         finalize = (GUEST / "scripts/finalize-rootfs.sh").read_text()
+         paths = finalize.split("compat_paths=(", 1)[1].split(")", 1)[0]
+-        self.assertIn("compat_revision=57", finalize)
++        self.assertIn("compat_revision=58", finalize)
+         for path in ("usr/local/bin/omarchy-native-screensaver-text", "usr/local/lib/try-omarchy/install-guest-qol", "usr/share/try-omarchy/guest-qol", "usr/local/bin/omarchy-windows-audio-bridge"):
+             self.assertIn(path, paths)
+         self.assertNotIn("etc/fonts/conf.d/30-try-omarchy.conf", paths)
+diff --git a/guest/tests/test_live_update.py b/guest/tests/test_live_update.py
+index 8e8e535..e10a941 100644
+--- a/guest/tests/test_live_update.py
++++ b/guest/tests/test_live_update.py
+@@ -176,7 +176,7 @@ class LiveUpdateTests(unittest.TestCase):
+ 
+     def test_delivery_and_best_effort_hook(self):
+         finalizer = (GUEST / 'scripts/finalize-rootfs.sh').read_text()
+-        self.assertIn('compat_revision=57', finalizer)
++        self.assertIn('compat_revision=58', finalizer)
+         for path in ['usr/local/lib/try-omarchy/live-update', 'etc/pacman.d/hooks/00-try-omarchy-live-update.hook', 'etc/pacman.d/hooks/zz-try-omarchy-live-update.hook']:
+             self.assertIn(path, finalizer)
+         pre = (GUEST / 'factory-overlay/etc/pacman.d/hooks/00-try-omarchy-live-update.hook').read_text()
+diff --git a/guest/tests/test_native_nightlight.py b/guest/tests/test_native_nightlight.py
+index 4801b49..9e65483 100644
+--- a/guest/tests/test_native_nightlight.py
++++ b/guest/tests/test_native_nightlight.py
+@@ -214,5 +214,5 @@ class PersistentNightlightTests(unittest.TestCase):
+         catch_up = (self.overlay / 'usr/local/lib/try-omarchy/catch-up').read_text()
+         for path in ['usr/local/bin/omarchy-native-nightlight', 'usr/local/share/try-omarchy/nightlight.frag', 'usr/local/lib/try-omarchy/install-nightlight', 'usr/share/try-omarchy/nightlight']:
+             self.assertIn(path, finalizer)
+-        self.assertIn('compat_revision=57', finalizer)
++        self.assertIn('compat_revision=58', finalizer)
+         self.assertIn('previous_revision < 55', catch_up)
+diff --git a/guest/tests/test_notification_privacy.py b/guest/tests/test_notification_privacy.py
+index 0cbe757..f864346 100644
+--- a/guest/tests/test_notification_privacy.py
++++ b/guest/tests/test_notification_privacy.py
+@@ -116,7 +116,7 @@ for (const state of [null, {screensaverStateKnown:false}, {screensaverStateKnown
+     def test_compatibility_overlay_and_catch_up_revision(self):
+         finalizer = (GUEST / 'scripts/finalize-rootfs.sh').read_text()
+         catch_up = (GUEST / 'factory-overlay/usr/local/lib/try-omarchy/catch-up').read_text()
+-        self.assertIn('compat_revision=57', finalizer)
++        self.assertIn('compat_revision=58', finalizer)
+         self.assertIn('usr/share/try-omarchy/notifications', finalizer)
+         self.assertIn('usr/local/lib/try-omarchy/install-notifications', finalizer)
+         self.assertIn('previous_revision < 52', catch_up)
+diff --git a/guest/tests/test_snapper_guest.py b/guest/tests/test_snapper_guest.py
+index 8956301..4c08764 100644
+--- a/guest/tests/test_snapper_guest.py
++++ b/guest/tests/test_snapper_guest.py
+@@ -44,5 +44,5 @@ class GuestSnapperTests(unittest.TestCase):
+         finalizer = (GUEST / 'scripts/finalize-rootfs.sh').read_text()
+         paths = finalizer.split('compat_paths=(', 1)[1].split(')', 1)[0]
+         self.assertIn(TARGET, paths)
+-        self.assertIn('compat_revision=57', finalizer)
++        self.assertIn('compat_revision=58', finalizer)
+         self.assertEqual(json.loads((GUEST / 'spec.json').read_text())['upstream']['packageRelease'], 8)
+diff --git a/guest/tests/test_windows_volume_sync.py b/guest/tests/test_windows_volume_sync.py
+index 1f3cb74..d116ead 100644
+--- a/guest/tests/test_windows_volume_sync.py
++++ b/guest/tests/test_windows_volume_sync.py
+@@ -285,7 +285,7 @@ class VolumeSyncTests(unittest.TestCase):
+ 
+     def test_revision_delivers_bridge_to_existing_disks(self):
+         finalize = (Path(__file__).resolve().parents[1] / "scripts/finalize-rootfs.sh").read_text()
+-        self.assertIn("compat_revision=57", finalize)
++        self.assertIn("compat_revision=58", finalize)
+         self.assertIn("usr/local/bin/omarchy-windows-audio-bridge", finalize)
+ 
+ 
+diff --git a/guest/tests/verify.py b/guest/tests/verify.py
+index 4cdbe4e..1e29146 100755
+--- a/guest/tests/verify.py
++++ b/guest/tests/verify.py
+@@ -324,7 +324,7 @@ def main() -> None:
+         "system services run without watchdogs, which fire after Windows sleeps",
+     )
+     check(
+-        "compat_revision=57" in finalize_rootfs
++        "compat_revision=58" in finalize_rootfs
+         and "usr/local/bin/mpv" in compat_paths
+         and "usr/share/dkms/modules_to_force_install/try-omarchy" in compat_paths
+         and "usr/local/lib/try-omarchy/try-omarchy-import.pyz" in compat_paths
+-- 
+2.56.0
+
