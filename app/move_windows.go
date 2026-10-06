@@ -310,6 +310,16 @@ func openMoveCleanupDisk(path string) (*os.File, error) {
 	return os.NewFile(uintptr(h), path), nil
 }
 
+// FindFirstStreamW reports these errors when there are no streams to enumerate,
+// including filesystems such as exFAT that do not support named streams.
+// Only the initial call may report an unsupported filesystem; after a search
+// handle opens, enumeration must complete normally or fail closed.
+func moveStreamsAbsent(err error) bool {
+	return errors.Is(err, syscall.Errno(38)) || // ERROR_HANDLE_EOF
+		errors.Is(err, syscall.Errno(87)) || // ERROR_INVALID_PARAMETER
+		errors.Is(err, syscall.Errno(1)) // ERROR_INVALID_FUNCTION
+}
+
 func rejectMoveStreams(path string) error {
 	ptr, err := syscall.UTF16PtrFromString(path)
 	if err != nil {
@@ -323,7 +333,7 @@ func rejectMoveStreams(path string) error {
 	next := kernel32.NewProc("FindNextStreamW")
 	h, _, callErr := first.Call(uintptr(unsafe.Pointer(ptr)), 0, uintptr(unsafe.Pointer(&data)), 0)
 	if h == ^uintptr(0) {
-		if callErr == syscall.Errno(38) {
+		if moveStreamsAbsent(callErr) {
 			return nil
 		}
 		return fmt.Errorf("checking file streams for %s: %v", path, callErr)

@@ -5,12 +5,27 @@ package main
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"syscall"
 	"testing"
 	"time"
 )
+
+func TestMoveStreamsAbsent(t *testing.T) {
+	for _, code := range []syscall.Errno{1, 38, 87, 0, 2, 3, 5, 32, 33, 50} {
+		want := code == 1 || code == 38 || code == 87
+		for _, err := range []error{code, fmt.Errorf("stream query: %w", code)} {
+			if got := moveStreamsAbsent(err); got != want {
+				t.Errorf("error %v: absent=%v, want %v", err, got, want)
+			}
+		}
+	}
+	if moveStreamsAbsent(nil) || moveStreamsAbsent(errors.New("The parameter is incorrect.")) {
+		t.Fatal("accepted an error without a supported Windows error code")
+	}
+}
 
 func TestWindowsMoveRetriesTemporaryLock(t *testing.T) {
 	for _, code := range []syscall.Errno{5, 32, 33, 3} {
