@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 # Clipboard bridge (guest side) for two-way text and image sync with the
 # Windows host. It waits for the active Wayland session and restarts both
 # directions if the compositor is replaced. 10.0.2.2 is the host under QEMU
@@ -146,13 +146,15 @@ while :; do
       # Keep socat directly connected to read. An extra pipe stage buffers
       # small clipboard payloads and makes ordinary text appear stuck.
       file-transfer clipboard-pull 2>/dev/null | while IFS= read -r line; do
-        line=${line%"$(printf '\r')"}
+        # A suffix pattern scans huge LF-only frames quadratically in Bash.
+        # Inspect fixed-length slices and keep decoding in the base64 process.
+        if [[ ${line: -1} == $'\r' ]]; then line=${line:0:-1}; fi
         receive=--receive
-        case $line in
-        png:*) receive=--receive-image; line=${line#png:} ;;
-        files:*) receive=--receive-files; line=${line#files:} ;;
-        transfer:*) receive=--receive-transfer; line=${line#transfer:} ;;
-        drop:*) receive=--receive-drop; line=${line#drop:} ;;
+        case ${line:0:9} in
+        png:*) receive=--receive-image; line=${line:4} ;;
+        files:*) receive=--receive-files; line=${line:6} ;;
+        transfer:*) receive=--receive-transfer; line=${line:9} ;;
+        drop:*) receive=--receive-drop; line=${line:5} ;;
         esac
         printf '%s' "$line" | base64 -d > "$STATE/incoming" 2>/dev/null || continue
         "$0" $receive < "$STATE/incoming" || break

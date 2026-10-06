@@ -161,6 +161,12 @@ same no-op setup to existing disks before login, and runtime `4.0.4-8` carries
 it through package updates. The migration runner and unrelated failures remain
 unchanged.
 
+Patch 0139 fixes large Windows clipboard image stalls. Compatibility revision 58
+delivers the bridge to existing disks before login, including revision-57 disks.
+The receiver checks fixed-length slices for CR and frame prefixes, then streams
+base64 into the decoder. This integration file is delivered by the compatibility
+overlay and does not require a runtime package release bump.
+
 Patch 0116 stops the launcher's initramfs from copying `vdso/` into
 `/usr/lib/modules/<version>` on the disk. `linux-headers` owns that directory,
 and an unowned copy made pacman refuse the next `linux-headers` upgrade, which
