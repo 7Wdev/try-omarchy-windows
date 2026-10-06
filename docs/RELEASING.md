@@ -41,9 +41,11 @@ artifact for verification. Use it after changing the OIDC or signing configurati
 ## Prepare the guest
 
 1. Add the technical changes to `CHANGELOG.md` and write the public announcement
-   in `.github/release-notes/TAG.md`. Review its exact title, prose and links
-   before publishing. Tyler requires clean, polished release notes in every
-   project; a raw bullet-point changelog is not a release announcement. The
+   in `.github/release-notes/TAG.md`. Release notes follow the Try Omarchy for
+   Mac format: a one-line summary naming the version, then `# Features`,
+   `# Fixes` and `## Dev` lists written for users, each item ending with its
+   pull request or issue numbers, and a closing section thanking reporters or
+   new contributors. Review the exact wording and links before publishing. The
    release workflow rejects missing or empty announcements instead of falling
    back to the changelog. Push both files to `master`.
 2. Run the `Release` workflow with phase `prepare` and the new release tag.
