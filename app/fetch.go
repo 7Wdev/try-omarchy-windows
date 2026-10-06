@@ -3,9 +3,11 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -59,6 +61,11 @@ func ensureGuest(cfg *config, release, sumsSHA256 string) (result error) {
 	if err := os.RemoveAll(staged); err != nil {
 		return err
 	}
+	defer func() {
+		// After publication the staging path is gone. On failure it contains
+		// only this attempt's files, never the retained previous tree.
+		_ = os.RemoveAll(staged)
+	}()
 	next := *cfg
 	next.guestDir = staged
 	if err := ensureGuestFiles(&next, release, sumsSHA256); err != nil {
@@ -95,6 +102,7 @@ func ensureGuest(cfg *config, release, sumsSHA256 string) (result error) {
 	if err := publishDirectoryUpdate(cfg.guestDir, staged, filepath.Join(cfg.dir, "guest.previous")); err != nil {
 		return fmt.Errorf("publishing image update: %w", err)
 	}
+	cfg.factoryVerifiedThisRun = next.factoryVerifiedThisRun
 	return nil
 }
 
@@ -109,7 +117,14 @@ func validateInstalledDiskBacking(cfg *config) error {
 	if disk.Backing == "" {
 		return nil
 	}
-	ok, err := verifyFileSHA256(disk.Backing, disk.BackingSHA256, nil)
+	release, digest, _ := installReceiptIdentity(cfg.guestDir)
+	ok, err := installReceiptMatches(cfg.guestDir, release, digest, []string{"rootfs.ext4"})
+	if err != nil || ok {
+		return err
+	}
+	// Timestamp/size changes require verification; ordinary unchanged launches
+	// trust the same installed receipt as the boot files.
+	ok, err = verifyFileSHA256(disk.Backing, disk.BackingSHA256, nil)
 	if err != nil {
 		return err
 	}
@@ -152,11 +167,27 @@ func ensureGuestFiles(cfg *config, release, sumsSHA256 string) error {
 		return err
 	}
 	names := append([]string{}, preparedBootArtifacts...)
+	// An in-place repair must not discard the original backing identity, even
+	// when its bytes are missing or damaged. Leave the old receipt for recovery.
+	backed := false
+	if cfg.portable && pathsEqual(cfg.guestDir, filepath.Join(cfg.dir, "guest")) {
+		if _, err := os.Lstat(cfg.disk); err == nil {
+			disk, err := inspectInstallationDisk(cfg.dir)
+			if err != nil {
+				return err
+			}
+			backed = disk.Backing != ""
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+	}
 	// Preserve an existing full layout when repairing the same installed build.
 	if ok, err := verifyFileSHA256(filepath.Join(cfg.guestDir, "rootfs.ext4"), sums["rootfs.ext4"], nil); err != nil {
 		return err
 	} else if ok {
 		names = append(names, "rootfs.ext4")
+	} else if backed {
+		return fmt.Errorf("original portable factory image is missing or damaged; restore the matching installation")
 	}
 	sums["SHA256SUMS"] = normalizedSHA256(sumsSHA256)
 	return writeInstallReceipt(cfg.guestDir, release, sumsSHA256, names, sums)
@@ -165,8 +196,12 @@ func ensureGuestFiles(cfg *config, release, sumsSHA256 string) error {
 // Acquisition uses a private sibling area, never the updater's verified cache.
 // Publish the verified template before extending the still-valid boot receipt.
 func ensureFactory(cfg *config, release, digest string) (result error) {
+	cfg.factoryVerifiedThisRun = false
 	defer func() {
-		if result != nil {
+		if result == nil {
+			cfg.factoryVerifiedThisRun = true
+		}
+		if factoryUnavailable(result) {
 			result = fmt.Errorf("%s: %w", uiTextWith("error.factory.unavailable", map[string]string{"version": factoryReleaseLabel(release)}), result)
 		}
 	}()
@@ -187,24 +222,63 @@ func ensureFactory(cfg *config, release, digest string) (result error) {
 				if !ok || !releaseLocationsEquivalent(oldRelease, release) || oldDigest != normalizedSHA256(digest) {
 					return fmt.Errorf("cannot replace an active portable backing image")
 				}
-				if err := validateInstalledDiskBacking(cfg); err != nil {
-					return err
-				}
 			}
 		} else if !os.IsNotExist(err) {
 			return err
 		}
 	}
-	stage := filepath.Join(filepath.Dir(cfg.guestDir), ".factory-"+normalizedSHA256(digest))
 	if !validSHA256(normalizedSHA256(digest)) {
 		return fmt.Errorf("invalid factory identity")
 	}
+	// Full legacy receipts already record the original factory identity. Verify
+	// those local bytes before requiring metadata that older launchers omitted.
+	oldRelease, oldDigest, haveReceipt := installReceiptIdentity(cfg.guestDir)
+	localHash, haveHash := installReceiptArtifactSHA256(cfg.guestDir, "rootfs.ext4")
+	checkedLocal := haveReceipt && haveHash && releaseLocationsEquivalent(oldRelease, release) && oldDigest == normalizedSHA256(digest)
+	if checkedLocal {
+		ok, err := verifyFileSHA256(filepath.Join(cfg.guestDir, "rootfs.ext4"), localHash, getUI().setProgress)
+		if err != nil {
+			return err
+		}
+		if ok {
+			for _, name := range bootGuestArtifacts {
+				hash, ok := installReceiptArtifactSHA256(cfg.guestDir, name)
+				if !ok {
+					return fmt.Errorf("installed boot file identity is missing: %s", name)
+				}
+				ok, err := verifyFileSHA256(filepath.Join(cfg.guestDir, name), hash, nil)
+				if err != nil {
+					return err
+				}
+				if !ok {
+					return fmt.Errorf("installed boot file is damaged: %s", name)
+				}
+			}
+			return nil
+		}
+		// Never replace the original backing, including when it is damaged.
+		if cfg.portable && pathsEqual(cfg.guestDir, filepath.Join(cfg.dir, "guest")) {
+			if _, err := os.Lstat(cfg.disk); err == nil {
+				disk, err := inspectInstallationDisk(cfg.dir)
+				if err != nil {
+					return err
+				}
+				if disk.Backing != "" {
+					return fmt.Errorf("original portable factory image is missing or damaged; restore the matching installation")
+				}
+			} else if !os.IsNotExist(err) {
+				return err
+			}
+		}
+	}
+	stage := filepath.Join(filepath.Dir(cfg.guestDir), ".factory-"+normalizedSHA256(digest))
 	if err := validateMovePath(stage); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(stage, 0700); err != nil {
 		return err
 	}
+	defer func() { _ = os.RemoveAll(stage) }()
 	// Resolve authentication from installed metadata before cache/embedded/network.
 	manifestData, sums, err := resolveGuestManifest(cfg, client, release, digest, true)
 	if err != nil {
@@ -243,9 +317,13 @@ func ensureFactory(cfg *config, release, digest string) (result error) {
 	if cfg.portable {
 		ui.setStatus("%s", uiText("status.checking_portable_system"))
 	}
-	ok, err := verifyFileSHA256(rootfs, sums["rootfs.ext4"], ui.setProgress)
-	if err != nil {
-		return err
+	ok := false
+	// A receipt miss above already hashed these bytes against the same digest.
+	if !checkedLocal || localHash != sums["rootfs.ext4"] {
+		ok, err = verifyFileSHA256(rootfs, sums["rootfs.ext4"], ui.setProgress)
+		if err != nil {
+			return err
+		}
 	}
 	if !ok {
 		zst := filepath.Join(stage, "rootfs.ext4.zst")
@@ -294,6 +372,21 @@ func ensureFactory(cfg *config, release, digest string) (result error) {
 	return nil
 }
 
+func factoryUnavailable(err error) bool {
+	if err == nil || errors.Is(err, errSetupCancelled) {
+		return false
+	}
+	var request *url.Error
+	var transfer *downloadUnavailableError
+	var status *downloadHTTPError
+	if errors.As(err, &status) {
+		return status.status == http.StatusNotFound || status.status == http.StatusGone ||
+			status.status == http.StatusUnauthorized || status.status == http.StatusForbidden ||
+			status.status == http.StatusRequestTimeout || status.status == http.StatusTooManyRequests || status.status >= 500
+	}
+	return errors.As(err, &request) || errors.As(err, &transfer)
+}
+
 func acquireFactoryArtifact(cfg *config, client *http.Client, release, digest, name, dest, sum string, ui *progressUI) error {
 	cached := filepath.Join(portablePayloadDirectory(cfg.payloadDir, digest), name)
 	if cfg.payloadDir != "" {
@@ -312,6 +405,14 @@ func ensureInstalledFactory(cfg *config) error {
 	release, digest, ok := installReceiptIdentity(cfg.guestDir)
 	if !ok {
 		return fmt.Errorf("verified factory release identity is missing")
+	}
+	// Creation/reset just verified the template under the same launch lock.
+	// Avoid another multi-GB hash unless the file changed after acquisition.
+	if cfg.factoryVerifiedThisRun {
+		ready, err := installReceiptMatches(cfg.guestDir, release, digest, []string{"rootfs.ext4"})
+		if err != nil || ready {
+			return err
+		}
 	}
 	return ensureFactory(cfg, release, digest)
 }

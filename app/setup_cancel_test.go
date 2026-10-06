@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -212,5 +213,43 @@ func TestCancelPreservesPortableRecoveryAfterInterruptedReset(t *testing.T) {
 	data, err := os.ReadFile(retained)
 	if err != nil || string(data) != "previous personal files" {
 		t.Fatalf("retained disk changed: %q %v", data, err)
+	}
+}
+
+func TestCancelRemovesPrivateFactoryAndGuestStages(t *testing.T) {
+	for _, pending := range []bool{false, true} {
+		t.Run(fmt.Sprint(pending), func(t *testing.T) {
+			root := t.TempDir()
+			factory := ".factory-" + strings.Repeat("a", 64)
+			for _, name := range []string{factory + "/rootfs.ext4.zst", "guest.next/vmlinuz-linux", "guest.previous/sentinel", ".factory-not-a-digest/personal"} {
+				path := filepath.Join(root, filepath.FromSlash(name))
+				if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte("keep or stage"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if pending {
+				if err := os.WriteFile(filepath.Join(root, payloadUpdateStateFilename), []byte("pending publication"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := cleanupCancelledSetup(root, "", false); err != nil {
+				t.Fatal(err)
+			}
+			for _, name := range []string{factory, "guest.next"} {
+				_, err := os.Lstat(filepath.Join(root, name))
+				wantGone := name == factory || !pending
+				if os.IsNotExist(err) != wantGone {
+					t.Fatalf("%s cleanup: %v", name, err)
+				}
+			}
+			for _, name := range []string{"guest.previous/sentinel", ".factory-not-a-digest/personal"} {
+				if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(name))); err != nil {
+					t.Fatal("removed unrelated or recovery data", err)
+				}
+			}
+		})
 	}
 }

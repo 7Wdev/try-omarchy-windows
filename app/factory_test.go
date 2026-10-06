@@ -176,8 +176,18 @@ func TestFactoryAcquisitionFailuresKeepWorkingInstallation(t *testing.T) {
 				files["guest-manifest.json"] = []byte("also damaged")
 			}
 			release, digest, _ := installReceiptIdentity(cfg.guestDir)
-			if err := ensureFactory(cfg, release, digest); err == nil {
+			err := ensureFactory(cfg, release, digest)
+			if err == nil {
 				t.Fatal("failure succeeded")
+			}
+			hint := uiTextWith("error.factory.unavailable", map[string]string{"version": factoryReleaseLabel(release)})
+			wantHint := mode == "offline" || mode == "404"
+			if strings.Contains(err.Error(), hint) != wantHint {
+				t.Fatalf("network hint=%v, error: %v", wantHint, err)
+			}
+			stages, err := filepath.Glob(filepath.Join(cfg.dir, ".factory-*"))
+			if err != nil || len(stages) != 0 {
+				t.Fatalf("failed acquisition left stages: %v %v", stages, err)
 			}
 			disk, _ := os.ReadFile(cfg.disk)
 			after, _ := os.ReadFile(filepath.Join(cfg.guestDir, installReceiptFilename))

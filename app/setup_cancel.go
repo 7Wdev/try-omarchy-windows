@@ -91,7 +91,7 @@ func (r setupReader) Read(p []byte) (int, error) {
 // Existing user or recovery data protects the whole tree even when verification
 // fails. Completeness alone must never authorize recursive cancellation cleanup.
 func installationDataExists(dir string) bool {
-	for _, name := range []string{"vm/disk.raw", "vm/disk.qcow2", "checkpoints", "guest.previous", "runtime.previous", "rollback-state.json"} {
+	for _, name := range []string{"vm/disk.raw", "vm/disk.qcow2", "checkpoints", "guest.previous", "runtime.previous", payloadUpdateStateFilename, updateStateFilename} {
 		if _, err := os.Lstat(filepath.Join(dir, filepath.FromSlash(name))); !os.IsNotExist(err) {
 			return true
 		}
@@ -176,6 +176,35 @@ func cleanupCancelledSetup(dir, executable string, removeAll bool) error {
 			}
 		}
 	}
+	// Only remove private acquisition directories with a valid digest suffix.
+	// Never follow a linked staging path or touch retained recovery directories.
+	entries, err := os.ReadDir(dir)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	for _, entry := range entries {
+		if !strings.HasPrefix(entry.Name(), ".factory-") || !validSHA256(strings.TrimPrefix(entry.Name(), ".factory-")) || !entry.IsDir() {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		if err := validateMovePath(path); err != nil {
+			continue
+		}
+		if err := os.RemoveAll(path); err != nil {
+			return err
+		}
+	}
+	// Pending publication recovery owns its directories. A pre-publication
+	// cancellation has no journal and can discard the verified staging tree.
+	if _, err := os.Lstat(filepath.Join(dir, payloadUpdateStateFilename)); os.IsNotExist(err) {
+		path := filepath.Join(dir, "guest.next")
+		if info, err := os.Lstat(path); err == nil && info.IsDir() && validateMovePath(path) == nil {
+			if err := os.RemoveAll(path); err != nil {
+				return err
+			}
+		}
+	}
+
 	return nil
 }
 

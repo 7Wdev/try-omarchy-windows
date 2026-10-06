@@ -97,11 +97,11 @@ func fetchSmallFileContext(ctx context.Context, client *http.Client, source stri
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+		return nil, &downloadHTTPError{status: resp.StatusCode}
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {
-		return nil, err
+		return nil, &downloadUnavailableError{err: err}
 	}
 	if int64(len(data)) > limit {
 		return nil, fmt.Errorf("response exceeds %d bytes", limit)

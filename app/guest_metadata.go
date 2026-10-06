@@ -13,6 +13,7 @@ func resolveGuestManifest(cfg *config, client *http.Client, release, digest stri
 	if cfg.payloadDir != "" {
 		paths = append(paths, filepath.Join(portablePayloadDirectory(cfg.payloadDir, digest), "SHA256SUMS"))
 	}
+	var localErr error
 	for _, path := range paths {
 		if _, err := os.Lstat(path); os.IsNotExist(err) {
 			continue
@@ -21,10 +22,15 @@ func resolveGuestManifest(cfg *config, client *http.Client, release, digest stri
 		}
 		data, err := readVerifiedManifestData(path, digest)
 		if err != nil {
-			return nil, nil, err
+			localErr = err
+			continue
 		}
 		sums, err := parseVerifiedSums(data, digest)
-		return data, sums, err
+		if err != nil {
+			localErr = err
+			continue
+		}
+		return data, sums, nil
 	}
 	if normalizedSHA256(digest) == normalizedSHA256(defaultSumsSHA256) {
 		if sums, err := parseVerifiedSums(defaultSums, digest); err == nil {
@@ -32,6 +38,9 @@ func resolveGuestManifest(cfg *config, client *http.Client, release, digest stri
 		}
 	}
 	if !network {
+		if localErr != nil {
+			return nil, nil, localErr
+		}
 		return nil, nil, fmt.Errorf("authenticated factory metadata is not available locally")
 	}
 	data, err := fetchSmallFile(client, normalizedRelease(release)+"/SHA256SUMS", maxSumsBytes)
@@ -69,21 +78,22 @@ func installedFactoryFloor(guest string) (int64, error) {
 	metadata := filepath.Join(guest, "guest-manifest.json")
 	if _, err := os.Lstat(metadata); err == nil {
 		sums, err := resolveGuestSums(cfg, nil, release, digest, false)
-		if err != nil {
-			return 0, err
+		if err == nil {
+			verified, err := verifyFileSHA256(metadata, sums["guest-manifest.json"], nil)
+			if err != nil {
+				return 0, err
+			}
+			if !verified {
+				return 0, fmt.Errorf("factory size metadata is damaged; your disk has been kept")
+			}
+			sizes, err := readGuestArtifactSizes(metadata, sums)
+			if err != nil {
+				return 0, err
+			}
+			return sizes["rootfs.ext4"], nil
 		}
-		verified, err := verifyFileSHA256(metadata, sums["guest-manifest.json"], nil)
-		if err != nil {
-			return 0, err
-		}
-		if !verified {
-			return 0, fmt.Errorf("factory size metadata is damaged; your disk has been kept")
-		}
-		sizes, err := readGuestArtifactSizes(metadata, sums)
-		if err != nil {
-			return 0, err
-		}
-		return sizes["rootfs.ext4"], nil
+		// Older full installs have metadata but no cached sums. Their receipt
+		// and original template can still establish the factory floor below.
 	} else if !os.IsNotExist(err) {
 		return 0, err
 	}

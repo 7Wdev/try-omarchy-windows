@@ -86,8 +86,8 @@ another factory image. A factory-backed QCOW2 is checkpointed and verified as
 independent before its original `data/guest/rootfs.ext4` can be replaced by a new
 boot directory. Never replace that original backing file yourself.
 
-Complete distribution ZIPs still include the authenticated factory archive and
-support offline creation. An exported independent portable copy can boot offline
+A complete distribution with the authenticated factory archive supports offline
+creation. An exported independent portable copy can boot offline
 without a template. **Start fresh** reuses a verified matching local template or
 acquires the exact installed or explicitly selected release online. A missing,
 corrupt, cancelled or unavailable template stops reset and keeps the old system.

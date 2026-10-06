@@ -38,6 +38,7 @@ type config struct {
 	winqEmu, share              string
 	fresh, fullscreen, noGpu    bool
 	resetPayloadPrepared        bool
+	factoryVerifiedThisRun      bool
 	fullscreenDisplay           string
 	hostCursor                  bool
 	experimentalPinch           bool
@@ -744,6 +745,17 @@ func main() {
 		}
 	}
 
+	// Detachment can fail for retryable reasons such as a full USB stick. Finish
+	// it before runtime publication can mark this version as a started update.
+	if !cfg.fresh && !payloadsRolledBack {
+		if err := preparePortablePayloadTransition(cfg, *release, *sumsSHA256); err != nil {
+			if finishSetupCancellation(cfg, err) {
+				return
+			}
+			fatal(uiTextWith("fatal.portable_disk_update", map[string]string{"error": err.Error()}))
+		}
+	}
+
 	// Machine setup the old bootstrap.ps1 handled: hypervisor on (may walk the
 	// user through one restart and exit), then a QEMU to run. Existing setups
 	// win - C:\WINQ-EMU, then a previously downloaded runtime, then stock QEMU
@@ -823,7 +835,7 @@ func main() {
 		if err != nil || !ready || validateInstalledDiskBacking(cfg) != nil {
 			fatal(uiText("fatal.image.incomplete"))
 		}
-	} else {
+	} else if !cfg.resetPayloadPrepared {
 		if err := ensureGuest(cfg, *release, *sumsSHA256); err != nil {
 			if finishSetupCancellation(cfg, err) {
 				return

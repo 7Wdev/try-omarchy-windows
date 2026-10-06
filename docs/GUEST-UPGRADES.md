@@ -203,7 +203,7 @@ runtime updates without requesting `rootfs.ext4` or `rootfs.ext4.zst`. Creation
 and explicit reset acquire the exact selected release's template, authenticated
 by the complete pinned SHA256SUMS. Standard raw disks are independent after
 creation. Portable disks retain their original backing until verified detachment
-succeeds immediately before publishing the new guest tree.
+succeeds before publishing any new runtime or guest payload.
 
 Component rollback restores the previous boot files, runtime and their recorded
 pins. An independent disk stays independent, and rollback needs no new factory
@@ -213,7 +213,9 @@ full previous installation is retained for automatic legacy-launcher recovery.
 Manual downgrade of a template-free installation to a mandatory-template
 launcher is unsupported; use its full compatible backup or distribution.
 
-A small raw disk with uncertain completeness now stops with a recovery error
-instead of being automatically rebuilt. Its bytes are kept. Restore verified
+Legacy full installations can grow using their verified original template and
+reset offline using the factory hash recorded in their receipt, even without
+cached SHA256SUMS. A small raw disk with uncertain completeness now stops with
+a recovery error instead of being automatically rebuilt. Its bytes are kept. Restore verified
 original metadata or a backup, or explicitly use Start fresh to retain the old
 disk while preparing a replacement.

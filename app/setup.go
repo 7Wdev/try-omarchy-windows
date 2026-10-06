@@ -320,6 +320,7 @@ func ensureRuntime(cfg *config, release, sumsSHA256 string) (string, error) {
 	runtimeCfg := *cfg
 	runtimeCfg.guestDir = tmp
 	if _, err := cacheGuestSums(&runtimeCfg, client, release, sumsSHA256, false); err != nil {
+		_ = os.RemoveAll(tmp)
 		return "", err
 	}
 	if err := writeRuntimeReceipt(tmp, release, sumsSHA256, archiveSHA); err != nil {
