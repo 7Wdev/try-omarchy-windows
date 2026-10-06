@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -373,7 +374,7 @@ func ensureFactory(cfg *config, release, digest string) (result error) {
 }
 
 func factoryUnavailable(err error) bool {
-	if err == nil || errors.Is(err, errSetupCancelled) {
+	if err == nil || errors.Is(err, errSetupCancelled) || errors.Is(err, context.Canceled) {
 		return false
 	}
 	var request *url.Error

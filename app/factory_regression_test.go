@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -170,7 +171,7 @@ func TestPortableBackingReceiptFastPath(t *testing.T) {
 }
 
 func TestFactoryUnavailableErrorsKeepLocalCause(t *testing.T) {
-	for _, err := range []error{syscall.ENOSPC, &os.PathError{Op: "write", Path: "factory", Err: syscall.ENOSPC}, errInsufficientDiskSpace, errSetupCancelled, errors.New("checksum mismatch"), &downloadHTTPError{status: 400}} {
+	for _, err := range []error{syscall.ENOSPC, &os.PathError{Op: "write", Path: "factory", Err: syscall.ENOSPC}, errInsufficientDiskSpace, errSetupCancelled, context.Canceled, &url.Error{Op: "Get", URL: "https://example.invalid", Err: context.Canceled}, errors.New("checksum mismatch"), &downloadHTTPError{status: 400}} {
 		if factoryUnavailable(fmt.Errorf("preparing factory: %w", err)) {
 			t.Fatalf("local error classified as network: %v", err)
 		}
