@@ -33,5 +33,5 @@ process.
 
 ## Maintainer
 
-Brandon Tyler South ([@btsouth](https://github.com/btsouth)) maintains this
+Brandon South ([@btsouth](https://github.com/btsouth)) maintains this
 project and handles security reports, audits and hardening.
