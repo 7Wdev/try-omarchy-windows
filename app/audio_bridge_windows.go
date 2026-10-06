@@ -301,6 +301,9 @@ func serveAudioBridge(conn net.Conn, dataDir, qemu string, microphoneDisabledAtB
 			if request.Type == "get-volume" {
 				if sync.message.Sequence == 0 {
 					startVolume()
+					// Only guests with volume sync ask, so this line in a
+					// diagnostics bundle tells an old guest from an off switch.
+					logf("audio bridge: guest volume sync handshake, sync active=%v", sync.message.Enabled)
 				}
 				if err := publishVolume(); err != nil {
 					return err
