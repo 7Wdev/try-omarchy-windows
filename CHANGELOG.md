@@ -1,8 +1,9 @@
 # Changelog
 
-## Unreleased
+## v0.10.1 - 2026-10-06
 
 - Large images copied from Windows reach Omarchy without stalling.
+- Portable installs on exFAT start again after the first launch.
 
 ## v0.10.0 - 2026-10-05
 
