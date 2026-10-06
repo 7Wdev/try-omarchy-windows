@@ -186,8 +186,10 @@ func TestFactoryAcquisitionFailuresKeepWorkingInstallation(t *testing.T) {
 				t.Fatalf("network hint=%v, error: %v", wantHint, err)
 			}
 			stages, err := filepath.Glob(filepath.Join(cfg.dir, ".factory-*"))
-			if err != nil || len(stages) != 0 {
-				t.Fatalf("failed acquisition left stages: %v %v", stages, err)
+			// Network and space failures keep the stage so a retry can resume.
+			keep := mode == "offline" || mode == "404" || mode == "low-space"
+			if err != nil || (len(stages) != 0) != keep {
+				t.Fatalf("stage kept=%v, want %v: %v %v", len(stages) != 0, keep, stages, err)
 			}
 			disk, _ := os.ReadFile(cfg.disk)
 			after, _ := os.ReadFile(filepath.Join(cfg.guestDir, installReceiptFilename))
@@ -618,5 +620,57 @@ func TestPortableBootOnlyPublicationDetachesOriginalBacking(t *testing.T) {
 				t.Fatal("rollback reattached old factory", disk, err)
 			}
 		})
+	}
+}
+
+func TestFactoryDownloadResumesAfterInterruptedTransfer(t *testing.T) {
+	fixture := factoryPayloadFixture(t, bytes.Repeat([]byte("exact pinned factory "), 4096))
+	cfg, files, server, _ := onDemandFixtureFiles(t, false, fixture)
+	full := files["rootfs.ext4.zst"]
+	half := len(full) / 2
+	var ranges []string
+	cut, down := true, true
+	server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		name := filepath.Base(r.URL.Path)
+		data, ok := files[name]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		if name == "rootfs.ext4.zst" {
+			if !cut && down {
+				// The network stays down for the rest of this attempt.
+				http.Error(w, "unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			ranges = append(ranges, r.Header.Get("Range"))
+			if cut {
+				// Promise the whole archive, deliver half, then drop the connection.
+				cut = false
+				w.Header().Set("Content-Length", fmt.Sprint(len(data)))
+				w.WriteHeader(http.StatusOK)
+				w.Write(data[:half])
+				w.(http.Flusher).Flush()
+				panic(http.ErrAbortHandler)
+			}
+		}
+		http.ServeContent(w, r, name, time.Time{}, bytes.NewReader(data))
+	})
+	release, digest, _ := installReceiptIdentity(cfg.guestDir)
+	if err := ensureFactory(cfg, release, digest); err == nil {
+		t.Fatal("interrupted transfer succeeded")
+	}
+	if stages, _ := filepath.Glob(filepath.Join(cfg.dir, ".factory-*")); len(stages) != 1 {
+		t.Fatalf("interrupted transfer did not keep its stage: %v", stages)
+	}
+	down = false
+	if err := ensureFactory(cfg, release, digest); err != nil {
+		t.Fatal(err)
+	}
+	if len(ranges) != 2 || ranges[1] == "" {
+		t.Fatalf("retry did not resume with a Range request: %q", ranges)
+	}
+	if stages, _ := filepath.Glob(filepath.Join(cfg.dir, ".factory-*")); len(stages) != 0 {
+		t.Fatalf("successful acquisition left stages: %v", stages)
 	}
 }

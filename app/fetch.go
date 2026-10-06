@@ -279,7 +279,13 @@ func ensureFactory(cfg *config, release, digest string) (result error) {
 	if err := os.MkdirAll(stage, 0700); err != nil {
 		return err
 	}
-	defer func() { _ = os.RemoveAll(stage) }()
+	// After a network or free-space failure, keep the stage so a retry resumes
+	// the partial download. Discard it otherwise, including after cancellation.
+	defer func() {
+		if result == nil || !(factoryUnavailable(result) || errors.Is(result, errInsufficientDiskSpace)) {
+			_ = os.RemoveAll(stage)
+		}
+	}()
 	// Resolve authentication from installed metadata before cache/embedded/network.
 	manifestData, sums, err := resolveGuestManifest(cfg, client, release, digest, true)
 	if err != nil {
