@@ -1,0 +1,21 @@
+--- a/ui/sdl2.c
++++ b/ui/sdl2.c
+@@ -695,6 +695,18 @@
+         sdl2_redraw(scon);
+         break;
+     case SDL_WINDOWEVENT_FOCUS_GAINED:
++#ifdef _WIN32
++        /* SDL starts text input at init, which keeps the Windows IME attached
++         * to the window. An active IME such as Microsoft Pinyin then turns
++         * key presses into composition and the guest never receives them.
++         * Graphic consoles take raw keys, so detach the IME from them; text
++         * consoles keep text input. */
++        if (qemu_console_is_graphic(scon->dcl.con)) {
++            SDL_StopTextInput();
++        } else {
++            SDL_StartTextInput();
++        }
++#endif
+         /* fall through */
+     case SDL_WINDOWEVENT_ENTER:
+         if (!gui_grab && (qemu_input_is_absolute(scon->dcl.con) || absolute_enabled)) {

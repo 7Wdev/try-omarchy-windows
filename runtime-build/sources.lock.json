@@ -89,6 +89,10 @@
       {
         "file": "patches/qemu/0020-allow-external-sdl-keyboard-hook.patch",
         "sha256": "6040a630c9961a1c70c7686aa8bb943e4f1c1c4ed04f64e41d73e92882050788"
+      },
+      {
+        "file": "patches/qemu/0021-detach-windows-ime-from-graphic-consoles.patch",
+        "sha256": "5c7a87f18a40a7c22b58ba7e70918ae2b9f7f571400aff6bf3ad05119488bb4e"
       }
     ]
   },
