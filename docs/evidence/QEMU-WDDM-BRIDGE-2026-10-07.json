@@ -13,12 +13,18 @@
     "liveAdapters": 0,
     "liveDevices": 0,
     "livePagingQueues": 0,
+    "liveAllocations": 0,
+    "allocatedBytes": 0,
     "cleanupFailures": 0
   },
   "kernelSha256": "fb3e75cf32214fad38a22939f8bdafffa78bd7e0e5b2aa2afa89f0ebe02849ba",
-  "initramfsSha256": "2dc5c1d79875a044fd548ec6a9668ad2c309b38f056210c7c972e79cbc92ed56",
-  "driverBridgeSha256": "892289a18795ecf92a6cae453b0daa679c40af5c3686a440f58d5c21fb2fede8",
-  "guestAllocationsImplemented": false,
+  "initramfsSha256": "36114a624b9ad6b13decbcd9690702638983750cca5182295991eba220c472eb",
+  "driverBridgeSha256": "8993643570cffd7a0f29adcbdcddfed8f57adcae4ea24d62870f19fc312084b9",
+  "allocationCycles": 6,
+  "allocationBytesPerCycle": 65536,
+  "cpuRoundtripBytes": 393216,
+  "hostBackedAllocationOperationsImplemented": true,
+  "sharedGuestRamMappingImplemented": false,
   "guestGpuSubmissionImplemented": false,
   "guestDesktopAcceleratedByThisBackend": false
 }

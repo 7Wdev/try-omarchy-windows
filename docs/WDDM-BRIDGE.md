@@ -2,7 +2,7 @@
 
 The first control path is implemented and tested on 2026-10-07. A Linux guest
 in the installed QEMU 11.0/WHPX runtime successfully calls documented Windows
-WDDM adapter, device and paging queue operations on an NVIDIA RTX 5090 Laptop
+WDDM adapter, device, paging queue and allocation operations on an NVIDIA RTX 5090 Laptop
 GPU. This is a **partial driver control bridge**, not guest rendering support.
 The Omarchy launcher does not select this backend yet.
 
@@ -24,11 +24,12 @@ uses a private experimental protocol; it does not expose `/dev/nvidia*`,
 
 The worker selects hardware NVIDIA using DXGI. Software adapters are refused.
 Each process serves one connection, with at most 64 live objects and 10,000
-requests. The TCP listener binds only 127.0.0.1 and has connect/read/write
+requests. Allocations are page-aligned, at most 1 MiB each and 16 MiB per
+connection; data copies are bounded to 4064 bytes per request. The TCP listener binds only 127.0.0.1 and has connect/read/write
 timeouts. This development endpoint has no authentication and should run only
 for the test's lifetime. Stdio is available for process-owned transport.
 
-Requests never contain Windows handles, addresses, pointer-bearing KMT
+Requests never contain Windows handles, host CPU addresses, pointer-bearing KMT
 structures, arbitrary ioctl codes, or vendor-private escape data. The worker
 constructs fixed, documented KMT structures. Local object IDs are scoped to
 the connection, never reused, checked for type and parent ownership, and
@@ -55,13 +56,30 @@ all unrelated operations are rejected without a driver call.
 | 0x2006 | device ID | D3DKMTCreatePagingQueue, normal priority, physical index zero. |
 | 0x2007 | queue ID | Read the host-only paging fence mapping; return value, never its address. |
 | 0x2008 | queue ID | D3DKMTDestroyPagingQueue. |
+| 0x2010 | device ID + u32 size | D3DKMTCreateAllocation2, standard existing heap with worker-owned CPU backing. |
+| 0x2011 | allocation ID + u32 offset, u32 count, bytes | Bounded CPU copy into allocation backing. |
+| 0x2012 | allocation ID + u32 offset, u32 count | Bounded CPU copy from allocation backing; bytes follow the reply body. |
+| 0x2013 | allocation ID + queue ID u32 | D3DKMTMakeResident; wait for the host paging fence, at most five seconds. |
+| 0x2014 | allocation ID + queue ID u32 | D3DKMTMapGpuVirtualAddress after residency; wait for paging completion, return GPU VA. |
+| 0x2015 | allocation ID | D3DKMTQueryAllocationResidency. |
+| 0x2016 | allocation ID | D3DKMTDestroyAllocation2; then release CPU backing. |
 
 Hello capability bit 0 means adapter/device lifecycle; bit 1 means paging queue
-and fence query. No rendering, allocation, guest mapping or event capability
-is advertised. Other successful dispatches return a 16-byte body containing
+and fence query; bit 2 means bounded host-backed allocation operations. No
+rendering, shared guest RAM mapping or event capability is advertised.
+The allocation's queue must belong to the same device. Bounds and byte budget
+are checked before driver calls and again before native memory access.
+Other successful dispatches return a 16-byte body containing
 signed NTSTATUS, reserved zero u32, value u64. Native failure remains a native
 NTSTATUS, distinct from negative errno in the header for protocol validation.
-Creation returns a local object ID only when the driver succeeds.
+Creation returns a local object ID only when the driver succeeds. A GPU virtual
+address belongs to the Windows GPU address space; it is not a guest CPU mapping.
+The current CPU copies have no competing GPU submission. Submission support
+must add CPU/GPU access synchronization before reusing these operations.
+Allocation destruction uses
+[`SynchronousDestroy`](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/d3dukmdt/ns-d3dukmdt-_d3dddicb_destroyallocation2flags)
+so Windows has released its secured backing before `VirtualFree`. A timed-out
+paging operation invalidates further allocation access until destruction.
 
 ## Physical acceptance
 
@@ -70,8 +88,13 @@ destroy-queue/destroy-device/close cycles. Every native operation succeeded;
 driver version query returned WDDM enum 3200. The guest also checked rejection
 of stale handles and destruction of a device with a live paging queue. QEMU
 and the Windows worker both exited successfully.
-The probe then left a live adapter/device/queue hierarchy and disconnected.
-The worker verified all three object counts returned to zero with no failed
+The guest additionally created six 64 KiB standard allocations, transferred
+393,216 bytes in bounded chunks and compared every byte after CPU readback.
+Every allocation became resident (status 1) and received a nonzero GPU virtual
+address. Repeated mapping returned the same address. Out-of-bounds copies were
+rejected. These copies do not prove that GPU commands consumed the data.
+The probe then left a live adapter/device/queue/allocation hierarchy and disconnected.
+The worker verified all four object counts and allocated bytes returned to zero with no failed
 driver cleanup calls.
 
 See [machine-readable evidence](evidence/QEMU-WDDM-BRIDGE-2026-10-07.json).
@@ -122,15 +145,19 @@ shows the remaining requirements:
 | Requirement | Source path / current gap |
 | --- | --- |
 | Guest process/device/context ownership | ioctl.c and dxgvmbus.c; current worker covers only its own process and typed device lifecycle. |
-| Allocation backing | dxgvmb_send_create_allocation and existing system-memory store; Hyper-V GPADL pins/maps guest pages. A serial payload cannot replace that mapping. |
-| GPU virtual addresses and residency | Map/reserve/update/make-resident plus paging fence synchronization; not implemented. |
+| Allocation backing | Standard Windows allocations with worker-owned memory are tested. dxgvmb_send_create_allocation uses Hyper-V GPADL to pin/map guest pages; copied serial payloads do not implement that sharing. |
+| GPU virtual addresses and residency | Typed make-resident/map and bounded paging waits are tested. Full reserve/update/eviction and guest monitored fences remain absent. |
 | Actual command submission | Context/hardware queue creation, UMD-generated command buffers, submit and completion; not implemented. |
 | Guest synchronization | Host events, mapped monitored fences, sync files/dma-fences; current fence query does not implement these. |
 | Linux graphics userspace | WDDM-aware runtime/UMD, matching driver files and ABI; ordinary Linux NVIDIA RM userspace cannot use these messages. |
 | Interactive desktop | DRM buffer sharing and compositor allocation, plus fenced scanout into the existing QEMU SDL window, resizing/input and crash recovery; not implemented. |
 
-The next gate is a guest-owned allocation whose backing and residency are
-verified on Windows, followed by a real guest command submission and completion.
+The installed Windows QEMU rejects `memory-backend-file` as an unknown object
+type and does not list `ivshmem-plain`. A Windows section-backed QEMU memory
+adapter or another proven mapping mechanism is needed before claiming shared
+guest RAM. A host file mapping alone does not map an allocation into the VM.
+
+The next gate is shared guest memory and a real guest command submission and completion.
 Only then can a guest driver/userspace and scanout integration be accepted.
 The current control success and separate native D3D12 host rendering success
 must not be combined into a claim that the guest renders on the GPU.

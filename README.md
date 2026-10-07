@@ -6,7 +6,7 @@
 
 **7Wdev development fork:** [build and upstream sync](docs/FORK.md) ·
 [Windows NVIDIA investigation](docs/WINDOWS-NVIDIA-BACKEND.md).
-The GPU experiment includes a [tested QEMU WDDM control bridge](docs/WDDM-BRIDGE.md).
+The GPU experiment includes a [tested QEMU WDDM allocation bridge](docs/WDDM-BRIDGE.md).
 Guest rendering and desktop acceleration through it are not implemented.
 Download links below refer to official upstream releases.
 

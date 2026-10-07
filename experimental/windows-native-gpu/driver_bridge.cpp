@@ -21,7 +21,28 @@ class KmtDriver : public Driver {
     LUID luid{};
     DXGI_ADAPTER_DESC1 description{};
     std::map<std::uint32_t, volatile std::uint64_t*> pagingFences;
+    struct Allocation {
+        std::uint32_t device, resource, size;
+        void* memory;
+        std::uint64_t gpuAddress = 0;
+        bool resident = false;
+        bool pagingFailed = false;
+    };
+    std::map<std::uint32_t, Allocation> allocations;
+    std::uint32_t allocatedBytes = 0;
     unsigned activeAdapters = 0, activeDevices = 0, cleanupFailures = 0;
+    static constexpr auto Invalid = static_cast<std::int32_t>(0xc000000du);
+    static constexpr auto PagingTimeout = static_cast<std::int32_t>(0xc00000b5u);
+    bool waitPaging(std::uint32_t queue, std::uint64_t target) const {
+        const auto fence = pagingFences.find(queue);
+        if (fence == pagingFences.end() || !fence->second) return false;
+        const auto deadline = GetTickCount64() + 5000;
+        while (*fence->second < target && GetTickCount64() < deadline) Sleep(1);
+        MemoryBarrier(); return *fence->second >= target;
+    }
+    static bool rangeValid(const Allocation& a, Range range) {
+        return range.size && range.size <= MaxChunk && range.size <= a.size && range.offset <= a.size - range.size;
+    }
 public:
     KmtDriver() {
         ComPtr<IDXGIFactory1> factory;
@@ -40,8 +61,9 @@ public:
     }
     native_gpu::Capabilities capabilities() const override {
         // Bit 0: adapter/device lifecycle. Bit 1: paging queue/fence query.
-        // No allocation, guest mapping, submission, event, or scanout capability.
-        return {Version, 3, description.VendorId, description.DeviceId};
+        // Bit 2: bounded host-backed allocation operations. No shared guest
+        // mapping, GPU submission, event or scanout capability is advertised.
+        return {Version, 7, description.VendorId, description.DeviceId};
     }
     Result openAdapter() override {
         D3DKMT_OPENADAPTERFROMLUID a{}; a.AdapterLuid = luid;
@@ -74,9 +96,92 @@ public:
         // x64 aligned read from the KMT-owned read-only mapping, never exported.
         const auto value = *entry->second; MemoryBarrier(); return {0, 0, value};
     }
+    Result createAllocation(std::uint32_t device, std::uint32_t size) override {
+        if (!size || size % 4096 || size > MaxAllocation || size > MaxAllocatedBytes - allocatedBytes)
+            return {Invalid, 0, 0};
+        auto memory = VirtualAlloc(nullptr, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+        if (!memory) return {static_cast<std::int32_t>(0xc0000017u), 0, 0};
+        D3DKMT_CREATESTANDARDALLOCATION standard{};
+        standard.Type = D3DKMT_STANDARDALLOCATIONTYPE_EXISTINGHEAP; standard.ExistingHeapData.Size = size;
+        D3DDDI_ALLOCATIONINFO2 info{}; info.pSystemMem = memory;
+        D3DKMT_CREATEALLOCATION a{}; a.hDevice = device; a.pStandardAllocation = &standard;
+        a.NumAllocations = 1; a.pAllocationInfo2 = &info;
+        a.Flags.StandardAllocation = 1; a.Flags.ExistingSysMem = 1;
+        a.Flags.CreateShared = 1; a.Flags.CreateResource = 1; a.Flags.CrossAdapter = 1; a.Flags.NtSecuritySharing = 1;
+        const auto status = D3DKMTCreateAllocation2(&a);
+        if (status < 0) { VirtualFree(memory, 0, MEM_RELEASE); return {status, 0, 0}; }
+        allocations.emplace(info.hAllocation, Allocation{device, a.hResource, size, memory});
+        allocatedBytes += size; return {status, info.hAllocation, size};
+    }
+    Result writeAllocation(std::uint32_t handle, Range range, const std::uint8_t* data) override {
+        const auto entry = allocations.find(handle);
+        if (entry == allocations.end() || entry->second.pagingFailed || !rangeValid(entry->second, range)) return {Invalid, 0, 0};
+        // No guest GPU submission exists yet. Future submission support must
+        // enforce CPU/GPU access synchronization before allowing these copies.
+        std::memcpy(static_cast<std::uint8_t*>(entry->second.memory) + range.offset, data, range.size);
+        MemoryBarrier(); return {0, 0, range.size};
+    }
+    Result readAllocation(std::uint32_t handle, Range range, std::vector<std::uint8_t>& data) override {
+        const auto entry = allocations.find(handle);
+        if (entry == allocations.end() || entry->second.pagingFailed || !rangeValid(entry->second, range)) return {Invalid, 0, 0};
+        data.resize(range.size); MemoryBarrier();
+        std::memcpy(data.data(), static_cast<const std::uint8_t*>(entry->second.memory) + range.offset, range.size);
+        return {0, 0, range.size};
+    }
+    Result makeResident(std::uint32_t handle, std::uint32_t queue) override {
+        const auto entry = allocations.find(handle);
+        if (entry == allocations.end()) return {Invalid, 0, 0};
+        if (entry->second.pagingFailed) return {PagingTimeout, 0, 0};
+        if (entry->second.resident) return {0, 0, 0};
+        D3DDDI_MAKERESIDENT a{}; a.hPagingQueue = queue; a.NumAllocations = 1; a.AllocationList = &handle;
+        auto status = D3DKMTMakeResident(&a);
+        if (status >= 0 && !waitPaging(queue, a.PagingFenceValue)) {
+            entry->second.pagingFailed = true; status = PagingTimeout;
+        }
+        if (status >= 0) entry->second.resident = true;
+        return {status, 0, a.PagingFenceValue};
+    }
+    Result mapAllocation(std::uint32_t handle, std::uint32_t queue) override {
+        const auto entry = allocations.find(handle);
+        if (entry == allocations.end() || !entry->second.resident) return {Invalid, 0, 0};
+        if (entry->second.pagingFailed) return {PagingTimeout, 0, 0};
+        if (entry->second.gpuAddress) return {0, 0, entry->second.gpuAddress};
+        D3DDDI_MAPGPUVIRTUALADDRESS a{}; a.hPagingQueue = queue; a.hAllocation = handle;
+        a.SizeInPages = entry->second.size / 4096; a.Protection.Write = 1;
+        auto status = D3DKMTMapGpuVirtualAddress(&a);
+        if (status >= 0) {
+            // Even a timed-out pending map is owned by the allocation. Prevent
+            // another map attempt until it is destroyed rather than leaking VA.
+            entry->second.gpuAddress = a.VirtualAddress;
+            if (!waitPaging(queue, a.PagingFenceValue)) { entry->second.pagingFailed = true; status = PagingTimeout; }
+        }
+        return {status, 0, status >= 0 ? a.VirtualAddress : 0};
+    }
+    Result queryResidency(std::uint32_t handle) override {
+        const auto entry = allocations.find(handle);
+        if (entry == allocations.end()) return {Invalid, 0, 0};
+        D3DKMT_ALLOCATIONRESIDENCYSTATUS residency{};
+        D3DKMT_QUERYALLOCATIONRESIDENCY a{}; a.hDevice = entry->second.device;
+        a.phAllocationList = &handle; a.AllocationCount = 1; a.pResidencyStatus = &residency;
+        const auto status = D3DKMTQueryAllocationResidency(&a); return {status, 0, static_cast<std::uint64_t>(residency)};
+    }
     Result destroy(Kind kind, std::uint32_t handle) override {
         NTSTATUS status{};
-        if (kind == Kind::PagingQueue) {
+        if (kind == Kind::Allocation) {
+            const auto entry = allocations.find(handle);
+            if (entry == allocations.end()) return {Invalid, 0, 0};
+            D3DKMT_DESTROYALLOCATION2 a{}; a.hDevice = entry->second.device; a.hResource = entry->second.resource;
+            // ExistingSysMem remains secured until destruction completes.
+            // Wait for completion before releasing the worker's CPU backing.
+            a.Flags.SynchronousDestroy = 1;
+            status = D3DKMTDestroyAllocation2(&a);
+            if (status >= 0) {
+                // The allocation's GPU VA is released by the documented
+                // allocation destruction. Free CPU backing only after success.
+                if (!VirtualFree(entry->second.memory, 0, MEM_RELEASE)) ++cleanupFailures;
+                allocatedBytes -= entry->second.size; allocations.erase(entry);
+            }
+        } else if (kind == Kind::PagingQueue) {
             D3DDDI_DESTROYPAGINGQUEUE a{}; a.hPagingQueue = handle; status = D3DKMTDestroyPagingQueue(&a);
             if (status >= 0) pagingFences.erase(handle);
         } else if (kind == Kind::Device) {
@@ -89,11 +194,12 @@ public:
         if (status < 0) ++cleanupFailures;
         return {status, 0, 0};
     }
-    bool clean() const { return !activeAdapters && !activeDevices && pagingFences.empty() && !cleanupFailures; }
+    bool clean() const { return !activeAdapters && !activeDevices && pagingFences.empty() && allocations.empty() && !cleanupFailures; }
     void reportCleanup() const {
         std::cerr << "{\"driverCleanupVerified\":" << (clean() ? "true" : "false")
                   << ",\"liveAdapters\":" << activeAdapters << ",\"liveDevices\":" << activeDevices
-                  << ",\"livePagingQueues\":" << pagingFences.size() << ",\"cleanupFailures\":" << cleanupFailures << "}\n";
+                  << ",\"livePagingQueues\":" << pagingFences.size() << ",\"liveAllocations\":" << allocations.size()
+                  << ",\"allocatedBytes\":" << allocatedBytes << ",\"cleanupFailures\":" << cleanupFailures << "}\n";
     }
 };
 struct Socket {

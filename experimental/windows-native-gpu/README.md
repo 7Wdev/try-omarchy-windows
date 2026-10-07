@@ -1,8 +1,9 @@
 # Native Windows GPU experiment
 
-Host renderer and partial WDDM control bridge for the 7Wdev fork. The bridge
-has passed a QEMU/WHPX Linux guest test. It does not yet allocate guest GPU
-memory, submit guest rendering, or accelerate Omarchy. Read the
+Host renderer and partial WDDM allocation bridge for the 7Wdev fork. A QEMU/WHPX
+Linux guest creates Windows GPU allocations, transfers bounded data, makes
+them resident and maps GPU addresses. Shared guest RAM, command submission
+and Omarchy desktop acceleration remain unimplemented. Read the
 [investigation](../../docs/WINDOWS-NVIDIA-BACKEND.md).
 
 Requirements: x64 Windows 10/11, NVIDIA GPU with D3D12, Visual Studio C++ Build

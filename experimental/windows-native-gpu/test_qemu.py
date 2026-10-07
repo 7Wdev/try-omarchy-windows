@@ -48,12 +48,14 @@ def main():
         _, helper_errors = helper.communicate(timeout=10)
         cleanup = json.loads(helper_errors.strip()) if helper.returncode == 0 else {}
         identity = re.search(r'BRIDGE_VENDOR=(\d+) BRIDGE_DEVICE=(\d+)', log)
+        allocation_checks = re.findall(r'BRIDGE_ALLOCATION bytes=65536 cpuRoundtrip=true gpuVaMapped=true residency=[12]', log)
         success = (qemu.returncode == 0 and helper.returncode == 0 and
-                   'PASS: QEMU guest WDDM control bridge, 5 lifecycle cycles' in log and
+                   'PASS: QEMU guest WDDM allocation bridge, 5 lifecycle cycles' in log and
                    'BRIDGE_GUEST_EXIT=0' in log and identity is not None and
+                   len(allocation_checks) == 6 and
                    cleanup.get('driverCleanupVerified') is True)
         log_path = args.report.with_suffix('.log')
-        log_path.write_text(log + '\nHOST BRIDGE:\n' + helper_errors, encoding='utf-8')
+        log_path.write_text(log + '\nHOST BRIDGE:\n' + helper_errors, encoding='utf-8', newline='\n')
         report = {'schema': 1, 'success': success, 'hypervisor': 'QEMU/WHPX',
                   'transport': 'virtio-serial to loopback Windows worker', 'lifecycleCycles': 5 if success else 0,
                   'qemuExit': qemu.returncode, 'hostBridgeExit': helper.returncode,
@@ -62,9 +64,12 @@ def main():
                   'disconnectCleanup': cleanup,
                   'kernelSha256': sha256(args.kernel), 'initramfsSha256': sha256(args.initramfs),
                   'driverBridgeSha256': sha256(args.bridge),
-                  'guestAllocationsImplemented': False, 'guestGpuSubmissionImplemented': False,
+                  'allocationCycles': len(allocation_checks), 'allocationBytesPerCycle': 65536,
+                  'cpuRoundtripBytes': len(allocation_checks) * 65536,
+                  'hostBackedAllocationOperationsImplemented': True,
+                  'sharedGuestRamMappingImplemented': False, 'guestGpuSubmissionImplemented': False,
                   'guestDesktopAcceleratedByThisBackend': False}
-        args.report.write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
+        args.report.write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8', newline='\n')
         for line in log.splitlines():
             if 'WDDM enum=' in line or 'PASS:' in line or 'FAIL:' in line or 'BRIDGE_' in line:
                 print(line)

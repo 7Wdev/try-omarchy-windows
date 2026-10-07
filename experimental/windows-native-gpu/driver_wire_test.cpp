@@ -8,17 +8,44 @@ static Header header(const std::vector<std::uint8_t>& p) {
     require(p.size() >= sizeof(Header)); Header h{}; std::memcpy(&h, p.data(), sizeof h); return h;
 }
 struct Fake : Driver {
-    int calls = 0; std::uint32_t next = 500; bool fail = false;
+    int calls = 0; std::uint32_t next = 500; bool fail = false, shortRead = false;
+    std::map<std::uint32_t, std::vector<std::uint8_t>> buffers;
     std::vector<Kind> destroyed;
-    native_gpu::Capabilities capabilities() const override { return {1, 3, 0x10de, 123}; }
+    native_gpu::Capabilities capabilities() const override { return {1, 7, 0x10de, 123}; }
     Result created() { ++calls; return {fail ? -123 : 0, ++next, 0}; }
     Result openAdapter() override { return created(); }
     Result queryVersion(std::uint32_t h) override { require(h > 500); ++calls; return {0, 0, 3200}; }
     Result createDevice(std::uint32_t h) override { require(h > 500); return created(); }
     Result createPagingQueue(std::uint32_t h) override { require(h > 500); return created(); }
     Result readPagingFence(std::uint32_t h) override { require(h > 500); ++calls; return {0, 0, 42}; }
+    Result createAllocation(std::uint32_t h, std::uint32_t size) override {
+        require(h > 500); auto result = created();
+        if (result.ntstatus >= 0) buffers.emplace(result.nativeHandle, std::vector<std::uint8_t>(size));
+        result.value = size; return result;
+    }
+    Result writeAllocation(std::uint32_t h, Range range, const std::uint8_t* data) override {
+        auto& buffer = buffers.at(h); ++calls;
+        require(range.size <= buffer.size() && range.offset <= buffer.size() - range.size);
+        std::memcpy(buffer.data() + range.offset, data, range.size); return {0, 0, range.size};
+    }
+    Result readAllocation(std::uint32_t h, Range range, std::vector<std::uint8_t>& data) override {
+        const auto& buffer = buffers.at(h); ++calls;
+        require(range.size <= buffer.size() && range.offset <= buffer.size() - range.size);
+        data.assign(buffer.begin() + range.offset, buffer.begin() + range.offset + range.size);
+        if (shortRead) data.pop_back();
+        return {0, 0, range.size};
+    }
+    Result makeResident(std::uint32_t h, std::uint32_t q) override {
+        require(buffers.count(h) && q > 500); ++calls; return {0, 0, 42};
+    }
+    Result mapAllocation(std::uint32_t h, std::uint32_t q) override {
+        require(buffers.count(h) && q > 500); ++calls; return {0, 0, 0x123456789ull};
+    }
+    Result queryResidency(std::uint32_t h) override { require(buffers.count(h)); ++calls; return {0, 0, 1}; }
     Result destroy(Kind k, std::uint32_t h) override {
-        require(h > 500); ++calls; if (!fail) destroyed.push_back(k); return {fail ? -123 : 0, 0, 0};
+        require(h > 500); ++calls;
+        if (!fail) { destroyed.push_back(k); if (k == Kind::Allocation) require(buffers.erase(h) == 1); }
+        return {fail ? -123 : 0, 0, 0};
     }
 };
 int main() {
@@ -53,6 +80,67 @@ int main() {
         // Disconnect without explicit close: reverse child-before-parent cleanup.
     }
     require(driver.destroyed == std::vector<Kind>{Kind::PagingQueue, Kind::Device, Kind::Adapter});
+    Fake memory;
+    {
+        Session s(memory); s.dispatch(hello());
+        const auto adapter = header(s.dispatch(request(Op::OpenAdapter))).handle;
+        const auto device = header(s.dispatch(request(Op::CreateDevice, adapter))).handle;
+        const auto queue = header(s.dispatch(request(Op::CreatePagingQueue, device))).handle;
+        const auto otherDevice = header(s.dispatch(request(Op::CreateDevice, adapter))).handle;
+        const auto otherQueue = header(s.dispatch(request(Op::CreatePagingQueue, otherDevice))).handle;
+        const auto allocation = header(s.dispatch(request(Op::CreateAllocation, device, std::uint32_t{4096}))).handle;
+        require(allocation && header(s.dispatch(request(Op::DestroyDevice, device))).status == -16);
+        auto before = memory.calls;
+        require(header(s.dispatch(request(Op::MakeResident, allocation, otherQueue))).status == -9);
+        require(header(s.dispatch(request(Op::MapAllocation, allocation, device))).status == -9);
+        require(header(s.dispatch(request(Op::ReadAllocation, queue, Range{0, 4}))).status == -9);
+        for (const auto range : {Range{4095, 2}, Range{UINT32_MAX, 2}, Range{0, MaxChunk + 1}, Range{0, 0}})
+            require(header(s.dispatch(request(Op::ReadAllocation, allocation, range))).status == -22);
+        for (const auto size : {0u, 1u, MaxAllocation + 4096u})
+            require(header(s.dispatch(request(Op::CreateAllocation, device, size))).status == -22);
+        auto packet = request(Op::WriteAllocation, allocation, Range{0, 4});
+        require(header(s.dispatch(packet)).status == -22 && memory.calls == before);
+        packet.insert(packet.end(), {10, 20, 30, 40});
+        require(header(s.dispatch(packet)).status == 0);
+        packet = s.dispatch(request(Op::ReadAllocation, allocation, Range{0, 4}));
+        require(packet.size() == sizeof(Header) + sizeof(Reply) + 4);
+        require(std::vector<std::uint8_t>(packet.end() - 4, packet.end()) == std::vector<std::uint8_t>{10, 20, 30, 40});
+        memory.shortRead = true;
+        require(header(s.dispatch(request(Op::ReadAllocation, allocation, Range{0, 4}))).status == -5);
+        memory.shortRead = false;
+        require(header(s.dispatch(request(Op::MakeResident, allocation, queue))).status == 0);
+        packet = s.dispatch(request(Op::MapAllocation, allocation, queue));
+        Reply result{}; std::memcpy(&result, packet.data() + sizeof(Header), sizeof result);
+        require(result.value == 0x123456789ull);
+        memory.fail = true;
+        packet = s.dispatch(request(Op::DestroyAllocation, allocation));
+        std::memcpy(&result, packet.data() + sizeof(Header), sizeof result); require(result.ntstatus == -123);
+        memory.fail = false;
+        require(header(s.dispatch(request(Op::DestroyAllocation, allocation))).status == 0);
+        require(header(s.dispatch(request(Op::QueryResidency, allocation))).status == -9);
+        // New allocation retains a larger monotonic ID. Leave it for disconnect cleanup.
+        require(header(s.dispatch(request(Op::CreateAllocation, device, std::uint32_t{4096}))).handle > allocation);
+    }
+    require(memory.buffers.empty() && memory.destroyed.back() == Kind::Adapter);
+    Fake budget;
+    {
+        Session s(budget); s.dispatch(hello());
+        const auto a = header(s.dispatch(request(Op::OpenAdapter))).handle;
+        const auto d = header(s.dispatch(request(Op::CreateDevice, a))).handle;
+        budget.fail = true;
+        auto packet = s.dispatch(request(Op::CreateAllocation, d, MaxAllocation));
+        Reply result{}; std::memcpy(&result, packet.data() + sizeof(Header), sizeof result);
+        require(result.ntstatus == -123 && header(packet).handle == 0);
+        budget.fail = false;
+        std::uint32_t last = 0;
+        for (std::uint32_t size = 0; size < MaxAllocatedBytes; size += MaxAllocation) {
+            last = header(s.dispatch(request(Op::CreateAllocation, d, MaxAllocation))).handle; require(last != 0);
+        }
+        const auto before = budget.calls;
+        require(header(s.dispatch(request(Op::CreateAllocation, d, std::uint32_t{4096}))).status == -24 && budget.calls == before);
+        require(header(s.dispatch(request(Op::DestroyAllocation, last))).status == 0);
+        require(header(s.dispatch(request(Op::CreateAllocation, d, MaxAllocation))).status == 0);
+    }
     Fake bounded;
     {
         Session s(bounded); s.dispatch(hello());
@@ -71,5 +159,5 @@ int main() {
     require(s.dispatch({1, 2, 3}).empty() && malformed.calls == 0);
     require(header(s.dispatch(hello(2))).status == -93);
     require(header(s.dispatch(request(Op::OpenAdapter))).status == -71);
-    std::cout << "PASS: WDDM wire ownership, quota, NTSTATUS, cleanup, ABI rejection\n";
+    std::cout << "PASS: WDDM wire ownership, allocation bounds/budget, NTSTATUS, cleanup, ABI rejection\n";
 }
