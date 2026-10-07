@@ -6,5 +6,26 @@
     "files": ["protocol/src/messages.rs", "device/src/virtio.rs", "device/src/nvidia/host.rs", "driver/virtio_gpu_nv.c"],
     "use": "Architecture and framing reference; no upstream implementation vendored"
   },
-  "tryOmarchyBase": "2bc11bbdf074f8ae58bff8cfb23fb290ead9f86b"
+  "tryOmarchyBase": "2bc11bbdf074f8ae58bff8cfb23fb290ead9f86b",
+  "wslDxgkrnl": {
+    "repository": "https://github.com/microsoft/WSL2-Linux-Kernel",
+    "commit": "d504d40ab83839cb61942a812a99d183c42227b9",
+    "files": ["drivers/hv/dxgkrnl/ioctl.c", "drivers/hv/dxgkrnl/dxgvmbus.c", "drivers/hv/dxgkrnl/dxgvmbus.h"],
+    "use": "Memory/event/driver architecture reference; no GPL source vendored"
+  },
+  "libdxg": {
+    "repository": "https://github.com/microsoft/libdxg",
+    "commit": "5c28ebb4ead460c23ec5e87decb7d1af7285bb59",
+    "use": "MIT WDDM headers and /dev/dxg thunk reference; not a QEMU transport"
+  },
+  "libdxgtest": {
+    "repository": "https://github.com/microsoft/libdxgtest",
+    "commit": "fb7a095c85d88e706d6fedaca2ab295b0c9aadc2",
+    "use": "Documented lifecycle reference; no sample implementation vendored"
+  },
+  "historicalPvgpu": {
+    "repository": "https://github.com/templarsco/limiar",
+    "commit": "5fbf6b9fe05c9a88e8a45f47f2a7c2a96540a73b",
+    "use": "Assessed retained D3D11/QEMU source; no code vendored"
+  }
 }

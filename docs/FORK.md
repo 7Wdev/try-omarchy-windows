@@ -3,7 +3,7 @@
 Source: https://github.com/7Wdev/try-omarchy-windows
 
 This fork tracks `omacom/try-omarchy-windows` and adds an NVIDIA backend
-investigation and experimental native host renderer. The experiment does not
+investigation, native host renderer and partial QEMU WDDM control bridge. These do not
 accelerate the Omarchy guest; read [Windows NVIDIA backend](WINDOWS-NVIDIA-BACKEND.md).
 
 ## Upstream updates

@@ -6,8 +6,9 @@
 
 **7Wdev development fork:** [build and upstream sync](docs/FORK.md) ·
 [Windows NVIDIA investigation](docs/WINDOWS-NVIDIA-BACKEND.md).
-The new GPU experiment is host-only; guest driver-level acceleration is not
-implemented. Download links below refer to official upstream releases.
+The GPU experiment includes a [tested QEMU WDDM control bridge](docs/WDDM-BRIDGE.md).
+Guest rendering and desktop acceleration through it are not implemented.
+Download links below refer to official upstream releases.
 
 <p align="center">The full Omarchy desktop, running in a window on your Windows PC.</p>
 

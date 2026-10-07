@@ -1,7 +1,8 @@
 # Native Windows GPU experiment
 
-Host-side rendering and protocol experiment for the 7Wdev fork. It is not wired
-into QEMU or Linux and is not a completed virtio-nvgpu Windows backend. Read the
+Host renderer and partial WDDM control bridge for the 7Wdev fork. The bridge
+has passed a QEMU/WHPX Linux guest test. It does not yet allocate guest GPU
+memory, submit guest rendering, or accelerate Omarchy. Read the
 [investigation](../../docs/WINDOWS-NVIDIA-BACKEND.md).
 
 Requirements: x64 Windows 10/11, NVIDIA GPU with D3D12, Visual Studio C++ Build
@@ -18,8 +19,9 @@ The build runs packet contract tests. GPU tests require an interactive Windows
 desktop and real NVIDIA hardware; hosted CI only builds the experiment.
 `--probe` reports adapter/device availability without claiming rendering.
 Failures have nonzero exit status; software fallback is refused. Reports
-explicitly record that guest acceleration and virtio transport are absent.
-No VM or existing Omarchy installation is touched.
+explicitly record that guest acceleration and a custom virtio GPU are absent.
+The host rendering test does not boot a VM. The separate disk-free QEMU control
+test and its build instructions are in [WDDM bridge](../../docs/WDDM-BRIDGE.md).
 
 The framing reference is pinned in `sources.json`. No upstream implementation
 is vendored; these new files use the repository's MIT license. Future copied

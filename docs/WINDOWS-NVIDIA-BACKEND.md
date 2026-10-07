@@ -1,6 +1,7 @@
 # Windows NVIDIA backend investigation
 
-Status on 2026-10-07: native host experiment implemented and physically tested;
+Status on 2026-10-07: native host renderer and partial QEMU WDDM control bridge
+implemented and physically tested;
 the requested driver-level Linux guest backend is **not implemented**.
 This experiment does not accelerate the Omarchy VM. The launcher continues to
 use WINQ-EMU VirGL/Venus and its existing CPU fallback.
@@ -66,11 +67,18 @@ a signed negative `EOPNOTSUPP` before any GPU submission.
 | Hyper-V GPU partitioning | Different hypervisor/device integration. Documented server/GPU/guest combinations do not establish a drop-in QEMU/WHPX consumer-laptop backend. |
 | New Windows RM translator | Preserves the existing NVIDIA Linux guest only if RM/UVM/mappings/events/DRM interoperability are actually implemented. That mapping is unresolved. |
 | New WDDM bridge over virtio | Could reuse queue architecture. Requires adapted guest kernel/userspace, Windows driver services and QEMU transport. A D3D12 API command service alone is API forwarding. |
+| Microsoft libdxg | Open WDDM headers and `/dev/dxg` user-mode thunks; useful guest-side interface reference, still requires a compatible kernel device. |
+| Google gfxstream | Windows-capable graphics API streaming backend; does not translate Linux NVIDIA kernel RM/UVM. |
+| Historical templarsco/pvgpu | Redirects to Limiar; current focus is Hyper-V/OpenHCL. Retained QEMU backend issues D3D11 API calls for Windows guests, not an NVIDIA Linux driver proxy. |
 
 References: [DirectX on Linux architecture](https://devblogs.microsoft.com/directx/directx-heart-linux/),
 [WHP APIs](https://learn.microsoft.com/en-us/virtualization/api/hypervisor-platform/hypervisor-platform),
 [Hyper-V GPU partitioning](https://learn.microsoft.com/en-us/windows-server/virtualization/hyper-v/gpu-partitioning),
 and [upstream WSL desktop evidence](WSL-GPU-EXPERIMENT.md).
+
+Additional source review: [libdxg](https://github.com/microsoft/libdxg/tree/5c28ebb4ead460c23ec5e87decb7d1af7285bb59),
+[gfxstream](https://github.com/google/gfxstream), and
+[retained PVGPU D3D11 backend](https://github.com/templarsco/limiar/blob/5fbf6b9fe05c9a88e8a45f47f2a7c2a96540a73b/backend/src/d3d11.rs).
 
 ## Implemented and tested
 
@@ -97,6 +105,13 @@ or evidence of Linux guest acceleration. The record is
 [`WINDOWS-NATIVE-GPU-2026-10-07.json`](evidence/WINDOWS-NATIVE-GPU-2026-10-07.json).
 
 ## Remaining implementation
+
+The new [WDDM control bridge](WDDM-BRIDGE.md) now transports typed adapter,
+device and paging queue operations from a Linux guest through QEMU virtio-serial
+to Windows D3DKMT. Five physical guest lifecycle cycles passed on this machine.
+It is a separate experimental protocol, not the original NVIDIA ABI or a
+custom virtio GPU. It supplies no guest allocation, command submission or
+desktop acceleration. Its own report records those capabilities as absent.
 
 First demonstrate real guest allocation, mapping, submission, events and buffer
 sharing against either a substantiated Linux RM translator or an explicitly

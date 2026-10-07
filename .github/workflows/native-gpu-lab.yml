@@ -24,6 +24,7 @@ jobs:
           name: native-gpu-experiment
           path: |
             experimental/windows-native-gpu/build/native-gpu.exe
+            experimental/windows-native-gpu/build/driver-bridge.exe
             dist/TryOmarchy-7Wdev.exe
   portable-checks:
     runs-on: ubuntu-latest
@@ -33,4 +34,11 @@ jobs:
       - run: |
           c++ -std=c++17 -Wall -Wextra -Werror experimental/windows-native-gpu/wire_test.cpp -o /tmp/native-wire-test
           /tmp/native-wire-test
+          c++ -std=c++17 -Wall -Wextra -Werror experimental/windows-native-gpu/driver_wire_test.cpp -o /tmp/driver-wire-test
+          /tmp/driver-wire-test
+          sh experimental/windows-native-gpu/build_guest.sh
           python3 -m unittest discover -s scripts/fork -p 'test_*.py'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: wddm-bridge-guest-probe
+          path: experimental/windows-native-gpu/build/bridge-test.cpio
