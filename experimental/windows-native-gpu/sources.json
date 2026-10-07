@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "virtioNvgpu": {
+    "repository": "https://github.com/nestrilabs/virtio-nvgpu",
+    "commit": "21a4f075d5c01c0865c809a8592e40b860435768",
+    "files": ["protocol/src/messages.rs", "device/src/virtio.rs", "device/src/nvidia/host.rs", "driver/virtio_gpu_nv.c"],
+    "use": "Architecture and framing reference; no upstream implementation vendored"
+  },
+  "tryOmarchyBase": "2bc11bbdf074f8ae58bff8cfb23fb290ead9f86b"
+}

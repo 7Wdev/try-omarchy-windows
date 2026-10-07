@@ -4,6 +4,11 @@
 
 <h1 align="center">Try Omarchy for Windows</h1>
 
+**7Wdev development fork:** [build and upstream sync](docs/FORK.md) ·
+[Windows NVIDIA investigation](docs/WINDOWS-NVIDIA-BACKEND.md).
+The new GPU experiment is host-only; guest driver-level acceleration is not
+implemented. Download links below refer to official upstream releases.
+
 <p align="center">The full Omarchy desktop, running in a window on your Windows PC.</p>
 
 <p align="center">
