@@ -1,0 +1,308 @@
+From c92386fd725163ef45514cb0c324e9700dd111b0 Mon Sep 17 00:00:00 2001
+From: Brandon South <tsouth2@gmail.com>
+Date: Wed, 7 Oct 2026 01:40:32 -0400
+Subject: [PATCH] Keep volume sync when the QEMU transport is picked
+
+---
+ .../local/bin/omarchy-windows-audio-bridge    | 31 +++++---
+ guest/scripts/finalize-rootfs.sh              |  3 +-
+ guest/tests/test_battery_details.py           |  2 +-
+ guest/tests/test_clipboard_pull.py            |  2 +-
+ guest/tests/test_compositor_health.py         |  2 +-
+ guest/tests/test_guest_qol.py                 |  2 +-
+ guest/tests/test_live_update.py               |  2 +-
+ guest/tests/test_native_nightlight.py         |  2 +-
+ guest/tests/test_notification_privacy.py      |  2 +-
+ guest/tests/test_snapper_guest.py             |  2 +-
+ guest/tests/test_windows_audio_bridge.py      | 70 +++++++++++++++++++
+ guest/tests/test_windows_volume_sync.py       |  2 +-
+ guest/tests/verify.py                         |  2 +-
+ 13 files changed, 104 insertions(+), 20 deletions(-)
+
+diff --git a/guest/factory-overlay/usr/local/bin/omarchy-windows-audio-bridge b/guest/factory-overlay/usr/local/bin/omarchy-windows-audio-bridge
+index 203104d..d2c48eb 100755
+--- a/guest/factory-overlay/usr/local/bin/omarchy-windows-audio-bridge
++++ b/guest/factory-overlay/usr/local/bin/omarchy-windows-audio-bridge
+@@ -103,6 +103,7 @@ class PipeWireMirror:
+         self.pending: dict[str, tuple[str | None, float]] = {}
+         self.transport_volume: tuple[str, list[int]] | None = None
+         self.transport_name: str | None = None
++        self.transport_source_name: str | None = None
+         self.transport_owned = False
+         self.transport_pending = False
+         self.rebuild_volume: list[int] | None = None
+@@ -125,6 +126,7 @@ class PipeWireMirror:
+         self._unload_modules()
+         self.transport_volume = None
+         self.transport_name = None
++        self.transport_source_name = None
+         self.transport_owned = False
+         self.transport_pending = False
+         self.rebuild_volume = None
+@@ -270,18 +272,28 @@ class PipeWireMirror:
+             self.volume_sync.poll()
+ 
+     def _capture_local_changes(self) -> None:
+-        for direction, command, mapping in (
+-            ("output", "get-default-sink", self.output_uids),
+-            ("input", "get-default-source", self.input_uids),
++        for direction, command, mapping, transport in (
++            ("output", "get-default-sink", self.output_uids, self.transport_name),
++            ("input", "get-default-source", self.input_uids, self.transport_source_name),
+         ):
+             current = run_pactl(command, check=False).strip()
+-            if current not in mapping:
++            if current in mapping:
++                uid = mapping[current]
++                if self.last_sent[direction] != uid:
++                    self.last_sent[direction] = uid
++                    self.pending[direction] = (uid, time.monotonic())
++                    self.send({"type": "select", "direction": direction, "deviceUID": uid})
+                 continue
+-            uid = mapping[current]
+-            if self.last_sent[direction] != uid:
+-                self.last_sent[direction] = uid
+-                self.pending[direction] = (uid, time.monotonic())
+-                self.send({"type": "select", "direction": direction, "deviceUID": uid})
++            # Omarchy's audio panel lists the raw QEMU transport alongside the
++            # Windows endpoints. Picking it stops volume sync, so while the
++            # mirror is active put the default back on the Windows device that
++            # is currently selected. Other devices (USB, Bluetooth) are left
++            # alone.
++            if (transport is None or current != transport or not mapping
++                    or self.catalog is None or self.last_sent[direction] not in mapping.values()):
++                continue
++            self._set_selected(direction, self.last_sent[direction])
++            log(f"the {direction} default returned to the Windows endpoint after the QEMU transport was selected")
+ 
+     @staticmethod
+     def _validated_devices(value: Any) -> list[dict[str, str]]:
+@@ -346,6 +358,7 @@ class PipeWireMirror:
+         # The visible remap owns guest volume. WirePlumber's transport default
+         # otherwise adds a second, hidden gain (normally 40%). Keep mute intact.
+         self._prepare_transport_volume(transport_sink)
++        self.transport_source_name = transport_source
+ 
+         output_records = [{"deviceUID": None, "name": "Windows System Default"}, *outputs]
+         input_records = [{"deviceUID": None, "name": "Windows System Default"}, *inputs] if inputs else []
+diff --git a/guest/scripts/finalize-rootfs.sh b/guest/scripts/finalize-rootfs.sh
+index acf0d4b..97760cb 100755
+--- a/guest/scripts/finalize-rootfs.sh
++++ b/guest/scripts/finalize-rootfs.sh
+@@ -244,7 +244,8 @@ tar -C / -cf /usr/share/try-omarchy/compat-overlay.tar "${compat_paths[@]}"
+ # Revision 56 retries the startup audio catalog until PipeWire is ready.
+ # Revision 57 skips Snapper setup on the ext4 guest.
+ # Revision 58 receives large clipboard frames without suffix-pattern stalls.
+-compat_revision=58
++# Revision 59 restores the Windows audio default when the QEMU transport is picked.
++compat_revision=59
+ printf '%s:%s\n' "$compat_revision" "$kernel_release" >/usr/share/try-omarchy/compat-version
+ 
+ # Fail the build if DKMS or networking modules were not packaged for this kernel.
+diff --git a/guest/tests/test_battery_details.py b/guest/tests/test_battery_details.py
+index 726945f..407a55f 100644
+--- a/guest/tests/test_battery_details.py
++++ b/guest/tests/test_battery_details.py
+@@ -204,7 +204,7 @@ class BatteryDetailsFlowTests(unittest.TestCase):
+     def test_compatibility_delivery_and_dkms_version(self):
+         overlay = GUEST / "factory-overlay"
+         finalize = (GUEST / "scripts/finalize-rootfs.sh").read_text()
+-        self.assertIn("compat_revision=58", finalize)
++        self.assertIn("compat_revision=59", finalize)
+         self.assertIn("usr/src/try-omarchy-battery-1.1.0", finalize)
+         self.assertIn("usr/local/lib/try-omarchy/update-battery-dkms", finalize)
+         self.assertIn('PACKAGE_VERSION="1.1.0"', (MODULE_SOURCE.parent / "dkms.conf").read_text())
+diff --git a/guest/tests/test_clipboard_pull.py b/guest/tests/test_clipboard_pull.py
+index 277b2fa..bbff943 100644
+--- a/guest/tests/test_clipboard_pull.py
++++ b/guest/tests/test_clipboard_pull.py
+@@ -71,4 +71,4 @@ class ClipboardPullTests(unittest.TestCase):
+         finalizer = (GUEST / 'scripts/finalize-rootfs.sh').read_text()
+         paths = finalizer.split('compat_paths=(', 1)[1].split(')', 1)[0]
+         self.assertIn('usr/local/bin/clipboard-bridge', paths)
+-        self.assertIn('compat_revision=58', finalizer)
++        self.assertIn('compat_revision=59', finalizer)
+diff --git a/guest/tests/test_compositor_health.py b/guest/tests/test_compositor_health.py
+index 9bbb0e9..d4e321b 100644
+--- a/guest/tests/test_compositor_health.py
++++ b/guest/tests/test_compositor_health.py
+@@ -34,7 +34,7 @@ class CompositorHealthTests(unittest.TestCase):
+ 
+     def test_existing_disks_receive_health_files(self):
+         finalizer = (GUEST / 'scripts/finalize-rootfs.sh').read_text()
+-        self.assertIn('compat_revision=58', finalizer)
++        self.assertIn('compat_revision=59', finalizer)
+         for name in ['agent', 'compositor-health']:
+             self.assertIn('  usr/local/lib/try-omarchy/' + name, finalizer)
+         self.assertTrue(HELPER.stat().st_mode & 0o111)
+diff --git a/guest/tests/test_guest_qol.py b/guest/tests/test_guest_qol.py
+index 2c851e2..298fb60 100644
+--- a/guest/tests/test_guest_qol.py
++++ b/guest/tests/test_guest_qol.py
+@@ -215,7 +215,7 @@ class GuestQolTests(unittest.TestCase):
+     def test_compatibility_delivers_guarded_payload_once_per_revision(self):
+         finalize = (GUEST / "scripts/finalize-rootfs.sh").read_text()
+         paths = finalize.split("compat_paths=(", 1)[1].split(")", 1)[0]
+-        self.assertIn("compat_revision=58", finalize)
++        self.assertIn("compat_revision=59", finalize)
+         for path in ("usr/local/bin/omarchy-native-screensaver-text", "usr/local/lib/try-omarchy/install-guest-qol", "usr/share/try-omarchy/guest-qol", "usr/local/bin/omarchy-windows-audio-bridge"):
+             self.assertIn(path, paths)
+         self.assertNotIn("etc/fonts/conf.d/30-try-omarchy.conf", paths)
+diff --git a/guest/tests/test_live_update.py b/guest/tests/test_live_update.py
+index e10a941..41a0a35 100644
+--- a/guest/tests/test_live_update.py
++++ b/guest/tests/test_live_update.py
+@@ -176,7 +176,7 @@ class LiveUpdateTests(unittest.TestCase):
+ 
+     def test_delivery_and_best_effort_hook(self):
+         finalizer = (GUEST / 'scripts/finalize-rootfs.sh').read_text()
+-        self.assertIn('compat_revision=58', finalizer)
++        self.assertIn('compat_revision=59', finalizer)
+         for path in ['usr/local/lib/try-omarchy/live-update', 'etc/pacman.d/hooks/00-try-omarchy-live-update.hook', 'etc/pacman.d/hooks/zz-try-omarchy-live-update.hook']:
+             self.assertIn(path, finalizer)
+         pre = (GUEST / 'factory-overlay/etc/pacman.d/hooks/00-try-omarchy-live-update.hook').read_text()
+diff --git a/guest/tests/test_native_nightlight.py b/guest/tests/test_native_nightlight.py
+index 9e65483..1a785ce 100644
+--- a/guest/tests/test_native_nightlight.py
++++ b/guest/tests/test_native_nightlight.py
+@@ -214,5 +214,5 @@ class PersistentNightlightTests(unittest.TestCase):
+         catch_up = (self.overlay / 'usr/local/lib/try-omarchy/catch-up').read_text()
+         for path in ['usr/local/bin/omarchy-native-nightlight', 'usr/local/share/try-omarchy/nightlight.frag', 'usr/local/lib/try-omarchy/install-nightlight', 'usr/share/try-omarchy/nightlight']:
+             self.assertIn(path, finalizer)
+-        self.assertIn('compat_revision=58', finalizer)
++        self.assertIn('compat_revision=59', finalizer)
+         self.assertIn('previous_revision < 55', catch_up)
+diff --git a/guest/tests/test_notification_privacy.py b/guest/tests/test_notification_privacy.py
+index f864346..75042c8 100644
+--- a/guest/tests/test_notification_privacy.py
++++ b/guest/tests/test_notification_privacy.py
+@@ -116,7 +116,7 @@ for (const state of [null, {screensaverStateKnown:false}, {screensaverStateKnown
+     def test_compatibility_overlay_and_catch_up_revision(self):
+         finalizer = (GUEST / 'scripts/finalize-rootfs.sh').read_text()
+         catch_up = (GUEST / 'factory-overlay/usr/local/lib/try-omarchy/catch-up').read_text()
+-        self.assertIn('compat_revision=58', finalizer)
++        self.assertIn('compat_revision=59', finalizer)
+         self.assertIn('usr/share/try-omarchy/notifications', finalizer)
+         self.assertIn('usr/local/lib/try-omarchy/install-notifications', finalizer)
+         self.assertIn('previous_revision < 52', catch_up)
+diff --git a/guest/tests/test_snapper_guest.py b/guest/tests/test_snapper_guest.py
+index 4c08764..59e0e57 100644
+--- a/guest/tests/test_snapper_guest.py
++++ b/guest/tests/test_snapper_guest.py
+@@ -44,5 +44,5 @@ class GuestSnapperTests(unittest.TestCase):
+         finalizer = (GUEST / 'scripts/finalize-rootfs.sh').read_text()
+         paths = finalizer.split('compat_paths=(', 1)[1].split(')', 1)[0]
+         self.assertIn(TARGET, paths)
+-        self.assertIn('compat_revision=58', finalizer)
++        self.assertIn('compat_revision=59', finalizer)
+         self.assertEqual(json.loads((GUEST / 'spec.json').read_text())['upstream']['packageRelease'], 8)
+diff --git a/guest/tests/test_windows_audio_bridge.py b/guest/tests/test_windows_audio_bridge.py
+index 7f832b1..78f76d3 100644
+--- a/guest/tests/test_windows_audio_bridge.py
++++ b/guest/tests/test_windows_audio_bridge.py
+@@ -481,6 +481,76 @@ class PipeWireMirrorTests(unittest.TestCase):
+         self.assertEqual(seen, set(expected))
+ 
+ 
++class TransportDefaultRedirectTests(unittest.TestCase):
++    """Omarchy's panel lists the raw QEMU transport beside the Windows devices."""
++
++    def make_mirror(self) -> tuple[object, PactlStub, list[dict[str, object]]]:
++        sent: list[dict[str, object]] = []
++        pactl = PactlStub()
++        mirror = bridge.PipeWireMirror(sent.append)
++        patcher = mock.patch.object(bridge, "run_pactl", side_effect=pactl)
++        patcher.start()
++        self.addCleanup(patcher.stop)
++        self.addCleanup(mirror.close)
++        return mirror, pactl, sent
++
++    def test_transport_sink_default_returns_to_the_selected_windows_endpoint(self) -> None:
++        mirror, pactl, _ = self.make_mirror()
++        mirror.apply(catalog_message())  # selected studio-output
++        mirror.last_health_check = float("inf")
++
++        pactl.default_sink = pactl.transport_sink
++        with mock.patch.object(bridge, "log") as log:
++            mirror.poll_selection()
++        self.assertEqual(pactl.default_sink, bridge.endpoint_name("output", "studio-output"))
++        log.assert_called_once()
++
++        # A default that already sits on the Windows endpoint stays put and
++        # does not log again.
++        with mock.patch.object(bridge, "log") as log:
++            mirror.poll_selection()
++        self.assertEqual(pactl.default_sink, bridge.endpoint_name("output", "studio-output"))
++        log.assert_not_called()
++
++    def test_transport_source_default_returns_to_the_selected_windows_endpoint(self) -> None:
++        mirror, pactl, _ = self.make_mirror()
++        mirror.apply(catalog_message())  # selected laptop-input
++        mirror.last_health_check = float("inf")
++
++        pactl.default_source = pactl.transport_source
++        with mock.patch.object(bridge, "log") as log:
++            mirror.poll_selection()
++        self.assertEqual(pactl.default_source, bridge.endpoint_name("input", "laptop-input"))
++        log.assert_called_once()
++
++    def test_transport_default_returns_to_windows_system_default_when_none_selected(self) -> None:
++        mirror, pactl, _ = self.make_mirror()
++        message = catalog_message()
++        message["selectedOutputUID"] = None
++        message["selectedInputUID"] = None
++        mirror.apply(message)
++        mirror.last_health_check = float("inf")
++
++        pactl.default_sink = pactl.transport_sink
++        pactl.default_source = pactl.transport_source
++        mirror.poll_selection()
++        self.assertEqual(pactl.default_sink, bridge.endpoint_name("output", None))
++        self.assertEqual(pactl.default_source, bridge.endpoint_name("input", None))
++
++    def test_other_guest_audio_devices_are_left_alone(self) -> None:
++        mirror, pactl, _ = self.make_mirror()
++        mirror.apply(catalog_message())
++        mirror.last_health_check = float("inf")
++
++        pactl.default_sink = "alsa_output.usb-headphones"
++        pactl.default_source = "alsa_input.bluetooth-headset"
++        with mock.patch.object(bridge, "log") as log:
++            mirror.poll_selection()
++        self.assertEqual(pactl.default_sink, "alsa_output.usb-headphones")
++        self.assertEqual(pactl.default_source, "alsa_input.bluetooth-headset")
++        log.assert_not_called()
++
++
+ class CatalogRetryTests(unittest.TestCase):
+     def test_main_retries_startup_catalog_until_transport_is_ready(self):
+         for capable in (False, True):
+diff --git a/guest/tests/test_windows_volume_sync.py b/guest/tests/test_windows_volume_sync.py
+index d116ead..4837304 100644
+--- a/guest/tests/test_windows_volume_sync.py
++++ b/guest/tests/test_windows_volume_sync.py
+@@ -285,7 +285,7 @@ class VolumeSyncTests(unittest.TestCase):
+ 
+     def test_revision_delivers_bridge_to_existing_disks(self):
+         finalize = (Path(__file__).resolve().parents[1] / "scripts/finalize-rootfs.sh").read_text()
+-        self.assertIn("compat_revision=58", finalize)
++        self.assertIn("compat_revision=59", finalize)
+         self.assertIn("usr/local/bin/omarchy-windows-audio-bridge", finalize)
+ 
+ 
+diff --git a/guest/tests/verify.py b/guest/tests/verify.py
+index 1e29146..12ecab3 100755
+--- a/guest/tests/verify.py
++++ b/guest/tests/verify.py
+@@ -324,7 +324,7 @@ def main() -> None:
+         "system services run without watchdogs, which fire after Windows sleeps",
+     )
+     check(
+-        "compat_revision=58" in finalize_rootfs
++        "compat_revision=59" in finalize_rootfs
+         and "usr/local/bin/mpv" in compat_paths
+         and "usr/share/dkms/modules_to_force_install/try-omarchy" in compat_paths
+         and "usr/local/lib/try-omarchy/try-omarchy-import.pyz" in compat_paths
+-- 
+2.56.0
+

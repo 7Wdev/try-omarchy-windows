@@ -72,6 +72,15 @@ stalling in shell suffix matching. Fresh images carry the same bridge. The bridg
 is supplied by the compatibility overlay, so no runtime package bump or
 **Update > Omarchy** is required. Resetting the disk is not required.
 
+Compatibility revision 59 delivers the audio bridge that keeps volume sync
+working when the raw QEMU transport device is chosen in Omarchy's audio panel.
+Existing disks, including revision-58 installations, receive the corrected
+bridge before login. While the Windows endpoint mirror is active, a default
+sink or source that points at the raw VirtIO transport is switched back to the
+mirror for the Windows device that is currently selected; other guest devices
+are left alone. Fresh images carry the same bridge, which the compatibility
+overlay supplies without a runtime package bump or **Update > Omarchy**.
+
 If repository publication fails, inspect:
 
 ```sh
