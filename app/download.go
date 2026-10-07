@@ -24,6 +24,14 @@ const (
 	commitRenameDelay     = 500 * time.Millisecond
 )
 
+// downloadFailure marks an error from a download that exhausted its retries,
+// so callers can tell the user their connection is the likely cause. It keeps
+// the original message and unwrap chain.
+type downloadFailure struct{ err error }
+
+func (e downloadFailure) Error() string { return e.err.Error() }
+func (e downloadFailure) Unwrap() error { return e.err }
+
 type downloadProgress func(phase string, done, total int64)
 
 type downloadOptions struct {
@@ -114,7 +122,7 @@ func downloadVerifiedWithOptions(client *http.Client, url, dest, wantSum string,
 			return nil
 		}
 	}
-	return fmt.Errorf("download failed after %d attempts: %w", opts.maxAttempts, lastErr)
+	return downloadFailure{fmt.Errorf("download failed after %d attempts: %w", opts.maxAttempts, lastErr)}
 }
 
 func downloadAttempt(client *http.Client, url, dest, wantSum string, progress downloadProgress, idleTimeout time.Duration) (retry, cleanRestart bool, resultErr error) {
