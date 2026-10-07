@@ -31,12 +31,14 @@ jobs:
             mingw-w64-ucrt-x86_64-python-yaml
             mingw-w64-ucrt-x86_64-zstd
       - name: Build pinned QEMU with section backend
+        id: build
         shell: msys2 {0}
         run: bash experimental/qemu/build_qemu.sh qemu-lab
       - name: Verify shared memory through real QEMU
         shell: pwsh
         run: python experimental/qemu/test_section.py --qemu qemu-lab/bin/qemu-system-x86_64.exe --firmware qemu-lab/share/qemu
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         with:
           name: qemu-win32-section-lab
           path: |

@@ -16,9 +16,9 @@ def prepare(source):
         raise RuntimeError(f'Expected QEMU {pinned}, got {head}')
     if subprocess.check_output(['git', '-C', str(source), 'status', '--porcelain'], text=True).strip():
         raise RuntimeError('QEMU checkout must be clean')
-    patch = recipe / 'external-shared-ram.patch'
-    subprocess.run(['git', '-C', str(source), 'apply', '--check', str(patch)], check=True)
-    subprocess.run(['git', '-C', str(source), 'apply', str(patch)], check=True)
+    patches = [recipe / name for name in ('external-shared-ram.patch', 'object-schema.patch')]
+    subprocess.run(['git', '-C', str(source), 'apply', '--check', *map(str, patches)], check=True)
+    subprocess.run(['git', '-C', str(source), 'apply', *map(str, patches)], check=True)
     shutil.copyfile(recipe / 'hostmem-win32-section.c', source / 'backends/hostmem-win32-section.c')
     meson = source / 'backends/meson.build'
     original = meson.read_text()
