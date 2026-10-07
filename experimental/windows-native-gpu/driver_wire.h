@@ -15,11 +15,15 @@ enum class Op : std::uint32_t {
     Hello = 0x2000, OpenAdapter, QueryDriverVersion, CloseAdapter,
     CreateDevice, DestroyDevice, CreatePagingQueue, ReadPagingFence, DestroyPagingQueue,
     CreateAllocation = 0x2010, WriteAllocation, ReadAllocation, MakeResident,
-    MapAllocation, QueryResidency, DestroyAllocation
+    MapAllocation, QueryResidency, DestroyAllocation, CreateSharedAllocation, CopySharedAllocation
 };
 enum class Kind { Adapter, Device, PagingQueue, Allocation };
 struct Range { std::uint32_t offset; std::uint32_t size; };
 static_assert(sizeof(Range) == 8, "fixed transfer layout");
+struct GuestRange { std::uint64_t offset; std::uint32_t size; std::uint32_t reserved; };
+static_assert(sizeof(GuestRange) == 16, "fixed guest range layout");
+struct CopyRange { std::uint32_t source; std::uint32_t sourceOffset; std::uint32_t destinationOffset; std::uint32_t size; };
+static_assert(sizeof(CopyRange) == 16, "fixed GPU copy layout");
 struct Result { std::int32_t ntstatus; std::uint32_t nativeHandle; std::uint64_t value; };
 // Native handles and pointers never cross the wire. NTSTATUS is preserved in
 // this fixed payload; Header.status is a negative errno for protocol errors.
@@ -35,6 +39,8 @@ public:
     virtual Result createPagingQueue(std::uint32_t device) = 0;
     virtual Result readPagingFence(std::uint32_t queue) = 0;
     virtual Result createAllocation(std::uint32_t device, std::uint32_t size) = 0;
+    virtual Result createSharedAllocation(std::uint32_t device, GuestRange range) = 0;
+    virtual Result copySharedAllocation(std::uint32_t destination, std::uint32_t source, CopyRange range) = 0;
     virtual Result writeAllocation(std::uint32_t allocation, Range range, const std::uint8_t* data) = 0;
     virtual Result readAllocation(std::uint32_t allocation, Range range, std::vector<std::uint8_t>& data) = 0;
     virtual Result makeResident(std::uint32_t allocation, std::uint32_t queue) = 0;
@@ -43,7 +49,10 @@ public:
     virtual Result destroy(Kind kind, std::uint32_t handle) = 0;
 };
 class Session {
-    struct Object { Kind kind; std::uint32_t parent; std::uint32_t nativeHandle; std::uint32_t size; };
+    struct Object {
+        Kind kind; std::uint32_t parent; std::uint32_t nativeHandle; std::uint32_t size;
+        std::uint64_t guestOffset; bool shared;
+    };
     Driver& driver;
     std::map<std::uint32_t, Object> objects;
     std::uint32_t nextId = 1;
@@ -60,11 +69,12 @@ class Session {
         }
         return out;
     }
-    std::vector<std::uint8_t> insert(Header h, Kind kind, std::uint32_t parent, Result result, std::uint32_t size = 0) {
+    std::vector<std::uint8_t> insert(Header h, Kind kind, std::uint32_t parent, Result result,
+                                   std::uint32_t size = 0, std::uint64_t guestOffset = 0, bool shared = false) {
         if (result.ntstatus < 0) return reply(h, 0, 0, &result);
         if (!result.nativeHandle) return reply(h, -5);
         const auto id = nextId++;
-        objects.emplace(id, Object{kind, parent, result.nativeHandle, size});
+        objects.emplace(id, Object{kind, parent, result.nativeHandle, size, guestOffset, shared});
         allocatedBytes += size;
         return reply(h, 0, id, &result);
     }
@@ -96,12 +106,16 @@ public:
             std::memcpy(out.data() + sizeof h, &caps, sizeof caps);
             return out;
         }
-        const bool memoryOp = op >= Op::CreateAllocation && op <= Op::DestroyAllocation;
+        const bool memoryOp = op >= Op::CreateAllocation && op <= Op::CopySharedAllocation;
         if (!memoryOp && (op < Op::OpenAdapter || op > Op::DestroyPagingQueue)) return reply(h, -95);
         const bool scalar = op == Op::CreateAllocation || op == Op::MakeResident || op == Op::MapAllocation;
         const bool transfer = op == Op::WriteAllocation || op == Op::ReadAllocation;
-        if ((!scalar && !transfer && packet.size() != sizeof h) ||
+        const bool shared = op == Op::CreateSharedAllocation;
+        const bool copy = op == Op::CopySharedAllocation;
+        if ((!scalar && !transfer && !shared && !copy && packet.size() != sizeof h) ||
             (scalar && packet.size() != sizeof h + 4) ||
+            (shared && packet.size() != sizeof h + sizeof(GuestRange)) ||
+            (copy && packet.size() != sizeof h + sizeof(CopyRange)) ||
             (transfer && packet.size() < sizeof h + sizeof(Range))) return reply(h, -22);
         if (!negotiated) return reply(h, -71);
         if (op == Op::OpenAdapter) {
@@ -113,15 +127,39 @@ public:
         if (entry == objects.end()) return reply(h, -9);
         const auto& object = entry->second;
         const bool adapterOp = op == Op::QueryDriverVersion || op == Op::CloseAdapter || op == Op::CreateDevice;
-        const bool deviceOp = op == Op::DestroyDevice || op == Op::CreatePagingQueue || op == Op::CreateAllocation;
+        const bool deviceOp = op == Op::DestroyDevice || op == Op::CreatePagingQueue || op == Op::CreateAllocation || shared;
         const auto required = adapterOp ? Kind::Adapter : deviceOp ? Kind::Device : memoryOp ? Kind::Allocation : Kind::PagingQueue;
         if (object.kind != required) return reply(h, -9);
-        if (op == Op::CreateAllocation) {
+        if (copy) {
+            CopyRange range{}; std::memcpy(&range, packet.data() + sizeof h, sizeof range);
+            const auto source = objects.find(range.source);
+            if (source == objects.end() || source->second.kind != Kind::Allocation ||
+                source->second.parent != object.parent || !source->second.shared || !object.shared) return reply(h, -9);
+            const auto& from = source->second;
+            if (range.source == h.handle || !range.size || range.size > object.size || range.size > from.size ||
+                range.sourceOffset > from.size - range.size || range.destinationOffset > object.size - range.size ||
+                object.guestOffset % 65536 || from.guestOffset % 65536 || object.size % 65536 || from.size % 65536)
+                return reply(h, -22);
+            const auto result = driver.copySharedAllocation(object.nativeHandle, from.nativeHandle, range);
+            return reply(h, 0, h.handle, &result);
+        }
+        if (op == Op::CreateAllocation || shared) {
             std::uint32_t size{}; std::memcpy(&size, packet.data() + sizeof h, 4);
+            GuestRange range{};
+            if (shared) {
+                std::memcpy(&range, packet.data() + sizeof h, sizeof range); size = range.size;
+                if (range.reserved || range.offset % 4096 || range.offset > UINT64_MAX - size) return reply(h, -22);
+                if (!size || size % 4096 || size > MaxAllocation) return reply(h, -22);
+                for (const auto& live : objects)
+                    if (live.second.shared && range.offset < live.second.guestOffset + live.second.size &&
+                        live.second.guestOffset < range.offset + size) return reply(h, -16);
+            }
             if (!size || size % 4096 || size > MaxAllocation) return reply(h, -22);
             if (objects.size() >= MaxObjects || nextId == UINT32_MAX || size > MaxAllocatedBytes - allocatedBytes)
                 return reply(h, -24);
-            return insert(h, Kind::Allocation, h.handle, driver.createAllocation(object.nativeHandle, size), size);
+            const auto result = shared ? driver.createSharedAllocation(object.nativeHandle, range)
+                                       : driver.createAllocation(object.nativeHandle, size);
+            return insert(h, Kind::Allocation, h.handle, result, size, range.offset, shared);
         }
         if (transfer) {
             Range range{}; std::memcpy(&range, packet.data() + sizeof h, sizeof range);

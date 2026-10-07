@@ -3,7 +3,11 @@
 The first control path is implemented and tested on 2026-10-07. A Linux guest
 in the installed QEMU 11.0/WHPX runtime successfully calls documented Windows
 WDDM adapter, device, paging queue and allocation operations on an NVIDIA RTX 5090 Laptop
-GPU. This is a **partial driver control bridge**, not guest rendering support.
+GPU. The current code additionally implements shared guest RAM registration and
+a bounded NVIDIA GPU buffer copy through a Windows section-backed D3D12 heap.
+The integrated QEMU shared-memory GPU copy passed six hardware cycles on
+2026-10-08, with all objects released after disconnect. This remains a **partial driver
+bridge**, with no guest rendering support.
 The Omarchy launcher does not select this backend yet.
 
 ## Implemented path
@@ -63,10 +67,15 @@ all unrelated operations are rejected without a driver call.
 | 0x2014 | allocation ID + queue ID u32 | D3DKMTMapGpuVirtualAddress after residency; wait for paging completion, return GPU VA. |
 | 0x2015 | allocation ID | D3DKMTQueryAllocationResidency. |
 | 0x2016 | allocation ID | D3DKMTDestroyAllocation2; then release CPU backing. |
+| 0x2017 | device ID + offset u64, size u32, reserved zero u32 | Register pages from the configured QEMU Windows section as a standard existing heap. |
+| 0x2018 | destination allocation ID + source ID u32, source offset u32, destination offset u32, count u32 | Synchronous D3D12 GPU buffer copy between two nonoverlapping shared allocations of the same device. |
 
 Hello capability bit 0 means adapter/device lifecycle; bit 1 means paging queue
-and fence query; bit 2 means bounded host-backed allocation operations. No
-rendering, shared guest RAM mapping or event capability is advertised.
+and fence query; bit 2 means bounded host-backed allocation operations. When a
+RAM section is configured, bit 3 means shared RAM imports and bit 4 means GPU
+buffer copy. GPU copy requires NVIDIA D3D12 Device3 and 64 KiB-aligned allocation
+offsets and sizes. It does not accept shader code, arbitrary driver commands,
+vendor escapes or scanout requests.
 The allocation's queue must belong to the same device. Bounds and byte budget
 are checked before driver calls and again before native memory access.
 Other successful dispatches return a 16-byte body containing
@@ -74,12 +83,21 @@ signed NTSTATUS, reserved zero u32, value u64. Native failure remains a native
 NTSTATUS, distinct from negative errno in the header for protocol validation.
 Creation returns a local object ID only when the driver succeeds. A GPU virtual
 address belongs to the Windows GPU address space; it is not a guest CPU mapping.
-The current CPU copies have no competing GPU submission. Submission support
-must add CPU/GPU access synchronization before reusing these operations.
+Requests are serialized. GPU copies return only after a checked completion
+fence, before any further host CPU copy. A GPU timeout terminates the worker
+while retaining its in-flight backing for Windows process teardown. This
+synchronous fixture does not provide asynchronous guest buffer ownership.
 Allocation destruction uses
 [`SynchronousDestroy`](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/d3dukmdt/ns-d3dukmdt-_d3dddicb_destroyallocation2flags)
 so Windows has released its secured backing before `VirtualFree`. A timed-out
 paging operation invalidates further allocation access until destruction.
+
+The shared heap uses the documented
+[`OpenExistingHeapFromFileMapping`](https://learn.microsoft.com/en-us/windows/win32/api/d3d12/nf-d3d12-id3d12device3-openexistingheapfromfilemapping)
+API. The Windows driver, through D3D12, produces the copy command buffers. This
+is a diagnostic heap in system memory, with cross-adapter buffer restrictions.
+It does not prove that general textures, arbitrary Linux UMD commands or
+near-native graphics can use this path.
 
 ## Physical acceptance
 
@@ -103,6 +121,29 @@ The test used no disk, network device, host share or existing VM process. It
 used the installed guest kernel and a separate 3.3 MB initramfs containing only
 a static init and probe. This test is intentionally a transport test; a
 headless control probe does not meet the interactive Omarchy acceptance goal.
+
+The separate [Windows section copy test](evidence/HOST-WDDM-SHARED-COPY-2026-10-08.json)
+registered two 64 KiB views in one temporary section with KMT, made both resident
+and mapped their GPU addresses. It then imported the section with D3D12 and
+copied 262,443 bytes through the NVIDIA GPU in six cycles, including partial
+copies. Every destination byte and guard matched; source bytes remained intact.
+The worker's counters confirmed six completed copies and zero remaining KMT,
+D3D12 or section objects. This is host-only evidence, not QEMU guest evidence.
+
+The [integrated QEMU/WHPX shared copy test](evidence/QEMU-WDDM-SHARED-COPY-2026-10-08.json)
+then passed the same six GPU copies in actual guest RAM: 262,443 bytes, all
+destination guards and source bytes verified by the Linux guest after fence
+completion. The guest also verified both directions of CPU access to one
+registered 64 KiB range, residency and GPU address mapping. QEMU and the worker
+exited zero, with all driver, GPU and section counts zero. The report pins the
+QEMU executable as well as the kernel, initramfs and worker.
+
+The QEMU build's [memory acceptance workflow](https://github.com/7Wdev/try-omarchy-windows/actions/runs/37688925268)
+also passed physical-memory alias, size/share/name/collision, migration blocker
+and lifetime checks. The worker handles a TCP reset at a frame boundary as a
+disconnect, while rejecting a reset in a truncated frame; both paths passed
+native object cleanup checks. These checks are evidence for a small fixture,
+not a desktop stability or performance benchmark.
 
 ## Reproduce
 
@@ -130,6 +171,24 @@ marker, guest exit zero, QEMU exit zero and worker exit zero. It kills only its
 own helper/VM processes on timeout. Hosted CI compiles this code and tests
 the packet contract; it does not claim physical GPU acceptance.
 
+To reproduce the host-only shared GPU copy acceptance:
+
+```powershell
+python experimental/windows-native-gpu/test_host_shared.py `
+  --bridge experimental/windows-native-gpu/build/driver-bridge.exe `
+  --report host-shared-report.json
+```
+
+The shared guest fixture additionally needs the runtime built by
+[`experimental/qemu`](../experimental/qemu). Add `--shared-memory` and
+`--firmware qemu-lab/share/qemu` to the QEMU command above. It reserves a 2 MiB
+huge page, checks actual guest PFNs with `/proc/self/pagemap`, verifies Windows
+can read and write that RAM, then asks the GPU to copy between two registered
+64 KiB ranges. The guest compares every byte after the GPU completion reply.
+This root-only fixture retains its mappings until the VM disconnects. A
+production guest driver must pin pages and manage their lifetime explicitly;
+the fixture is not a general page-registration API.
+
 ## Reuse and next acceptance gate
 
 [Microsoft libdxg](https://github.com/microsoft/libdxg/tree/5c28ebb4ead460c23ec5e87decb7d1af7285bb59)
@@ -145,19 +204,21 @@ shows the remaining requirements:
 | Requirement | Source path / current gap |
 | --- | --- |
 | Guest process/device/context ownership | ioctl.c and dxgvmbus.c; current worker covers only its own process and typed device lifecycle. |
-| Allocation backing | Standard Windows allocations with worker-owned memory are tested. dxgvmb_send_create_allocation uses Hyper-V GPADL to pin/map guest pages; copied serial payloads do not implement that sharing. |
+| Allocation backing | Worker-owned KMT allocations, the QEMU Windows section backend and shared guest GPU copies passed physical acceptance. Production pinning and scatter/gather page registration remain absent. |
 | GPU virtual addresses and residency | Typed make-resident/map and bounded paging waits are tested. Full reserve/update/eviction and guest monitored fences remain absent. |
-| Actual command submission | Context/hardware queue creation, UMD-generated command buffers, submit and completion; not implemented. |
+| Actual command submission | Bounded synchronous D3D12 GPU copies are implemented. Guest UMD context/hardware queue creation, arbitrary command buffers, submit and completion remain absent. |
 | Guest synchronization | Host events, mapped monitored fences, sync files/dma-fences; current fence query does not implement these. |
 | Linux graphics userspace | WDDM-aware runtime/UMD, matching driver files and ABI; ordinary Linux NVIDIA RM userspace cannot use these messages. |
 | Interactive desktop | DRM buffer sharing and compositor allocation, plus fenced scanout into the existing QEMU SDL window, resizing/input and crash recovery; not implemented. |
 
 The installed Windows QEMU rejects `memory-backend-file` as an unknown object
-type and does not list `ivshmem-plain`. A Windows section-backed QEMU memory
-adapter or another proven mapping mechanism is needed before claiming shared
-guest RAM. A host file mapping alone does not map an allocation into the VM.
+type and does not list `ivshmem-plain`. The experimental runtime adds a Windows
+section memory backend without replacing the installed runtime. Its object
+schema and RAM API patches are separate from the app so upstream fixes can
+remain mergeable. A host file mapping alone does not prove a guest mapping.
 
-The next gate is shared guest memory and a real guest command submission and completion.
-Only then can a guest driver/userspace and scanout integration be accepted.
-The current control success and separate native D3D12 host rendering success
-must not be combined into a claim that the guest renders on the GPU.
+The shared-memory GPU copy gate is passed. Next, the guest WDDM interface and
+Linux graphics stack must be exercised,
+including real DRM allocation and fenced scanout in the QEMU SDL window.
+These memory and copy tests do not establish guest rendering, desktop stability
+or near-native performance.

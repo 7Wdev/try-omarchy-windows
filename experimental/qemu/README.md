@@ -1,7 +1,8 @@
 # QEMU Windows section memory lab
 
 This engineering runtime adds `memory-backend-win32-section` to the exact
-WINQ-EMU QEMU revision pinned by the project. It is being built and validated;
+WINQ-EMU QEMU revision pinned by the project. The build and memory acceptance
+[passed CI](https://github.com/7Wdev/try-omarchy-windows/actions/runs/37688925268);
 it is not selected by the launcher and does not supply guest GPU rendering.
 
 The new backend uses `CreateFileMappingW` and `MapViewOfFile` for shared RAM.
@@ -17,8 +18,9 @@ processes running as the same user.
 external Windows mapping, and checks the bytes through QEMU's physical-memory
 read command. It also checks invalid size/share/name, section collisions,
 immutable properties, migration rejection and mapping cleanup. No NVIDIA GPU
-is required for this memory test. The later WDDM acceptance must additionally
-prove guest writes, host writes, residency and GPU mapping of those guest pages.
+is required for this memory test. The separate NVIDIA WDDM acceptance also
+passed guest writes, host writes, residency, GPU address mapping and six GPU
+copies in actual guest RAM. See [evidence and limitations](../../docs/WDDM-BRIDGE.md).
 
 Build in MSYS2 UCRT64 using the packages listed in
 `.github/workflows/wddm-qemu-lab.yml`:

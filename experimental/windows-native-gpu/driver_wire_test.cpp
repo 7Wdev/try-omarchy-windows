@@ -11,7 +11,7 @@ struct Fake : Driver {
     int calls = 0; std::uint32_t next = 500; bool fail = false, shortRead = false;
     std::map<std::uint32_t, std::vector<std::uint8_t>> buffers;
     std::vector<Kind> destroyed;
-    native_gpu::Capabilities capabilities() const override { return {1, 7, 0x10de, 123}; }
+    native_gpu::Capabilities capabilities() const override { return {1, 31, 0x10de, 123}; }
     Result created() { ++calls; return {fail ? -123 : 0, ++next, 0}; }
     Result openAdapter() override { return created(); }
     Result queryVersion(std::uint32_t h) override { require(h > 500); ++calls; return {0, 0, 3200}; }
@@ -22,6 +22,14 @@ struct Fake : Driver {
         require(h > 500); auto result = created();
         if (result.ntstatus >= 0) buffers.emplace(result.nativeHandle, std::vector<std::uint8_t>(size));
         result.value = size; return result;
+    }
+    Result createSharedAllocation(std::uint32_t h, GuestRange range) override { return createAllocation(h, range.size); }
+    Result copySharedAllocation(std::uint32_t destination, std::uint32_t source, CopyRange range) override {
+        auto& to = buffers.at(destination); const auto& from = buffers.at(source); ++calls;
+        require(destination != source && range.size && range.size <= to.size() && range.size <= from.size());
+        require(range.sourceOffset <= from.size() - range.size && range.destinationOffset <= to.size() - range.size);
+        std::memcpy(to.data() + range.destinationOffset, from.data() + range.sourceOffset, range.size);
+        return {0, 0, range.size};
     }
     Result writeAllocation(std::uint32_t h, Range range, const std::uint8_t* data) override {
         auto& buffer = buffers.at(h); ++calls;
@@ -120,6 +128,31 @@ int main() {
         require(header(s.dispatch(request(Op::QueryResidency, allocation))).status == -9);
         // New allocation retains a larger monotonic ID. Leave it for disconnect cleanup.
         require(header(s.dispatch(request(Op::CreateAllocation, device, std::uint32_t{4096}))).handle > allocation);
+        const auto shared = header(s.dispatch(request(Op::CreateSharedAllocation, device, GuestRange{0x100000, 4096, 0}))).handle;
+        require(shared != 0);
+        before = memory.calls;
+        require(header(s.dispatch(request(Op::CreateSharedAllocation, device, GuestRange{0x100000, 4096, 0}))).status == -16);
+        require(header(s.dispatch(request(Op::CreateSharedAllocation, device, GuestRange{UINT64_MAX - 4095, 8192, 0}))).status == -22);
+        require(header(s.dispatch(request(Op::CreateSharedAllocation, device, GuestRange{1, 4096, 0}))).status == -22);
+        require(header(s.dispatch(request(Op::CreateSharedAllocation, device, GuestRange{0, 4096, 1}))).status == -22);
+        require(memory.calls == before);
+        const auto from = header(s.dispatch(request(Op::CreateSharedAllocation, device, GuestRange{0x200000, 65536, 0}))).handle;
+        const auto to = header(s.dispatch(request(Op::CreateSharedAllocation, device, GuestRange{0x210000, 65536, 0}))).handle;
+        const auto foreign = header(s.dispatch(request(Op::CreateSharedAllocation, otherDevice, GuestRange{0x220000, 65536, 0}))).handle;
+        before = memory.calls;
+        for (const auto copy : {CopyRange{from, UINT32_MAX, 0, 1}, CopyRange{from, 0, 65535, 2},
+                                CopyRange{from, 0, 0, 0}, CopyRange{to, 0, 0, 4}})
+            require(header(s.dispatch(request(Op::CopySharedAllocation, to, copy))).status == -22);
+        require(header(s.dispatch(request(Op::CopySharedAllocation, to, CopyRange{foreign, 0, 0, 4}))).status == -9);
+        require(header(s.dispatch(request(Op::CopySharedAllocation, to, CopyRange{allocation, 0, 0, 4}))).status == -9);
+        require(header(s.dispatch(request(Op::CopySharedAllocation, to, CopyRange{queue, 0, 0, 4}))).status == -9);
+        require(header(s.dispatch(request(Op::CopySharedAllocation, shared, CopyRange{from, 0, 0, 4}))).status == -22);
+        require(memory.calls == before);
+        packet = request(Op::WriteAllocation, from, Range{3, 4}); packet.insert(packet.end(), {91, 23, 201, 45});
+        require(header(s.dispatch(packet)).status == 0);
+        require(header(s.dispatch(request(Op::CopySharedAllocation, to, CopyRange{from, 3, 7, 4}))).status == 0);
+        packet = s.dispatch(request(Op::ReadAllocation, to, Range{7, 4}));
+        require(std::vector<std::uint8_t>(packet.end() - 4, packet.end()) == std::vector<std::uint8_t>{91, 23, 201, 45});
     }
     require(memory.buffers.empty() && memory.destroyed.back() == Kind::Adapter);
     Fake budget;

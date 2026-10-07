@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: MIT
-// Linux QEMU guest client. Tests driver control operations, not rendering.
+// Linux QEMU guest client. Tests driver memory and GPU copy, not rendering.
 #include "driver_wire.h"
 #include <fcntl.h>
 #include <poll.h>
+#include <sys/mman.h>
 #include <unistd.h>
+#include <algorithm>
+#include <atomic>
 #include <cerrno>
 #include <iostream>
 #include <stdexcept>
@@ -80,6 +83,78 @@ static std::uint32_t allocationTest(Port& port, std::uint32_t device, std::uint3
     std::cout << "BRIDGE_ALLOCATION bytes=" << size << " cpuRoundtrip=true gpuVaMapped=true residency=" << residency << '\n';
     return allocation;
 }
+static void sharedAllocationTest(Port& port, std::uint32_t device, std::uint32_t queue, bool gpuCopy) {
+    constexpr std::uint32_t size = 65536, hugeSize = 2 * 1024 * 1024;
+    auto memory = mmap(nullptr, hugeSize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
+    if (memory == MAP_FAILED) throw std::runtime_error("Cannot obtain test huge page; boot with hugepagesz=2M hugepages=1");
+    // This root-only fixture checks every PFN rather than assuming mmap's pages
+    // are physically contiguous. A production guest driver must pin/register
+    // pages and maintain their lifetime instead of reading /proc pagemap.
+    auto bytes = static_cast<volatile std::uint8_t*>(memory);
+    for (std::uint32_t i = 0; i < size; ++i) bytes[i] = static_cast<std::uint8_t>((i * 37u) ^ (i >> 8));
+    const auto pagemap = open("/proc/self/pagemap", O_RDONLY | O_CLOEXEC);
+    if (pagemap < 0) throw std::runtime_error("Cannot read test page mapping");
+    std::uint64_t firstPfn = 0;
+    for (std::uint32_t page = 0; page < 2 * size / 4096; ++page) {
+        const auto index = (reinterpret_cast<std::uintptr_t>(memory) / 4096 + page) * 8;
+        std::uint64_t entry = 0;
+        if (pread(pagemap, &entry, sizeof entry, static_cast<off_t>(index)) != sizeof entry || !(entry & (1ull << 63)))
+            throw std::runtime_error("Test page is not present");
+        const auto pfn = entry & ((1ull << 55) - 1);
+        if (!page) firstPfn = pfn;
+        if (!firstPfn || pfn != firstPfn + page) throw std::runtime_error("Test physical pages are not contiguous");
+    }
+    close(pagemap);
+    const auto created = exchange(port, request(Op::CreateSharedAllocation, device, GuestRange{firstPfn * 4096, size, 0}));
+    const auto allocation = created.header.handle;
+    if (!allocation || created.reply.value != size) throw std::runtime_error("Shared allocation creation failed");
+    for (std::uint32_t offset = 0; offset < size; offset += MaxChunk) {
+        const auto count = std::min(MaxChunk, size - offset);
+        const auto response = exchange(port, request(Op::ReadAllocation, allocation, Range{offset, count}), count);
+        for (std::uint32_t i = 0; i < count; ++i)
+            if (response.data[i] != bytes[offset + i]) throw std::runtime_error("Windows did not see guest RAM writes");
+    }
+    auto write = request(Op::WriteAllocation, allocation, Range{0, 4}); write.insert(write.end(), {89, 34, 201, 17});
+    exchange(port, write); std::atomic_thread_fence(std::memory_order_seq_cst);
+    if (bytes[0] != 89 || bytes[1] != 34 || bytes[2] != 201 || bytes[3] != 17)
+        throw std::runtime_error("Guest did not see Windows RAM writes");
+    exchange(port, request(Op::MakeResident, allocation, queue));
+    if (!exchange(port, request(Op::MapAllocation, allocation, queue)).reply.value)
+        throw std::runtime_error("Shared guest allocation GPU mapping failed");
+    const auto residency = exchange(port, request(Op::QueryResidency, allocation)).reply.value;
+    if (residency != 1 && residency != 2) throw std::runtime_error("Shared guest allocation is not resident");
+    std::cout << "BRIDGE_SHARED_ALLOCATION bytes=" << size << " guestToHost=true hostToGuest=true gpuVaMapped=true residency=" << residency << '\n';
+    if (gpuCopy) {
+        const auto second = exchange(port, request(Op::CreateSharedAllocation, device, GuestRange{firstPfn * 4096 + size, size, 0}));
+        if (!second.header.handle || second.reply.value != size) throw std::runtime_error("GPU destination creation failed");
+        std::uint64_t copied = 0;
+        const CopyRange ranges[] = {{allocation, 0, 0, size}, {allocation, 7, 31, 73},
+            {allocation, 0, 31, size - 31}, {allocation, 0, 0, size},
+            {allocation, 201, 501, 257}, {allocation, 0, 0, size}};
+        unsigned cycle = 0;
+        for (const auto range : ranges) {
+            for (std::uint32_t i = 0; i < size; ++i) {
+                bytes[i] = static_cast<std::uint8_t>((i * 31u + cycle * 13u) ^ (i >> 8)); bytes[size + i] = 85;
+            }
+            std::atomic_thread_fence(std::memory_order_seq_cst);
+            const auto copiedResult = exchange(port, request(Op::CopySharedAllocation, second.header.handle, range));
+            if (copiedResult.reply.value != range.size) throw std::runtime_error("Short GPU copy");
+            std::atomic_thread_fence(std::memory_order_seq_cst);
+            for (std::uint32_t i = 0; i < size; ++i) {
+                const auto expected = i >= range.destinationOffset && i - range.destinationOffset < range.size
+                    ? bytes[range.sourceOffset + i - range.destinationOffset] : static_cast<std::uint8_t>(85);
+                if (bytes[size + i] != expected) throw std::runtime_error("Guest GPU copy bytes or destination guard mismatch");
+                if (bytes[i] != static_cast<std::uint8_t>((i * 31u + cycle * 13u) ^ (i >> 8)))
+                    throw std::runtime_error("GPU copy modified source");
+            }
+            copied += range.size; ++cycle;
+        }
+        std::cout << "BRIDGE_GPU_COPY cycles=" << cycle << " bytes=" << copied
+                  << " guestToGpuToGuest=true guards=true fenceCompleted=true\n";
+    }
+    // Retain this allocation and mapping until disconnect to verify teardown
+    // while the Windows worker still owns a view of QEMU's RAM section.
+}
 int main(int argc, char** argv) {
     try {
         if (argc != 2) throw std::runtime_error("Usage: guest-probe /dev/vport0p1");
@@ -88,7 +163,7 @@ int main(int argc, char** argv) {
         if (h.status || h.type != static_cast<std::uint32_t>(Op::Hello) || helloPacket.size() != 32)
             throw std::runtime_error("Handshake failed");
         native_gpu::Capabilities caps{}; std::memcpy(&caps, helloPacket.data() + sizeof(Header), sizeof caps);
-        if (caps.version != Version || caps.vendor != 0x10de || caps.flags != 7) throw std::runtime_error("Unexpected backend capabilities");
+        if (caps.version != Version || caps.vendor != 0x10de || (caps.flags & 7) != 7) throw std::runtime_error("Unexpected backend capabilities");
         std::cout << "BRIDGE_VENDOR=" << caps.vendor << " BRIDGE_DEVICE=" << caps.device << '\n';
         for (unsigned cycle = 0; cycle < 5; ++cycle) {
             const auto adapter = operation(port, Op::OpenAdapter);
@@ -110,6 +185,7 @@ int main(int argc, char** argv) {
         const auto abandonedDevice = operation(port, Op::CreateDevice, abandonedAdapter);
         const auto abandonedQueue = operation(port, Op::CreatePagingQueue, abandonedDevice);
         allocationTest(port, abandonedDevice, abandonedQueue, 5);
+        if (caps.flags & 8) sharedAllocationTest(port, abandonedDevice, abandonedQueue, (caps.flags & 16) != 0);
         std::cout << "PASS: QEMU guest WDDM allocation bridge, 5 lifecycle cycles; guest rendering=false\n";
         return 0;
     } catch (const std::exception& error) { std::cerr << "FAIL: " << error.what() << '\n'; return 1; }

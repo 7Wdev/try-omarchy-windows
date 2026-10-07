@@ -106,15 +106,17 @@ or evidence of Linux guest acceleration. The record is
 
 ## Remaining implementation
 
-The new [WDDM allocation bridge](WDDM-BRIDGE.md) now transports typed adapter,
-device, paging queue and allocation operations from a Linux guest through QEMU
+The new [WDDM memory bridge](WDDM-BRIDGE.md) now transports typed adapter,
+device, paging queue, allocation and bounded GPU copy operations from a Linux guest through QEMU
 virtio-serial to Windows D3DKMT. Five physical guest lifecycle cycles passed,
 plus six 64 KiB allocations with bounded CPU roundtrip verification, residency,
 GPU address mapping and disconnect cleanup.
 It is a separate experimental protocol, not the original NVIDIA ABI or a
-custom virtio GPU. Its allocations use worker-owned host memory. Shared guest
-RAM, command submission and desktop acceleration remain absent; the report
-records these limits explicitly.
+custom virtio GPU. A pinned QEMU section backend now supplies shared guest RAM.
+Six GPU copy cycles totaling 262,443 bytes passed actual QEMU/WHPX guest byte
+and guard verification, with completion fences and zero remaining host objects.
+General guest graphics command submission and desktop acceleration remain
+absent; the report records these limits explicitly.
 
 First demonstrate real guest allocation, mapping, submission, events and buffer
 sharing against either a substantiated Linux RM translator or an explicitly
