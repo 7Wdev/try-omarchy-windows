@@ -6,8 +6,9 @@ them resident and maps GPU addresses. Shared guest RAM and bounded, fenced GPU
 copies passed physical acceptance. Opt-in virtual context lifecycle support is
 also tested, including locally captured Linux NVIDIA initialization data.
 Live NVIDIA Linux runtime initialization now reaches native paging and graphics
-context creation through QEMU, then fails at the unsupported live allocation
-interface. Direct guest fence reads and acknowledged unmap passed physical testing. Omarchy
+context creation and standalone video-memory allocation through QEMU, then
+fails at the unsupported live GPU-address mapping interface. Direct guest
+fence reads, synchronous allocation destruction and acknowledged unmap passed physical testing. Omarchy
 desktop acceleration remains unimplemented. Read the
 [investigation](../../docs/WINDOWS-NVIDIA-BACKEND.md).
 
@@ -41,6 +42,10 @@ without modifying vendor-private replies. Its
 through a host-only QMP channel and retains pages until unmap acknowledgement
 or confirmed owned VM exit. It is a partial initialization
 experiment, not a graphics kernel driver or a usable accelerated backend.
+The [live allocation route](../../docs/LIVE-ALLOCATION-BRIDGE.md) adds the
+separate `--driver-allocations` opt-in and typed standalone allocation ownership.
+Its reported-memory guard is not a hard allocation-byte quota; it remains
+restricted to the local runtime diagnostic.
 
 The framing reference is pinned in `sources.json`. No upstream implementation
 is vendored from virtio-nvgpu; these new files use the repository's MIT license.

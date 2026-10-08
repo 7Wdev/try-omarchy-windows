@@ -20,6 +20,48 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (fd < 0) return failed("open");
+    if (!std::strncmp(mode, "allocation-", 11)) {
+        D3DKMT_OPENADAPTERFROMLUID adapter{}; adapter.AdapterLuid.LowPart = 0x57475055;
+        if (ioctl(fd, _IOWR('G', 1, D3DKMT_OPENADAPTERFROMLUID), &adapter)) return failed("allocation adapter");
+        D3DKMT_CREATEDEVICE device{}; device.hAdapter = adapter.hAdapter; device.Flags.RequestVSync = 1;
+        if (ioctl(fd, _IOWR('G', 2, D3DKMT_CREATEDEVICE), &device)) return failed("allocation device");
+        unsigned char data[]{37, 38, 39, 40};
+        D3DDDI_ALLOCATIONINFO2 info{}; info.Flags.Value = 4; info.Priority = 0x78100000;
+        info.pPrivateDriverData = data; info.PrivateDriverDataSize = sizeof data;
+        D3DKMT_CREATEALLOCATION allocation{}; allocation.hDevice = device.hDevice; allocation.NumAllocations = 1;
+        allocation.pAllocationInfo2 = &info;
+        if (!std::strcmp(mode, "allocation-invalid")) {
+            info.pSystemMem = data;
+            if (ioctl(fd, _IOWR('G', 6, D3DKMT_CREATEALLOCATION), &allocation) != -1 || errno != EINVAL) return failed("guest CPU pointer accepted");
+            info.pSystemMem = nullptr; info.Reserved[0] = 1;
+            if (ioctl(fd, _IOWR('G', 6, D3DKMT_CREATEALLOCATION), &allocation) != -1 || errno != EINVAL) return failed("reserved input accepted");
+            info.Reserved[0] = 0; allocation.hResource = 999;
+            if (ioctl(fd, _IOWR('G', 6, D3DKMT_CREATEALLOCATION), &allocation) != -1 || errno != ENOSYS) return failed("resource accepted");
+        } else if (!std::strcmp(mode, "allocation-disabled")) {
+            if (ioctl(fd, _IOWR('G', 6, D3DKMT_CREATEALLOCATION), &allocation) != -1 || errno != ENOSYS) return failed("disabled allocation accepted");
+        } else if (!std::strcmp(mode, "allocation-nt-failure")) {
+            if (ioctl(fd, _IOWR('G', 6, D3DKMT_CREATEALLOCATION), &allocation) != -1 || errno != EINVAL ||
+                data[0] != (37 ^ 255) || info.hAllocation) return failed("native failure lost in/out");
+        } else if (!std::strcmp(mode, "allocation-normal") || !std::strcmp(mode, "allocation-failed-destroy")) {
+            if (ioctl(fd, _IOWR('G', 6, D3DKMT_CREATEALLOCATION), &allocation) || info.hAllocation != 3 || info.GpuVirtualAddress ||
+                data[0] != (37 ^ 255) || allocation.hResource || allocation.hGlobalShare) return failed("allocation response");
+            D3DKMT_HANDLE duplicates[]{3, 3};
+            D3DKMT_DESTROYALLOCATION2 release{}; release.hDevice = device.hDevice; release.phAllocationList = duplicates;
+            release.AllocationCount = 2;
+            if (ioctl(fd, _IOWR('G', 19, D3DKMT_DESTROYALLOCATION2), &release) != -1 || errno != EINVAL) return failed("duplicate destruction");
+            release.AllocationCount = 1; release.hDevice = 999;
+            if (ioctl(fd, _IOWR('G', 19, D3DKMT_DESTROYALLOCATION2), &release) != -1 || errno != EBADF) return failed("wrong device destruction");
+            release.hDevice = device.hDevice; release.Flags.Value = 3;
+            if (!std::strcmp(mode, "allocation-failed-destroy") &&
+                (ioctl(fd, _IOWR('G', 19, D3DKMT_DESTROYALLOCATION2), &release) != -1 || errno != EINVAL)) return failed("native destroy failure");
+            if (ioctl(fd, _IOWR('G', 19, D3DKMT_DESTROYALLOCATION2), &release)) return failed("allocation destruction");
+            if (ioctl(fd, _IOWR('G', 19, D3DKMT_DESTROYALLOCATION2), &release) != -1 || errno != EBADF) return failed("destroyed ID reused");
+        } else {
+            if (ioctl(fd, _IOWR('G', 6, D3DKMT_CREATEALLOCATION), &allocation) != -1 || errno != EPROTO) return failed("malformed allocation accepted");
+            if (open("/dev/dxg", O_RDONLY) != -1 || errno != EIO) return failed("allocation broken transport reused");
+        }
+        close(fd); return 0;
+    }
     if (!std::strncmp(mode, "paging-", 7)) {
         D3DKMT_OPENADAPTERFROMLUID adapter{}; adapter.AdapterLuid.LowPart = 0x57475055;
         if (ioctl(fd, _IOWR('G', 1, D3DKMT_OPENADAPTERFROMLUID), &adapter)) return failed("paging adapter");

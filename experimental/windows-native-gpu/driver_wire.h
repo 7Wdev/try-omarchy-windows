@@ -2,6 +2,7 @@
 // Independent, deliberately small WDDM experiment, not the /dev/dxg or RM ABI.
 #pragma once
 #include "wire.h"
+#include <algorithm>
 #include <map>
 
 namespace driver_bridge {
@@ -15,6 +16,22 @@ constexpr std::uint32_t ContextCapability = 32;
 constexpr std::uint32_t MaxContextPrivateBytes = 4000;
 constexpr std::uint32_t QueryCapability = 64;
 constexpr std::uint32_t GuestPagingCapability = 128;
+constexpr std::uint32_t VendorAllocationCapability = 256;
+constexpr std::uint32_t MaxVendorPrivateBytes = 4000;
+constexpr std::size_t MaxVendorAllocations = 16;
+struct VendorAllocationDesc {
+    std::uint32_t flags, priority, source, privateBytes, reserved, reserved2;
+};
+static_assert(sizeof(VendorAllocationDesc) == 24, "fixed vendor allocation layout");
+inline bool validVendorAllocation(VendorAllocationDesc d) {
+    // Standalone video memory only. No primary, stereo, resource sharing,
+    // system-memory pointer or host CPU address crosses this interface.
+    return !d.source && !d.reserved && !d.reserved2 && d.privateBytes && d.privateBytes <= MaxVendorPrivateBytes &&
+           ((d.flags == 0 && d.priority == 0) ||
+            (d.flags == 4 && d.priority >= 0x28000000u && d.priority <= 0x78ffffffu));
+}
+struct DestroyVendorDesc { std::uint32_t count, reserved; };
+static_assert(sizeof(DestroyVendorDesc) == 8, "fixed vendor destruction layout");
 constexpr std::uint64_t FenceApertureBytes = 64 * 4096;
 constexpr std::uint32_t MaxQueryBytes = 65536;
 constexpr std::size_t MaxActiveQueries = 2;
@@ -47,9 +64,10 @@ enum class Op : std::uint32_t {
     MapAllocation, QueryResidency, DestroyAllocation, CreateSharedAllocation, CopySharedAllocation,
     CreateContext = 0x2020, DestroyContext,
     BeginAdapterQuery = 0x2030, WriteAdapterQuery, RunAdapterQuery, ReadAdapterQuery, EndAdapterQuery,
-    CreateGuestPagingQueue = 0x2040
+    CreateGuestPagingQueue = 0x2040,
+    CreateVendorAllocation = 0x2050, DestroyVendorAllocations
 };
-enum class Kind { Adapter, Device, PagingQueue, Allocation, Context, PagingSync };
+enum class Kind { Adapter, Device, PagingQueue, Allocation, Context, PagingSync, VendorAllocation };
 struct ContextDesc {
     std::uint32_t node, engine, flags, clientHint, privateBytes, reserved;
 };
@@ -91,6 +109,12 @@ public:
     virtual Result createDevice(std::uint32_t adapter) = 0;
     virtual Result createContext(std::uint32_t device, ContextDesc desc, std::vector<std::uint8_t>& data) = 0;
     virtual Result createPagingQueue(std::uint32_t device) = 0;
+    virtual Result createVendorAllocation(std::uint32_t, VendorAllocationDesc, std::vector<std::uint8_t>&) {
+        return {static_cast<std::int32_t>(0xc00000bbu), 0, 0};
+    }
+    virtual Result destroyVendorAllocations(std::uint32_t, const std::vector<std::uint32_t>&) {
+        return {static_cast<std::int32_t>(0xc00000bbu), 0, 0};
+    }
     virtual GuestPagingResult createGuestPagingQueue(std::uint32_t) {
         return {{static_cast<std::int32_t>(0xc00000bbu), 0, 0}, 0, 0};
     }
@@ -269,6 +293,52 @@ public:
             } catch (...) {
                 objects.erase(sync); objects.erase(queue);
                 driver.destroy(Kind::PagingQueue, native.queue.nativeHandle);
+                throw;
+            }
+        }
+        if (op == Op::CreateVendorAllocation || op == Op::DestroyVendorAllocations) {
+            if (!negotiated) return reply(h, -71);
+            if (!(driver.capabilities().flags & VendorAllocationCapability)) return reply(h, -95);
+            const auto device = objects.find(h.handle);
+            if (device == objects.end() || device->second.kind != Kind::Device) return reply(h, -9);
+            if (op == Op::DestroyVendorAllocations) {
+                if (packet.size() < sizeof h + sizeof(DestroyVendorDesc)) return reply(h, -22);
+                DestroyVendorDesc desc{}; std::memcpy(&desc, packet.data() + sizeof h, sizeof desc);
+                if (desc.reserved || !desc.count || desc.count > MaxVendorAllocations ||
+                    packet.size() != sizeof h + sizeof desc + desc.count * sizeof(std::uint32_t)) return reply(h, -22);
+                std::vector<std::uint32_t> ids(desc.count), native(desc.count);
+                std::memcpy(ids.data(), packet.data() + sizeof h + sizeof desc, ids.size() * sizeof(ids[0]));
+                for (std::size_t n = 0; n < ids.size(); ++n) {
+                    const auto entry = objects.find(ids[n]);
+                    if (entry == objects.end() || entry->second.kind != Kind::VendorAllocation || entry->second.parent != h.handle)
+                        return reply(h, -9);
+                    if (std::find(ids.begin(), ids.begin() + n, ids[n]) != ids.begin() + n) return reply(h, -22);
+                    native[n] = entry->second.nativeHandle;
+                }
+                const auto result = driver.destroyVendorAllocations(device->second.nativeHandle, native);
+                if (result.ntstatus >= 0) for (const auto id : ids) objects.erase(id);
+                return reply(h, 0, h.handle, &result);
+            }
+            if (packet.size() < sizeof h + sizeof(VendorAllocationDesc)) return reply(h, -22);
+            VendorAllocationDesc desc{}; std::memcpy(&desc, packet.data() + sizeof h, sizeof desc);
+            if (!validVendorAllocation(desc) || packet.size() != sizeof h + sizeof desc + desc.privateBytes) return reply(h, -22);
+            const auto count = std::count_if(objects.begin(), objects.end(), [](const auto& item) { return item.second.kind == Kind::VendorAllocation; });
+            if (objects.size() >= MaxObjects || nextId == UINT32_MAX || static_cast<std::size_t>(count) >= MaxVendorAllocations) return reply(h, -24);
+            std::vector<std::uint8_t> data(packet.begin() + sizeof h + sizeof desc, packet.end());
+            const auto result = driver.createVendorAllocation(device->second.nativeHandle, desc, data);
+            if (data.size() != desc.privateBytes || (result.ntstatus >= 0 && (!result.nativeHandle || result.value % 4096)) ||
+                (result.ntstatus < 0 && (result.nativeHandle || result.value))) {
+                if (result.nativeHandle) driver.destroy(Kind::VendorAllocation, result.nativeHandle);
+                return reply(h, -5);
+            }
+            const auto id = result.ntstatus >= 0 ? nextId++ : 0;
+            try {
+                auto out = reply(h, 0, id, &result);
+                out.insert(out.end(), data.begin(), data.end()); // Preserve in/out on native failure too.
+                if (id) objects.emplace(id, Object{Kind::VendorAllocation, h.handle, result.nativeHandle, 0, 0, false});
+                return out;
+            } catch (...) {
+                if (result.nativeHandle) driver.destroy(Kind::VendorAllocation, result.nativeHandle);
                 throw;
             }
         }

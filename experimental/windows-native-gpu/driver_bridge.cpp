@@ -39,6 +39,14 @@ class KmtDriver : public Driver {
         bool owned = true;
     };
     std::map<std::uint32_t, Allocation> allocations;
+    // Vendor video-memory allocations have no host CPU backing or public
+    // size field. Never mix these with the byte-counted standard allocations.
+    std::map<std::uint32_t, std::uint32_t> vendorAllocations;
+    ComPtr<IDXGIAdapter3> allocationBudgetAdapter;
+    bool allocationsEnabled = false;
+    unsigned completedVendorAllocations = 0, destroyedVendorAllocations = 0, failedVendorAllocations = 0;
+    std::uint64_t peakReportedGpuUsage = 0;
+    static constexpr std::uint64_t ReportedGpuUsageLimit = 64ull * 1024 * 1024;
     std::uint32_t allocatedBytes = 0;
     unsigned activeAdapters = 0, activeDevices = 0, cleanupFailures = 0;
     unsigned activeContexts = 0;
@@ -58,6 +66,21 @@ class KmtDriver : public Driver {
     HRESULT lastCopyError = S_OK;
     static constexpr auto Invalid = static_cast<std::int32_t>(0xc000000du);
     static constexpr auto PagingTimeout = static_cast<std::int32_t>(0xc00000b5u);
+    bool reportedGpuUsageAcceptable() {
+        // This is a reported-usage guard, not an allocation-size decoder or
+        // a pre-allocation hard quota. Nonresident allocations and transient
+        // growth can escape CurrentUsage; the endpoint stays diagnostic-only.
+        if (!allocationBudgetAdapter) return false;
+        std::uint64_t total = 0;
+        for (const auto group : {DXGI_MEMORY_SEGMENT_GROUP_LOCAL, DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL}) {
+            DXGI_QUERY_VIDEO_MEMORY_INFO info{};
+            if (FAILED(allocationBudgetAdapter->QueryVideoMemoryInfo(0, group, &info)) ||
+                info.CurrentUsage > UINT64_MAX - total) return false;
+            total += info.CurrentUsage;
+        }
+        peakReportedGpuUsage = (std::max)(peakReportedGpuUsage, total);
+        return total <= ReportedGpuUsageLimit;
+    }
     Result copyFailure(HRESULT error) {
         lastCopyError = error; return {static_cast<std::int32_t>(0xc0000001u), 0, 0};
     }
@@ -89,8 +112,8 @@ class KmtDriver : public Driver {
     }
 public:
     KmtDriver(std::string sectionName, std::uint32_t sectionBytes, bool enableContexts, bool enableQueries,
-              driver_qemu::Runtime* ownedRuntime = nullptr)
-        : runtime(ownedRuntime), contextsEnabled(enableContexts), queriesEnabled(enableQueries),
+              driver_qemu::Runtime* ownedRuntime = nullptr, bool enableAllocations = false)
+        : runtime(ownedRuntime), allocationsEnabled(enableAllocations), contextsEnabled(enableContexts), queriesEnabled(enableQueries),
           guestSectionName(std::move(sectionName)), guestBytes(sectionBytes) {
         const std::string prefix = "Local\\7Wdev-WDDM-";
         if (!guestSectionName.empty()) {
@@ -109,6 +132,8 @@ public:
             if (FAILED(result) || FAILED(adapter->GetDesc1(&description))) throw std::runtime_error("Adapter enumeration failed");
             if (description.VendorId == 0x10de && !(description.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)) {
                 luid = description.AdapterLuid; found = true;
+                if (allocationsEnabled && FAILED(adapter.As(&allocationBudgetAdapter)))
+                    throw std::runtime_error("NVIDIA video-memory accounting unavailable");
                 if (!guestSectionName.empty()) {
                     // Device3 provides the documented section-backed heap
                     // import. Refuse to advertise GPU copy without this API.
@@ -131,7 +156,8 @@ public:
         // imports. Bit 4: bounded, synchronous GPU buffer copy between shared
         // allocations. No arbitrary guest command stream or scanout support.
         return {Version, (guestSectionName.empty() ? 7u : 31u) | (contextsEnabled ? ContextCapability : 0u) |
-                (queriesEnabled ? QueryCapability : 0u) | (runtime ? GuestPagingCapability : 0u),
+                (queriesEnabled ? QueryCapability : 0u) | (runtime ? GuestPagingCapability : 0u) |
+                (allocationsEnabled ? VendorAllocationCapability : 0u),
                 description.VendorId, description.DeviceId};
     }
     Result openAdapter() override {
@@ -175,6 +201,53 @@ public:
         const auto status = D3DKMTCreateContextVirtual(&a);
         if (status >= 0) ++activeContexts;
         return {status, a.hContext, 0};
+    }
+    Result createVendorAllocation(std::uint32_t device, VendorAllocationDesc desc, std::vector<std::uint8_t>& data) override {
+        if (!allocationsEnabled || !validVendorAllocation(desc) || data.size() != desc.privateBytes) return {Invalid, 0, 0};
+        if (vendorAllocations.size() >= MaxVendorAllocations || !reportedGpuUsageAcceptable())
+            return {static_cast<std::int32_t>(0xc0000017u), 0, 0};
+        D3DDDI_ALLOCATIONINFO2 info{}; info.Flags.Value = desc.flags; info.Priority = desc.priority;
+        info.pPrivateDriverData = data.data(); info.PrivateDriverDataSize = desc.privateBytes;
+        D3DKMT_CREATEALLOCATION a{}; a.hDevice = device; a.NumAllocations = 1; a.pAllocationInfo2 = &info;
+        auto status = D3DKMTCreateAllocation2(&a);
+        if (status < 0) { ++failedVendorAllocations; return {status, 0, 0}; }
+        if (!info.hAllocation || a.hResource || a.hGlobalShare || info.GpuVirtualAddress % 4096 || info.PrivateDriverDataSize != desc.privateBytes) {
+            D3DKMT_DESTROYALLOCATION2 release{}; release.hDevice = device;
+            release.hResource = a.hResource; release.Flags.SynchronousDestroy = 1;
+            if (!a.hResource) { release.phAllocationList = &info.hAllocation; release.AllocationCount = 1; }
+            if (D3DKMTDestroyAllocation2(&release) < 0) ++cleanupFailures;
+            throw std::runtime_error("Unexpected native vendor-allocation result");
+        }
+        try { vendorAllocations.emplace(info.hAllocation, device); }
+        catch (...) {
+            D3DKMT_DESTROYALLOCATION2 release{}; release.hDevice = device; release.phAllocationList = &info.hAllocation;
+            release.AllocationCount = 1; release.Flags.SynchronousDestroy = 1;
+            if (D3DKMTDestroyAllocation2(&release) < 0) ++cleanupFailures;
+            throw;
+        }
+        if (!reportedGpuUsageAcceptable()) {
+            const auto released = destroyVendorAllocations(device, {info.hAllocation});
+            if (released.ntstatus < 0) throw std::runtime_error("Cannot release vendor allocation after reported-usage limit");
+            ++failedVendorAllocations; return {static_cast<std::int32_t>(0xc0000017u), 0, 0};
+        }
+        ++completedVendorAllocations;
+        return {status, info.hAllocation, info.GpuVirtualAddress};
+    }
+    Result destroyVendorAllocations(std::uint32_t device, const std::vector<std::uint32_t>& handles) override {
+        if (!allocationsEnabled || handles.empty() || handles.size() > MaxVendorAllocations) return {Invalid, 0, 0};
+        for (std::size_t n = 0; n < handles.size(); ++n) {
+            const auto found = vendorAllocations.find(handles[n]);
+            if (found == vendorAllocations.end() || found->second != device ||
+                std::find(handles.begin(), handles.begin() + n, handles[n]) != handles.begin() + n) return {Invalid, 0, 0};
+        }
+        D3DKMT_DESTROYALLOCATION2 a{}; a.hDevice = device; a.phAllocationList = handles.data();
+        a.AllocationCount = static_cast<UINT>(handles.size()); a.Flags.SynchronousDestroy = 1;
+        const auto status = D3DKMTDestroyAllocation2(&a);
+        if (status >= 0) {
+            for (const auto handle : handles) vendorAllocations.erase(handle);
+            destroyedVendorAllocations += static_cast<unsigned>(handles.size());
+        } else ++cleanupFailures;
+        return {status, 0, 0};
     }
     Result createPagingQueue(std::uint32_t device) override {
         D3DKMT_CREATEPAGINGQUEUE a{}; a.hDevice = device; a.Priority = D3DDDI_PAGINGQUEUE_PRIORITY_NORMAL;
@@ -360,7 +433,11 @@ public:
     }
     Result destroy(Kind kind, std::uint32_t handle) override {
         NTSTATUS status{};
-        if (kind == Kind::Allocation) {
+        if (kind == Kind::VendorAllocation) {
+            const auto found = vendorAllocations.find(handle);
+            if (found == vendorAllocations.end()) return {Invalid, 0, 0};
+            return destroyVendorAllocations(found->second, {handle});
+        } else if (kind == Kind::Allocation) {
             const auto entry = allocations.find(handle);
             if (entry == allocations.end()) return {Invalid, 0, 0};
             D3DKMT_DESTROYALLOCATION2 a{}; a.hDevice = entry->second.device; a.hResource = entry->second.resource;
@@ -405,7 +482,7 @@ public:
         return {status, 0, 0};
     }
     void releaseGuestMemory() {
-        if (!allocations.empty()) return;
+        if (!allocations.empty() || !vendorAllocations.empty()) return;
         copyQueue.Reset(); copyFence.Reset(); copyHeap.Reset(); copyDevice.Reset();
         if (copyEvent) {
             if (CloseHandle(copyEvent)) copyEvent = nullptr;
@@ -421,7 +498,7 @@ public:
         }
     }
     bool clean() const {
-        return !activeAdapters && !activeDevices && !activeContexts && pagingFences.empty() && allocations.empty() &&
+        return !activeAdapters && !activeDevices && !activeContexts && pagingFences.empty() && allocations.empty() && vendorAllocations.empty() &&
                !guestMemory && !guestSection && !copyDevice && !copyHeap && !copyQueue && !copyFence && !copyEvent && !cleanupFailures;
     }
     void reportCleanup() const {
@@ -435,7 +512,14 @@ public:
                   << ",\"completedGpuCopies\":" << completedCopies << ",\"gpuCopiedBytes\":" << gpuCopiedBytes
                   << ",\"lastGpuCopyHresult\":" << static_cast<std::uint32_t>(lastCopyError)
                   << ",\"completedAdapterQueries\":" << completedQueries
-                  << ",\"failedAdapterQueries\":" << failedQueries << "}\n";
+                  << ",\"failedAdapterQueries\":" << failedQueries
+                  << ",\"liveVendorAllocations\":" << vendorAllocations.size()
+                  << ",\"completedVendorAllocations\":" << completedVendorAllocations
+                  << ",\"destroyedVendorAllocations\":" << destroyedVendorAllocations
+                  << ",\"failedVendorAllocations\":" << failedVendorAllocations
+                  << ",\"peakReportedGpuUsageBytes\":" << peakReportedGpuUsage
+                  << ",\"reportedGpuUsageLimitBytes\":" << ReportedGpuUsageLimit
+                  << ",\"hardVendorAllocationByteQuotaImplemented\":false}\n";
     }
 };
 struct Socket {
@@ -477,8 +561,8 @@ public:
     }
 };
 static void serve(Stream& stream, const std::string& sectionName = {}, std::uint32_t sectionBytes = 0,
-                  bool contexts = false, bool queries = false, driver_qemu::Runtime* runtime = nullptr) {
-    KmtDriver driver(sectionName, sectionBytes, contexts, queries, runtime);
+                  bool contexts = false, bool queries = false, driver_qemu::Runtime* runtime = nullptr, bool allocations = false) {
+    KmtDriver driver(sectionName, sectionBytes, contexts, queries, runtime, allocations);
     std::exception_ptr failure;
     {
       Session session(driver);
@@ -511,23 +595,25 @@ int main(int argc, char** argv) {
     try {
         // Explicit experimental opt-in; keep the existing allocation endpoint
         // closed to vendor-private context data unless requested by its owner.
-        bool contexts = false, queries = false;
+        bool contexts = false, queries = false, allocations = false;
         while (argc > 1) {
             const auto option = std::string(argv[argc - 1]);
             if (option == "--driver-contexts" && !contexts) contexts = true;
             else if (option == "--driver-queries" && !queries) queries = true;
+            else if (option == "--driver-allocations" && !allocations) allocations = true;
             else break;
             --argc;
         }
+        if (allocations && (!contexts || !queries)) throw std::runtime_error("Vendor allocations require explicit query/context opt-ins");
         if (argc == 2 && std::string(argv[1]) == "--stdio") {
             if (_setmode(_fileno(stdin), _O_BINARY) == -1 || _setmode(_fileno(stdout), _O_BINARY) == -1)
                 throw std::runtime_error("Cannot set binary stdio mode");
-            Stream stream; serve(stream, {}, 0, contexts, queries); return 0;
+            Stream stream; serve(stream, {}, 0, contexts, queries, nullptr, allocations); return 0;
         }
         const bool ownedRuntime = argc == 7 && std::string(argv[1]) == "--run-qemu";
         if (!ownedRuntime && ((argc != 3 && argc != 7) || std::string(argv[1]) != "--listen")) {
             std::cerr << "Usage: driver-bridge.exe --stdio | --listen port [--guest-section name --guest-ram-bytes count] "
-                "[--driver-contexts] [--driver-queries]\n"
+                "[--driver-contexts] [--driver-queries] [--driver-allocations]\n"
                 "       driver-bridge.exe --run-qemu qemu firmware kernel initramfs fresh-log --driver-contexts --driver-queries\n"; return 2;
         }
         if (ownedRuntime && (!contexts || !queries)) throw std::runtime_error("Owned QEMU runtime requires explicit query/context opt-ins");
@@ -566,7 +652,7 @@ int main(int argc, char** argv) {
         if (setsockopt(client.value, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&milliseconds), sizeof milliseconds) ||
             setsockopt(client.value, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&milliseconds), sizeof milliseconds))
             throw std::runtime_error("Cannot set socket timeouts");
-        Stream stream(client.value); serve(stream, sectionName, sectionBytes, contexts, queries, runtime.get());
+        Stream stream(client.value); serve(stream, sectionName, sectionBytes, contexts, queries, runtime.get(), allocations);
         if (runtime) {
             runtime->report();
             if (!runtime->cleanExit()) throw std::runtime_error("Owned QEMU runtime did not exit cleanly");

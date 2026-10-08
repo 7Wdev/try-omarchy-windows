@@ -211,9 +211,10 @@ class Bridge {
     native_gpu::Capabilities caps{};
     unsigned counts[256]{}, completedQueries = 0, privateQueries = 0, contexts = 0;
     std::map<int, std::pair<dev_t, ino_t>> descriptors;
+    std::map<std::uint32_t, std::uint32_t> vendorOwners;
     static constexpr std::uint32_t GuestLuidLow = 0x57475055;
     static constexpr std::int32_t GuestLuidHigh = 0;
-    Response call(const std::vector<std::uint8_t>& requestPacket, std::uint32_t bytes = 0) {
+    Response call(const std::vector<std::uint8_t>& requestPacket, std::uint32_t bytes = 0, bool preserveNativeFailure = false) {
         const auto packet = transport.exchange(requestPacket);
         Header wanted{}, header{}; std::memcpy(&wanted, requestPacket.data(), sizeof wanted);
         std::memcpy(&header, packet.data(), sizeof header);
@@ -227,7 +228,7 @@ class Bridge {
         if (packet.size() < sizeof(Header) + sizeof(Reply)) { transport.fail(); throw Error(EPROTO); }
         Reply reply{}; std::memcpy(&reply, packet.data() + sizeof(Header), sizeof reply);
         if (reply.reserved) { transport.fail(); throw Error(EPROTO); }
-        checkNt(reply.ntstatus);
+        if (!preserveNativeFailure) checkNt(reply.ntstatus);
         if (packet.size() != sizeof(Header) + sizeof(Reply) + bytes) { transport.fail(); throw Error(EPROTO); }
         return {header, reply, {packet.begin() + sizeof(Header) + sizeof(Reply), packet.end()}};
     }
@@ -407,6 +408,63 @@ public:
                 ++contexts; std::fprintf(stderr, "LINUX_BRIDGE nativeContextCreated=true bytes=%u\n", desc.privateBytes); return 0;
             }
             case 5: { auto& a = args<D3DKMT_DESTROYCONTEXT>(requestNumber, pointer); destroy(Op::DestroyContext, a.hContext); return 0; }
+            case 6: {
+                auto& a = args<D3DKMT_CREATEALLOCATION>(requestNumber, pointer);
+                unsigned flags{}; static_assert(sizeof a.Flags == sizeof flags);
+                std::memcpy(&flags, &a.Flags, sizeof flags);
+                std::fprintf(stderr, "LINUX_BRIDGE allocationInput flags=%u count=%u runtimeBytes=%u privateBytes=%u resourceReuse=%u\n",
+                             flags, a.NumAllocations, a.PrivateRuntimeDataSize, a.PrivateDriverDataSize, a.hResource ? 1u : 0u);
+                if (a.NumAllocations <= 16 && a.pAllocationInfo2)
+                    for (unsigned n = 0; n < a.NumAllocations; ++n) {
+                        const auto& item = a.pAllocationInfo2[n];
+                        std::fprintf(stderr, "LINUX_BRIDGE allocationItem index=%u flags=%u privateBytes=%u hasSystemMemory=%u priority=%u source=%u\n",
+                                     n, item.Flags.Value, item.PrivateDriverDataSize, item.pSystemMem ? 1u : 0u, item.Priority, item.VidPnSourceId);
+                    }
+                if (!(caps.flags & VendorAllocationCapability) || flags || a.hResource || a.PrivateRuntimeDataSize ||
+                    a.PrivateDriverDataSize || a.NumAllocations != 1 || !a.pAllocationInfo2) {
+                    std::fprintf(stderr, "LINUX_BRIDGE unsupported nr=6 bytes=%zu\n", sizeof a); throw Error(ENOSYS);
+                }
+                auto& item = a.pAllocationInfo2[0];
+                const VendorAllocationDesc desc{item.Flags.Value, item.Priority, item.VidPnSourceId, item.PrivateDriverDataSize, 0, 0};
+                if (!validVendorAllocation(desc) || item.pSystemMem || !item.pPrivateDriverData ||
+                    std::any_of(std::begin(item.Reserved), std::end(item.Reserved), [](auto value) { return value != 0; })) throw Error(EINVAL);
+                if (vendorOwners.size() >= MaxVendorAllocations) throw Error(EMFILE);
+                auto packet = request(Op::CreateVendorAllocation, a.hDevice, desc);
+                const auto begin = static_cast<const std::uint8_t*>(item.pPrivateDriverData);
+                packet.insert(packet.end(), begin, begin + desc.privateBytes);
+                const auto result = call(packet, desc.privateBytes, true);
+                if ((result.result.ntstatus >= 0 && (!result.header.handle || result.result.value % 4096 || vendorOwners.count(result.header.handle))) ||
+                    (result.result.ntstatus < 0 && (result.header.handle || result.result.value))) { transport.fail(); throw Error(EPROTO); }
+                std::memcpy(item.pPrivateDriverData, result.data.data(), result.data.size()); checkNt(result.result.ntstatus);
+                vendorOwners.emplace(result.header.handle, a.hDevice);
+                item.hAllocation = result.header.handle; item.GpuVirtualAddress = result.result.value;
+                a.hResource = 0; a.hGlobalShare = 0;
+                std::fprintf(stderr, "LINUX_BRIDGE nativeVendorAllocationCreated=true privateBytes=%u\n", desc.privateBytes); return 0;
+            }
+            case 19: {
+                auto& a = args<D3DKMT_DESTROYALLOCATION2>(requestNumber, pointer);
+                if (!(caps.flags & VendorAllocationCapability)) {
+                    std::fprintf(stderr, "LINUX_BRIDGE unsupported nr=19 bytes=%zu\n", sizeof a); throw Error(ENOSYS);
+                }
+                if (a.hResource || !a.AllocationCount || a.AllocationCount > MaxVendorAllocations || !a.phAllocationList ||
+                    (a.Flags.Value & ~3u)) throw Error(EINVAL);
+                // Accept the public destruction hints, but always request
+                // synchronous native destruction rather than trusting the
+                // guest's AssumeNotInUse hint to shorten object lifetime.
+                for (unsigned n = 0; n < a.AllocationCount; ++n) {
+                    const auto found = vendorOwners.find(a.phAllocationList[n]);
+                    if (found == vendorOwners.end() || found->second != a.hDevice) throw Error(EBADF);
+                    for (unsigned previous = 0; previous < n; ++previous)
+                        if (a.phAllocationList[previous] == a.phAllocationList[n]) throw Error(EINVAL);
+                }
+                auto packet = request(Op::DestroyVendorAllocations, a.hDevice, DestroyVendorDesc{a.AllocationCount, 0});
+                const auto begin = reinterpret_cast<const std::uint8_t*>(a.phAllocationList);
+                packet.insert(packet.end(), begin, begin + a.AllocationCount * sizeof(a.phAllocationList[0]));
+                const auto result = call(packet);
+                if (result.header.handle != a.hDevice || result.result.value) { transport.fail(); throw Error(EPROTO); }
+                for (unsigned n = 0; n < a.AllocationCount; ++n) vendorOwners.erase(a.phAllocationList[n]);
+                std::fprintf(stderr, "LINUX_BRIDGE nativeVendorAllocationsDestroyed=true count=%u\n", a.AllocationCount); return 0;
+            }
             default:
                 std::fprintf(stderr, "LINUX_BRIDGE unsupported nr=%u bytes=%u\n", nr, static_cast<unsigned>(_IOC_SIZE(requestNumber)));
                 throw Error(ENOSYS);

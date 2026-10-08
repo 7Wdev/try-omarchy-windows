@@ -1,5 +1,9 @@
 # Live Windows paging fences in QEMU
 
+The later [live allocation route](LIVE-ALLOCATION-BRIDGE.md) builds on this
+paging milestone. The evidence below retains its original allocation boundary;
+with the additional opt-in, initialization now reaches GPU-address mapping.
+
 The NVIDIA Linux runtime now creates a Windows WDDM paging queue and graphics
 context through the diagnostic bridge. On the RTX 5090 Laptop GPU with driver
 `32.0.16.1742`, the disk-free QEMU/WHPX guest directly loaded the native paging

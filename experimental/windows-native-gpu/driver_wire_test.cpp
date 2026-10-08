@@ -14,11 +14,14 @@ struct Fake : Driver {
     bool queriesEnabled = true, badQueryReply = false;
     bool guestPagingEnabled = false;
     int badPagingReply = 0;
+    bool vendorEnabled = false;
+    int badVendorReply = 0;
+    std::map<std::uint32_t, std::uint32_t> vendorOwners;
     std::map<std::uint32_t, std::vector<std::uint8_t>> buffers;
     std::vector<Kind> destroyed;
     native_gpu::Capabilities capabilities() const override {
         return {1, 31u | (contextsEnabled ? ContextCapability : 0u) | (queriesEnabled ? QueryCapability : 0u) |
-                (guestPagingEnabled ? GuestPagingCapability : 0u), 0x10de, 123};
+                (guestPagingEnabled ? GuestPagingCapability : 0u) | (vendorEnabled ? VendorAllocationCapability : 0u), 0x10de, 123};
     }
     Result created() { ++calls; return {fail ? -123 : 0, ++next, 0}; }
     Result openAdapter() override { return created(); }
@@ -37,6 +40,21 @@ struct Fake : Driver {
         return created();
     }
     Result createPagingQueue(std::uint32_t h) override { require(h > 500); return created(); }
+    Result createVendorAllocation(std::uint32_t device, VendorAllocationDesc desc, std::vector<std::uint8_t>& data) override {
+        require(device > 500 && validVendorAllocation(desc) && data.size() == desc.privateBytes);
+        ++calls; data[0] ^= 255;
+        if (badVendorReply == 1) data.pop_back();
+        if (fail) return {-123, 0, 0};
+        const auto handle = ++next; vendorOwners.emplace(handle, device);
+        return {0, badVendorReply == 2 ? 0u : handle, badVendorReply == 3 ? 1ull : 0ull};
+    }
+    Result destroyVendorAllocations(std::uint32_t device, const std::vector<std::uint32_t>& handles) override {
+        require(!handles.empty()); ++calls;
+        for (const auto handle : handles) require(vendorOwners.at(handle) == device);
+        if (fail) return {-123, 0, 0};
+        for (const auto handle : handles) { vendorOwners.erase(handle); destroyed.push_back(Kind::VendorAllocation); }
+        return {0, 0, 0};
+    }
     GuestPagingResult createGuestPagingQueue(std::uint32_t h) override {
         require(h > 500);
         auto queue = created();
@@ -80,6 +98,7 @@ struct Fake : Driver {
     Result destroy(Kind k, std::uint32_t h) override {
         require(h > 500); ++calls;
         if (k == Kind::PagingSync) return {0, 0, 0}; // borrowed, queue destroys the native object
+        if (k == Kind::VendorAllocation) return destroyVendorAllocations(vendorOwners.at(h), {h});
         if (!fail) { destroyed.push_back(k); if (k == Kind::Allocation) require(buffers.erase(h) == 1); }
         return {fail ? -123 : 0, 0, 0};
     }
@@ -409,6 +428,67 @@ int main() {
     }
     require(paging.destroyed[paging.destroyed.size() - 3] == Kind::PagingQueue);
     require(paging.destroyed.back() == Kind::Adapter);
+    Fake vendor;
+    {
+        Session s(vendor);
+        const VendorAllocationDesc desc{4, 0x78100000, 0, 586, 0, 0};
+        auto create = [&](std::uint32_t device, VendorAllocationDesc input = VendorAllocationDesc{4, 0x78100000, 0, 586, 0, 0}) {
+            auto packet = request(Op::CreateVendorAllocation, device, input); packet.insert(packet.end(), input.privateBytes, 37); return packet;
+        };
+        auto release = [&](std::uint32_t device, std::vector<std::uint32_t> ids) {
+            auto packet = request(Op::DestroyVendorAllocations, device, DestroyVendorDesc{static_cast<std::uint32_t>(ids.size()), 0});
+            const auto bytes = reinterpret_cast<const std::uint8_t*>(ids.data());
+            if (!ids.empty()) packet.insert(packet.end(), bytes, bytes + ids.size() * sizeof(ids[0]));
+            return packet;
+        };
+        require(header(s.dispatch(create(2))).status == -71);
+        s.dispatch(hello());
+        const auto adapter = header(s.dispatch(request(Op::OpenAdapter))).handle;
+        const auto device = header(s.dispatch(request(Op::CreateDevice, adapter))).handle;
+        auto before = vendor.calls;
+        require(header(s.dispatch(create(device))).status == -95 && vendor.calls == before);
+        vendor.vendorEnabled = true;
+        require(header(s.dispatch(create(adapter))).status == -9);
+        for (const auto input : {VendorAllocationDesc{5, desc.priority, 0, 586, 0, 0}, VendorAllocationDesc{4, 0xa0000000, 0, 586, 0, 0},
+                                 VendorAllocationDesc{4, desc.priority, 1, 586, 0, 0}, VendorAllocationDesc{4, desc.priority, 0, 0, 0, 0},
+                                 VendorAllocationDesc{4, desc.priority, 0, MaxVendorPrivateBytes + 1, 0, 0},
+                                 VendorAllocationDesc{4, desc.priority, 0, 586, 1, 0}, VendorAllocationDesc{4, desc.priority, 0, 586, 0, 1}})
+            require(header(s.dispatch(create(device, input))).status == -22);
+        auto shortInput = create(device); shortInput.pop_back(); require(header(s.dispatch(shortInput)).status == -22);
+        require(vendor.calls == before);
+        vendor.fail = true;
+        auto packet = s.dispatch(create(device)); Reply nt{}; std::memcpy(&nt, packet.data() + sizeof(Header), sizeof nt);
+        require(!header(packet).handle && !header(packet).status && nt.ntstatus == -123 && packet.back() == 37 &&
+                packet[sizeof(Header) + sizeof(Reply)] == (37 ^ 255) && packet.size() == sizeof(Header) + sizeof(Reply) + desc.privateBytes);
+        vendor.fail = false;
+        for (const auto invalid : {1, 3}) { // malformed native in/out and GPU address must clean the native object
+            vendor.badVendorReply = invalid;
+            require(header(s.dispatch(create(device))).status == -5 && vendor.vendorOwners.empty());
+        }
+        vendor.badVendorReply = 0;
+        const auto first = header(s.dispatch(create(device))).handle;
+        require(first == 3); // failed allocations never consume successful object IDs
+        const auto second = header(s.dispatch(create(device))).handle;
+        const auto other = header(s.dispatch(request(Op::CreateDevice, adapter))).handle;
+        before = vendor.calls;
+        require(header(s.dispatch(request(Op::ReadAllocation, first, Range{0, 4}))).status == -9);
+        require(header(s.dispatch(request(Op::DestroyAllocation, first))).status == -9);
+        require(header(s.dispatch(release(device, {}))).status == -22);
+        require(header(s.dispatch(release(device, {first, first}))).status == -22);
+        require(header(s.dispatch(release(other, {first}))).status == -9);
+        require(header(s.dispatch(release(device, {first, device}))).status == -9);
+        require(header(s.dispatch(request(Op::DestroyDevice, device))).status == -16 && vendor.calls == before);
+        vendor.fail = true;
+        packet = s.dispatch(release(device, {first, second})); std::memcpy(&nt, packet.data() + sizeof(Header), sizeof nt);
+        require(nt.ntstatus == -123 && vendor.vendorOwners.size() == 2);
+        vendor.fail = false;
+        require(header(s.dispatch(release(device, {first, second}))).status == 0 && vendor.vendorOwners.empty());
+        require(header(s.dispatch(release(device, {first}))).status == -9);
+        for (std::size_t n = 0; n < MaxVendorAllocations; ++n) require(header(s.dispatch(create(device))).handle != 0);
+        before = vendor.calls;
+        require(header(s.dispatch(create(device))).status == -24 && vendor.calls == before);
+    }
+    require(vendor.vendorOwners.empty() && vendor.destroyed.back() == Kind::Adapter);
     Fake pagingQuota; pagingQuota.guestPagingEnabled = true;
     {
         Session s(pagingQuota); s.dispatch(hello());

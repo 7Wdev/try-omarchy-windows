@@ -6,20 +6,26 @@ serial to the native Windows worker. On the RTX 5090 Laptop GPU, it completed
 19 native adapter queries, including the 50,616-byte NVIDIA-private query,
 created a native WDDM device and paging queue, directly read its Windows fence
 10,000 times without emulation, and created a native graphics context from the
-live UMD's 3,204-byte initialization data. This test uses no captured private input fixtures
+live UMD's 3,204-byte initialization data. With the explicit allocation opt-in,
+it also creates and synchronously destroys one Windows video-memory allocation
+using the live UMD's 586-byte private input/output buffer.
+This test uses no captured private input fixtures
 and has no real WSL `/dev/dxg` available in the guest.
 
 **D3D12 device initialization is incomplete.** The runtime fails with
-`0x80004001` after reaching `CreateAllocation` (ioctl 6). The paging interface
+`0x80004001` after reaching `MapGpuVirtualAddress` (ioctl 12). The paging interface
 now returns a queue-owned typed synchronization ID and a directly mapped CPU
 fence. Synchronization creation, eviction, residency/GPU-address operations in
 this runtime API, an optional feature query and registry queries remain unsupported.
 All native objects were released and the guest and worker exited successfully.
-[Paging hardware evidence](evidence/QEMU-LIVE-PAGING-2026-10-08.json) records
+[Allocation hardware evidence](evidence/QEMU-LIVE-ALLOCATION-2026-10-08.json) records
 the exact executable, image and kernel hashes and the negative initialization
 result separately from diagnostic acceptance. The
 [earlier device-only result](evidence/QEMU-LIVE-NVIDIA-RUNTIME-2026-10-08.json)
-is retained as the previous initialization boundary.
+is retained alongside the [paging result](evidence/QEMU-LIVE-PAGING-2026-10-08.json)
+as earlier initialization boundaries. The
+[allocation contract and memory-budget limitation](LIVE-ALLOCATION-BRIDGE.md)
+describe this deliberately restricted interface.
 
 This is progress toward interactive Omarchy acceleration. It does not render,
 submit guest GPU command buffers, run Hyprland, verify desktop stability or
@@ -33,7 +39,8 @@ ioctls go to the bridge rather than the genuine WSL device. Descriptor identity
 is checked, so closing/reusing a descriptor cannot redirect unrelated files.
 The supported x64 subset is adapter enumeration/open/close, adapter queries,
 device creation/destruction, paging queue/fence lifecycle in the owned-QEMU
-mode, and virtual context creation/destruction. Native
+mode, virtual context creation/destruction, and opt-in single standalone
+video-memory allocation with typed list destruction. Native
 objects remain connection-local IDs. Unsupported calls fail with `ENOSYS`.
 
 The adapter name is a consistent guest-local LUID. Adapter queries preserve
@@ -95,12 +102,15 @@ owned fake workers; it neither packs nor publishes installed NVIDIA binaries.
 
 On the Windows host, use `test_owned_runtime_qemu.py` with `--qemu`, `--firmware`,
 `--kernel`, `--initramfs`, `--bridge`, a fresh `--report` path and
-`--expected-unimplemented-ioctl 6`. The native driver owner starts the hidden,
+`--driver-allocations --minimum-vendor-allocations 1 --expected-unimplemented-ioctl 12`.
+Without the allocation opt-in, the same image still stops at ioctl 6.
+The native driver owner starts the hidden,
 disk-free QEMU process, with no NIC, guest disk or host share. Use the QEMU build
 with the dynamic fence hub; the [paging protocol and full command](LIVE-PAGING-BRIDGE.md)
 describe its ownership contract. Acceptance requires live Linux UMD presence,
 native device/context creation, direct fence reads, successful host unmap
-acknowledgements, the expected unsupported allocation call, a failed D3D12
+acknowledgements, matching native allocation creation/destruction counts,
+the expected unsupported GPU-address mapping call, a failed D3D12
 result and clean native teardown. `diagnosticAccepted` is not an application
 GPU-readiness signal. The older `test_runtime_qemu.py` still tests the explicitly
 disabled paging baseline with a separately owned VM and worker.
