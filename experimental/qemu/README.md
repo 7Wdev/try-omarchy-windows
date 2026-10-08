@@ -48,7 +48,7 @@ lifetime contract before guests can register RAM ranges with Windows. A
 section-backed CPU mapping alone does not produce GPU commands, Linux DRM or
 SDL scanout.
 
-## Read-only driver fence aperture (integration under test)
+## Read-only driver fence aperture
 
 The recipe also adds `wddm-fence-lab`, a diagnostic PCI device with one 4 KiB
 read-only BAR. Its source process handle and idle fence address come only from
@@ -60,7 +60,14 @@ loads from emulation. It exposes no host pointer in PCI configuration.
 
 This extension follows the successful standalone
 [WHP mapping/protection tests](../../docs/evidence/WHP-WDDM-FENCES-2026-10-08.json).
-Its QEMU build and Linux guest integration require separate validation. It
+The [QEMU build](https://github.com/7Wdev/try-omarchy-windows/actions/runs/37746324169)
+and [Linux guest integration](../../docs/evidence/QEMU-WDDM-FENCES-2026-10-08.json)
+passed: four queue cases, 80,000 direct idle-fence loads, zero emulated reads,
+and successful teardown. The native queue probe's `--qemu-fences` mode holds
+the driver objects until the owned VM exits. Build the separate `fence-test.cpio`
+with `experimental/windows-native-gpu/build_guest.sh`; reproduction arguments
+are in [the compatibility report](../../docs/UMD-CONTEXT-COMPATIBILITY.md).
+The device
 uses private lab PCI identifiers, disables hotplug and migration, and requires
 WHPX. The parent must keep driver objects alive until QEMU has exited. It is
 not a graphics device, command-submission interface or production fence ABI.

@@ -221,8 +221,8 @@ shows the remaining requirements:
 | Guest process/device/context ownership | ioctl.c and dxgvmbus.c; current worker covers only its own process and typed device lifecycle. |
 | Allocation backing | Worker-owned KMT allocations, the QEMU Windows section backend and shared guest GPU copies passed physical acceptance. Production pinning and scatter/gather page registration remain absent. |
 | GPU virtual addresses and residency | Typed make-resident/map and bounded paging waits are tested. Full reserve/update/eviction and guest monitored fences remain absent. |
-| Actual command submission | Bounded synchronous D3D12 GPU copies and opt-in virtual context lifecycle are implemented. Hardware queue creation, live UMD command buffers, submit and completion remain absent. |
-| Guest synchronization | Host events, mapped monitored fences, sync files/dma-fences; current fence query does not implement these. |
+| Actual command submission | Bounded synchronous D3D12 GPU copies and opt-in virtual context lifecycle are implemented. A native captured-input diagnostic creates hardware queues. Live guest UMD allocations, queue creation, command buffers, submit and completion remain absent. |
+| Guest synchronization | A QEMU/WHPX diagnostic passed 80,000 direct reads of Windows driver fence pages through read-only PCI apertures. Live monitored-fence integration, host events and Linux sync files/dma-fences remain absent. |
 | Linux graphics userspace | WDDM-aware runtime/UMD, matching driver files and ABI; ordinary Linux NVIDIA RM userspace cannot use these messages. |
 | Interactive desktop | DRM buffer sharing and compositor allocation, plus fenced scanout into the existing QEMU SDL window, resizing/input and crash recovery; not implemented. |
 

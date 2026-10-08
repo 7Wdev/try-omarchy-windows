@@ -76,6 +76,16 @@ This establishes cross-process mapping on this machine, not QEMU integration
 or live GPU completion under a guest workload. The tested API provides a
 possible route to expose fences without copying each poll through an RPC.
 
+The separate QEMU integration subsequently passed four Linux guest runs using
+the read-only PCI aperture. Each read both driver fences 10,000 times, for
+80,000 verified loads across the four queues. The QEMU emulation counters
+did not change. All guest/QEMU exits and native destruction calls succeeded;
+see [QEMU fence evidence](evidence/QEMU-WDDM-FENCES-2026-10-08.json). This is
+direct access to idle driver-owned fence pages, not completion of submitted
+guest GPU work. The new runtime also passed the prior shared-memory GPU copy
+and context fixture acceptance; see
+[regression evidence](evidence/QEMU-FENCE-COPY-REGRESSION-2026-10-08.json).
+
 The next integration must create UMD-requested allocations and their GPU
 address mappings in the Windows worker, return those addresses to the live
 Linux UMD, implement typed allocation-handle translation, and then use the queue
@@ -158,7 +168,7 @@ deadline and a ten-second child deadline. The parent holds all backing objects
 until the children have exited. No host process addresses or private driver
 buffers are written into the evidence report.
 
-For the QEMU integration under test, build the recipe in `experimental/qemu`
+For the QEMU fence integration, build the recipe in `experimental/qemu`
 and run `build_guest.sh` to produce the separate `fence-test.cpio`. Replace
 `--whp-fences` with the following six arguments:
 
@@ -175,5 +185,5 @@ and requires the emulation counter to remain unchanged. The test requires
 both the guest success marker and a zero QEMU exit code, then destroys the
 NVIDIA objects. A 60-second deadline kills only its owned QEMU child before
 cleanup. An older QEMU without the device was verified to fail this harness
-while all NVIDIA destruction calls still succeeded. The successful standalone
-WHP test does not imply this QEMU integration has passed.
+while all NVIDIA destruction calls still succeeded. The direct-load acceptance
+does not cover live guest graphics commands or desktop acceleration.
