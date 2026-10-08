@@ -7,8 +7,10 @@ copies passed physical acceptance. Opt-in virtual context lifecycle support is
 also tested, including locally captured Linux NVIDIA initialization data.
 Live NVIDIA Linux runtime initialization now reaches native paging and graphics
 context creation, standalone video-memory allocation, GPU-address mapping,
-residency and direct CPU allocation access through QEMU, then fails at hardware
-queue creation (ioctl 24). Direct guest
+residency, direct CPU allocation access and hardware queue creation through
+QEMU. Physical testing created three hardware queues and 16 allocations before
+the diagnostic allocation-count limit; guest command submission is still
+unsupported. Direct guest
 fence reads, synchronous allocation destruction and acknowledged unmap passed physical testing. Omarchy
 desktop acceleration remains unimplemented. Read the
 [investigation](../../docs/WINDOWS-NVIDIA-BACKEND.md).
@@ -60,8 +62,15 @@ hub. The [live CPU allocation route](../../docs/LIVE-CPU-ALLOCATION-BRIDGE.md)
 adds `--driver-cpu` only to an owned QEMU runtime. Physical tests passed direct
 reads, first/last-word stores restored by Windows, repeated guest references,
 capability-disabled behavior and native cleanup after VM exit with a lock held.
-This covers the observed 64 KiB allocation; general allocation layouts,
-hardware queues, command submission and desktop integration remain unfinished.
+The [live hardware queue route](../../docs/LIVE-HARDWARE-QUEUE-BRIDGE.md) adds
+documented allocation-token translation and the `--driver-hwqueues` opt-in.
+The live UMD builds its private queue data from a translated allocation alias;
+public operations still resolve to typed owned wire objects. Direct queue
+fences, queue-before-allocation cleanup and guest exit with a queue held passed
+physical testing. Exact committed CPU subregions of 4, 16, 64 and 128 KiB work,
+including subregions inside larger reservations. Live runtime writes reached
+eight views. General allocation layouts, synchronization, command submission,
+scanout and desktop integration remain unfinished.
 
 The framing reference is pinned in `sources.json`. No upstream implementation
 is vendored from virtio-nvgpu; these new files use the repository's MIT license.

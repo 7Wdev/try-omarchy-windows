@@ -1,5 +1,9 @@
 # Linux NVIDIA UMD context compatibility
 
+The later [live hardware queue bridge](LIVE-HARDWARE-QUEUE-BRIDGE.md) now lets
+the live UMD create native queues with its own private data. The captured
+dependency probes described below remain separate historical controls.
+
 On 2026-10-08, a Linux guest in QEMU/WHPX successfully created six WDDM
 synchronization contexts and five NVIDIA virtual contexts through the Windows
 worker. The five NVIDIA requests used initialization data captured locally from

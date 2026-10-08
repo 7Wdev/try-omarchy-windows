@@ -1,5 +1,10 @@
 # Live NVIDIA CPU allocation sharing in QEMU
 
+The later [live hardware queue route](LIVE-HARDWARE-QUEUE-BRIDGE.md) advances
+beyond this 64 KiB acceptance boundary. It adds translated allocation aliases,
+hardware queues and bounded exact committed CPU subregions inside larger
+reservations. The evidence below records the earlier CPU milestone.
+
 The NVIDIA Linux runtime can now lock its native Windows allocation and obtain
 a guest CPU pointer into the actual driver-owned pages. On the RTX 5090 Laptop
 GPU, physical QEMU/WHPX acceptance passed a 64 KiB allocation, 10,000 direct
@@ -25,7 +30,7 @@ zero CPU output. Success returns byte count, slot offset and generation,
 never a Windows CPU address.
 
 The host retains the native lock before any validation or mapping can fail.
-Eligible memory starts at its region/allocation base, is aligned and committed
+In this acceptance version, eligible memory starts at its region/allocation base, is aligned and committed
 `MEM_PRIVATE`, has read/write protection optionally with write combining, and
 has the exact byte extent of the bounded GPU mapping. A reserved tail of the
 same reservation is permitted but never exposed. This uses
@@ -67,8 +72,9 @@ Store/reference checks are explicit diagnostics, not writes performed by the
 NVIDIA UMD. They touch two words only after initialization has failed, verify
 host visibility and restore those words before native unlock. The unmodified
 live initialization test observed no changed CPU contents at this boundary.
-Hosted CI runs protocol/bounds/ownership tests and 40 Linux interposer fault
-cases without NVIDIA binaries. This remains a local initialization diagnostic;
+This milestone ran protocol/bounds/ownership tests and 40 Linux interposer fault
+cases without NVIDIA binaries. The hardware queue route expands this to 69
+cases. This remains a local initialization diagnostic;
 kernel/DRM integration, hardware queues, synchronization objects, command
 submission, scanout, Hyprland, stability and performance work are still required.
 

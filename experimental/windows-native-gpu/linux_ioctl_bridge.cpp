@@ -209,6 +209,7 @@ struct Response { Header header; Reply result; std::vector<std::uint8_t> data; }
 class Bridge {
     Transport transport;
     guest_paging::Fences pagingFences;
+    guest_paging::Fences hwQueueFences;
     guest_allocation::Memory allocationMemory;
     std::set<std::uint32_t> cpuLocks;
     bool negotiated = false;
@@ -216,7 +217,11 @@ class Bridge {
     unsigned counts[256]{}, completedQueries = 0, privateQueries = 0, contexts = 0;
     std::map<int, std::pair<dev_t, ino_t>> descriptors;
     std::map<std::uint32_t, std::uint32_t> vendorOwners;
+    std::map<std::uint32_t, std::uint32_t> vendorWireIds, deviceAdapters;
     std::map<std::uint32_t, std::uint32_t> pagingOwners;
+    struct Context { std::uint32_t device, flags; };
+    std::map<std::uint32_t, Context> contextOwners;
+    std::map<std::uint32_t, std::uint32_t> hwQueueContexts;
     static constexpr std::uint32_t GuestLuidLow = 0x57475055;
     static constexpr std::int32_t GuestLuidHigh = 0;
     Response call(const std::vector<std::uint8_t>& requestPacket, std::uint32_t bytes = 0, bool preserveNativeFailure = false) {
@@ -282,12 +287,18 @@ class Bridge {
         if (_IOC_SIZE(requestNumber) != sizeof(T)) throw Error(EINVAL);
         return *static_cast<T*>(pointer);
     }
+    std::uint32_t wireAllocation(std::uint32_t alias) const {
+        const auto found = vendorWireIds.find(alias);
+        if (found == vendorWireIds.end()) throw Error(EBADF);
+        return found->second;
+    }
     void unlockCpu(std::uint32_t allocation, std::uint32_t device, bool force = false) {
         if (!cpuLocks.count(allocation)) throw Error(EBADF);
         try { if (!allocationMemory.release(allocation, force)) return; }
         catch (...) { transport.fail(); throw; }
-        const auto result = call(request(Op::UnlockVendorAllocation, allocation, VendorCpuDesc{device, 0}), 0, true);
-        if (result.header.handle != allocation || result.result.value || result.result.ntstatus > 0) {
+        const auto wire = wireAllocation(allocation);
+        const auto result = call(request(Op::UnlockVendorAllocation, wire, VendorCpuDesc{device, 0}), 0, true);
+        if (result.header.handle != wire || result.result.value || result.result.ntstatus > 0) {
             transport.fail(); throw Error(EPROTO);
         }
         checkNt(result.result.ntstatus); cpuLocks.erase(allocation);
@@ -381,11 +392,12 @@ public:
                 unsigned flags{}; static_assert(sizeof a.Flags == sizeof flags); std::memcpy(&flags, &a.Flags, sizeof flags);
                 if (flags != 2) throw Error(ENOSYS);
                 a.hDevice = create(Op::CreateDevice, a.hAdapter);
+                if (!deviceAdapters.emplace(a.hDevice, a.hAdapter).second) { transport.fail(); throw Error(EPROTO); }
                 a.pCommandBuffer = nullptr; a.CommandBufferSize = 0; a.pAllocationList = nullptr;
                 a.AllocationListSize = 0; a.pPatchLocationList = nullptr; a.PatchLocationListSize = 0;
                 std::fprintf(stderr, "LINUX_BRIDGE deviceCreated=true\n"); return 0;
             }
-            case 25: { auto& a = args<D3DKMT_DESTROYDEVICE>(requestNumber, pointer); destroy(Op::DestroyDevice, a.hDevice); return 0; }
+            case 25: { auto& a = args<D3DKMT_DESTROYDEVICE>(requestNumber, pointer); destroy(Op::DestroyDevice, a.hDevice); deviceAdapters.erase(a.hDevice); return 0; }
             case 7: {
                 auto& a = args<D3DKMT_CREATEPAGINGQUEUE>(requestNumber, pointer);
                 if (!(caps.flags & GuestPagingCapability) || a.Priority != D3DDDI_PAGINGQUEUE_PRIORITY_NORMAL || a.PhysicalAdapterIndex) {
@@ -423,10 +435,15 @@ public:
                 const auto result = call(packet, desc.privateBytes);
                 if (!result.header.handle) { transport.fail(); throw Error(EPROTO); }
                 a.hContext = result.header.handle;
+                if (!contextOwners.emplace(a.hContext, Context{a.hDevice, desc.flags}).second) { transport.fail(); throw Error(EPROTO); }
                 if (desc.privateBytes) std::memcpy(a.pPrivateDriverData, result.data.data(), result.data.size());
-                ++contexts; std::fprintf(stderr, "LINUX_BRIDGE nativeContextCreated=true bytes=%u\n", desc.privateBytes); return 0;
+                ++contexts; std::fprintf(stderr, "LINUX_BRIDGE nativeContextCreated=true bytes=%u flags=%u\n", desc.privateBytes, desc.flags); return 0;
             }
-            case 5: { auto& a = args<D3DKMT_DESTROYCONTEXT>(requestNumber, pointer); destroy(Op::DestroyContext, a.hContext); return 0; }
+            case 5: {
+                auto& a = args<D3DKMT_DESTROYCONTEXT>(requestNumber, pointer);
+                for (const auto& queue : hwQueueContexts) if (queue.second == a.hContext) throw Error(EBUSY);
+                destroy(Op::DestroyContext, a.hContext); contextOwners.erase(a.hContext); return 0;
+            }
             case 6: {
                 auto& a = args<D3DKMT_CREATEALLOCATION>(requestNumber, pointer);
                 unsigned flags{}; static_assert(sizeof a.Flags == sizeof flags);
@@ -452,11 +469,36 @@ public:
                 const auto begin = static_cast<const std::uint8_t*>(item.pPrivateDriverData);
                 packet.insert(packet.end(), begin, begin + desc.privateBytes);
                 const auto result = call(packet, desc.privateBytes, true);
-                if ((result.result.ntstatus >= 0 && (!result.header.handle || result.result.value % 4096 || vendorOwners.count(result.header.handle))) ||
+                const bool reusedWireId = std::any_of(vendorWireIds.begin(), vendorWireIds.end(), [&](const auto& owned) {
+                    return owned.second == result.header.handle;
+                });
+                if ((result.result.ntstatus >= 0 && (!result.header.handle || result.result.value % 4096 || reusedWireId)) ||
                     (result.result.ntstatus < 0 && (result.header.handle || result.result.value))) { transport.fail(); throw Error(EPROTO); }
                 std::memcpy(item.pPrivateDriverData, result.data.data(), result.data.size()); checkNt(result.result.ntstatus);
-                vendorOwners.emplace(result.header.handle, a.hDevice);
-                item.hAllocation = result.header.handle; item.GpuVirtualAddress = result.result.value;
+                std::uint32_t alias = result.header.handle;
+                if (caps.flags & VendorTranslationCapability) {
+                    const auto parent = deviceAdapters.find(a.hDevice);
+                    if (parent == deviceAdapters.end()) { transport.fail(); throw Error(EPROTO); }
+                    const auto translated = call(request(Op::TranslateVendorAllocation, result.header.handle,
+                                                        VendorTranslationDesc{a.hDevice, parent->second, 0, 0}), 0, true);
+                    if (translated.header.handle != result.header.handle || translated.result.ntstatus > 0 ||
+                        (translated.result.ntstatus >= 0 && (!translated.result.value || translated.result.value > UINT32_MAX)) ||
+                        (translated.result.ntstatus < 0 && translated.result.value)) { transport.fail(); throw Error(EPROTO); }
+                    if (translated.result.ntstatus < 0) {
+                        auto cleanup = request(Op::DestroyVendorAllocations, a.hDevice, DestroyVendorDesc{1, 0});
+                        const auto id = reinterpret_cast<const std::uint8_t*>(&result.header.handle);
+                        cleanup.insert(cleanup.end(), id, id + 4);
+                        const auto released = call(cleanup);
+                        if (released.header.handle != a.hDevice || released.result.value) { transport.fail(); throw Error(EPROTO); }
+                        checkNt(translated.result.ntstatus);
+                    }
+                    alias = static_cast<std::uint32_t>(translated.result.value);
+                    std::fprintf(stderr, "LINUX_BRIDGE allocationDriverAliasCreated=true typedWireIdentityRetained=true\n");
+                }
+                if (!vendorOwners.emplace(alias, a.hDevice).second || !vendorWireIds.emplace(alias, result.header.handle).second) {
+                    transport.fail(); throw Error(EPROTO);
+                }
+                item.hAllocation = alias; item.GpuVirtualAddress = result.result.value;
                 a.hResource = 0; a.hGlobalShare = 0;
                 std::fprintf(stderr, "LINUX_BRIDGE nativeVendorAllocationCreated=true privateBytes=%u\n", desc.privateBytes); return 0;
             }
@@ -467,6 +509,8 @@ public:
                 }
                 if (a.hResource || !a.AllocationCount || a.AllocationCount > MaxVendorAllocations || !a.phAllocationList ||
                     (a.Flags.Value & ~3u)) throw Error(EINVAL);
+                for (const auto& queue : hwQueueContexts)
+                    if (contextOwners.at(queue.second).device == a.hDevice) throw Error(EBUSY);
                 // Accept the public destruction hints, but always request
                 // synchronous native destruction rather than trusting the
                 // guest's AssumeNotInUse hint to shorten object lifetime.
@@ -479,11 +523,13 @@ public:
                 auto packet = request(Op::DestroyVendorAllocations, a.hDevice, DestroyVendorDesc{a.AllocationCount, 0});
                 for (unsigned n = 0; n < a.AllocationCount; ++n)
                     if (cpuLocks.count(a.phAllocationList[n])) unlockCpu(a.phAllocationList[n], a.hDevice, true);
-                const auto begin = reinterpret_cast<const std::uint8_t*>(a.phAllocationList);
-                packet.insert(packet.end(), begin, begin + a.AllocationCount * sizeof(a.phAllocationList[0]));
+                std::vector<std::uint32_t> wireIds;
+                for (unsigned n = 0; n < a.AllocationCount; ++n) wireIds.push_back(wireAllocation(a.phAllocationList[n]));
+                const auto begin = reinterpret_cast<const std::uint8_t*>(wireIds.data());
+                packet.insert(packet.end(), begin, begin + a.AllocationCount * sizeof(wireIds[0]));
                 const auto result = call(packet);
                 if (result.header.handle != a.hDevice || result.result.value) { transport.fail(); throw Error(EPROTO); }
-                for (unsigned n = 0; n < a.AllocationCount; ++n) vendorOwners.erase(a.phAllocationList[n]);
+                for (unsigned n = 0; n < a.AllocationCount; ++n) { vendorOwners.erase(a.phAllocationList[n]); vendorWireIds.erase(a.phAllocationList[n]); }
                 std::fprintf(stderr, "LINUX_BRIDGE nativeVendorAllocationsDestroyed=true count=%u\n", a.AllocationCount); return 0;
             }
             case 11: {
@@ -504,8 +550,10 @@ public:
                         if (a.AllocationList[previous] == a.AllocationList[n]) throw Error(EINVAL);
                 }
                 auto packet = request(Op::MakeVendorResident, a.hPagingQueue, desc);
-                const auto ids = reinterpret_cast<const std::uint8_t*>(a.AllocationList);
-                packet.insert(packet.end(), ids, ids + desc.count * sizeof(a.AllocationList[0]));
+                std::vector<std::uint32_t> wireIds;
+                for (unsigned n = 0; n < desc.count; ++n) wireIds.push_back(wireAllocation(a.AllocationList[n]));
+                const auto ids = reinterpret_cast<const std::uint8_t*>(wireIds.data());
+                packet.insert(packet.end(), ids, ids + desc.count * sizeof(wireIds[0]));
                 if (desc.priorities) {
                     const auto priorities = reinterpret_cast<const std::uint8_t*>(a.PriorityList);
                     packet.insert(packet.end(), priorities, priorities + desc.count * sizeof(a.PriorityList[0]));
@@ -541,9 +589,10 @@ public:
                 if (a.Reserved1 || !validGpuVa(desc)) throw Error(EINVAL);
                 const auto allocation = vendorOwners.find(a.hAllocation), queue = pagingOwners.find(a.hPagingQueue);
                 if (allocation == vendorOwners.end() || queue == pagingOwners.end() || allocation->second != queue->second) throw Error(EBADF);
-                const auto result = call(request(Op::MapVendorAllocation, a.hAllocation, desc), sizeof(GpuVaReply), true);
+                const auto wire = wireAllocation(a.hAllocation);
+                const auto result = call(request(Op::MapVendorAllocation, wire, desc), sizeof(GpuVaReply), true);
                 GpuVaReply fence{}; std::memcpy(&fence, result.data.data(), sizeof fence);
-                if (result.header.handle != a.hAllocation ||
+                if (result.header.handle != wire ||
                     (result.result.ntstatus >= 0 && ((result.result.ntstatus != 0 && result.result.ntstatus != 0x103) || !validGpuVaOutput(desc, result.result.value))) ||
                     (result.result.ntstatus < 0 && (result.result.value || fence.fence))) { transport.fail(); throw Error(EPROTO); }
                 checkNt(result.result.ntstatus);
@@ -568,9 +617,10 @@ public:
                     a.pData = allocationMemory.retain(a.hAllocation); return 0;
                 }
                 if (cpuLocks.count(a.hAllocation)) throw Error(EBUSY);
-                const auto result = call(request(Op::LockVendorAllocation, a.hAllocation, VendorCpuDesc{a.hDevice, 0}), sizeof(VendorCpuReply), true);
+                const auto wire = wireAllocation(a.hAllocation);
+                const auto result = call(request(Op::LockVendorAllocation, wire, VendorCpuDesc{a.hDevice, 0}), sizeof(VendorCpuReply), true);
                 VendorCpuReply output{}; std::memcpy(&output, result.data.data(), sizeof output);
-                if (result.header.handle != a.hAllocation || result.result.ntstatus > 0 ||
+                if (result.header.handle != wire || result.result.ntstatus > 0 ||
                     (result.result.ntstatus >= 0 && !validVendorCpuReply(result.result.value, output)) ||
                     (result.result.ntstatus < 0 && (result.result.value || output.bytes || output.reserved || output.generation))) {
                     transport.fail(); throw Error(EPROTO);
@@ -606,6 +656,89 @@ public:
                 const auto allocation = vendorOwners.find(a.hAllocation);
                 if (allocation == vendorOwners.end() || allocation->second != a.hDevice) throw Error(EBADF);
                 unlockCpu(a.hAllocation, a.hDevice); return 0;
+            }
+            case 13: {
+                auto& a = args<D3DKMT_ESCAPE>(requestNumber, pointer);
+                std::fprintf(stderr, "LINUX_BRIDGE escapeInput type=%u flags=%u privateBytes=%u hasContext=%u\n",
+                             static_cast<unsigned>(a.Type), a.Flags.Value, a.PrivateDriverDataSize, a.hContext ? 1u : 0u);
+                if (a.Type == D3DKMT_ESCAPE_DRIVERPRIVATE && a.Flags.Value == 64 && a.pPrivateDriverData &&
+                    a.PrivateDriverDataSize == sizeof(D3DDDI_DRIVERESCAPE_TRANSLATEALLOCATIONEHANDLE)) {
+                    D3DDDI_DRIVERESCAPE_TRANSLATEALLOCATIONEHANDLE known{}; std::memcpy(&known, a.pPrivateDriverData, sizeof known);
+                    const auto allocation = vendorOwners.find(known.hAllocation);
+                    std::fprintf(stderr, "LINUX_BRIDGE knownEscapeInput type=%u ownedAllocation=%u\n",
+                                 static_cast<unsigned>(known.EscapeType), allocation != vendorOwners.end() && allocation->second == a.hDevice ? 1u : 0u);
+                    if ((caps.flags & VendorTranslationCapability) && known.EscapeType == D3DDDI_DRIVERESCAPETYPE_TRANSLATEALLOCATIONHANDLE) {
+                        if (a.hContext) throw Error(EINVAL);
+                        const auto parent = deviceAdapters.find(a.hDevice);
+                        if (allocation == vendorOwners.end() || allocation->second != a.hDevice || parent == deviceAdapters.end() || parent->second != a.hAdapter)
+                            throw Error(EBADF);
+                        // Allocation aliases already carry the documented driver
+                        // token. This known escape is a validated identity operation,
+                        // matching WSL's host/guest token contract. No private rewrite.
+                        std::fprintf(stderr, "LINUX_BRIDGE knownAllocationTranslation=true aliasAlreadyTranslated=true\n"); return 0;
+                    }
+                }
+                std::fprintf(stderr, "LINUX_BRIDGE unsupported nr=13 bytes=%zu\n", sizeof a); throw Error(ENOSYS);
+            }
+            case 24: {
+                auto& a = args<D3DKMT_CREATEHWQUEUE>(requestNumber, pointer);
+                unsigned allocationReferences = 0;
+                if (a.pPrivateDriverData && a.PrivateDriverDataSize <= MaxContextPrivateBytes) {
+                    for (std::size_t offset = 0; offset + 4 <= a.PrivateDriverDataSize; offset += 4) {
+                        std::uint32_t value{}; std::memcpy(&value, static_cast<const char*>(a.pPrivateDriverData) + offset, sizeof value);
+                        if (vendorOwners.count(value)) ++allocationReferences;
+                    }
+                }
+                std::fprintf(stderr, "LINUX_BRIDGE hwQueueInput flags=%u privateBytes=%u hasPrivateData=%u guestAllocationReferenceMatches=%u\n",
+                             a.Flags.Value, a.PrivateDriverDataSize, a.pPrivateDriverData ? 1u : 0u, allocationReferences);
+                if (!(caps.flags & HwQueueCapability)) {
+                    std::fprintf(stderr, "LINUX_BRIDGE unsupported nr=24 bytes=%zu\n", sizeof a); throw Error(ENOSYS);
+                }
+                const HwQueueDesc desc{a.Flags.Value, a.PrivateDriverDataSize, 0, 0};
+                if (!validHwQueue(desc) || !a.pPrivateDriverData) throw Error(EINVAL);
+                const auto parent = contextOwners.find(a.hHwContext);
+                if (parent == contextOwners.end()) throw Error(EBADF);
+                if (parent->second.flags != 16) throw Error(ENOSYS);
+                if (hwQueueContexts.size() >= MaxHwQueues) throw Error(EMFILE);
+                auto packet = request(Op::CreateHwQueue, a.hHwContext, desc);
+                const auto begin = static_cast<const std::uint8_t*>(a.pPrivateDriverData);
+                packet.insert(packet.end(), begin, begin + desc.privateBytes);
+                const auto result = call(packet, sizeof(HwQueueReply) + desc.privateBytes, true);
+                HwQueueReply output{}; std::memcpy(&output, result.data.data(), sizeof output);
+                if (result.result.ntstatus > 0 || result.result.value || output.reserved ||
+                    (result.result.ntstatus == 0 && (!result.header.handle || hwQueueContexts.count(result.header.handle) ||
+                        !output.sync || output.sync == result.header.handle || output.offset % 8 || output.offset >= FenceApertureBytes ||
+                        !output.gpuAddress || output.gpuAddress % 8 || output.gpuAddress >= MaxGpuAddress)) ||
+                    (result.result.ntstatus < 0 && (result.header.handle || output.sync || output.offset || output.gpuAddress))) {
+                    transport.fail(); throw Error(EPROTO);
+                }
+                std::memcpy(a.pPrivateDriverData, result.data.data() + sizeof output, desc.privateBytes);
+                checkNt(result.result.ntstatus);
+                void* fence = nullptr;
+                try { fence = hwQueueFences.map(result.header.handle, output.offset, "hwQueue"); }
+                catch (...) { destroy(Op::DestroyHwQueue, result.header.handle); throw; }
+                if (!hwQueueContexts.emplace(result.header.handle, a.hHwContext).second) { transport.fail(); throw Error(EPROTO); }
+                a.hHwQueue = result.header.handle; a.hHwQueueProgressFence = output.sync;
+                a.HwQueueProgressFenceCPUVirtualAddress = fence; a.HwQueueProgressFenceGPUVirtualAddress = output.gpuAddress;
+                std::fprintf(stderr, "LINUX_BRIDGE nativeHwQueueCreated=true privateBytes=%u progressFenceDirect=true\n", desc.privateBytes);
+                const auto eofTest = std::getenv("WDDM_BRIDGE_HWQUEUE_EOF_TEST");
+                if (eofTest && std::strcmp(eofTest, "1") == 0) {
+                    std::fprintf(stderr, "LINUX_BRIDGE hwQueueEofTest=true exitingWithQueueOwned=true\n");
+                    _exit(1);
+                }
+                return 0;
+            }
+            case 27: {
+                auto& a = args<D3DKMT_DESTROYHWQUEUE>(requestNumber, pointer);
+                if (!(caps.flags & HwQueueCapability)) {
+                    std::fprintf(stderr, "LINUX_BRIDGE unsupported nr=27 bytes=%zu\n", sizeof a); throw Error(ENOSYS);
+                }
+                if (!hwQueueContexts.count(a.hHwQueue)) throw Error(EBADF);
+                if (hwQueueFences.contains(a.hHwQueue)) hwQueueFences.unmap(a.hHwQueue);
+                const auto result = call(request(Op::DestroyHwQueue, a.hHwQueue));
+                if (result.header.handle != a.hHwQueue || result.result.value || result.result.ntstatus) { transport.fail(); throw Error(EPROTO); }
+                hwQueueContexts.erase(a.hHwQueue);
+                std::fprintf(stderr, "LINUX_BRIDGE nativeHwQueueDestroyed=true\n"); return 0;
             }
             default:
                 std::fprintf(stderr, "LINUX_BRIDGE unsupported nr=%u bytes=%u\n", nr, static_cast<unsigned>(_IOC_SIZE(requestNumber)));

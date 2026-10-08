@@ -155,7 +155,7 @@ class Runtime {
     bool stopped = false, failed = false;
     std::filesystem::path logfile;
 public:
-    Runtime(unsigned short driverPort, const qemu_fence::Paths& paths, bool enableCpu = false, bool cpuStoreTest = false, bool cpuEofTest = false)
+    Runtime(unsigned short driverPort, const qemu_fence::Paths& paths, bool enableCpu = false, bool cpuStoreTest = false, bool cpuEofTest = false, bool hwQueueEofTest = false)
         : allocationsEnabled(enableCpu), logfile(std::filesystem::absolute(paths.log)) {
         const auto executable = std::filesystem::absolute(paths.qemu).wstring();
         job.value = CreateJobObjectW(nullptr, nullptr);
@@ -187,6 +187,7 @@ public:
             L"-L", std::filesystem::absolute(paths.firmware).wstring(), L"-kernel", std::filesystem::absolute(paths.kernel).wstring(),
             L"-initrd", std::filesystem::absolute(paths.initramfs).wstring(), L"-append",
             cpuStoreTest ? L"console=ttyS0 rdinit=/init panic=1 wddm_cpu_store_test=1" :
+            hwQueueEofTest ? L"console=ttyS0 rdinit=/init panic=1 wddm_hwqueue_eof_test=1" :
             cpuEofTest ? L"console=ttyS0 rdinit=/init panic=1 wddm_cpu_eof_test=1" : L"console=ttyS0 rdinit=/init panic=1",
             L"-name", std::wstring(name.begin(), name.end()), L"-qmp", L"tcp:127.0.0.1:" + std::to_wstring(qmpPort) + L",server=on,wait=off",
             L"-device", L"wddm-fence-hub,id=wddm-fences,source-process=" + std::to_wstring(reinterpret_cast<std::uintptr_t>(source.value)),

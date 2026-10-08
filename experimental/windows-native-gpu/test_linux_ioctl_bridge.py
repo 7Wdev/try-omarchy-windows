@@ -22,6 +22,9 @@ def send(op, handle, value=0, data=b'', padding=0, hello=False, ntstatus=0):
     caps |= 1024 if mode == 'resident-invalid' else 0
     caps |= 256 if mode.startswith('cpu-') else 0
     caps |= 2048 if mode.startswith('cpu-') and mode != 'cpu-disabled' else 0
+    caps |= 256 if mode.startswith('translation-') else 0
+    caps |= 4096 if mode.startswith('translation-') and mode != 'translation-disabled' else 0
+    caps |= 8192 if mode.startswith('hwqueue-') and mode != 'hwqueue-disabled' else 0
     packet += struct.pack('<IIII',1,caps,4318,11352) if hello else struct.pack('<iIQ',ntstatus,0,value) + data
     sys.stdout.buffer.write(struct.pack('<I',len(packet)) + packet)
     sys.stdout.buffer.flush()
@@ -46,6 +49,27 @@ try:
         elif op == 0x2003: send(op,handle)
         elif op == 0x2004: send(op,2)
         elif op == 0x2005: send(op,handle)
+        elif op == 0x2020:
+            assert handle == 2
+            desc = struct.unpack_from('<6I',packet,16)
+            assert desc == ((0,0,8,0,0,0) if mode == 'hwqueue-sync-context' else (0,1,16,12,4,0))
+            send(op,3,data=b'' if mode == 'hwqueue-sync-context' else bytes([37 ^ 255,38,39,40]))
+        elif op == 0x2060:
+            assert handle == 3 and packet[16:32] == struct.pack('<4I',0,4,0,0)
+            assert packet[32:] == bytes([37,38,39,40])
+            failed = mode in ('hwqueue-nt-failure','hwqueue-bad-failure')
+            queue = 0 if failed or mode == 'hwqueue-bad-id' else 4
+            sync = 0 if failed or mode == 'hwqueue-bad-sync' else 4 if mode == 'hwqueue-same-sync' else 5
+            offset = 0 if failed else 1 if mode == 'hwqueue-bad-alignment' else 262144 if mode == 'hwqueue-bad-offset' else 8192
+            gpu = 0 if failed or mode == 'hwqueue-zero-gpu' else 65537 if mode == 'hwqueue-bad-gpu-alignment' else 1 << 48 if mode == 'hwqueue-bad-gpu-range' else 65536
+            if mode == 'hwqueue-bad-failure': sync = 5
+            data = struct.pack('<IIQQ',sync,1 if mode == 'hwqueue-bad-reserved' else 0,offset,gpu) + bytes([37 ^ 255,38,39,40])
+            if mode == 'hwqueue-short': data = data[:-1]
+            send(op,queue,value=1 if mode == 'hwqueue-bad-value' else 0,data=data,
+                 ntstatus=-1073741811 if failed else 259 if mode == 'hwqueue-bad-status' else 0)
+        elif op == 0x2061:
+            assert handle == 4 and len(packet) == 16
+            send(op,handle)
         elif op == 0x2040:
             sync = 0 if mode == 'paging-bad-sync' else 4
             offset = 262144 if mode == 'paging-bad-offset' else 0
@@ -64,7 +88,15 @@ try:
                  ntstatus=-1073741811 if mode == 'allocation-nt-failure' else 0)
         elif op == 0x2051:
             assert handle == 2 and packet[16:] == struct.pack('<III',1,0,3)
-            send(op,handle,ntstatus=-1073741811 if mode == 'allocation-failed-destroy' and operations.count(op) == 1 else 0)
+            send(op,handle,ntstatus=-1073741811 if (mode == 'allocation-failed-destroy' and operations.count(op) == 1) or mode == 'translation-failed-cleanup' else 0)
+        elif op == 0x2056:
+            assert handle == 3 and packet[16:] == struct.pack('<IIII',2,1,0,0)
+            failed = mode in ('translation-nt-failure','translation-bad-failure','translation-failed-cleanup')
+            token = 0 if failed or mode == 'translation-zero' else 1 << 32 if mode == 'translation-overflow' else 0x10000003
+            if mode == 'translation-bad-failure': token = 1
+            send(op,0 if mode == 'translation-bad-id' else handle,value=token,
+                 data=b'X' if mode == 'translation-long' else b'',
+                 ntstatus=-1073741811 if failed else 259 if mode == 'translation-bad-status' else 0)
         elif op == 0x2054:
             assert handle == 3 and packet[16:] == struct.pack('<II',2,0)
             native_failure = mode in ('cpu-nt-failure','cpu-bad-failure')
@@ -93,6 +125,12 @@ if mode.startswith('gpuva-'): assert operations == [0x2000], operations
 if mode.startswith('resident-'): assert operations == [0x2000], operations
 if mode in ('cpu-disabled','cpu-invalid'): assert 0x2054 not in operations, operations
 if mode.startswith('cpu-'): assert 0x2055 not in operations, operations
+if mode == 'translation-disabled': assert 0x2056 not in operations, operations
+if mode in ('translation-normal','translation-invalid','translation-disabled','translation-nt-failure','translation-failed-cleanup'):
+    assert operations.count(0x2051) == 1, operations
+if mode.startswith('translation-'): assert 0x2016 not in operations, operations
+if mode in ('hwqueue-disabled','hwqueue-invalid','hwqueue-sync-context'): assert 0x2060 not in operations, operations
+if mode == 'hwqueue-no-hub': assert operations[-2:] == [0x2060,0x2061], operations
 print('FAKE_WORKER_EOF=true',file=sys.stderr)
 '''
 
@@ -113,7 +151,14 @@ def main():
                      'gpuva-disabled', 'gpuva-invalid', 'resident-disabled', 'resident-invalid',
                      'cpu-disabled', 'cpu-invalid', 'cpu-nt-failure', 'cpu-bad-failure', 'cpu-bad-id',
                      'cpu-bad-bytes', 'cpu-bad-alignment', 'cpu-bad-reserved', 'cpu-bad-generation',
-                     'cpu-bad-offset', 'cpu-bad-slot', 'cpu-short', 'cpu-bad-status', 'cpu-no-hub'):
+                     'cpu-bad-offset', 'cpu-bad-slot', 'cpu-short', 'cpu-bad-status', 'cpu-no-hub',
+                     'translation-normal', 'translation-invalid', 'translation-disabled', 'translation-nt-failure',
+                     'translation-failed-cleanup', 'translation-zero', 'translation-overflow', 'translation-bad-failure',
+                     'translation-bad-status', 'translation-bad-id', 'translation-long',
+                     'hwqueue-disabled', 'hwqueue-invalid', 'hwqueue-sync-context', 'hwqueue-nt-failure', 'hwqueue-bad-failure',
+                     'hwqueue-bad-id', 'hwqueue-bad-sync', 'hwqueue-same-sync', 'hwqueue-bad-alignment', 'hwqueue-bad-offset',
+                     'hwqueue-zero-gpu', 'hwqueue-bad-gpu-alignment', 'hwqueue-bad-gpu-range', 'hwqueue-bad-reserved',
+                     'hwqueue-short', 'hwqueue-bad-value', 'hwqueue-bad-status', 'hwqueue-no-hub'):
             environment = {k: v for k, v in os.environ.items() if not k.startswith('WDDM_BRIDGE_') and k != 'LD_PRELOAD'}
             environment['LD_PRELOAD'] = str(args.shim.resolve())
             environment['BRIDGE_FAULT_TEST'] = mode

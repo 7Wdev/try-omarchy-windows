@@ -22,6 +22,17 @@ constexpr std::size_t MaxVendorAllocations = 16;
 constexpr std::uint32_t VendorGpuVaCapability = 512;
 constexpr std::uint32_t VendorResidencyCapability = 1024;
 constexpr std::uint32_t VendorCpuCapability = 2048;
+constexpr std::uint32_t VendorTranslationCapability = 4096;
+constexpr std::uint32_t HwQueueCapability = 8192;
+constexpr std::size_t MaxHwQueues = 8;
+struct HwQueueDesc { std::uint32_t flags, privateBytes, reserved, reserved2; };
+struct HwQueueReply { std::uint32_t sync, reserved; std::uint64_t offset, gpuAddress; };
+static_assert(sizeof(HwQueueDesc) == 16 && sizeof(HwQueueReply) == 24, "fixed hardware queue layouts");
+inline bool validHwQueue(HwQueueDesc d) {
+    return !d.flags && d.privateBytes && d.privateBytes <= 4000 && !d.reserved && !d.reserved2;
+}
+struct VendorTranslationDesc { std::uint32_t device, adapter, reserved, reserved2; };
+static_assert(sizeof(VendorTranslationDesc) == 16, "fixed allocation translation layout");
 constexpr std::uint64_t VendorCpuSlotBytes = MaxAllocation;
 constexpr std::uint64_t VendorCpuApertureBytes = MaxVendorAllocations * VendorCpuSlotBytes;
 constexpr std::uint64_t CpuStoreFirstMarker = 0x4350554649525354ull, CpuStoreLastMarker = 0x4350554c41535421ull;
@@ -114,9 +125,10 @@ enum class Op : std::uint32_t {
     BeginAdapterQuery = 0x2030, WriteAdapterQuery, RunAdapterQuery, ReadAdapterQuery, EndAdapterQuery,
     CreateGuestPagingQueue = 0x2040,
     CreateVendorAllocation = 0x2050, DestroyVendorAllocations, MapVendorAllocation, MakeVendorResident,
-    LockVendorAllocation, UnlockVendorAllocation
+    LockVendorAllocation, UnlockVendorAllocation, TranslateVendorAllocation,
+    CreateHwQueue = 0x2060, DestroyHwQueue
 };
-enum class Kind { Adapter, Device, PagingQueue, Allocation, Context, PagingSync, VendorAllocation };
+enum class Kind { Adapter, Device, PagingQueue, Allocation, Context, PagingSync, VendorAllocation, HwQueue, HwQueueSync };
 struct ContextDesc {
     std::uint32_t node, engine, flags, clientHint, privateBytes, reserved;
 };
@@ -143,6 +155,7 @@ struct VendorCpuResult { Result lock; VendorCpuReply output; };
 // The synchronization object is borrowed from the paging queue. Destruction
 // of the queue owns its lifetime; no native handle is exposed to the guest.
 struct GuestPagingResult { Result queue; std::uint32_t sync; std::uint64_t offset; };
+struct HwQueueResult { Result queue; std::uint32_t sync; std::uint64_t offset, gpuAddress; };
 struct PagingReply { std::uint32_t sync, reserved; std::uint64_t offset; };
 static_assert(sizeof(PagingReply) == 16, "fixed guest paging reply");
 // Native KMT object fields use local IDs, never raw handles/pointers. Opt-in
@@ -183,6 +196,12 @@ public:
     virtual Result unlockVendorAllocation(std::uint32_t, std::uint32_t) {
         return {static_cast<std::int32_t>(0xc00000bbu), 0, 0};
     }
+    virtual Result translateVendorAllocation(std::uint32_t, std::uint32_t, std::uint32_t) {
+        return {static_cast<std::int32_t>(0xc00000bbu), 0, 0};
+    }
+    virtual HwQueueResult createHwQueue(std::uint32_t, HwQueueDesc, std::vector<std::uint8_t>&) {
+        return {{static_cast<std::int32_t>(0xc00000bbu), 0, 0}, 0, 0, 0};
+    }
     virtual Result readPagingFence(std::uint32_t queue) = 0;
     virtual Result createAllocation(std::uint32_t device, std::uint32_t size) = 0;
     virtual Result createSharedAllocation(std::uint32_t device, GuestRange range) = 0;
@@ -204,6 +223,8 @@ class Session {
         std::uint64_t gpuOffsetPages = 0;
         std::uint32_t cpuBytes = 0;
         std::uint64_t cpuOffset = 0;
+        std::uint32_t driverToken = 0;
+        std::uint32_t contextFlags = 0;
     };
     Driver& driver;
     std::map<std::uint32_t, Object> objects;
@@ -229,11 +250,12 @@ class Session {
         return out;
     }
     std::vector<std::uint8_t> insert(Header h, Kind kind, std::uint32_t parent, Result result,
-                                   std::uint32_t size = 0, std::uint64_t guestOffset = 0, bool shared = false) {
+                                   std::uint32_t size = 0, std::uint64_t guestOffset = 0, bool shared = false, std::uint32_t contextFlags = 0) {
         if (result.ntstatus < 0) return reply(h, 0, 0, &result);
         if (!result.nativeHandle) return reply(h, -5);
         const auto id = nextId++;
-        objects.emplace(id, Object{kind, parent, result.nativeHandle, size, guestOffset, shared});
+        Object object{kind, parent, result.nativeHandle, size, guestOffset, shared}; object.contextFlags = contextFlags;
+        objects.emplace(id, object);
         allocatedBytes += size;
         return reply(h, 0, id, &result);
     }
@@ -245,8 +267,15 @@ public:
     // worker is also one process per connection, so OS teardown is a backstop.
     ~Session() {
         queries.clear();
+        // Queue-private data may reference any allocation on its device.
+        // Destroy queues before allocations even when allocations were created
+        // later. Borrowed progress syncs are released by their owning queue.
         for (auto i = objects.rbegin(); i != objects.rend(); ++i)
-            driver.destroy(i->second.kind, i->second.nativeHandle);
+            if (i->second.kind == Kind::HwQueue || i->second.kind == Kind::HwQueueSync)
+                driver.destroy(i->second.kind, i->second.nativeHandle);
+        for (auto i = objects.rbegin(); i != objects.rend(); ++i)
+            if (i->second.kind != Kind::HwQueue && i->second.kind != Kind::HwQueueSync)
+                driver.destroy(i->second.kind, i->second.nativeHandle);
     }
     std::vector<std::uint8_t> dispatch(const std::vector<std::uint8_t>& packet) {
         if (packet.size() < sizeof(Header)) return {};
@@ -322,6 +351,7 @@ public:
             if (entry == objects.end() || entry->second.kind != required) return reply(h, -9);
             if (op == Op::DestroyContext) {
                 if (packet.size() != sizeof h) return reply(h, -22);
+                for (const auto& child : objects) if (child.second.parent == h.handle) return reply(h, -16);
                 const auto result = driver.destroy(Kind::Context, entry->second.nativeHandle);
                 if (result.ntstatus >= 0) objects.erase(entry);
                 return reply(h, 0, h.handle, &result);
@@ -336,7 +366,7 @@ public:
                 if (result.ntstatus >= 0 && result.nativeHandle) driver.destroy(Kind::Context, result.nativeHandle);
                 return reply(h, -5);
             }
-            auto out = insert(h, Kind::Context, h.handle, result);
+            auto out = insert(h, Kind::Context, h.handle, result, 0, 0, false, desc.flags);
             if (result.ntstatus >= 0 && result.nativeHandle) out.insert(out.end(), data.begin(), data.end());
             return out;
         }
@@ -369,12 +399,67 @@ public:
                 throw;
             }
         }
+        if (op == Op::CreateHwQueue || op == Op::DestroyHwQueue) {
+            if (!negotiated) return reply(h, -71);
+            if (!(driver.capabilities().flags & HwQueueCapability)) return reply(h, -95);
+            const auto entry = objects.find(h.handle);
+            if (entry == objects.end() || entry->second.kind != (op == Op::CreateHwQueue ? Kind::Context : Kind::HwQueue)) return reply(h, -9);
+            if (op == Op::DestroyHwQueue) {
+                if (packet.size() != sizeof h) return reply(h, -22);
+                const auto result = driver.destroy(Kind::HwQueue, entry->second.nativeHandle);
+                if (result.ntstatus > 0 || result.nativeHandle || result.value) return reply(h, -5);
+                if (result.ntstatus == 0) {
+                    for (auto child = objects.begin(); child != objects.end(); )
+                        if (child->second.parent == h.handle && child->second.kind == Kind::HwQueueSync) child = objects.erase(child);
+                        else ++child;
+                    objects.erase(entry);
+                }
+                return reply(h, 0, h.handle, &result);
+            }
+            if (entry->second.contextFlags != 16) return reply(h, -95);
+            if (packet.size() < sizeof h + sizeof(HwQueueDesc)) return reply(h, -22);
+            HwQueueDesc desc{}; std::memcpy(&desc, packet.data() + sizeof h, sizeof desc);
+            if (!validHwQueue(desc) || packet.size() != sizeof h + sizeof desc + desc.privateBytes) return reply(h, -22);
+            const auto count = std::count_if(objects.begin(), objects.end(), [](const auto& item) { return item.second.kind == Kind::HwQueue; });
+            if (objects.size() > MaxObjects - 2 || nextId >= UINT32_MAX - 1 || static_cast<std::size_t>(count) >= MaxHwQueues) return reply(h, -24);
+            std::vector<std::uint8_t> data(packet.begin() + sizeof h + sizeof desc, packet.end());
+            const auto native = driver.createHwQueue(entry->second.nativeHandle, desc, data);
+            if (data.size() != desc.privateBytes || native.queue.value ||
+                (native.queue.ntstatus >= 0 && (native.queue.ntstatus != 0 || !native.queue.nativeHandle || !native.sync ||
+                    native.sync == native.queue.nativeHandle || native.offset % 8 || native.offset >= FenceApertureBytes ||
+                    !native.gpuAddress || native.gpuAddress % 8 || native.gpuAddress >= MaxGpuAddress)) ||
+                (native.queue.ntstatus < 0 && (native.queue.nativeHandle || native.sync || native.offset || native.gpuAddress))) {
+                if (native.queue.nativeHandle) driver.destroy(Kind::HwQueue, native.queue.nativeHandle);
+                return reply(h, -5);
+            }
+            const auto queue = native.queue.ntstatus == 0 ? nextId++ : 0;
+            const auto sync = queue ? nextId++ : 0;
+            try {
+                auto out = reply(h, 0, queue, &native.queue);
+                const HwQueueReply body{sync, 0, native.offset, native.gpuAddress};
+                const auto start = out.size(); out.resize(start + sizeof body); std::memcpy(out.data() + start, &body, sizeof body);
+                out.insert(out.end(), data.begin(), data.end()); // Private in/out remains opaque, including native failure.
+                if (queue) {
+                    objects.emplace(queue, Object{Kind::HwQueue, h.handle, native.queue.nativeHandle, 0, 0, false});
+                    objects.emplace(sync, Object{Kind::HwQueueSync, queue, native.sync, 0, 0, false});
+                }
+                return out;
+            } catch (...) {
+                objects.erase(sync); objects.erase(queue);
+                if (native.queue.nativeHandle) driver.destroy(Kind::HwQueue, native.queue.nativeHandle);
+                throw;
+            }
+        }
         if (op == Op::CreateVendorAllocation || op == Op::DestroyVendorAllocations) {
             if (!negotiated) return reply(h, -71);
             if (!(driver.capabilities().flags & VendorAllocationCapability)) return reply(h, -95);
             const auto device = objects.find(h.handle);
             if (device == objects.end() || device->second.kind != Kind::Device) return reply(h, -9);
             if (op == Op::DestroyVendorAllocations) {
+                // No private queue format decoder is assumed. Conservatively
+                // retain all allocations on the device while a queue exists.
+                for (const auto& queue : objects)
+                    if (queue.second.kind == Kind::HwQueue && objects.at(queue.second.parent).parent == h.handle) return reply(h, -16);
                 if (packet.size() < sizeof h + sizeof(DestroyVendorDesc)) return reply(h, -22);
                 DestroyVendorDesc desc{}; std::memcpy(&desc, packet.data() + sizeof h, sizeof desc);
                 if (desc.reserved || !desc.count || desc.count > MaxVendorAllocations ||
@@ -417,6 +502,31 @@ public:
                 if (result.nativeHandle) driver.destroy(Kind::VendorAllocation, result.nativeHandle);
                 throw;
             }
+        }
+        if (op == Op::TranslateVendorAllocation) {
+            if (!negotiated) return reply(h, -71);
+            if (!(driver.capabilities().flags & VendorTranslationCapability)) return reply(h, -95);
+            if (packet.size() != sizeof h + sizeof(VendorTranslationDesc)) return reply(h, -22);
+            VendorTranslationDesc desc{}; std::memcpy(&desc, packet.data() + sizeof h, sizeof desc);
+            if (!desc.device || !desc.adapter || desc.reserved || desc.reserved2) return reply(h, -22);
+            const auto allocation = objects.find(h.handle), device = objects.find(desc.device), adapter = objects.find(desc.adapter);
+            if (allocation == objects.end() || allocation->second.kind != Kind::VendorAllocation ||
+                device == objects.end() || device->second.kind != Kind::Device ||
+                adapter == objects.end() || adapter->second.kind != Kind::Adapter ||
+                allocation->second.parent != desc.device || device->second.parent != desc.adapter) return reply(h, -9);
+            const auto result = driver.translateVendorAllocation(allocation->second.nativeHandle, device->second.nativeHandle, adapter->second.nativeHandle);
+            if (result.nativeHandle || (result.ntstatus >= 0 && (result.ntstatus != 0 || !result.value || result.value > UINT32_MAX)) ||
+                (result.ntstatus < 0 && result.value)) return reply(h, -5);
+            if (result.ntstatus >= 0) {
+                if (allocation->second.driverToken && allocation->second.driverToken != result.value) return reply(h, -5);
+                for (const auto& item : objects)
+                    if (item.first != h.handle && item.second.kind == Kind::VendorAllocation && item.second.driverToken == result.value)
+                        return reply(h, -5);
+                allocation->second.driverToken = static_cast<std::uint32_t>(result.value);
+            }
+            // This opaque KMD token is an explicit driver-private contract,
+            // never a substitute for a typed ID in public bridge operations.
+            return reply(h, 0, h.handle, &result);
         }
         if (op == Op::LockVendorAllocation || op == Op::UnlockVendorAllocation) {
             if (!negotiated) return reply(h, -71);

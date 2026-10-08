@@ -18,6 +18,13 @@ struct Fake : Driver {
     bool gpuVaEnabled = false;
     bool residencyEnabled = false;
     bool cpuEnabled = false;
+    bool translationEnabled = false;
+    int badTranslationReply = 0;
+    std::uint32_t translationOverride = 0;
+    std::vector<std::uint32_t> lastTranslationHandles;
+    bool hwQueuesEnabled = false;
+    int badHwQueueReply = 0;
+    std::map<std::uint32_t, std::uint32_t> hwQueueParents;
     unsigned cpuLocks = 0, cpuUnlocks = 0;
     int badCpuReply = 0;
     int badResidentReply = 0;
@@ -32,7 +39,8 @@ struct Fake : Driver {
         return {1, 31u | (contextsEnabled ? ContextCapability : 0u) | (queriesEnabled ? QueryCapability : 0u) |
                 (guestPagingEnabled ? GuestPagingCapability : 0u) | (vendorEnabled ? VendorAllocationCapability : 0u) |
                 (gpuVaEnabled ? VendorGpuVaCapability : 0u) | (residencyEnabled ? VendorResidencyCapability : 0u) |
-                (cpuEnabled ? VendorCpuCapability : 0u), 0x10de, 123};
+                (cpuEnabled ? VendorCpuCapability : 0u) | (translationEnabled ? VendorTranslationCapability : 0u) |
+                (hwQueuesEnabled ? HwQueueCapability : 0u), 0x10de, 123};
     }
     Result created() { ++calls; return {fail ? -123 : 0, ++next, 0}; }
     Result openAdapter() override { return created(); }
@@ -94,6 +102,26 @@ struct Fake : Driver {
         require(allocation > 500 && device > 500 && vendorOwners.at(allocation) == device); ++calls; ++cpuUnlocks;
         return {fail ? -123 : badCpuReply == 1 ? 259 : 0, badCpuReply == 2 ? 777u : 0u, badCpuReply == 3 ? 1ull : 0ull};
     }
+    Result translateVendorAllocation(std::uint32_t allocation, std::uint32_t device, std::uint32_t adapter) override {
+        require(adapter > 500 && vendorOwners.at(allocation) == device); ++calls;
+        lastTranslationHandles = {allocation, device, adapter};
+        if (fail) return {-123, 0, badTranslationReply == 5 ? 1ull : 0ull};
+        return {badTranslationReply == 3 ? 259 : 0, badTranslationReply == 4 ? 777u : 0u,
+                badTranslationReply == 1 ? 0ull : badTranslationReply == 2 ? 1ull << 32 :
+                translationOverride ? translationOverride : allocation + 0x10000000ull};
+    }
+    HwQueueResult createHwQueue(std::uint32_t context, HwQueueDesc desc, std::vector<std::uint8_t>& data) override {
+        require(context > 500 && validHwQueue(desc) && data.size() == desc.privateBytes); ++calls;
+        data[0] ^= 255;
+        if (badHwQueueReply == 11) data.pop_back();
+        if (fail) return {{-123, 0, 0}, badHwQueueReply == 12 ? 777u : 0u, 0, 0};
+        const auto queue = badHwQueueReply == 2 ? 0u : ++next;
+        if (queue) hwQueueParents.emplace(queue, context);
+        return {{badHwQueueReply == 1 ? 259 : 0, queue, badHwQueueReply == 10 ? 1ull : 0ull},
+                badHwQueueReply == 3 ? 0u : badHwQueueReply == 4 ? queue : ++next,
+                badHwQueueReply == 5 ? 1ull : badHwQueueReply == 6 ? FenceApertureBytes : 8192ull,
+                badHwQueueReply == 7 ? 0ull : badHwQueueReply == 8 ? 65537ull : badHwQueueReply == 9 ? MaxGpuAddress : 65536ull};
+    }
     GuestPagingResult createGuestPagingQueue(std::uint32_t h) override {
         require(h > 500);
         auto queue = created();
@@ -136,9 +164,13 @@ struct Fake : Driver {
     Result queryResidency(std::uint32_t h) override { require(buffers.count(h)); ++calls; return {0, 0, 1}; }
     Result destroy(Kind k, std::uint32_t h) override {
         require(h > 500); ++calls;
-        if (k == Kind::PagingSync) return {0, 0, 0}; // borrowed, queue destroys the native object
+        if (k == Kind::PagingSync || k == Kind::HwQueueSync) return {0, 0, 0}; // borrowed
         if (k == Kind::VendorAllocation) return destroyVendorAllocations(vendorOwners.at(h), {h});
-        if (!fail) { destroyed.push_back(k); if (k == Kind::Allocation) require(buffers.erase(h) == 1); }
+        if (!fail) {
+            destroyed.push_back(k);
+            if (k == Kind::Allocation) require(buffers.erase(h) == 1);
+            if (k == Kind::HwQueue) require(hwQueueParents.erase(h) == 1);
+        }
         return {fail ? -123 : 0, 0, 0};
     }
 };
@@ -746,6 +778,117 @@ int main() {
         // EOF retains the vendor allocation for native child-before-parent destruction.
     }
     require(cpu.vendorOwners.empty() && cpu.cpuLocks > 0 && cpu.cpuUnlocks > 0);
+    Fake translation; translation.vendorEnabled = translation.translationEnabled = true;
+    {
+        Session s(translation);
+        require(header(s.dispatch(request(Op::TranslateVendorAllocation, 3, VendorTranslationDesc{2, 1, 0, 0}))).status == -71);
+        s.dispatch(hello());
+        const auto adapter = header(s.dispatch(request(Op::OpenAdapter))).handle;
+        const auto device = header(s.dispatch(request(Op::CreateDevice, adapter))).handle;
+        const auto otherAdapter = header(s.dispatch(request(Op::OpenAdapter))).handle;
+        const auto otherDevice = header(s.dispatch(request(Op::CreateDevice, otherAdapter))).handle;
+        auto create = [&] {
+            auto p = request(Op::CreateVendorAllocation, device, VendorAllocationDesc{0, 0, 0, 1, 0, 0});
+            p.push_back(37); return header(s.dispatch(p)).handle;
+        };
+        const auto allocation = create(), second = create();
+        const auto translate = request(Op::TranslateVendorAllocation, allocation, VendorTranslationDesc{device, adapter, 0, 0});
+        const auto before = translation.calls;
+        translation.translationEnabled = false; require(header(s.dispatch(translate)).status == -95);
+        translation.translationEnabled = true;
+        require(header(s.dispatch(request(Op::TranslateVendorAllocation, allocation))).status == -22);
+        for (const auto desc : {VendorTranslationDesc{0, adapter, 0, 0}, VendorTranslationDesc{device, 0, 0, 0},
+                               VendorTranslationDesc{device, adapter, 1, 0}, VendorTranslationDesc{device, adapter, 0, 1}})
+            require(header(s.dispatch(request(Op::TranslateVendorAllocation, allocation, desc))).status == -22);
+        for (const auto desc : {VendorTranslationDesc{otherDevice, otherAdapter, 0, 0}, VendorTranslationDesc{device, otherAdapter, 0, 0},
+                               VendorTranslationDesc{allocation, adapter, 0, 0}, VendorTranslationDesc{device, device, 0, 0}})
+            require(header(s.dispatch(request(Op::TranslateVendorAllocation, allocation, desc))).status == -9);
+        require(header(s.dispatch(request(Op::TranslateVendorAllocation, device, VendorTranslationDesc{device, adapter, 0, 0}))).status == -9);
+        require(translation.calls == before);
+        translation.fail = true;
+        auto out = s.dispatch(translate); Reply body{}; std::memcpy(&body, out.data() + sizeof(Header), sizeof body);
+        require(header(out).status == 0 && header(out).handle == allocation && body.ntstatus == -123 && body.value == 0);
+        translation.badTranslationReply = 5; require(header(s.dispatch(translate)).status == -5);
+        translation.fail = false;
+        for (int malformedTranslation = 1; malformedTranslation <= 4; ++malformedTranslation) {
+            translation.badTranslationReply = malformedTranslation; require(header(s.dispatch(translate)).status == -5);
+        }
+        translation.badTranslationReply = 0;
+        out = s.dispatch(translate); std::memcpy(&body, out.data() + sizeof(Header), sizeof body);
+        require(header(out).handle == allocation && body.ntstatus == 0 && body.value == 0x10000000ull + allocation + 500);
+        require(translation.lastTranslationHandles == std::vector<std::uint32_t>{allocation + 500, device + 500, adapter + 500});
+        require(header(s.dispatch(translate)).status == 0);
+        translation.translationOverride = static_cast<std::uint32_t>(body.value);
+        require(header(s.dispatch(request(Op::TranslateVendorAllocation, second, VendorTranslationDesc{device, adapter, 0, 0}))).status == -5);
+        ++translation.translationOverride; require(header(s.dispatch(translate)).status == -5);
+        translation.translationOverride = 0;
+        require(header(s.dispatch(request(Op::TranslateVendorAllocation, second, VendorTranslationDesc{device, adapter, 0, 0}))).status == 0);
+        // The driver token never becomes a typed wire identity.
+        require(header(s.dispatch(request(Op::TranslateVendorAllocation, static_cast<std::uint32_t>(body.value), VendorTranslationDesc{device, adapter, 0, 0}))).status == -9);
+    }
+    require(translation.vendorOwners.empty());
+    Fake hardware; hardware.hwQueuesEnabled = hardware.vendorEnabled = true;
+    {
+        Session s(hardware);
+        require(header(s.dispatch(request(Op::CreateHwQueue, 3, HwQueueDesc{0, 4, 0, 0}))).status == -71);
+        s.dispatch(hello());
+        const auto adapter = header(s.dispatch(request(Op::OpenAdapter))).handle;
+        const auto device = header(s.dispatch(request(Op::CreateDevice, adapter))).handle;
+        auto contextPacket = request(Op::CreateContext, device, ContextDesc{0, 1, 16, 12, 4, 0});
+        contextPacket.insert(contextPacket.end(), {1, 2, 3, 4});
+        const auto context = header(s.dispatch(contextPacket)).handle;
+        const auto syncContext = header(s.dispatch(request(Op::CreateContext, device, ContextDesc{0, 0, 8, 0, 0, 0}))).handle;
+        auto create = [&](std::uint32_t parent, HwQueueDesc desc = {0, 4, 0, 0}) {
+            auto p = request(Op::CreateHwQueue, parent, desc); p.insert(p.end(), {37, 38, 39, 40}); return p;
+        };
+        auto before = hardware.calls;
+        hardware.hwQueuesEnabled = false; require(header(s.dispatch(create(context))).status == -95); hardware.hwQueuesEnabled = true;
+        require(header(s.dispatch(create(device))).status == -9);
+        require(header(s.dispatch(create(syncContext))).status == -95);
+        require(header(s.dispatch(request(Op::CreateHwQueue, context))).status == -22);
+        for (const auto desc : {HwQueueDesc{1, 4, 0, 0}, HwQueueDesc{2, 4, 0, 0}, HwQueueDesc{4, 4, 0, 0},
+                               HwQueueDesc{0, 0, 0, 0}, HwQueueDesc{0, 4001, 0, 0}, HwQueueDesc{0, 4, 1, 0}, HwQueueDesc{0, 4, 0, 1}})
+            require(header(s.dispatch(create(context, desc))).status == -22);
+        require(hardware.calls == before);
+        hardware.fail = true;
+        auto out = s.dispatch(create(context)); Reply body{}; HwQueueReply progress{};
+        std::memcpy(&body, out.data() + sizeof(Header), sizeof body);
+        std::memcpy(&progress, out.data() + sizeof(Header) + sizeof body, sizeof progress);
+        require(header(out).status == 0 && !header(out).handle && body.ntstatus == -123 && !progress.sync && !progress.gpuAddress && out.back() == 40);
+        hardware.badHwQueueReply = 12; require(header(s.dispatch(create(context))).status == -5);
+        hardware.fail = false;
+        for (int malformedQueue = 1; malformedQueue <= 11; ++malformedQueue) {
+            hardware.badHwQueueReply = malformedQueue; require(header(s.dispatch(create(context))).status == -5 && hardware.hwQueueParents.empty());
+        }
+        hardware.badHwQueueReply = 0;
+        out = s.dispatch(create(context)); const auto queue = header(out).handle;
+        std::memcpy(&progress, out.data() + sizeof(Header) + sizeof body, sizeof progress);
+        require(queue && progress.sync && progress.sync != queue && progress.offset == 8192 && progress.gpuAddress == 65536);
+        require(out[sizeof(Header) + sizeof body + sizeof progress] == (37 ^ 255));
+        before = hardware.calls;
+        require(header(s.dispatch(request(Op::DestroyContext, context))).status == -16);
+        require(header(s.dispatch(request(Op::DestroyDevice, device))).status == -16);
+        require(header(s.dispatch(request(Op::DestroyHwQueue, progress.sync))).status == -9 && hardware.calls == before);
+        auto allocationPacket = request(Op::CreateVendorAllocation, device, VendorAllocationDesc{0, 0, 0, 1, 0, 0}); allocationPacket.push_back(37);
+        const auto allocation = header(s.dispatch(allocationPacket)).handle;
+        auto release = request(Op::DestroyVendorAllocations, device, DestroyVendorDesc{1, 0});
+        const auto bytes = reinterpret_cast<const std::uint8_t*>(&allocation); release.insert(release.end(), bytes, bytes + 4);
+        before = hardware.calls; require(header(s.dispatch(release)).status == -16 && hardware.calls == before);
+        hardware.fail = true; out = s.dispatch(request(Op::DestroyHwQueue, queue)); std::memcpy(&body, out.data() + sizeof(Header), sizeof body);
+        require(header(out).status == 0 && body.ntstatus == -123 && !hardware.hwQueueParents.empty());
+        hardware.fail = false;
+        require(header(s.dispatch(request(Op::DestroyHwQueue, queue))).status == 0);
+        require(header(s.dispatch(request(Op::DestroyHwQueue, queue))).status == -9);
+        require(header(s.dispatch(release)).status == 0);
+        for (std::size_t n = 0; n < MaxHwQueues; ++n) require(header(s.dispatch(create(context))).handle != 0);
+        before = hardware.calls; require(header(s.dispatch(create(context))).status == -24 && hardware.calls == before);
+        // An allocation created after the queues still outlives them at EOF.
+        require(header(s.dispatch(allocationPacket)).handle != 0);
+        hardware.destroyed.clear();
+    }
+    require(hardware.hwQueueParents.empty() && hardware.vendorOwners.empty() && hardware.destroyed.size() >= MaxHwQueues + 5);
+    for (std::size_t n = 0; n < MaxHwQueues; ++n) require(hardware.destroyed[n] == Kind::HwQueue);
+    require(hardware.destroyed[MaxHwQueues] == Kind::VendorAllocation);
     Fake pagingQuota; pagingQuota.guestPagingEnabled = true;
     {
         Session s(pagingQuota); s.dispatch(hello());

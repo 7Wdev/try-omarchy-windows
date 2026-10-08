@@ -20,6 +20,100 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (fd < 0) return failed("open");
+    if (!std::strncmp(mode, "hwqueue-", 8)) {
+        D3DKMT_OPENADAPTERFROMLUID adapter{}; adapter.AdapterLuid.LowPart = 0x57475055;
+        if (ioctl(fd, _IOWR('G', 1, D3DKMT_OPENADAPTERFROMLUID), &adapter)) return failed("queue adapter");
+        D3DKMT_CREATEDEVICE device{}; device.hAdapter = adapter.hAdapter; device.Flags.RequestVSync = 1;
+        if (ioctl(fd, _IOWR('G', 2, D3DKMT_CREATEDEVICE), &device)) return failed("queue device");
+        unsigned char contextData[]{37, 38, 39, 40};
+        D3DKMT_CREATECONTEXTVIRTUAL context{}; context.hDevice = device.hDevice;
+        const bool sync = !std::strcmp(mode, "hwqueue-sync-context");
+        context.EngineAffinity = sync ? 0 : 1; context.Flags.Value = sync ? 8 : 16;
+        context.ClientHint = sync ? D3DKMT_CLIENTHINT_UNKNOWN : D3DKMT_CLIENTHINT_DX12;
+        context.PrivateDriverDataSize = sync ? 0 : sizeof contextData; context.pPrivateDriverData = sync ? nullptr : contextData;
+        if (ioctl(fd, _IOWR('G', 4, D3DKMT_CREATECONTEXTVIRTUAL), &context) || context.hContext != 3) return failed("queue context");
+        unsigned char data[]{37, 38, 39, 40};
+        D3DKMT_CREATEHWQUEUE queue{}; queue.hHwContext = context.hContext; queue.pPrivateDriverData = data; queue.PrivateDriverDataSize = sizeof data;
+        if (!std::strcmp(mode, "hwqueue-invalid")) {
+            for (unsigned n = 0; n < 8; ++n) {
+                auto invalid = queue;
+                switch (n) {
+                    case 0: invalid.Flags.Value = 1; break;
+                    case 1: invalid.Flags.Value = 2; break;
+                    case 2: invalid.Flags.Value = 4; break;
+                    case 3: invalid.PrivateDriverDataSize = 0; break;
+                    case 4: invalid.PrivateDriverDataSize = 4001; break;
+                    case 5: invalid.pPrivateDriverData = nullptr; break;
+                    case 6: invalid.hHwContext = 999; break;
+                    default: invalid.hHwContext = device.hDevice; break;
+                }
+                if (ioctl(fd, _IOWR('G', 24, D3DKMT_CREATEHWQUEUE), &invalid) != -1 || errno != (n < 6 ? EINVAL : EBADF)) return failed("queue invalid input");
+            }
+            D3DKMT_DESTROYHWQUEUE release{}; release.hHwQueue = 999;
+            if (ioctl(fd, _IOWR('G', 27, D3DKMT_DESTROYHWQUEUE), &release) != -1 || errno != EBADF) return failed("queue unowned destruction");
+        } else {
+            const auto expected = !std::strcmp(mode, "hwqueue-disabled") || sync ? ENOSYS :
+                                  !std::strcmp(mode, "hwqueue-nt-failure") ? EINVAL : !std::strcmp(mode, "hwqueue-no-hub") ? EIO : EPROTO;
+            if (ioctl(fd, _IOWR('G', 24, D3DKMT_CREATEHWQUEUE), &queue) != -1 || errno != expected || queue.hHwQueue ||
+                queue.hHwQueueProgressFence || queue.HwQueueProgressFenceCPUVirtualAddress || queue.HwQueueProgressFenceGPUVirtualAddress)
+                return failed("queue malformed response");
+            if (!std::strcmp(mode, "hwqueue-nt-failure") && data[0] != (37 ^ 255)) return failed("queue failure private in/out");
+            if ((expected == EPROTO || expected == EIO) && (open("/dev/dxg", O_RDONLY) != -1 || errno != EIO)) return failed("queue broken transport reused");
+        }
+        close(fd); return 0;
+    }
+    if (!std::strncmp(mode, "translation-", 12)) {
+        D3DKMT_OPENADAPTERFROMLUID adapter{}; adapter.AdapterLuid.LowPart = 0x57475055;
+        if (ioctl(fd, _IOWR('G', 1, D3DKMT_OPENADAPTERFROMLUID), &adapter)) return failed("translation adapter");
+        D3DKMT_CREATEDEVICE device{}; device.hAdapter = adapter.hAdapter; device.Flags.RequestVSync = 1;
+        if (ioctl(fd, _IOWR('G', 2, D3DKMT_CREATEDEVICE), &device)) return failed("translation device");
+        unsigned char data[]{37, 38, 39, 40};
+        D3DDDI_ALLOCATIONINFO2 info{}; info.Flags.Value = 4; info.Priority = 0x78100000;
+        info.pPrivateDriverData = data; info.PrivateDriverDataSize = sizeof data;
+        D3DKMT_CREATEALLOCATION allocation{}; allocation.hDevice = device.hDevice; allocation.NumAllocations = 1;
+        allocation.pAllocationInfo2 = &info;
+        const bool success = !std::strcmp(mode, "translation-normal") || !std::strcmp(mode, "translation-invalid") || !std::strcmp(mode, "translation-disabled");
+        const auto created = ioctl(fd, _IOWR('G', 6, D3DKMT_CREATEALLOCATION), &allocation);
+        if (success) {
+            const D3DKMT_HANDLE alias = !std::strcmp(mode, "translation-disabled") ? 3 : 0x10000003;
+            if (created || info.hAllocation != alias || data[0] != (37 ^ 255)) return failed("translation allocation alias");
+            D3DDDI_DRIVERESCAPE_TRANSLATEALLOCATIONEHANDLE known{};
+            known.EscapeType = D3DDDI_DRIVERESCAPETYPE_TRANSLATEALLOCATIONHANDLE; known.hAllocation = alias;
+            D3DKMT_ESCAPE escape{}; escape.hAdapter = adapter.hAdapter; escape.hDevice = device.hDevice;
+            escape.Type = D3DKMT_ESCAPE_DRIVERPRIVATE; escape.Flags.DriverKnownEscape = 1;
+            escape.pPrivateDriverData = &known; escape.PrivateDriverDataSize = sizeof known;
+            if (!std::strcmp(mode, "translation-disabled")) {
+                if (ioctl(fd, _IOWR('G', 13, D3DKMT_ESCAPE), &escape) != -1 || errno != ENOSYS) return failed("translation disabled escape");
+            } else {
+                if (!std::strcmp(mode, "translation-invalid")) {
+                    for (unsigned n = 0; n < 4; ++n) {
+                        auto invalid = escape; auto invalidKnown = known; invalid.pPrivateDriverData = &invalidKnown;
+                        switch (n) {
+                            case 0: invalid.hContext = 999; break;
+                            case 1: invalid.hDevice = 999; break;
+                            case 2: invalid.hAdapter = 999; break;
+                            default: invalidKnown.hAllocation = 3; break;
+                        }
+                        if (ioctl(fd, _IOWR('G', 13, D3DKMT_ESCAPE), &invalid) != -1 || errno != (n == 0 ? EINVAL : EBADF)) return failed("translation wrong identity");
+                    }
+                }
+                if (ioctl(fd, _IOWR('G', 13, D3DKMT_ESCAPE), &escape) || known.hAllocation != alias) return failed("translation repeated known escape");
+            }
+            D3DKMT_HANDLE handle = alias;
+            D3DKMT_DESTROYALLOCATION2 release{}; release.hDevice = device.hDevice; release.phAllocationList = &handle; release.AllocationCount = 1;
+            if (alias != 3) {
+                handle = 3;
+                if (ioctl(fd, _IOWR('G', 19, D3DKMT_DESTROYALLOCATION2), &release) != -1 || errno != EBADF) return failed("raw wire ID accepted as guest alias");
+                handle = alias;
+            }
+            if (ioctl(fd, _IOWR('G', 19, D3DKMT_DESTROYALLOCATION2), &release)) return failed("translation alias destruction");
+        } else {
+            const auto expected = !std::strcmp(mode, "translation-nt-failure") || !std::strcmp(mode, "translation-failed-cleanup") ? EINVAL : EPROTO;
+            if (created != -1 || errno != expected || info.hAllocation || data[0] != (37 ^ 255)) return failed("translation malformed response");
+            if (expected == EPROTO && (open("/dev/dxg", O_RDONLY) != -1 || errno != EIO)) return failed("translation broken connection reused");
+        }
+        close(fd); return 0;
+    }
     if (!std::strncmp(mode, "cpu-", 4)) {
         D3DKMT_OPENADAPTERFROMLUID adapter{}; adapter.AdapterLuid.LowPart = 0x57475055;
         if (ioctl(fd, _IOWR('G', 1, D3DKMT_OPENADAPTERFROMLUID), &adapter)) return failed("CPU adapter");

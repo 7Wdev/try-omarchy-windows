@@ -66,7 +66,7 @@ public:
     Fences() = default;
     Fences(const Fences&) = delete;
     ~Fences() { for (const auto& mapping : mappings) munmap(mapping.second.page, 4096); }
-    void* map(std::uint32_t queue, std::uint64_t offset) {
+    void* map(std::uint32_t queue, std::uint64_t offset, const char* category = "paging") {
         if (!queue || offset % 8 || offset >= driver_bridge::FenceApertureBytes || mappings.count(queue) || mappings.size() >= 64)
             throw std::runtime_error("Invalid guest fence identity or offset");
         if (resource.fd < 0) discover();
@@ -83,8 +83,8 @@ public:
             mappings.emplace(queue, Mapping{page, fence});
         } catch (...) { munmap(page, 4096); throw; }
         reads += 10000; ++created;
-        std::fprintf(stderr, "LINUX_BRIDGE pagingFenceMapped=true direct=true loads=10000 offset=%llu value=%llu\n",
-                     static_cast<unsigned long long>(offset), static_cast<unsigned long long>(observed));
+        std::fprintf(stderr, "LINUX_BRIDGE %sFenceMapped=true direct=true loads=10000 offset=%llu value=%llu\n",
+                     category, static_cast<unsigned long long>(offset), static_cast<unsigned long long>(observed));
         return const_cast<std::uint64_t*>(fence);
     }
     void verifyRetired(std::uint32_t queue, std::uint64_t target, const char* operation) {
@@ -106,6 +106,7 @@ public:
         mappings.erase(found);
     }
     unsigned total() const { return created; }
+    bool contains(std::uint32_t queue) const { return mappings.count(queue) != 0; }
     std::uint64_t directLoads() const { return reads; }
 };
 } // namespace guest_paging
