@@ -87,7 +87,7 @@ func writeDiagnostics(dir string, facts map[string]string) (string, error) {
 	if info, err := os.Lstat(filepath.Join(dir, desktopPreferencesFilename)); err == nil && info.Mode().IsRegular() {
 		if prefs, err := loadDesktopPreferences(dir); err == nil {
 			// Device identity can contain a USB serial number; keep only selection state.
-			value := map[string]any{"cameraDisabled": prefs.CameraDisabled, "microphoneDisabled": prefs.MicrophoneDisabled, "cameraSelected": prefs.CameraID != "", "automaticUpdatesDisabled": prefs.AutomaticUpdatesDisabled}
+			value := map[string]any{"cameraDisabled": prefs.CameraDisabled, "microphoneDisabled": prefs.MicrophoneDisabled, "cameraSelected": prefs.CameraID != "", "automaticUpdatesDisabled": prefs.AutomaticUpdatesDisabled, "volumeSyncDisabled": prefs.VolumeSyncDisabled}
 			data, _ := json.MarshalIndent(value, "", "  ")
 			if err := addDiagnosticText(w, "desktop-preferences.redacted.json", string(data)); err != nil {
 				return fail(err)
