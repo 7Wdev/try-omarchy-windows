@@ -5,6 +5,7 @@
 #include <wsl/winadapter.h>
 #include <dxg/d3dkmthk.h>
 #include "adapter_query_client.h"
+#include "guest_paging_fence.h"
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -205,6 +206,7 @@ public:
 struct Response { Header header; Reply result; std::vector<std::uint8_t> data; };
 class Bridge {
     Transport transport;
+    guest_paging::Fences pagingFences;
     bool negotiated = false;
     native_gpu::Capabilities caps{};
     unsigned counts[256]{}, completedQueries = 0, privateQueries = 0, contexts = 0;
@@ -279,6 +281,8 @@ public:
     ~Bridge() {
         std::fprintf(stderr, "LINUX_BRIDGE summary completedQueries=%u privateQueries=%u nativeContexts=%u realDxgForwarding=false\n",
                      completedQueries, privateQueries, contexts);
+        std::fprintf(stderr, "LINUX_BRIDGE pagingSummary queues=%u directLoads=%llu\n", pagingFences.total(),
+                     static_cast<unsigned long long>(pagingFences.directLoads()));
         for (unsigned n = 0; n < 256; ++n)
             if (counts[n]) std::fprintf(stderr, "LINUX_BRIDGE ioctlSummary nr=%u count=%u\n", n, counts[n]);
         for (const auto& entry : descriptors) rawClose(entry.first);
@@ -363,6 +367,31 @@ public:
                 std::fprintf(stderr, "LINUX_BRIDGE deviceCreated=true\n"); return 0;
             }
             case 25: { auto& a = args<D3DKMT_DESTROYDEVICE>(requestNumber, pointer); destroy(Op::DestroyDevice, a.hDevice); return 0; }
+            case 7: {
+                auto& a = args<D3DKMT_CREATEPAGINGQUEUE>(requestNumber, pointer);
+                if (!(caps.flags & GuestPagingCapability) || a.Priority != D3DDDI_PAGINGQUEUE_PRIORITY_NORMAL || a.PhysicalAdapterIndex) {
+                    std::fprintf(stderr, "LINUX_BRIDGE unsupported nr=7 bytes=%zu\n", sizeof a);
+                    throw Error(ENOSYS);
+                }
+                const auto result = call(request(Op::CreateGuestPagingQueue, a.hDevice), sizeof(PagingReply));
+                PagingReply reply{}; std::memcpy(&reply, result.data.data(), sizeof reply);
+                if (!result.header.handle || !reply.sync || reply.sync == result.header.handle || reply.reserved || result.result.value ||
+                    reply.offset % 8 || reply.offset >= FenceApertureBytes) { transport.fail(); throw Error(EPROTO); }
+                try { a.FenceValueCPUVirtualAddress = pagingFences.map(result.header.handle, reply.offset); }
+                catch (...) {
+                    // The failed mapping never escapes to the runtime. The
+                    // native owner acknowledges unmap before freeing its page.
+                    destroy(Op::DestroyPagingQueue, result.header.handle);
+                    throw;
+                }
+                a.hPagingQueue = result.header.handle; a.hSyncObject = reply.sync;
+                return 0;
+            }
+            case 28: {
+                auto& a = args<D3DDDI_DESTROYPAGINGQUEUE>(requestNumber, pointer);
+                pagingFences.unmap(a.hPagingQueue);
+                destroy(Op::DestroyPagingQueue, a.hPagingQueue); return 0;
+            }
             case 4: {
                 auto& a = args<D3DKMT_CREATECONTEXTVIRTUAL>(requestNumber, pointer);
                 const ContextDesc desc{a.NodeOrdinal, a.EngineAffinity, a.Flags.Value, static_cast<unsigned>(a.ClientHint), a.PrivateDriverDataSize, 0};

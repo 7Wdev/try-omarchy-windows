@@ -12,8 +12,11 @@ support also passed QEMU acceptance on 2026-10-08; see the
 [Linux UMD compatibility experiment](UMD-CONTEXT-COMPATIBILITY.md).
 The Omarchy launcher does not select this backend yet.
 The [live NVIDIA runtime diagnostic](LIVE-NVIDIA-RUNTIME.md) loads the local
-Linux UMD inside QEMU and reaches native device creation before the unsupported
-paging-queue interface. It does not complete D3D12 device initialization.
+Linux UMD inside QEMU and reaches native paging and graphics context creation
+before the unsupported live allocation interface. The
+[dynamic paging bridge](LIVE-PAGING-BRIDGE.md) directly maps queue fences and
+acknowledges unmapping before releasing native pages. It does not complete
+D3D12 device initialization.
 
 ## Implemented path
 

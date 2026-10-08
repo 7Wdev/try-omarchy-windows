@@ -12,10 +12,13 @@ struct Fake : Driver {
     int calls = 0; std::uint32_t next = 500; bool fail = false, shortRead = false, badContextReply = false;
     bool contextsEnabled = true;
     bool queriesEnabled = true, badQueryReply = false;
+    bool guestPagingEnabled = false;
+    int badPagingReply = 0;
     std::map<std::uint32_t, std::vector<std::uint8_t>> buffers;
     std::vector<Kind> destroyed;
     native_gpu::Capabilities capabilities() const override {
-        return {1, 31u | (contextsEnabled ? ContextCapability : 0u) | (queriesEnabled ? QueryCapability : 0u), 0x10de, 123};
+        return {1, 31u | (contextsEnabled ? ContextCapability : 0u) | (queriesEnabled ? QueryCapability : 0u) |
+                (guestPagingEnabled ? GuestPagingCapability : 0u), 0x10de, 123};
     }
     Result created() { ++calls; return {fail ? -123 : 0, ++next, 0}; }
     Result openAdapter() override { return created(); }
@@ -34,6 +37,13 @@ struct Fake : Driver {
         return created();
     }
     Result createPagingQueue(std::uint32_t h) override { require(h > 500); return created(); }
+    GuestPagingResult createGuestPagingQueue(std::uint32_t h) override {
+        require(h > 500);
+        auto queue = created();
+        const auto sync = badPagingReply == 1 ? 0 : ++next;
+        if (badPagingReply == 4) queue.value = UINT64_MAX;
+        return {queue, sync, badPagingReply == 2 ? 1ull : badPagingReply == 3 ? FenceApertureBytes : 8192ull};
+    }
     Result readPagingFence(std::uint32_t h) override { require(h > 500); ++calls; return {0, 0, 42}; }
     Result createAllocation(std::uint32_t h, std::uint32_t size) override {
         require(h > 500); auto result = created();
@@ -69,6 +79,7 @@ struct Fake : Driver {
     Result queryResidency(std::uint32_t h) override { require(buffers.count(h)); ++calls; return {0, 0, 1}; }
     Result destroy(Kind k, std::uint32_t h) override {
         require(h > 500); ++calls;
+        if (k == Kind::PagingSync) return {0, 0, 0}; // borrowed, queue destroys the native object
         if (!fail) { destroyed.push_back(k); if (k == Kind::Allocation) require(buffers.erase(h) == 1); }
         return {fail ? -123 : 0, 0, 0};
     }
@@ -349,6 +360,64 @@ int main() {
         for (std::size_t i = 0; i < MaxObjects; ++i) require(header(s.dispatch(request(Op::OpenAdapter))).status == 0);
         const auto before = bounded.calls;
         require(header(s.dispatch(request(Op::OpenAdapter))).status == -24 && bounded.calls == before);
+    }
+    Fake paging;
+    {
+        Session s(paging);
+        require(header(s.dispatch(request(Op::CreateGuestPagingQueue))).status == -71);
+        s.dispatch(hello());
+        const auto a = header(s.dispatch(request(Op::OpenAdapter))).handle;
+        const auto d = header(s.dispatch(request(Op::CreateDevice, a))).handle;
+        auto before = paging.calls;
+        require(header(s.dispatch(request(Op::CreateGuestPagingQueue, d))).status == -95 && paging.calls == before);
+        paging.guestPagingEnabled = true;
+        require(header(s.dispatch(request(Op::CreateGuestPagingQueue, a))).status == -9);
+        require(header(s.dispatch(request(Op::CreateGuestPagingQueue, d, unsigned{0}))).status == -22);
+        require(paging.calls == before);
+        for (int invalid = 1; invalid <= 4; ++invalid) {
+            paging.badPagingReply = invalid;
+            const auto destroys = paging.destroyed.size();
+            require(header(s.dispatch(request(Op::CreateGuestPagingQueue, d))).status == -5);
+            require(paging.destroyed.size() == destroys + 1 && paging.destroyed.back() == Kind::PagingQueue);
+        }
+        paging.badPagingReply = 0; paging.fail = true;
+        auto packet = s.dispatch(request(Op::CreateGuestPagingQueue, d));
+        Reply nt{}; std::memcpy(&nt, packet.data() + sizeof(Header), sizeof nt);
+        require(packet.size() == sizeof(Header) + sizeof(Reply) && !header(packet).handle && nt.ntstatus == -123);
+        paging.fail = false;
+        packet = s.dispatch(request(Op::CreateGuestPagingQueue, d));
+        const auto queue = header(packet).handle;
+        PagingReply info{}; require(packet.size() == sizeof(Header) + sizeof(Reply) + sizeof info);
+        std::memcpy(&info, packet.data() + sizeof(Header) + sizeof(Reply), sizeof info);
+        require(queue == 3 && info.sync == 4 && !info.reserved && info.offset == 8192);
+        before = paging.calls;
+        require(header(s.dispatch(request(Op::ReadPagingFence, info.sync))).status == -9);
+        require(header(s.dispatch(request(Op::DestroyPagingQueue, info.sync))).status == -9);
+        require(header(s.dispatch(request(Op::DestroyDevice, d))).status == -16 && paging.calls == before);
+        paging.fail = true;
+        packet = s.dispatch(request(Op::DestroyPagingQueue, queue));
+        std::memcpy(&nt, packet.data() + sizeof(Header), sizeof nt); require(nt.ntstatus == -123);
+        require(header(s.dispatch(request(Op::DestroyDevice, d))).status == -16);
+        paging.fail = false;
+        require(header(s.dispatch(request(Op::ReadPagingFence, queue))).status == 0);
+        const auto destroys = paging.destroyed.size();
+        require(header(s.dispatch(request(Op::DestroyPagingQueue, queue))).status == 0);
+        require(paging.destroyed.size() == destroys + 1); // no separate native sync destruction
+        require(header(s.dispatch(request(Op::ReadPagingFence, queue))).status == -9);
+        require(header(s.dispatch(request(Op::DestroyPagingQueue, info.sync))).status == -9);
+        require(header(s.dispatch(request(Op::CreateGuestPagingQueue, d))).handle > info.sync);
+    }
+    require(paging.destroyed[paging.destroyed.size() - 3] == Kind::PagingQueue);
+    require(paging.destroyed.back() == Kind::Adapter);
+    Fake pagingQuota; pagingQuota.guestPagingEnabled = true;
+    {
+        Session s(pagingQuota); s.dispatch(hello());
+        const auto a = header(s.dispatch(request(Op::OpenAdapter))).handle;
+        const auto d = header(s.dispatch(request(Op::CreateDevice, a))).handle;
+        for (std::size_t n = 0; n < (MaxObjects - 2) / 2; ++n)
+            require(header(s.dispatch(request(Op::CreateGuestPagingQueue, d))).handle != 0);
+        const auto before = pagingQuota.calls;
+        require(header(s.dispatch(request(Op::CreateGuestPagingQueue, d))).status == -24 && pagingQuota.calls == before);
     }
     Fake malformed; Session s(malformed); s.dispatch(hello());
     auto p = request(Op::OpenAdapter); p.push_back(0);

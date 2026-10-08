@@ -25,6 +25,7 @@ jobs:
           path: |
             experimental/windows-native-gpu/build/native-gpu.exe
             experimental/windows-native-gpu/build/driver-bridge.exe
+            experimental/windows-native-gpu/build/nlohmann-json-LICENSE.MIT
             dist/TryOmarchy-7Wdev.exe
   portable-checks:
     runs-on: ubuntu-latest
@@ -46,6 +47,8 @@ jobs:
           /tmp/native-wire-test
           c++ -std=c++17 -Wall -Wextra -Werror experimental/windows-native-gpu/driver_wire_test.cpp -o /tmp/driver-wire-test
           /tmp/driver-wire-test
+          c++ -std=c++17 -Wall -Wextra -Werror experimental/windows-native-gpu/qmp_protocol_test.cpp -o /tmp/qmp-protocol-test
+          /tmp/qmp-protocol-test
           sh experimental/windows-native-gpu/build_guest.sh
           python3 -m unittest discover -s scripts/fork -p 'test_*.py'
           cc -std=c11 -Wall -Wextra -Werror experimental/qemu/fence_map_test.c -o /tmp/fence-map-test
@@ -56,7 +59,7 @@ jobs:
           c++ -std=c++17 -Wall -Wextra -Werror -isystem .runtime-headers/include -isystem .runtime-headers/include/wsl/stubs -isystem .runtime-dxg/include experimental/windows-native-gpu/linux_ioctl_bridge_test.cpp -o /tmp/linux-ioctl-bridge-test
           python3 experimental/windows-native-gpu/test_linux_ioctl_bridge.py --shim /tmp/linux-ioctl-bridge.so --probe /tmp/linux-ioctl-bridge-test
           cc -static -std=c11 -Wall -Wextra -Werror -O2 experimental/windows-native-gpu/runtime_guest_init.c -o /tmp/runtime-init
-          python3 -m py_compile experimental/windows-native-gpu/make_runtime_initramfs.py experimental/windows-native-gpu/test_runtime_qemu.py
+          python3 -m py_compile experimental/windows-native-gpu/make_runtime_initramfs.py experimental/windows-native-gpu/test_runtime_qemu.py experimental/windows-native-gpu/test_owned_runtime_qemu.py
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: wddm-bridge-guest-probe

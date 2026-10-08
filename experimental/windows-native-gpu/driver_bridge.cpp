@@ -17,12 +17,19 @@
 #include <stdexcept>
 #include <string>
 #include "driver_wire.h"
+#include "qemu_runtime_host.h"
 using Microsoft::WRL::ComPtr;
 using namespace driver_bridge;
 class KmtDriver : public Driver {
     LUID luid{};
     DXGI_ADAPTER_DESC1 description{};
-    std::map<std::uint32_t, volatile std::uint64_t*> pagingFences;
+    struct Paging {
+        volatile std::uint64_t* fence;
+        std::uint32_t sync;
+        std::optional<driver_qemu::FenceLease> lease;
+    };
+    std::map<std::uint32_t, Paging> pagingFences;
+    driver_qemu::Runtime* runtime = nullptr;
     struct Allocation {
         std::uint32_t device, resource, size;
         void* memory;
@@ -56,10 +63,10 @@ class KmtDriver : public Driver {
     }
     bool waitPaging(std::uint32_t queue, std::uint64_t target) const {
         const auto fence = pagingFences.find(queue);
-        if (fence == pagingFences.end() || !fence->second) return false;
+        if (fence == pagingFences.end() || !fence->second.fence) return false;
         const auto deadline = GetTickCount64() + 5000;
-        while (*fence->second < target && GetTickCount64() < deadline) Sleep(1);
-        MemoryBarrier(); return *fence->second >= target;
+        while (*fence->second.fence < target && GetTickCount64() < deadline) Sleep(1);
+        MemoryBarrier(); return *fence->second.fence >= target;
     }
     static bool rangeValid(const Allocation& a, Range range) {
         return range.size && range.size <= MaxChunk && range.size <= a.size && range.offset <= a.size - range.size;
@@ -81,8 +88,9 @@ class KmtDriver : public Driver {
         allocatedBytes += size; return {status, info.hAllocation, size};
     }
 public:
-    KmtDriver(std::string sectionName, std::uint32_t sectionBytes, bool enableContexts, bool enableQueries)
-        : contextsEnabled(enableContexts), queriesEnabled(enableQueries),
+    KmtDriver(std::string sectionName, std::uint32_t sectionBytes, bool enableContexts, bool enableQueries,
+              driver_qemu::Runtime* ownedRuntime = nullptr)
+        : runtime(ownedRuntime), contextsEnabled(enableContexts), queriesEnabled(enableQueries),
           guestSectionName(std::move(sectionName)), guestBytes(sectionBytes) {
         const std::string prefix = "Local\\7Wdev-WDDM-";
         if (!guestSectionName.empty()) {
@@ -123,7 +131,7 @@ public:
         // imports. Bit 4: bounded, synchronous GPU buffer copy between shared
         // allocations. No arbitrary guest command stream or scanout support.
         return {Version, (guestSectionName.empty() ? 7u : 31u) | (contextsEnabled ? ContextCapability : 0u) |
-                (queriesEnabled ? QueryCapability : 0u),
+                (queriesEnabled ? QueryCapability : 0u) | (runtime ? GuestPagingCapability : 0u),
                 description.VendorId, description.DeviceId};
     }
     Result openAdapter() override {
@@ -171,14 +179,39 @@ public:
     Result createPagingQueue(std::uint32_t device) override {
         D3DKMT_CREATEPAGINGQUEUE a{}; a.hDevice = device; a.Priority = D3DDDI_PAGINGQUEUE_PRIORITY_NORMAL;
         const auto status = D3DKMTCreatePagingQueue(&a);
-        if (status >= 0) pagingFences.emplace(a.hPagingQueue, static_cast<volatile std::uint64_t*>(a.FenceValueCPUVirtualAddress));
+        if (status >= 0) {
+            try { pagingFences.emplace(a.hPagingQueue, Paging{
+                static_cast<volatile std::uint64_t*>(a.FenceValueCPUVirtualAddress), a.hSyncObject, std::nullopt}); }
+            catch (...) {
+                D3DDDI_DESTROYPAGINGQUEUE cleanup{}; cleanup.hPagingQueue = a.hPagingQueue;
+                if (D3DKMTDestroyPagingQueue(&cleanup) < 0) ++cleanupFailures;
+                throw;
+            }
+        }
         return {status, a.hPagingQueue, 0};
+    }
+    GuestPagingResult createGuestPagingQueue(std::uint32_t device) override {
+        if (!runtime) return Driver::createGuestPagingQueue(device);
+        const auto result = createPagingQueue(device);
+        if (result.ntstatus < 0) return {result, 0, 0};
+        auto& queue = pagingFences.at(result.nativeHandle);
+        try {
+            if (!queue.sync) throw std::runtime_error("Native paging synchronization object absent");
+            queue.lease = runtime->map(queue.fence);
+            return {result, queue.sync, queue.lease->offset};
+        } catch (...) {
+            // map() stops its owned VM before returning a control failure.
+            // Also stop on a malformed native result before releasing pages.
+            runtime->stop(0);
+            destroy(Kind::PagingQueue, result.nativeHandle);
+            throw;
+        }
     }
     Result readPagingFence(std::uint32_t queue) override {
         const auto entry = pagingFences.find(queue);
-        if (entry == pagingFences.end() || !entry->second) return {static_cast<std::int32_t>(0xc0000008u), 0, 0};
+        if (entry == pagingFences.end() || !entry->second.fence) return {static_cast<std::int32_t>(0xc0000008u), 0, 0};
         // x64 aligned read from the KMT-owned read-only mapping, never exported.
-        const auto value = *entry->second; MemoryBarrier(); return {0, 0, value};
+        const auto value = *entry->second.fence; MemoryBarrier(); return {0, 0, value};
     }
     Result createAllocation(std::uint32_t device, std::uint32_t size) override {
         if (!size || size % 4096 || size > MaxAllocation || size > MaxAllocatedBytes - allocatedBytes)
@@ -342,8 +375,22 @@ public:
                 allocatedBytes -= entry->second.size; allocations.erase(entry);
             }
         } else if (kind == Kind::PagingQueue) {
+            const auto queue = pagingFences.find(handle);
+            if (queue == pagingFences.end()) return {Invalid, 0, 0};
+            if (queue->second.lease) {
+                try { runtime->unmap(*queue->second.lease); }
+                catch (...) {
+                    // No unmap acknowledgement: retain pages until the owned
+                    // VM has exited. Its control failure is reported separately.
+                    runtime->stop(0);
+                }
+                queue->second.lease.reset();
+            }
             D3DDDI_DESTROYPAGINGQUEUE a{}; a.hPagingQueue = handle; status = D3DKMTDestroyPagingQueue(&a);
             if (status >= 0) pagingFences.erase(handle);
+        } else if (kind == Kind::PagingSync) {
+            // Borrowed queue-owned KMT sync object; the queue releases it.
+            return {0, 0, 0};
         } else if (kind == Kind::Context) {
             D3DKMT_DESTROYCONTEXT a{}; a.hContext = handle; status = D3DKMTDestroyContext(&a);
             if (status >= 0) --activeContexts;
@@ -430,13 +477,16 @@ public:
     }
 };
 static void serve(Stream& stream, const std::string& sectionName = {}, std::uint32_t sectionBytes = 0,
-                  bool contexts = false, bool queries = false) {
-    KmtDriver driver(sectionName, sectionBytes, contexts, queries);
+                  bool contexts = false, bool queries = false, driver_qemu::Runtime* runtime = nullptr) {
+    KmtDriver driver(sectionName, sectionBytes, contexts, queries, runtime);
     std::exception_ptr failure;
-    try {
+    {
       Session session(driver);
+      try {
       unsigned count = 0;
+      const auto deadline = GetTickCount64() + 60000;
       for (; count < 10000; ++count) {
+        if (runtime && GetTickCount64() >= deadline) throw std::runtime_error("Owned runtime diagnostic deadline exceeded");
         // A byte stream needs a length prefix outside the borrowed 16-byte
         // descriptor header. Both are little endian; target host/guest are x64.
         std::uint32_t size{};
@@ -448,7 +498,11 @@ static void serve(Stream& stream, const std::string& sectionName = {}, std::uint
         stream.write(reply.data(), reply.size());
       }
       if (count == 10000) throw std::runtime_error("Session request quota exceeded");
-    } catch (...) { failure = std::current_exception(); }
+      } catch (...) { failure = std::current_exception(); }
+      // Session destruction releases queue pages. A transport failure must
+      // first stop the owned VM; graceful EOF waits for its normal poweroff.
+      if (runtime) runtime->stop(failure ? 0 : 5000);
+    }
     driver.releaseGuestMemory(); driver.reportCleanup();
     if (!driver.clean()) throw std::runtime_error("Driver object cleanup failed");
     if (failure) std::rethrow_exception(failure);
@@ -470,14 +524,17 @@ int main(int argc, char** argv) {
                 throw std::runtime_error("Cannot set binary stdio mode");
             Stream stream; serve(stream, {}, 0, contexts, queries); return 0;
         }
-        if ((argc != 3 && argc != 7) || std::string(argv[1]) != "--listen") {
+        const bool ownedRuntime = argc == 7 && std::string(argv[1]) == "--run-qemu";
+        if (!ownedRuntime && ((argc != 3 && argc != 7) || std::string(argv[1]) != "--listen")) {
             std::cerr << "Usage: driver-bridge.exe --stdio | --listen port [--guest-section name --guest-ram-bytes count] "
-                "[--driver-contexts] [--driver-queries]\n"; return 2;
+                "[--driver-contexts] [--driver-queries]\n"
+                "       driver-bridge.exe --run-qemu qemu firmware kernel initramfs fresh-log --driver-contexts --driver-queries\n"; return 2;
         }
-        std::size_t end{}; const auto port = std::stoul(argv[2], &end);
-        if (end != std::string(argv[2]).size() || port > 65535) throw std::runtime_error("Invalid port");
+        if (ownedRuntime && (!contexts || !queries)) throw std::runtime_error("Owned QEMU runtime requires explicit query/context opt-ins");
+        std::size_t end{}; const auto port = ownedRuntime ? 0ul : std::stoul(argv[2], &end);
+        if (!ownedRuntime && (end != std::string(argv[2]).size() || port > 65535)) throw std::runtime_error("Invalid port");
         std::string sectionName; std::uint32_t sectionBytes = 0;
-        if (argc == 7) {
+        if (argc == 7 && !ownedRuntime) {
             if (std::string(argv[3]) != "--guest-section" || std::string(argv[5]) != "--guest-ram-bytes")
                 throw std::runtime_error("Invalid guest section arguments");
             sectionName = argv[4]; const auto bytes = std::stoul(argv[6], &end);
@@ -498,6 +555,9 @@ int main(int argc, char** argv) {
         int length = sizeof address;
         if (getsockname(listener.value, reinterpret_cast<sockaddr*>(&address), &length)) throw std::runtime_error("getsockname failed");
         std::cout << "{\"port\":" << ntohs(address.sin_port) << ",\"transport\":\"tcp-loopback\"}\n" << std::flush;
+        std::unique_ptr<driver_qemu::Runtime> runtime;
+        if (ownedRuntime) runtime = std::make_unique<driver_qemu::Runtime>(ntohs(address.sin_port),
+            qemu_fence::Paths{argv[2], argv[3], argv[4], argv[5], argv[6]});
         fd_set reads; FD_ZERO(&reads); FD_SET(listener.value, &reads); timeval timeout{60, 0};
         if (select(0, &reads, nullptr, nullptr, &timeout) != 1) throw std::runtime_error("Connection timed out");
         Socket client; client.value = accept(listener.value, nullptr, nullptr);
@@ -506,6 +566,11 @@ int main(int argc, char** argv) {
         if (setsockopt(client.value, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&milliseconds), sizeof milliseconds) ||
             setsockopt(client.value, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&milliseconds), sizeof milliseconds))
             throw std::runtime_error("Cannot set socket timeouts");
-        Stream stream(client.value); serve(stream, sectionName, sectionBytes, contexts, queries); return 0;
+        Stream stream(client.value); serve(stream, sectionName, sectionBytes, contexts, queries, runtime.get());
+        if (runtime) {
+            runtime->report();
+            if (!runtime->cleanExit()) throw std::runtime_error("Owned QEMU runtime did not exit cleanly");
+        }
+        return 0;
     } catch (const std::exception& error) { std::cerr << "FAIL: " << error.what() << '\n'; return 1; }
 }

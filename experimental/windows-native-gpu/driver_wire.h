@@ -14,6 +14,8 @@ constexpr std::uint32_t MaxChunk = 4064;
 constexpr std::uint32_t ContextCapability = 32;
 constexpr std::uint32_t MaxContextPrivateBytes = 4000;
 constexpr std::uint32_t QueryCapability = 64;
+constexpr std::uint32_t GuestPagingCapability = 128;
+constexpr std::uint64_t FenceApertureBytes = 64 * 4096;
 constexpr std::uint32_t MaxQueryBytes = 65536;
 constexpr std::size_t MaxActiveQueries = 2;
 struct QueryDesc { std::uint32_t type, bytes, reserved, reserved2; };
@@ -44,9 +46,10 @@ enum class Op : std::uint32_t {
     CreateAllocation = 0x2010, WriteAllocation, ReadAllocation, MakeResident,
     MapAllocation, QueryResidency, DestroyAllocation, CreateSharedAllocation, CopySharedAllocation,
     CreateContext = 0x2020, DestroyContext,
-    BeginAdapterQuery = 0x2030, WriteAdapterQuery, RunAdapterQuery, ReadAdapterQuery, EndAdapterQuery
+    BeginAdapterQuery = 0x2030, WriteAdapterQuery, RunAdapterQuery, ReadAdapterQuery, EndAdapterQuery,
+    CreateGuestPagingQueue = 0x2040
 };
-enum class Kind { Adapter, Device, PagingQueue, Allocation, Context };
+enum class Kind { Adapter, Device, PagingQueue, Allocation, Context, PagingSync };
 struct ContextDesc {
     std::uint32_t node, engine, flags, clientHint, privateBytes, reserved;
 };
@@ -67,6 +70,11 @@ static_assert(sizeof(GuestRange) == 16, "fixed guest range layout");
 struct CopyRange { std::uint32_t source; std::uint32_t sourceOffset; std::uint32_t destinationOffset; std::uint32_t size; };
 static_assert(sizeof(CopyRange) == 16, "fixed GPU copy layout");
 struct Result { std::int32_t ntstatus; std::uint32_t nativeHandle; std::uint64_t value; };
+// The synchronization object is borrowed from the paging queue. Destruction
+// of the queue owns its lifetime; no native handle is exposed to the guest.
+struct GuestPagingResult { Result queue; std::uint32_t sync; std::uint64_t offset; };
+struct PagingReply { std::uint32_t sync, reserved; std::uint64_t offset; };
+static_assert(sizeof(PagingReply) == 16, "fixed guest paging reply");
 // Native KMT object fields use local IDs, never raw handles/pointers. Opt-in
 // context private data is opaque and requires a compatible PV-aware UMD.
 // NTSTATUS is preserved in
@@ -83,6 +91,9 @@ public:
     virtual Result createDevice(std::uint32_t adapter) = 0;
     virtual Result createContext(std::uint32_t device, ContextDesc desc, std::vector<std::uint8_t>& data) = 0;
     virtual Result createPagingQueue(std::uint32_t device) = 0;
+    virtual GuestPagingResult createGuestPagingQueue(std::uint32_t) {
+        return {{static_cast<std::int32_t>(0xc00000bbu), 0, 0}, 0, 0};
+    }
     virtual Result readPagingFence(std::uint32_t queue) = 0;
     virtual Result createAllocation(std::uint32_t device, std::uint32_t size) = 0;
     virtual Result createSharedAllocation(std::uint32_t device, GuestRange range) = 0;
@@ -232,6 +243,35 @@ public:
             if (result.ntstatus >= 0 && result.nativeHandle) out.insert(out.end(), data.begin(), data.end());
             return out;
         }
+        if (op == Op::CreateGuestPagingQueue) {
+            if (!negotiated) return reply(h, -71);
+            if (!(driver.capabilities().flags & GuestPagingCapability)) return reply(h, -95);
+            if (packet.size() != sizeof h) return reply(h, -22);
+            const auto device = objects.find(h.handle);
+            if (device == objects.end() || device->second.kind != Kind::Device) return reply(h, -9);
+            if (objects.size() > MaxObjects - 2 || nextId >= UINT32_MAX - 1) return reply(h, -24);
+            const auto native = driver.createGuestPagingQueue(device->second.nativeHandle);
+            if (native.queue.ntstatus < 0) return reply(h, 0, 0, &native.queue);
+            if (!native.queue.nativeHandle || !native.sync || native.queue.value ||
+                native.offset % 8 || native.offset >= FenceApertureBytes) {
+                if (native.queue.nativeHandle) driver.destroy(Kind::PagingQueue, native.queue.nativeHandle);
+                return reply(h, -5);
+            }
+            const auto queue = nextId++, sync = nextId++;
+            try {
+                auto out = reply(h, 0, queue, &native.queue);
+                const PagingReply body{sync, 0, native.offset};
+                const auto start = out.size(); out.resize(start + sizeof body);
+                std::memcpy(out.data() + start, &body, sizeof body);
+                objects.emplace(queue, Object{Kind::PagingQueue, h.handle, native.queue.nativeHandle, 0, 0, false});
+                objects.emplace(sync, Object{Kind::PagingSync, queue, native.sync, 0, 0, false});
+                return out;
+            } catch (...) {
+                objects.erase(sync); objects.erase(queue);
+                driver.destroy(Kind::PagingQueue, native.queue.nativeHandle);
+                throw;
+            }
+        }
         const bool memoryOp = op >= Op::CreateAllocation && op <= Op::CopySharedAllocation;
         if (!memoryOp && (op < Op::OpenAdapter || op > Op::DestroyPagingQueue)) return reply(h, -95);
         const bool scalar = op == Op::CreateAllocation || op == Op::MakeResident || op == Op::MapAllocation;
@@ -328,9 +368,18 @@ public:
         }
         if (queries.count(h.handle)) return reply(h, -16);
         for (const auto& child : objects)
-            if (child.second.parent == h.handle) return reply(h, -16);
+            if (child.second.parent == h.handle &&
+                !(object.kind == Kind::PagingQueue && child.second.kind == Kind::PagingSync)) return reply(h, -16);
         const auto result = driver.destroy(object.kind, object.nativeHandle);
-        if (result.ntstatus >= 0) { allocatedBytes -= object.size; objects.erase(entry); }
+        if (result.ntstatus >= 0) {
+            if (object.kind == Kind::PagingQueue) {
+                for (auto child = objects.begin(); child != objects.end();) {
+                    if (child->second.parent == h.handle && child->second.kind == Kind::PagingSync) child = objects.erase(child);
+                    else ++child;
+                }
+            }
+            allocatedBytes -= object.size; objects.erase(entry);
+        }
         return reply(h, 0, h.handle, &result);
     }
 };

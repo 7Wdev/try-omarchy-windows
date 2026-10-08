@@ -72,7 +72,7 @@ uses private lab PCI identifiers, disables hotplug and migration, and requires
 WHPX. The parent must keep driver objects alive until QEMU has exited. It is
 not a graphics device, command-submission interface or production fence ABI.
 
-## Dynamic fence hub under development
+## Dynamic fence hub
 
 `wddm-fence-hub` adds 64 initially unmapped, read-only 4 KiB slots in a PCI BAR.
 The owning host controls the `fence-mapping` QOM property over QMP with
@@ -84,8 +84,12 @@ The guest sees slot offsets and reads; it cannot provide a host address.
 Migration and hotplug are blocked. `fence-state` reports mapped count,
 generation and emulated-read count without source addresses.
 
-This new hub is not yet a verified live paging-queue integration. Portable
-command/generation tests exist; its QEMU build and physical dynamic mapping,
-native queue lifetime and guest runtime acceptance still need to pass. The
-Windows owner must retain each native fence through successful QMP unmapping,
-or stop and reap its owned QEMU process before releasing driver objects.
+The [live paging integration](../../docs/LIVE-PAGING-BRIDGE.md) passed physical
+QEMU/WHPX acceptance: NVIDIA's Linux runtime created a Windows paging queue,
+read its live fence 10,000 times without emulation, created a graphics context
+from live private data, and acknowledged unmapping before native teardown.
+The Windows owner retains each native fence through successful QMP unmapping,
+or stops and reaps its owned QEMU process before releasing driver objects.
+Portable command/generation tests cover stale and occupied slots. Slot-reuse
+stress, GPU resets, runtime allocations/submission and desktop acceleration
+remain unverified or unimplemented; the result is partial initialization.

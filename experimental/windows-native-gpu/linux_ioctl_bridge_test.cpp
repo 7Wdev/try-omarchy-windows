@@ -20,6 +20,25 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (fd < 0) return failed("open");
+    if (!std::strncmp(mode, "paging-", 7)) {
+        D3DKMT_OPENADAPTERFROMLUID adapter{}; adapter.AdapterLuid.LowPart = 0x57475055;
+        if (ioctl(fd, _IOWR('G', 1, D3DKMT_OPENADAPTERFROMLUID), &adapter)) return failed("paging adapter");
+        D3DKMT_CREATEDEVICE device{}; device.hAdapter = adapter.hAdapter; device.Flags.RequestVSync = 1;
+        if (ioctl(fd, _IOWR('G', 2, D3DKMT_CREATEDEVICE), &device)) return failed("paging device");
+        D3DKMT_CREATEPAGINGQUEUE paging{}; paging.hDevice = device.hDevice;
+        paging.Priority = D3DDDI_PAGINGQUEUE_PRIORITY_NORMAL;
+        if (!std::strcmp(mode, "paging-invalid")) {
+            paging.PhysicalAdapterIndex = 1;
+            if (ioctl(fd, _IOWR('G', 7, D3DKMT_CREATEPAGINGQUEUE), &paging) != -1 || errno != ENOSYS) return failed("paging invalid adapter index");
+            paging.PhysicalAdapterIndex = 0; paging.Priority = D3DDDI_PAGINGQUEUE_PRIORITY_ABOVE_NORMAL;
+            if (ioctl(fd, _IOWR('G', 7, D3DKMT_CREATEPAGINGQUEUE), &paging) != -1 || errno != ENOSYS) return failed("paging invalid priority");
+        } else {
+            const auto expected = !std::strcmp(mode, "paging-disabled") ? ENOSYS : !std::strcmp(mode, "paging-no-hub") ? EIO : EPROTO;
+            if (ioctl(fd, _IOWR('G', 7, D3DKMT_CREATEPAGINGQUEUE), &paging) != -1 || errno != expected) return failed("paging failure boundary");
+            if (expected != ENOSYS && (open("/dev/dxg", O_RDONLY) != -1 || errno != EIO)) return failed("paging broken transport reused");
+        }
+        close(fd); return 0;
+    }
     if (!std::strcmp(mode, "reuse")) {
         if (close(fd)) return failed("close");
         const auto other = static_cast<int>(syscall(SYS_memfd_create, "ordinary-file", MFD_CLOEXEC));

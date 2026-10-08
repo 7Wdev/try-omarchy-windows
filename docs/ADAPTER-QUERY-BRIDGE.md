@@ -18,8 +18,9 @@ claim follows from adapter query acceptance.
 
 The separate [live runtime diagnostic](LIVE-NVIDIA-RUNTIME.md) subsequently
 loaded the installed NVIDIA Linux UMD inside QEMU and completed 19 live native
-queries without captured input fixtures. That run reaches native device
-creation and stops at the unsupported paging-queue interface; full graphics
+queries without captured input fixtures. With the [paging bridge](LIVE-PAGING-BRIDGE.md),
+it reaches native device, paging and graphics context creation, then stops at
+the unsupported live allocation interface; full graphics
 initialization and rendering remain unfinished.
 
 ## Wire and lifetime

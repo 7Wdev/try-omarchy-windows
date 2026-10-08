@@ -3,18 +3,23 @@
 The disk-free QEMU/WHPX guest now loads this machine's installed NVIDIA Linux
 user-mode driver and routes its actual initialization calls through virtio
 serial to the native Windows worker. On the RTX 5090 Laptop GPU, it completed
-19 native adapter queries, including the 50,616-byte NVIDIA-private query, and
-created a native WDDM device. This test uses no captured private input fixtures
+19 native adapter queries, including the 50,616-byte NVIDIA-private query,
+created a native WDDM device and paging queue, directly read its Windows fence
+10,000 times without emulation, and created a native graphics context from the
+live UMD's 3,204-byte initialization data. This test uses no captured private input fixtures
 and has no real WSL `/dev/dxg` available in the guest.
 
 **D3D12 device initialization is incomplete.** The runtime fails with
-`0x80004001` at `CreatePagingQueue` (ioctl 7), whose required synchronization
-handle and directly mapped fence are not implemented in this guest API. An
-optional feature query (ioctl 73) and registry queries are also unsupported.
+`0x80004001` after reaching `CreateAllocation` (ioctl 6). The paging interface
+now returns a queue-owned typed synchronization ID and a directly mapped CPU
+fence. Synchronization creation, eviction, residency/GPU-address operations in
+this runtime API, an optional feature query and registry queries remain unsupported.
 All native objects were released and the guest and worker exited successfully.
-[Hardware evidence](evidence/QEMU-LIVE-NVIDIA-RUNTIME-2026-10-08.json) records
+[Paging hardware evidence](evidence/QEMU-LIVE-PAGING-2026-10-08.json) records
 the exact executable, image and kernel hashes and the negative initialization
-result separately from diagnostic acceptance.
+result separately from diagnostic acceptance. The
+[earlier device-only result](evidence/QEMU-LIVE-NVIDIA-RUNTIME-2026-10-08.json)
+is retained as the previous initialization boundary.
 
 This is progress toward interactive Omarchy acceleration. It does not render,
 submit guest GPU command buffers, run Hyprland, verify desktop stability or
@@ -27,7 +32,8 @@ not a Linux kernel module. Opening `/dev/dxg` creates a tracked memfd; matching
 ioctls go to the bridge rather than the genuine WSL device. Descriptor identity
 is checked, so closing/reusing a descriptor cannot redirect unrelated files.
 The supported x64 subset is adapter enumeration/open/close, adapter queries,
-device creation/destruction, and virtual context creation/destruction. Native
+device creation/destruction, paging queue/fence lifecycle in the owned-QEMU
+mode, and virtual context creation/destruction. Native
 objects remain connection-local IDs. Unsupported calls fail with `ENOSYS`.
 
 The adapter name is a consistent guest-local LUID. Adapter queries preserve
@@ -87,31 +93,28 @@ uploads anything, refuses existing output paths, records a local hash manifest,
 and marks redistribution as unapproved. CI compiles the interposer and tests
 owned fake workers; it neither packs nor publishes installed NVIDIA binaries.
 
-On the Windows host, run `test_runtime_qemu.py` with `--qemu`, `--firmware`,
-`--kernel`, `--initramfs`, `--bridge` and a fresh `--report` path. It starts only
-its own hidden worker and disk-free VM, with no NIC, guest disk or host share.
-The current acceptance requires observed Linux UMD presence during its live
-private query, the successful native device creation, the expected unsupported
-paging call, a failed D3D12 result, and clean native teardown. Its
-`diagnosticAccepted` field is not an application GPU-readiness signal.
+On the Windows host, use `test_owned_runtime_qemu.py` with `--qemu`, `--firmware`,
+`--kernel`, `--initramfs`, `--bridge`, a fresh `--report` path and
+`--expected-unimplemented-ioctl 6`. The native driver owner starts the hidden,
+disk-free QEMU process, with no NIC, guest disk or host share. Use the QEMU build
+with the dynamic fence hub; the [paging protocol and full command](LIVE-PAGING-BRIDGE.md)
+describe its ownership contract. Acceptance requires live Linux UMD presence,
+native device/context creation, direct fence reads, successful host unmap
+acknowledgements, the expected unsupported allocation call, a failed D3D12
+result and clean native teardown. `diagnosticAccepted` is not an application
+GPU-readiness signal. The older `test_runtime_qemu.py` still tests the explicitly
+disabled paging baseline with a separately owned VM and worker.
 
 Portable fault tests cover missing configuration, wrong protocol version,
 closed/reused descriptors, malformed replies, closed workers and valid public
-flag adaptation. They also verify the owned worker exits after EOF. These tests
+flag adaptation, disabled paging, unsupported priorities/adapter indices,
+malformed paging replies and queue cleanup when the PCI hub is absent. They
+also verify the owned worker exits after EOF. These tests
 run in CI using the pinned public headers and no GPU hardware.
 
 ## Next driver interface
 
-The existing native backend can create paging queues, and the separate QEMU
-fence experiment can directly map driver-owned pages. They are not yet
-connected for queues created dynamically by this live runtime. The next step
-must return a typed synchronization ID and guest fence mapping, with a private
-host-to-QEMU mapping handshake and an acknowledgement before replying to the
-guest. Queue destruction must unmap that page before releasing its native
-owner. Do not send the Windows CPU pointer to the guest or substitute a stale
-copied counter for the live completion fence.
-
-After that, live allocation/private-data handling, GPU virtual-address
+Live allocation/private-data handling is the next interface. GPU virtual-address
 operations, allocation-token translation, hardware queue creation/submission
 and synchronization remain. Their successful integration must precede DRM/Mesa
 and fenced SDL presentation, interactive Hyprland acceptance and performance

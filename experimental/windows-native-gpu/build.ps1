@@ -26,7 +26,11 @@ cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\driver_wire_test.cpp" /Fe
 if errorlevel 1 exit /b 1
 driver-wire-test.exe
 if errorlevel 1 exit /b 1
-cl /nologo /std:c++17 /EHsc /W4 /WX /O2 /DUNICODE /D_UNICODE "$PSScriptRoot\driver_bridge.cpp" /Fe:driver-bridge.exe /link d3d12.lib dxgi.lib gdi32.lib ws2_32.lib
+cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\qmp_protocol_test.cpp" /Fe:qmp-protocol-test.exe
+if errorlevel 1 exit /b 1
+qmp-protocol-test.exe
+if errorlevel 1 exit /b 1
+cl /nologo /std:c++17 /EHsc /W4 /WX /O2 /DUNICODE /D_UNICODE "$PSScriptRoot\driver_bridge.cpp" /Fe:driver-bridge.exe /link d3d12.lib dxgi.lib gdi32.lib ws2_32.lib bcrypt.lib
 if errorlevel 1 exit /b 1
 cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\context_native_probe.cpp" /Fe:context-native-probe.exe /link dxgi.lib gdi32.lib
 if errorlevel 1 exit /b 1
@@ -39,3 +43,4 @@ exit /b %errorlevel%
 "@ | Set-Content -LiteralPath $batch -Encoding ascii
 & $env:ComSpec /d /c $batch
 if ($LASTEXITCODE -ne 0) { throw "Native GPU build failed ($LASTEXITCODE)." }
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'third_party/nlohmann-json/LICENSE.MIT') -Destination (Join-Path $output 'nlohmann-json-LICENSE.MIT') -Force
