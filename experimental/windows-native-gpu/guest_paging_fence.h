@@ -9,6 +9,7 @@
 #include <unistd.h>
 #include <cstdio>
 #include <map>
+#include <atomic>
 #include <stdexcept>
 #include <string>
 
@@ -25,7 +26,8 @@ class Fences {
         }
     };
     File config, resource;
-    std::map<std::uint32_t, void*> mappings;
+    struct Mapping { void* page; volatile std::uint64_t* fence; };
+    std::map<std::uint32_t, Mapping> mappings;
     std::uint64_t reads = 0;
     unsigned created = 0;
     static constexpr std::uint32_t Identity = 0x11fd1234, Magic = 0x31484e46;
@@ -63,7 +65,7 @@ class Fences {
 public:
     Fences() = default;
     Fences(const Fences&) = delete;
-    ~Fences() { for (const auto& mapping : mappings) munmap(mapping.second, 4096); }
+    ~Fences() { for (const auto& mapping : mappings) munmap(mapping.second.page, 4096); }
     void* map(std::uint32_t queue, std::uint64_t offset) {
         if (!queue || offset % 8 || offset >= driver_bridge::FenceApertureBytes || mappings.count(queue) || mappings.size() >= 64)
             throw std::runtime_error("Invalid guest fence identity or offset");
@@ -78,17 +80,29 @@ public:
         for (unsigned n = 0; n < 10000; ++n) observed = *fence;
         try {
             if (word(0x48) != before) throw std::runtime_error("Guest fence reads were emulated");
-            mappings.emplace(queue, page);
+            mappings.emplace(queue, Mapping{page, fence});
         } catch (...) { munmap(page, 4096); throw; }
         reads += 10000; ++created;
         std::fprintf(stderr, "LINUX_BRIDGE pagingFenceMapped=true direct=true loads=10000 offset=%llu value=%llu\n",
                      static_cast<unsigned long long>(offset), static_cast<unsigned long long>(observed));
         return const_cast<std::uint64_t*>(fence);
     }
+    void verifyRetired(std::uint32_t queue, std::uint64_t target) {
+        const auto found = mappings.find(queue);
+        if (found == mappings.end()) throw std::runtime_error("Mapped guest paging fence absent");
+        const auto before = word(0x48);
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+        std::uint64_t observed = 0;
+        for (unsigned n = 0; n < 10000; ++n) observed = *found->second.fence;
+        if (observed < target || word(0x48) != before) throw std::runtime_error("Guest fence did not directly observe paging retirement");
+        reads += 10000;
+        std::fprintf(stderr, "LINUX_BRIDGE pagingFenceRetired=true direct=true loads=10000 target=%llu observed=%llu\n",
+                     static_cast<unsigned long long>(target), static_cast<unsigned long long>(observed));
+    }
     void unmap(std::uint32_t queue) {
         const auto found = mappings.find(queue);
         if (found == mappings.end()) throw std::runtime_error("Guest paging queue absent");
-        if (munmap(found->second, 4096)) throw std::runtime_error("Guest fence unmap failed");
+        if (munmap(found->second.page, 4096)) throw std::runtime_error("Guest fence unmap failed");
         mappings.erase(found);
     }
     unsigned total() const { return created; }

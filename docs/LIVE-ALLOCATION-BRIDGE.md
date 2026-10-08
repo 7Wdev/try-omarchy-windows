@@ -1,5 +1,10 @@
 # Live NVIDIA allocation from QEMU to Windows
 
+This document records the allocation milestone. The
+[later GPU-address mapping result](LIVE-GPUVA-BRIDGE.md) now reaches live
+`MapGpuVirtualAddress`; its next unsupported call is `MakeResident`, ioctl 11.
+The earlier ioctl 12 boundary below describes the allocation-only configuration.
+
 The NVIDIA Linux runtime now creates a standalone Windows video-memory
 allocation through the QEMU diagnostic bridge. Physical testing on the RTX
 5090 Laptop GPU with Windows driver `32.0.16.1742` used the runtime's actual

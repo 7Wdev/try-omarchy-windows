@@ -20,6 +20,32 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (fd < 0) return failed("open");
+    if (!std::strncmp(mode, "gpuva-", 6)) {
+        D3DDDI_MAPGPUVIRTUALADDRESS map{}; map.hPagingQueue = 9; map.hAllocation = 10;
+        map.MinimumAddress = 67108864; map.MaximumAddress = 1099511627776ull;
+        map.SizeInPages = 16; map.Protection.Write = 1;
+        if (!std::strcmp(mode, "gpuva-disabled")) {
+            if (ioctl(fd, _IOWR('G', 12, D3DDDI_MAPGPUVIRTUALADDRESS), &map) != -1 || errno != ENOSYS) return failed("disabled GPU-address mapping");
+        } else {
+            for (unsigned n = 0; n < 9; ++n) {
+                auto invalid = map;
+                switch (n) {
+                    case 0: invalid.Reserved0 = 1; break;
+                    case 1: invalid.Reserved1 = 1; break;
+                    case 2: invalid.SizeInPages = 0; break;
+                    case 3: invalid.SizeInPages = 257; break;
+                    case 4: invalid.OffsetInPages = ~0ull; break;
+                    case 5: invalid.Protection.Value = 16; break;
+                    case 6: invalid.DriverProtection = 1; break;
+                    case 7: invalid.BaseAddress = 1; break;
+                    default: invalid.MaximumAddress = invalid.MinimumAddress; break;
+                }
+                if (ioctl(fd, _IOWR('G', 12, D3DDDI_MAPGPUVIRTUALADDRESS), &invalid) != -1 || errno != EINVAL) return failed("invalid GPU-address descriptor");
+            }
+            if (ioctl(fd, _IOWR('G', 12, D3DDDI_MAPGPUVIRTUALADDRESS), &map) != -1 || errno != EBADF) return failed("GPU-address unowned object");
+        }
+        close(fd); return 0;
+    }
     if (!std::strncmp(mode, "allocation-", 11)) {
         D3DKMT_OPENADAPTERFROMLUID adapter{}; adapter.AdapterLuid.LowPart = 0x57475055;
         if (ioctl(fd, _IOWR('G', 1, D3DKMT_OPENADAPTERFROMLUID), &adapter)) return failed("allocation adapter");

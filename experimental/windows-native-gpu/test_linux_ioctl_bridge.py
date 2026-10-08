@@ -17,6 +17,8 @@ def send(op, handle, value=0, data=b'', padding=0, hello=False, ntstatus=0):
     packet = struct.pack('<IIiI',op,handle,0,padding)
     caps = 103 | (128 if mode.startswith('paging-') and mode != 'paging-disabled' else 0)
     caps |= 256 if mode.startswith('allocation-') and mode != 'allocation-disabled' else 0
+    caps |= 256 if mode.startswith('gpuva-') else 0
+    caps |= 512 if mode == 'gpuva-invalid' else 0
     packet += struct.pack('<IIII',1,caps,4318,11352) if hello else struct.pack('<iIQ',ntstatus,0,value) + data
     sys.stdout.buffer.write(struct.pack('<I',len(packet)) + packet)
     sys.stdout.buffer.flush()
@@ -72,6 +74,7 @@ if mode == 'paging-no-hub': assert operations[-2:] == [0x2040,0x2008], operation
 if mode in ('allocation-disabled','allocation-invalid'): assert 0x2050 not in operations, operations
 if mode == 'allocation-normal': assert operations.count(0x2051) == 1, operations
 if mode == 'allocation-failed-destroy': assert operations.count(0x2051) == 2, operations
+if mode.startswith('gpuva-'): assert operations == [0x2000], operations
 print('FAKE_WORKER_EOF=true',file=sys.stderr)
 '''
 
@@ -88,7 +91,8 @@ def main():
                      'paging-disabled', 'paging-invalid', 'paging-bad-sync', 'paging-bad-offset',
                      'paging-bad-reserved', 'paging-bad-value', 'paging-short', 'paging-no-hub',
                      'allocation-normal', 'allocation-disabled', 'allocation-invalid', 'allocation-nt-failure',
-                     'allocation-bad-id', 'allocation-bad-va', 'allocation-short', 'allocation-failed-destroy'):
+                     'allocation-bad-id', 'allocation-bad-va', 'allocation-short', 'allocation-failed-destroy',
+                     'gpuva-disabled', 'gpuva-invalid'):
             environment = {k: v for k, v in os.environ.items() if not k.startswith('WDDM_BRIDGE_') and k != 'LD_PRELOAD'}
             environment['LD_PRELOAD'] = str(args.shim.resolve())
             environment['BRIDGE_FAULT_TEST'] = mode

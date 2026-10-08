@@ -212,6 +212,7 @@ class Bridge {
     unsigned counts[256]{}, completedQueries = 0, privateQueries = 0, contexts = 0;
     std::map<int, std::pair<dev_t, ino_t>> descriptors;
     std::map<std::uint32_t, std::uint32_t> vendorOwners;
+    std::map<std::uint32_t, std::uint32_t> pagingOwners;
     static constexpr std::uint32_t GuestLuidLow = 0x57475055;
     static constexpr std::int32_t GuestLuidHigh = 0;
     Response call(const std::vector<std::uint8_t>& requestPacket, std::uint32_t bytes = 0, bool preserveNativeFailure = false) {
@@ -386,12 +387,13 @@ public:
                     throw;
                 }
                 a.hPagingQueue = result.header.handle; a.hSyncObject = reply.sync;
+                pagingOwners.emplace(a.hPagingQueue, a.hDevice);
                 return 0;
             }
             case 28: {
                 auto& a = args<D3DDDI_DESTROYPAGINGQUEUE>(requestNumber, pointer);
                 pagingFences.unmap(a.hPagingQueue);
-                destroy(Op::DestroyPagingQueue, a.hPagingQueue); return 0;
+                destroy(Op::DestroyPagingQueue, a.hPagingQueue); pagingOwners.erase(a.hPagingQueue); return 0;
             }
             case 4: {
                 auto& a = args<D3DKMT_CREATECONTEXTVIRTUAL>(requestNumber, pointer);
@@ -464,6 +466,33 @@ public:
                 if (result.header.handle != a.hDevice || result.result.value) { transport.fail(); throw Error(EPROTO); }
                 for (unsigned n = 0; n < a.AllocationCount; ++n) vendorOwners.erase(a.phAllocationList[n]);
                 std::fprintf(stderr, "LINUX_BRIDGE nativeVendorAllocationsDestroyed=true count=%u\n", a.AllocationCount); return 0;
+            }
+            case 12: {
+                auto& a = args<D3DDDI_MAPGPUVIRTUALADDRESS>(requestNumber, pointer);
+                std::fprintf(stderr, "LINUX_BRIDGE gpuVaInput base=%llu minimum=%llu maximum=%llu offsetPages=%llu sizePages=%llu protection=%llu driverProtection=%llu reserved0=%u reserved1=%llu\n",
+                    static_cast<unsigned long long>(a.BaseAddress), static_cast<unsigned long long>(a.MinimumAddress),
+                    static_cast<unsigned long long>(a.MaximumAddress), static_cast<unsigned long long>(a.OffsetInPages),
+                    static_cast<unsigned long long>(a.SizeInPages), static_cast<unsigned long long>(a.Protection.Value),
+                    static_cast<unsigned long long>(a.DriverProtection), a.Reserved0, static_cast<unsigned long long>(a.Reserved1));
+                if (!(caps.flags & VendorGpuVaCapability)) {
+                    std::fprintf(stderr, "LINUX_BRIDGE unsupported nr=12 bytes=%zu\n", sizeof a); throw Error(ENOSYS);
+                }
+                const GpuVaDesc desc{a.hPagingQueue, a.Reserved0, a.BaseAddress, a.MinimumAddress, a.MaximumAddress,
+                                     a.OffsetInPages, a.SizeInPages, a.Protection.Value, a.DriverProtection};
+                if (a.Reserved1 || !validGpuVa(desc)) throw Error(EINVAL);
+                const auto allocation = vendorOwners.find(a.hAllocation), queue = pagingOwners.find(a.hPagingQueue);
+                if (allocation == vendorOwners.end() || queue == pagingOwners.end() || allocation->second != queue->second) throw Error(EBADF);
+                const auto result = call(request(Op::MapVendorAllocation, a.hAllocation, desc), sizeof(GpuVaReply), true);
+                GpuVaReply fence{}; std::memcpy(&fence, result.data.data(), sizeof fence);
+                if (result.header.handle != a.hAllocation ||
+                    (result.result.ntstatus >= 0 && ((result.result.ntstatus != 0 && result.result.ntstatus != 0x103) || !validGpuVaOutput(desc, result.result.value))) ||
+                    (result.result.ntstatus < 0 && (result.result.value || fence.fence))) { transport.fail(); throw Error(EPROTO); }
+                checkNt(result.result.ntstatus);
+                pagingFences.verifyRetired(a.hPagingQueue, fence.fence);
+                a.VirtualAddress = result.result.value; a.PagingFenceValue = fence.fence;
+                std::fprintf(stderr, "LINUX_BRIDGE nativeVendorGpuVaMapped=true pages=%llu status=%d fence=%llu\n",
+                             static_cast<unsigned long long>(desc.sizePages), result.result.ntstatus, static_cast<unsigned long long>(fence.fence));
+                return result.result.ntstatus;
             }
             default:
                 std::fprintf(stderr, "LINUX_BRIDGE unsupported nr=%u bytes=%u\n", nr, static_cast<unsigned>(_IOC_SIZE(requestNumber)));

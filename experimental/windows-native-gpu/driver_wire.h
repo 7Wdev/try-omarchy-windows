@@ -19,6 +19,32 @@ constexpr std::uint32_t GuestPagingCapability = 128;
 constexpr std::uint32_t VendorAllocationCapability = 256;
 constexpr std::uint32_t MaxVendorPrivateBytes = 4000;
 constexpr std::size_t MaxVendorAllocations = 16;
+constexpr std::uint32_t VendorGpuVaCapability = 512;
+constexpr std::uint64_t MaxGpuAddress = 1ull << 48;
+constexpr std::uint32_t MaxVendorMapPages = MaxAllocation / 4096;
+constexpr std::uint32_t MaxVendorMappedPages = MaxAllocatedBytes / 4096;
+struct GpuVaDesc {
+    std::uint32_t queue, reserved;
+    std::uint64_t base, minimum, maximum, offsetPages, sizePages, protection, driverProtection;
+};
+static_assert(sizeof(GpuVaDesc) == 64, "fixed GPU-address descriptor");
+inline bool validGpuVa(GpuVaDesc d) {
+    if (!d.queue || d.reserved || !d.sizePages || d.sizePages > MaxVendorMapPages ||
+        d.offsetPages > MaxVendorMapPages - d.sizePages || d.protection > 3 || d.driverProtection ||
+        d.base % 4096 || d.minimum % 4096 || d.maximum % 4096 ||
+        d.base >= MaxGpuAddress || d.minimum >= MaxGpuAddress || d.maximum > MaxGpuAddress) return false;
+    const auto bytes = d.sizePages * 4096;
+    if (d.base) return d.base <= MaxGpuAddress - bytes;
+    const auto end = d.maximum ? d.maximum : MaxGpuAddress;
+    return d.minimum <= end && bytes <= end - d.minimum;
+}
+inline bool validGpuVaOutput(GpuVaDesc d, std::uint64_t address) {
+    if (!validGpuVa(d) || !address || address % 4096 || address > MaxGpuAddress - d.sizePages * 4096) return false;
+    if (d.base) return address == d.base;
+    return address >= d.minimum && (!d.maximum || address + d.sizePages * 4096 <= d.maximum);
+}
+struct GpuVaReply { std::uint64_t fence; };
+static_assert(sizeof(GpuVaReply) == 8, "fixed GPU-address fence reply");
 struct VendorAllocationDesc {
     std::uint32_t flags, priority, source, privateBytes, reserved, reserved2;
 };
@@ -65,7 +91,7 @@ enum class Op : std::uint32_t {
     CreateContext = 0x2020, DestroyContext,
     BeginAdapterQuery = 0x2030, WriteAdapterQuery, RunAdapterQuery, ReadAdapterQuery, EndAdapterQuery,
     CreateGuestPagingQueue = 0x2040,
-    CreateVendorAllocation = 0x2050, DestroyVendorAllocations
+    CreateVendorAllocation = 0x2050, DestroyVendorAllocations, MapVendorAllocation
 };
 enum class Kind { Adapter, Device, PagingQueue, Allocation, Context, PagingSync, VendorAllocation };
 struct ContextDesc {
@@ -88,6 +114,7 @@ static_assert(sizeof(GuestRange) == 16, "fixed guest range layout");
 struct CopyRange { std::uint32_t source; std::uint32_t sourceOffset; std::uint32_t destinationOffset; std::uint32_t size; };
 static_assert(sizeof(CopyRange) == 16, "fixed GPU copy layout");
 struct Result { std::int32_t ntstatus; std::uint32_t nativeHandle; std::uint64_t value; };
+struct GpuVaResult { Result map; std::uint64_t fence; };
 // The synchronization object is borrowed from the paging queue. Destruction
 // of the queue owns its lifetime; no native handle is exposed to the guest.
 struct GuestPagingResult { Result queue; std::uint32_t sync; std::uint64_t offset; };
@@ -115,6 +142,9 @@ public:
     virtual Result destroyVendorAllocations(std::uint32_t, const std::vector<std::uint32_t>&) {
         return {static_cast<std::int32_t>(0xc00000bbu), 0, 0};
     }
+    virtual GpuVaResult mapVendorAllocation(std::uint32_t, std::uint32_t, GpuVaDesc) {
+        return {{static_cast<std::int32_t>(0xc00000bbu), 0, 0}, 0};
+    }
     virtual GuestPagingResult createGuestPagingQueue(std::uint32_t) {
         return {{static_cast<std::int32_t>(0xc00000bbu), 0, 0}, 0, 0};
     }
@@ -133,6 +163,8 @@ class Session {
     struct Object {
         Kind kind; std::uint32_t parent; std::uint32_t nativeHandle; std::uint32_t size;
         std::uint64_t guestOffset; bool shared;
+        std::uint32_t gpuPages = 0;
+        std::uint64_t gpuAddress = 0;
     };
     Driver& driver;
     std::map<std::uint32_t, Object> objects;
@@ -143,6 +175,7 @@ class Session {
     std::map<std::uint32_t, Query> queries;
     std::uint32_t nextId = 1;
     std::uint32_t allocatedBytes = 0;
+    std::uint32_t vendorMappedPages = 0;
     bool negotiated = false;
     static std::vector<std::uint8_t> reply(Header h, std::int32_t error,
                                          std::uint32_t id = 0, const Result* result = nullptr) {
@@ -316,7 +349,9 @@ public:
                     native[n] = entry->second.nativeHandle;
                 }
                 const auto result = driver.destroyVendorAllocations(device->second.nativeHandle, native);
-                if (result.ntstatus >= 0) for (const auto id : ids) objects.erase(id);
+                if (result.ntstatus >= 0) for (const auto id : ids) {
+                    vendorMappedPages -= objects.at(id).gpuPages; objects.erase(id);
+                }
                 return reply(h, 0, h.handle, &result);
             }
             if (packet.size() < sizeof h + sizeof(VendorAllocationDesc)) return reply(h, -22);
@@ -341,6 +376,39 @@ public:
                 if (result.nativeHandle) driver.destroy(Kind::VendorAllocation, result.nativeHandle);
                 throw;
             }
+        }
+        if (op == Op::MapVendorAllocation) {
+            if (!negotiated) return reply(h, -71);
+            if (!(driver.capabilities().flags & VendorGpuVaCapability)) return reply(h, -95);
+            if (packet.size() != sizeof h + sizeof(GpuVaDesc)) return reply(h, -22);
+            GpuVaDesc desc{}; std::memcpy(&desc, packet.data() + sizeof h, sizeof desc);
+            if (!validGpuVa(desc)) return reply(h, -22);
+            const auto allocation = objects.find(h.handle), queue = objects.find(desc.queue);
+            if (allocation == objects.end() || allocation->second.kind != Kind::VendorAllocation ||
+                queue == objects.end() || queue->second.kind != Kind::PagingQueue || allocation->second.parent != queue->second.parent)
+                return reply(h, -9);
+            auto& object = allocation->second;
+            if (object.gpuPages) return reply(h, -16);
+            if (desc.sizePages > MaxVendorMappedPages - vendorMappedPages) return reply(h, -24);
+            if (desc.base) for (const auto& item : objects) {
+                const auto& mapped = item.second;
+                if (mapped.kind == Kind::VendorAllocation && mapped.gpuPages &&
+                    desc.base < mapped.gpuAddress + mapped.gpuPages * 4096ull &&
+                    mapped.gpuAddress < desc.base + desc.sizePages * 4096) return reply(h, -16);
+            }
+            const auto result = driver.mapVendorAllocation(object.nativeHandle, queue->second.nativeHandle, desc);
+            if (result.map.nativeHandle || (result.map.ntstatus >= 0 &&
+                (result.map.ntstatus != 0 && result.map.ntstatus != 0x103)) ||
+                (result.map.ntstatus >= 0 && !validGpuVaOutput(desc, result.map.value)) ||
+                (result.map.ntstatus < 0 && (result.map.value || result.fence))) return reply(h, -5);
+            if (result.map.ntstatus >= 0) {
+                object.gpuPages = static_cast<std::uint32_t>(desc.sizePages); object.gpuAddress = result.map.value;
+                vendorMappedPages += object.gpuPages;
+            }
+            auto out = reply(h, 0, h.handle, &result.map);
+            const auto start = out.size(); out.resize(start + sizeof(GpuVaReply));
+            const GpuVaReply fence{result.fence}; std::memcpy(out.data() + start, &fence, sizeof fence);
+            return out;
         }
         const bool memoryOp = op >= Op::CreateAllocation && op <= Op::CopySharedAllocation;
         if (!memoryOp && (op < Op::OpenAdapter || op > Op::DestroyPagingQueue)) return reply(h, -95);

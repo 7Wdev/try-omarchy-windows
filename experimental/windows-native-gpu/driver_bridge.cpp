@@ -41,9 +41,13 @@ class KmtDriver : public Driver {
     std::map<std::uint32_t, Allocation> allocations;
     // Vendor video-memory allocations have no host CPU backing or public
     // size field. Never mix these with the byte-counted standard allocations.
-    std::map<std::uint32_t, std::uint32_t> vendorAllocations;
+    struct VendorAllocation { std::uint32_t device; std::uint64_t address = 0, pages = 0; };
+    std::map<std::uint32_t, VendorAllocation> vendorAllocations;
     ComPtr<IDXGIAdapter3> allocationBudgetAdapter;
     bool allocationsEnabled = false;
+    bool gpuVaEnabled = false;
+    std::uint32_t vendorMappedPages = 0, peakVendorMappedPages = 0;
+    unsigned completedVendorMaps = 0, failedVendorMaps = 0, completedVendorMapWaits = 0;
     unsigned completedVendorAllocations = 0, destroyedVendorAllocations = 0, failedVendorAllocations = 0;
     std::uint64_t peakReportedGpuUsage = 0;
     static constexpr std::uint64_t ReportedGpuUsageLimit = 64ull * 1024 * 1024;
@@ -112,8 +116,8 @@ class KmtDriver : public Driver {
     }
 public:
     KmtDriver(std::string sectionName, std::uint32_t sectionBytes, bool enableContexts, bool enableQueries,
-              driver_qemu::Runtime* ownedRuntime = nullptr, bool enableAllocations = false)
-        : runtime(ownedRuntime), allocationsEnabled(enableAllocations), contextsEnabled(enableContexts), queriesEnabled(enableQueries),
+              driver_qemu::Runtime* ownedRuntime = nullptr, bool enableAllocations = false, bool enableGpuVa = false)
+        : runtime(ownedRuntime), allocationsEnabled(enableAllocations), gpuVaEnabled(enableGpuVa), contextsEnabled(enableContexts), queriesEnabled(enableQueries),
           guestSectionName(std::move(sectionName)), guestBytes(sectionBytes) {
         const std::string prefix = "Local\\7Wdev-WDDM-";
         if (!guestSectionName.empty()) {
@@ -157,7 +161,7 @@ public:
         // allocations. No arbitrary guest command stream or scanout support.
         return {Version, (guestSectionName.empty() ? 7u : 31u) | (contextsEnabled ? ContextCapability : 0u) |
                 (queriesEnabled ? QueryCapability : 0u) | (runtime ? GuestPagingCapability : 0u) |
-                (allocationsEnabled ? VendorAllocationCapability : 0u),
+                (allocationsEnabled ? VendorAllocationCapability : 0u) | (gpuVaEnabled ? VendorGpuVaCapability : 0u),
                 description.VendorId, description.DeviceId};
     }
     Result openAdapter() override {
@@ -218,7 +222,7 @@ public:
             if (D3DKMTDestroyAllocation2(&release) < 0) ++cleanupFailures;
             throw std::runtime_error("Unexpected native vendor-allocation result");
         }
-        try { vendorAllocations.emplace(info.hAllocation, device); }
+        try { vendorAllocations.emplace(info.hAllocation, VendorAllocation{device, info.GpuVirtualAddress, 0}); }
         catch (...) {
             D3DKMT_DESTROYALLOCATION2 release{}; release.hDevice = device; release.phAllocationList = &info.hAllocation;
             release.AllocationCount = 1; release.Flags.SynchronousDestroy = 1;
@@ -237,17 +241,62 @@ public:
         if (!allocationsEnabled || handles.empty() || handles.size() > MaxVendorAllocations) return {Invalid, 0, 0};
         for (std::size_t n = 0; n < handles.size(); ++n) {
             const auto found = vendorAllocations.find(handles[n]);
-            if (found == vendorAllocations.end() || found->second != device ||
+            if (found == vendorAllocations.end() || found->second.device != device ||
                 std::find(handles.begin(), handles.begin() + n, handles[n]) != handles.begin() + n) return {Invalid, 0, 0};
         }
         D3DKMT_DESTROYALLOCATION2 a{}; a.hDevice = device; a.phAllocationList = handles.data();
         a.AllocationCount = static_cast<UINT>(handles.size()); a.Flags.SynchronousDestroy = 1;
         const auto status = D3DKMTDestroyAllocation2(&a);
         if (status >= 0) {
-            for (const auto handle : handles) vendorAllocations.erase(handle);
+            for (const auto handle : handles) {
+                vendorMappedPages -= static_cast<std::uint32_t>(vendorAllocations.at(handle).pages);
+                vendorAllocations.erase(handle);
+            }
             destroyedVendorAllocations += static_cast<unsigned>(handles.size());
         } else ++cleanupFailures;
         return {status, 0, 0};
+    }
+    GpuVaResult mapVendorAllocation(std::uint32_t allocation, std::uint32_t queue, GpuVaDesc desc) override {
+        const auto entry = vendorAllocations.find(allocation);
+        if (!gpuVaEnabled || !validGpuVa(desc) || entry == vendorAllocations.end() || !pagingFences.count(queue) ||
+            entry->second.pages || entry->second.address || desc.sizePages > MaxVendorMappedPages - vendorMappedPages)
+            return {{Invalid, 0, 0}, 0};
+        if (desc.base) {
+            const auto overlaps = [&](std::uint64_t address, std::uint64_t bytes) {
+                return address && bytes && desc.base < address + bytes && address < desc.base + desc.sizePages * 4096;
+            };
+            for (const auto& mapped : vendorAllocations)
+                if (overlaps(mapped.second.address, mapped.second.pages * 4096)) return {{Invalid, 0, 0}, 0};
+            for (const auto& mapped : allocations)
+                if (overlaps(mapped.second.gpuAddress, mapped.second.size)) return {{Invalid, 0, 0}, 0};
+        }
+        D3DDDI_MAPGPUVIRTUALADDRESS a{}; a.hPagingQueue = queue; a.hAllocation = allocation;
+        a.BaseAddress = desc.base; a.MinimumAddress = desc.minimum; a.MaximumAddress = desc.maximum;
+        a.OffsetInPages = desc.offsetPages; a.SizeInPages = desc.sizePages;
+        a.Protection.Value = desc.protection; a.DriverProtection = desc.driverProtection;
+        const auto status = D3DKMTMapGpuVirtualAddress(&a);
+        if (status < 0) { ++failedVendorMaps; return {{status, 0, 0}, 0}; }
+        // Record ownership before any validation/wait can throw. Destruction
+        // releases this VA even if paging fails; retries cannot create a leak.
+        entry->second.address = a.VirtualAddress; entry->second.pages = desc.sizePages;
+        vendorMappedPages += static_cast<std::uint32_t>(desc.sizePages);
+        peakVendorMappedPages = (std::max)(peakVendorMappedPages, vendorMappedPages);
+        if ((status != 0 && status != 0x103) || !validGpuVaOutput(desc, a.VirtualAddress))
+            throw std::runtime_error("Unexpected native GPU-address mapping output");
+        if (!waitPaging(queue, a.PagingFenceValue)) {
+            ++failedVendorMaps;
+            // Do not expose an incomplete mapping. The server first reaps its
+            // owned VM, then destroys the allocation and its paging queue.
+            throw std::runtime_error("Native GPU-address paging deadline exceeded");
+        }
+        if (!reportedGpuUsageAcceptable()) {
+            ++failedVendorMaps;
+            throw std::runtime_error("Reported GPU usage limit after address mapping");
+        }
+        ++completedVendorMapWaits; ++completedVendorMaps;
+        // Preserve STATUS_PENDING even though our native wait already retired
+        // the fence. The Linux KMT thunk preserves positive ioctl statuses.
+        return {{status, 0, a.VirtualAddress}, a.PagingFenceValue};
     }
     Result createPagingQueue(std::uint32_t device) override {
         D3DKMT_CREATEPAGINGQUEUE a{}; a.hDevice = device; a.Priority = D3DDDI_PAGINGQUEUE_PRIORITY_NORMAL;
@@ -436,7 +485,7 @@ public:
         if (kind == Kind::VendorAllocation) {
             const auto found = vendorAllocations.find(handle);
             if (found == vendorAllocations.end()) return {Invalid, 0, 0};
-            return destroyVendorAllocations(found->second, {handle});
+            return destroyVendorAllocations(found->second.device, {handle});
         } else if (kind == Kind::Allocation) {
             const auto entry = allocations.find(handle);
             if (entry == allocations.end()) return {Invalid, 0, 0};
@@ -517,6 +566,11 @@ public:
                   << ",\"completedVendorAllocations\":" << completedVendorAllocations
                   << ",\"destroyedVendorAllocations\":" << destroyedVendorAllocations
                   << ",\"failedVendorAllocations\":" << failedVendorAllocations
+                  << ",\"completedVendorGpuVaMaps\":" << completedVendorMaps
+                  << ",\"failedVendorGpuVaMaps\":" << failedVendorMaps
+                  << ",\"completedVendorGpuVaWaits\":" << completedVendorMapWaits
+                  << ",\"liveVendorMappedPages\":" << vendorMappedPages
+                  << ",\"peakVendorMappedPages\":" << peakVendorMappedPages
                   << ",\"peakReportedGpuUsageBytes\":" << peakReportedGpuUsage
                   << ",\"reportedGpuUsageLimitBytes\":" << ReportedGpuUsageLimit
                   << ",\"hardVendorAllocationByteQuotaImplemented\":false}\n";
@@ -561,8 +615,8 @@ public:
     }
 };
 static void serve(Stream& stream, const std::string& sectionName = {}, std::uint32_t sectionBytes = 0,
-                  bool contexts = false, bool queries = false, driver_qemu::Runtime* runtime = nullptr, bool allocations = false) {
-    KmtDriver driver(sectionName, sectionBytes, contexts, queries, runtime, allocations);
+                  bool contexts = false, bool queries = false, driver_qemu::Runtime* runtime = nullptr, bool allocations = false, bool gpuVa = false) {
+    KmtDriver driver(sectionName, sectionBytes, contexts, queries, runtime, allocations, gpuVa);
     std::exception_ptr failure;
     {
       Session session(driver);
@@ -595,25 +649,27 @@ int main(int argc, char** argv) {
     try {
         // Explicit experimental opt-in; keep the existing allocation endpoint
         // closed to vendor-private context data unless requested by its owner.
-        bool contexts = false, queries = false, allocations = false;
+        bool contexts = false, queries = false, allocations = false, gpuVa = false;
         while (argc > 1) {
             const auto option = std::string(argv[argc - 1]);
             if (option == "--driver-contexts" && !contexts) contexts = true;
             else if (option == "--driver-queries" && !queries) queries = true;
             else if (option == "--driver-allocations" && !allocations) allocations = true;
+            else if (option == "--driver-gpuva" && !gpuVa) gpuVa = true;
             else break;
             --argc;
         }
         if (allocations && (!contexts || !queries)) throw std::runtime_error("Vendor allocations require explicit query/context opt-ins");
+        if (gpuVa && !allocations) throw std::runtime_error("Vendor GPU-address mappings require explicit allocation opt-in");
         if (argc == 2 && std::string(argv[1]) == "--stdio") {
             if (_setmode(_fileno(stdin), _O_BINARY) == -1 || _setmode(_fileno(stdout), _O_BINARY) == -1)
                 throw std::runtime_error("Cannot set binary stdio mode");
-            Stream stream; serve(stream, {}, 0, contexts, queries, nullptr, allocations); return 0;
+            Stream stream; serve(stream, {}, 0, contexts, queries, nullptr, allocations, gpuVa); return 0;
         }
         const bool ownedRuntime = argc == 7 && std::string(argv[1]) == "--run-qemu";
         if (!ownedRuntime && ((argc != 3 && argc != 7) || std::string(argv[1]) != "--listen")) {
             std::cerr << "Usage: driver-bridge.exe --stdio | --listen port [--guest-section name --guest-ram-bytes count] "
-                "[--driver-contexts] [--driver-queries] [--driver-allocations]\n"
+                "[--driver-contexts] [--driver-queries] [--driver-allocations] [--driver-gpuva]\n"
                 "       driver-bridge.exe --run-qemu qemu firmware kernel initramfs fresh-log --driver-contexts --driver-queries\n"; return 2;
         }
         if (ownedRuntime && (!contexts || !queries)) throw std::runtime_error("Owned QEMU runtime requires explicit query/context opt-ins");
@@ -652,7 +708,7 @@ int main(int argc, char** argv) {
         if (setsockopt(client.value, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&milliseconds), sizeof milliseconds) ||
             setsockopt(client.value, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&milliseconds), sizeof milliseconds))
             throw std::runtime_error("Cannot set socket timeouts");
-        Stream stream(client.value); serve(stream, sectionName, sectionBytes, contexts, queries, runtime.get(), allocations);
+        Stream stream(client.value); serve(stream, sectionName, sectionBytes, contexts, queries, runtime.get(), allocations, gpuVa);
         if (runtime) {
             runtime->report();
             if (!runtime->cleanExit()) throw std::runtime_error("Owned QEMU runtime did not exit cleanly");

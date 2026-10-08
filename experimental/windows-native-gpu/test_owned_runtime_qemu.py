@@ -27,9 +27,13 @@ def main():
     parser.add_argument('--expected-unimplemented-ioctl', type=int, required=True)
     parser.add_argument('--driver-allocations', action='store_true', help='Explicitly enable diagnostic vendor video-memory allocations')
     parser.add_argument('--minimum-vendor-allocations', type=int, default=0)
+    parser.add_argument('--driver-gpuva', action='store_true')
+    parser.add_argument('--minimum-vendor-gpuva-maps', type=int, default=0)
     args = parser.parse_args()
     if args.minimum_vendor_allocations < 0 or (args.minimum_vendor_allocations and not args.driver_allocations):
         parser.error('Minimum allocation acceptance requires the explicit allocation opt-in')
+    if args.minimum_vendor_gpuva_maps < 0 or (args.driver_gpuva and not args.driver_allocations) or (args.minimum_vendor_gpuva_maps and not args.driver_gpuva):
+        parser.error('GPU-address mapping acceptance requires explicit allocation and GPU-address opt-ins')
     if sys.platform != 'win32':
         parser.error('Run on the Windows NVIDIA host')
     for path in (args.qemu, args.kernel, args.initramfs, args.bridge):
@@ -48,7 +52,7 @@ def main():
     owner = subprocess.Popen([str(args.bridge.resolve()), '--run-qemu', str(args.qemu.resolve()),
                               str(args.firmware.resolve()), str(args.kernel.resolve()), str(args.initramfs.resolve()),
                               str(log_path.resolve()), '--driver-contexts', '--driver-queries'] +
-                             (['--driver-allocations'] if args.driver_allocations else []),
+                             (['--driver-allocations'] if args.driver_allocations else []) + (['--driver-gpuva'] if args.driver_gpuva else []),
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                              creationflags=subprocess.CREATE_NO_WINDOW)
     output, errors, observer_errors = [], [], []
@@ -102,6 +106,15 @@ def main():
         loaded = 'nvidiaUmdPresentDuringPrivateQuery=true' in log
         contexts = log.count('LINUX_BRIDGE nativeContextCreated=true')
         allocations = log.count('LINUX_BRIDGE nativeVendorAllocationCreated=true')
+        gpuva = [{'pages': int(p), 'status': int(s), 'fence': int(f)} for p, s, f in
+                 re.findall(r'nativeVendorGpuVaMapped=true pages=(\d+) status=(\d+) fence=(\d+)', log)]
+        retirements = [{'target': int(t), 'observed': int(o)} for t, o in
+                       re.findall(r'pagingFenceRetired=true direct=true loads=10000 target=(\d+) observed=(\d+)', log)]
+        accepted_stage_marker = ('nativeVendorGpuVaMapped=true' if args.driver_gpuva else
+                                 'nativeVendorAllocationCreated=true' if args.driver_allocations else
+                                 'nativeContextCreated=true')
+        boundary = re.search(re.escape(accepted_stage_marker) + r'[^\n]*\n[\s\S]*?LINUX_BRIDGE unsupported nr=(\d+)', log)
+        first_unsupported_after_stage = int(boundary[1]) if boundary else None
         accepted = (owner.returncode == 0 and loaded and contexts > 0 and len(fences) > 0 and
                     'LINUX_BRIDGE deviceCreated=true' in log and 'factory=00000000' in log and 'list=00000000' in log and
                     {'type': 0, 'bytes': 50616} in completed and
@@ -112,21 +125,33 @@ def main():
                     cleanup.get('driverCleanupVerified') is True and cleanup.get('failedAdapterQueries') == 0 and
                     cleanup.get('completedAdapterQueries') == len(completed) and
                     'transport=virtio-port' in log and 'BRIDGE_RUNTIME_EXIT=1' in log and
-                    args.expected_unimplemented_ioctl in unsupported and result is not None and int(result[1], 16) & 0x80000000)
+                    first_unsupported_after_stage == args.expected_unimplemented_ioctl and
+                    result is not None and int(result[1], 16) & 0x80000000)
         if args.driver_allocations:
             accepted = (accepted and allocations >= args.minimum_vendor_allocations and
                         cleanup.get('liveVendorAllocations') == 0 and cleanup.get('failedVendorAllocations') == 0 and
                         cleanup.get('completedVendorAllocations') == allocations and cleanup.get('destroyedVendorAllocations') == allocations and
                         6 not in unsupported and 19 not in unsupported)
+        if args.driver_gpuva:
+            accepted = (accepted and len(gpuva) >= args.minimum_vendor_gpuva_maps and 12 not in unsupported and
+                        cleanup.get('completedVendorGpuVaMaps') == len(gpuva) and cleanup.get('failedVendorGpuVaMaps') == 0 and
+                        cleanup.get('completedVendorGpuVaWaits') == len(gpuva) and cleanup.get('liveVendorMappedPages') == 0 and
+                        len(retirements) == len(gpuva) and
+                        all(retired['target'] == mapped['fence'] and retired['observed'] >= mapped['fence'] for retired, mapped in zip(retirements, gpuva)))
         report = {'schema': 1, 'diagnosticAccepted': bool(accepted), 'runtimeInitializationComplete': False,
-                  'stage': 'live NVIDIA runtime with Windows video-memory allocation' if args.driver_allocations else
+                  'stage': 'live NVIDIA runtime with Windows GPU-address mappings' if args.driver_gpuva else
+                           'live NVIDIA runtime with Windows video-memory allocation' if args.driver_allocations else
                            'live NVIDIA runtime with dynamic Windows paging fence mappings',
                   'hypervisor': 'QEMU/WHPX', 'hostBridgeExit': owner.returncode,
                   'liveNvidiaLinuxUmdLoaded': loaded, 'nativeKmtDeviceCreatedByLiveRuntime': 'deviceCreated=true' in log,
                   'nativeKmtContextsCreatedByLiveRuntime': contexts, 'nativePagingFenceMappings': fences,
                   'vendorAllocationOptIn': args.driver_allocations, 'nativeVendorAllocationsCreatedByLiveRuntime': allocations,
                   'minimumVendorAllocationsRequired': args.minimum_vendor_allocations,
-                  'directGuestFenceLoads': len(fences) * 10000, 'expectedInitializationBoundary': args.expected_unimplemented_ioctl,
+                  'vendorGpuVaOptIn': args.driver_gpuva, 'nativeVendorGpuVaMappings': gpuva,
+                  'directGuestPagingRetirementChecks': retirements,
+                  'minimumVendorGpuVaMappingsRequired': args.minimum_vendor_gpuva_maps,
+                  'directGuestFenceLoads': (len(fences) + len(retirements)) * 10000, 'expectedInitializationBoundary': args.expected_unimplemented_ioctl,
+                  'firstUnsupportedIoctlAfterAcceptedStage': first_unsupported_after_stage,
                   'unsupportedIoctls': unsupported, 'completedNativeQueries': completed,
                   'd3d12DeviceHresult': result[1] if result else None, 'ownedQemuControl': control, 'disconnectCleanup': cleanup,
                   'realWslDxgForwarding': False, 'capturedPrivateFixturesUsed': False,

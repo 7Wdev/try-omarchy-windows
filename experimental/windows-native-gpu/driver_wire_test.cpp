@@ -15,13 +15,16 @@ struct Fake : Driver {
     bool guestPagingEnabled = false;
     int badPagingReply = 0;
     bool vendorEnabled = false;
+    bool gpuVaEnabled = false;
+    int badGpuVaReply = 0;
     int badVendorReply = 0;
     std::map<std::uint32_t, std::uint32_t> vendorOwners;
     std::map<std::uint32_t, std::vector<std::uint8_t>> buffers;
     std::vector<Kind> destroyed;
     native_gpu::Capabilities capabilities() const override {
         return {1, 31u | (contextsEnabled ? ContextCapability : 0u) | (queriesEnabled ? QueryCapability : 0u) |
-                (guestPagingEnabled ? GuestPagingCapability : 0u) | (vendorEnabled ? VendorAllocationCapability : 0u), 0x10de, 123};
+                (guestPagingEnabled ? GuestPagingCapability : 0u) | (vendorEnabled ? VendorAllocationCapability : 0u) |
+                (gpuVaEnabled ? VendorGpuVaCapability : 0u), 0x10de, 123};
     }
     Result created() { ++calls; return {fail ? -123 : 0, ++next, 0}; }
     Result openAdapter() override { return created(); }
@@ -54,6 +57,13 @@ struct Fake : Driver {
         if (fail) return {-123, 0, 0};
         for (const auto handle : handles) { vendorOwners.erase(handle); destroyed.push_back(Kind::VendorAllocation); }
         return {0, 0, 0};
+    }
+    GpuVaResult mapVendorAllocation(std::uint32_t allocation, std::uint32_t queue, GpuVaDesc desc) override {
+        require(vendorOwners.count(allocation) && queue > 500 && validGpuVa(desc)); ++calls;
+        if (fail) return {{-123, 0, 0}, 0};
+        const auto address = desc.base ? desc.base : (desc.minimum ? desc.minimum : 65536ull) + (allocation - 500) * 1048576ull;
+        return {{badGpuVaReply == 4 ? 1 : 0x103, badGpuVaReply == 5 ? 777u : 0u,
+                 badGpuVaReply == 1 ? 0ull : badGpuVaReply == 2 ? address + 1 : badGpuVaReply == 3 ? MaxGpuAddress : address}, 7019};
     }
     GuestPagingResult createGuestPagingQueue(std::uint32_t h) override {
         require(h > 500);
@@ -489,6 +499,82 @@ int main() {
         require(header(s.dispatch(create(device))).status == -24 && vendor.calls == before);
     }
     require(vendor.vendorOwners.empty() && vendor.destroyed.back() == Kind::Adapter);
+    Fake gpuVa; gpuVa.vendorEnabled = true;
+    {
+        Session s(gpuVa); const GpuVaDesc input{3, 0, 0, 67108864, 1099511627776ull, 0, 16, 1, 0};
+        require(header(s.dispatch(request(Op::MapVendorAllocation, 4, input))).status == -71);
+        s.dispatch(hello());
+        const auto adapter = header(s.dispatch(request(Op::OpenAdapter))).handle;
+        const auto device = header(s.dispatch(request(Op::CreateDevice, adapter))).handle;
+        const auto queue = header(s.dispatch(request(Op::CreatePagingQueue, device))).handle;
+        auto create = [&] {
+            auto packet = request(Op::CreateVendorAllocation, device, VendorAllocationDesc{4, 0x78100000, 0, 586, 0, 0});
+            packet.insert(packet.end(), 586, 0); return header(s.dispatch(packet)).handle;
+        };
+        auto release = [&](std::uint32_t id) {
+            auto packet = request(Op::DestroyVendorAllocations, device, DestroyVendorDesc{1, 0});
+            const auto start = packet.size(); packet.resize(start + 4); std::memcpy(packet.data() + start, &id, 4);
+            return s.dispatch(packet);
+        };
+        const auto allocation = create(); require(queue == 3 && allocation == 4);
+        auto before = gpuVa.calls;
+        require(header(s.dispatch(request(Op::MapVendorAllocation, allocation, input))).status == -95 && gpuVa.calls == before);
+        gpuVa.gpuVaEnabled = true;
+        for (unsigned n = 0; n < 12; ++n) {
+            auto invalid = input;
+            switch (n) {
+                case 0: invalid.queue = 0; break;
+                case 1: invalid.reserved = 1; break;
+                case 2: invalid.sizePages = 0; break;
+                case 3: invalid.sizePages = MaxVendorMapPages + 1; break;
+                case 4: invalid.offsetPages = UINT64_MAX; break;
+                case 5: invalid.protection = 16; break;
+                case 6: invalid.driverProtection = 1; break;
+                case 7: invalid.base = MaxGpuAddress - 4096; break;
+                case 8: invalid.minimum = 1; break;
+                case 9: invalid.maximum = MaxGpuAddress + 4096; break;
+                case 10: invalid.maximum = invalid.minimum; break;
+                default: invalid.base = 1; break;
+            }
+            require(header(s.dispatch(request(Op::MapVendorAllocation, allocation, invalid))).status == -22);
+        }
+        auto other = input; other.queue = device;
+        require(header(s.dispatch(request(Op::MapVendorAllocation, allocation, other))).status == -9);
+        require(header(s.dispatch(request(Op::MapVendorAllocation, queue, input))).status == -9);
+        const auto device2 = header(s.dispatch(request(Op::CreateDevice, adapter))).handle;
+        other.queue = header(s.dispatch(request(Op::CreatePagingQueue, device2))).handle;
+        before = gpuVa.calls;
+        require(header(s.dispatch(request(Op::MapVendorAllocation, allocation, other))).status == -9 && gpuVa.calls == before);
+        gpuVa.fail = true;
+        auto packet = s.dispatch(request(Op::MapVendorAllocation, allocation, input)); Reply nt{}; GpuVaReply fence{};
+        require(packet.size() == sizeof(Header) + sizeof(Reply) + sizeof(GpuVaReply));
+        std::memcpy(&nt, packet.data() + sizeof(Header), sizeof nt); std::memcpy(&fence, packet.data() + sizeof(Header) + sizeof(Reply), sizeof fence);
+        require(nt.ntstatus == -123 && !nt.value && !fence.fence && header(packet).handle == allocation);
+        gpuVa.fail = false;
+        for (int invalid = 1; invalid <= 5; ++invalid) {
+            gpuVa.badGpuVaReply = invalid;
+            require(header(s.dispatch(request(Op::MapVendorAllocation, allocation, input))).status == -5);
+        }
+        gpuVa.badGpuVaReply = 0;
+        packet = s.dispatch(request(Op::MapVendorAllocation, allocation, input));
+        std::memcpy(&nt, packet.data() + sizeof(Header), sizeof nt); std::memcpy(&fence, packet.data() + sizeof(Header) + sizeof(Reply), sizeof fence);
+        require(!header(packet).status && nt.ntstatus == 0x103 && validGpuVaOutput(input, nt.value) && fence.fence == 7019);
+        const auto competing = create(); auto collision = input; collision.base = nt.value;
+        before = gpuVa.calls;
+        require(header(s.dispatch(request(Op::MapVendorAllocation, competing, collision))).status == -16 && gpuVa.calls == before);
+        require(header(release(competing)).status == 0);
+        before = gpuVa.calls;
+        require(header(s.dispatch(request(Op::MapVendorAllocation, allocation, input))).status == -16 && gpuVa.calls == before);
+        gpuVa.fail = true; release(allocation); gpuVa.fail = false;
+        require(header(s.dispatch(request(Op::MapVendorAllocation, allocation, input))).status == -16);
+        require(header(release(allocation)).status == 0);
+        for (std::size_t n = 0; n < MaxVendorAllocations; ++n) {
+            const auto id = create(); auto large = input; large.sizePages = MaxVendorMapPages;
+            require(header(s.dispatch(request(Op::MapVendorAllocation, id, large))).status == 0);
+        }
+        // Disconnect releases all mapped native allocations before their devices.
+    }
+    require(gpuVa.vendorOwners.empty());
     Fake pagingQuota; pagingQuota.guestPagingEnabled = true;
     {
         Session s(pagingQuota); s.dispatch(hello());
