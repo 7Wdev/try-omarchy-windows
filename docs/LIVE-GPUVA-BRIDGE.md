@@ -1,5 +1,10 @@
 # Live NVIDIA GPU-address mapping from QEMU to Windows
 
+This document records the GPU-address milestone. The
+[later residency result](LIVE-RESIDENCY-BRIDGE.md) now reaches live
+`MakeResident`; the next unsupported call is `Lock2`, ioctl 37. The ioctl 11
+boundary below describes the mapping-only configuration.
+
 The NVIDIA Linux runtime running in QEMU now maps its live Windows allocation
 into GPU virtual address space through the Windows native driver bridge. The
 RTX 5090 Laptop GPU with Windows driver `32.0.16.1742` accepted the actual

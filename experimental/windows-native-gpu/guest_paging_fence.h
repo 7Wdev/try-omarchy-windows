@@ -87,7 +87,7 @@ public:
                      static_cast<unsigned long long>(offset), static_cast<unsigned long long>(observed));
         return const_cast<std::uint64_t*>(fence);
     }
-    void verifyRetired(std::uint32_t queue, std::uint64_t target) {
+    void verifyRetired(std::uint32_t queue, std::uint64_t target, const char* operation) {
         const auto found = mappings.find(queue);
         if (found == mappings.end()) throw std::runtime_error("Mapped guest paging fence absent");
         const auto before = word(0x48);
@@ -96,8 +96,8 @@ public:
         for (unsigned n = 0; n < 10000; ++n) observed = *found->second.fence;
         if (observed < target || word(0x48) != before) throw std::runtime_error("Guest fence did not directly observe paging retirement");
         reads += 10000;
-        std::fprintf(stderr, "LINUX_BRIDGE pagingFenceRetired=true direct=true loads=10000 target=%llu observed=%llu\n",
-                     static_cast<unsigned long long>(target), static_cast<unsigned long long>(observed));
+        std::fprintf(stderr, "LINUX_BRIDGE pagingFenceRetired=true direct=true loads=10000 target=%llu observed=%llu operation=%s\n",
+                     static_cast<unsigned long long>(target), static_cast<unsigned long long>(observed), operation);
     }
     void unmap(std::uint32_t queue) {
         const auto found = mappings.find(queue);

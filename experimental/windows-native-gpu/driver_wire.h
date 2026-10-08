@@ -20,6 +20,17 @@ constexpr std::uint32_t VendorAllocationCapability = 256;
 constexpr std::uint32_t MaxVendorPrivateBytes = 4000;
 constexpr std::size_t MaxVendorAllocations = 16;
 constexpr std::uint32_t VendorGpuVaCapability = 512;
+constexpr std::uint32_t VendorResidencyCapability = 1024;
+constexpr std::uint32_t MaxVendorResidencyAttempts = 64;
+struct ResidentDesc { std::uint32_t count, flags, priorities, reserved; };
+static_assert(sizeof(ResidentDesc) == 16, "fixed residency descriptor");
+inline bool validResident(ResidentDesc d) {
+    // CantTrimFurther is used by the live runtime. MustSucceed can force
+    // device loss and is deliberately absent from this diagnostic.
+    return d.count && d.count <= MaxVendorAllocations && d.flags <= 1 && d.priorities <= 1 && !d.reserved;
+}
+struct ResidentReply { std::uint32_t count, reserved; std::uint64_t bytesToTrim; };
+static_assert(sizeof(ResidentReply) == 16, "fixed residency output");
 constexpr std::uint64_t MaxGpuAddress = 1ull << 48;
 constexpr std::uint32_t MaxVendorMapPages = MaxAllocation / 4096;
 constexpr std::uint32_t MaxVendorMappedPages = MaxAllocatedBytes / 4096;
@@ -91,7 +102,7 @@ enum class Op : std::uint32_t {
     CreateContext = 0x2020, DestroyContext,
     BeginAdapterQuery = 0x2030, WriteAdapterQuery, RunAdapterQuery, ReadAdapterQuery, EndAdapterQuery,
     CreateGuestPagingQueue = 0x2040,
-    CreateVendorAllocation = 0x2050, DestroyVendorAllocations, MapVendorAllocation
+    CreateVendorAllocation = 0x2050, DestroyVendorAllocations, MapVendorAllocation, MakeVendorResident
 };
 enum class Kind { Adapter, Device, PagingQueue, Allocation, Context, PagingSync, VendorAllocation };
 struct ContextDesc {
@@ -115,6 +126,7 @@ struct CopyRange { std::uint32_t source; std::uint32_t sourceOffset; std::uint32
 static_assert(sizeof(CopyRange) == 16, "fixed GPU copy layout");
 struct Result { std::int32_t ntstatus; std::uint32_t nativeHandle; std::uint64_t value; };
 struct GpuVaResult { Result map; std::uint64_t fence; };
+struct ResidentResult { Result residency; ResidentReply output; };
 // The synchronization object is borrowed from the paging queue. Destruction
 // of the queue owns its lifetime; no native handle is exposed to the guest.
 struct GuestPagingResult { Result queue; std::uint32_t sync; std::uint64_t offset; };
@@ -145,6 +157,10 @@ public:
     virtual GpuVaResult mapVendorAllocation(std::uint32_t, std::uint32_t, GpuVaDesc) {
         return {{static_cast<std::int32_t>(0xc00000bbu), 0, 0}, 0};
     }
+    virtual ResidentResult makeVendorResident(std::uint32_t, ResidentDesc, const std::vector<std::uint32_t>&,
+                                            const std::vector<std::uint32_t>&) {
+        return {{static_cast<std::int32_t>(0xc00000bbu), 0, 0}, {0, 0, 0}};
+    }
     virtual GuestPagingResult createGuestPagingQueue(std::uint32_t) {
         return {{static_cast<std::int32_t>(0xc00000bbu), 0, 0}, 0, 0};
     }
@@ -165,6 +181,7 @@ class Session {
         std::uint64_t guestOffset; bool shared;
         std::uint32_t gpuPages = 0;
         std::uint64_t gpuAddress = 0;
+        std::uint32_t residencyAttempts = 0;
     };
     Driver& driver;
     std::map<std::uint32_t, Object> objects;
@@ -376,6 +393,38 @@ public:
                 if (result.nativeHandle) driver.destroy(Kind::VendorAllocation, result.nativeHandle);
                 throw;
             }
+        }
+        if (op == Op::MakeVendorResident) {
+            if (!negotiated) return reply(h, -71);
+            if (!(driver.capabilities().flags & VendorResidencyCapability)) return reply(h, -95);
+            if (packet.size() < sizeof h + sizeof(ResidentDesc)) return reply(h, -22);
+            ResidentDesc desc{}; std::memcpy(&desc, packet.data() + sizeof h, sizeof desc);
+            if (!validResident(desc) || packet.size() != sizeof h + sizeof desc + desc.count * 4 * (1 + desc.priorities))
+                return reply(h, -22);
+            const auto queue = objects.find(h.handle);
+            if (queue == objects.end() || queue->second.kind != Kind::PagingQueue) return reply(h, -9);
+            std::vector<std::uint32_t> ids(desc.count), native(desc.count), priorities(desc.priorities ? desc.count : 0);
+            std::memcpy(ids.data(), packet.data() + sizeof h + sizeof desc, ids.size() * 4);
+            if (!priorities.empty()) std::memcpy(priorities.data(), packet.data() + sizeof h + sizeof desc + ids.size() * 4, priorities.size() * 4);
+            for (std::size_t n = 0; n < ids.size(); ++n) {
+                const auto entry = objects.find(ids[n]);
+                if (entry == objects.end() || entry->second.kind != Kind::VendorAllocation || entry->second.parent != queue->second.parent)
+                    return reply(h, -9);
+                if (std::find(ids.begin(), ids.begin() + n, ids[n]) != ids.begin() + n) return reply(h, -22);
+                if (entry->second.residencyAttempts >= MaxVendorResidencyAttempts) return reply(h, -24);
+                native[n] = entry->second.nativeHandle;
+            }
+            // Conservatively bound all native attempts, including failure
+            // that may have made only part of the list resident.
+            for (const auto id : ids) ++objects.at(id).residencyAttempts;
+            const auto result = driver.makeVendorResident(queue->second.nativeHandle, desc, native, priorities);
+            if (result.residency.nativeHandle || result.output.reserved || result.output.count > desc.count ||
+                (result.residency.ntstatus >= 0 && result.residency.ntstatus != 0 && result.residency.ntstatus != 0x103))
+                return reply(h, -5);
+            auto out = reply(h, 0, h.handle, &result.residency);
+            const auto start = out.size(); out.resize(start + sizeof(ResidentReply));
+            std::memcpy(out.data() + start, &result.output, sizeof result.output);
+            return out;
         }
         if (op == Op::MapVendorAllocation) {
             if (!negotiated) return reply(h, -71);

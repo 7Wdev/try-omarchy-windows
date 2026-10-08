@@ -467,6 +467,46 @@ public:
                 for (unsigned n = 0; n < a.AllocationCount; ++n) vendorOwners.erase(a.phAllocationList[n]);
                 std::fprintf(stderr, "LINUX_BRIDGE nativeVendorAllocationsDestroyed=true count=%u\n", a.AllocationCount); return 0;
             }
+            case 11: {
+                auto& a = args<D3DDDI_MAKERESIDENT>(requestNumber, pointer);
+                std::fprintf(stderr, "LINUX_BRIDGE residentInput count=%u flags=%u hasAllocations=%u hasPriorities=%u\n",
+                             a.NumAllocations, a.Flags.Value, a.AllocationList ? 1u : 0u, a.PriorityList ? 1u : 0u);
+                if (!(caps.flags & VendorResidencyCapability)) {
+                    std::fprintf(stderr, "LINUX_BRIDGE unsupported nr=11 bytes=%zu\n", sizeof a); throw Error(ENOSYS);
+                }
+                const ResidentDesc desc{a.NumAllocations, a.Flags.Value, a.PriorityList ? 1u : 0u, 0};
+                if (!validResident(desc) || !a.AllocationList) throw Error(EINVAL);
+                const auto queue = pagingOwners.find(a.hPagingQueue);
+                if (queue == pagingOwners.end()) throw Error(EBADF);
+                for (unsigned n = 0; n < desc.count; ++n) {
+                    const auto allocation = vendorOwners.find(a.AllocationList[n]);
+                    if (allocation == vendorOwners.end() || allocation->second != queue->second) throw Error(EBADF);
+                    for (unsigned previous = 0; previous < n; ++previous)
+                        if (a.AllocationList[previous] == a.AllocationList[n]) throw Error(EINVAL);
+                }
+                auto packet = request(Op::MakeVendorResident, a.hPagingQueue, desc);
+                const auto ids = reinterpret_cast<const std::uint8_t*>(a.AllocationList);
+                packet.insert(packet.end(), ids, ids + desc.count * sizeof(a.AllocationList[0]));
+                if (desc.priorities) {
+                    const auto priorities = reinterpret_cast<const std::uint8_t*>(a.PriorityList);
+                    packet.insert(packet.end(), priorities, priorities + desc.count * sizeof(a.PriorityList[0]));
+                }
+                const auto result = call(packet, sizeof(ResidentReply), true);
+                ResidentReply output{}; std::memcpy(&output, result.data.data(), sizeof output);
+                if (result.header.handle != a.hPagingQueue || output.reserved || output.count > desc.count ||
+                    (result.result.ntstatus >= 0 && result.result.ntstatus != 0 && result.result.ntstatus != 0x103)) {
+                    transport.fail(); throw Error(EPROTO);
+                }
+                // Windows returns in/out count, fence and bytes-to-trim on
+                // budget failure too. Copy them before translating NTSTATUS.
+                a.NumAllocations = output.count; a.PagingFenceValue = result.result.value; a.NumBytesToTrim = output.bytesToTrim;
+                checkNt(result.result.ntstatus);
+                pagingFences.verifyRetired(a.hPagingQueue, a.PagingFenceValue, "residency");
+                std::fprintf(stderr, "LINUX_BRIDGE nativeVendorResident=true count=%u status=%d fence=%llu bytesToTrim=%llu\n",
+                             a.NumAllocations, result.result.ntstatus, static_cast<unsigned long long>(a.PagingFenceValue),
+                             static_cast<unsigned long long>(a.NumBytesToTrim));
+                return result.result.ntstatus;
+            }
             case 12: {
                 auto& a = args<D3DDDI_MAPGPUVIRTUALADDRESS>(requestNumber, pointer);
                 std::fprintf(stderr, "LINUX_BRIDGE gpuVaInput base=%llu minimum=%llu maximum=%llu offsetPages=%llu sizePages=%llu protection=%llu driverProtection=%llu reserved0=%u reserved1=%llu\n",
@@ -488,7 +528,7 @@ public:
                     (result.result.ntstatus >= 0 && ((result.result.ntstatus != 0 && result.result.ntstatus != 0x103) || !validGpuVaOutput(desc, result.result.value))) ||
                     (result.result.ntstatus < 0 && (result.result.value || fence.fence))) { transport.fail(); throw Error(EPROTO); }
                 checkNt(result.result.ntstatus);
-                pagingFences.verifyRetired(a.hPagingQueue, fence.fence);
+                pagingFences.verifyRetired(a.hPagingQueue, fence.fence, "gpuva");
                 a.VirtualAddress = result.result.value; a.PagingFenceValue = fence.fence;
                 std::fprintf(stderr, "LINUX_BRIDGE nativeVendorGpuVaMapped=true pages=%llu status=%d fence=%llu\n",
                              static_cast<unsigned long long>(desc.sizePages), result.result.ntstatus, static_cast<unsigned long long>(fence.fence));

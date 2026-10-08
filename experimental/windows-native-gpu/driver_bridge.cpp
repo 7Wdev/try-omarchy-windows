@@ -27,6 +27,7 @@ class KmtDriver : public Driver {
         volatile std::uint64_t* fence;
         std::uint32_t sync;
         std::optional<driver_qemu::FenceLease> lease;
+        std::uint32_t device;
     };
     std::map<std::uint32_t, Paging> pagingFences;
     driver_qemu::Runtime* runtime = nullptr;
@@ -41,11 +42,19 @@ class KmtDriver : public Driver {
     std::map<std::uint32_t, Allocation> allocations;
     // Vendor video-memory allocations have no host CPU backing or public
     // size field. Never mix these with the byte-counted standard allocations.
-    struct VendorAllocation { std::uint32_t device; std::uint64_t address = 0, pages = 0; };
+    struct VendorAllocation {
+        std::uint32_t device;
+        std::uint64_t address = 0, pages = 0;
+        std::uint32_t residencyAttempts = 0;
+    };
     std::map<std::uint32_t, VendorAllocation> vendorAllocations;
     ComPtr<IDXGIAdapter3> allocationBudgetAdapter;
     bool allocationsEnabled = false;
     bool gpuVaEnabled = false;
+    bool residencyEnabled = false;
+    std::uint32_t vendorResidencyAttempts = 0, peakVendorResidencyAttempts = 0;
+    unsigned completedVendorResidency = 0, failedVendorResidency = 0, completedVendorResidencyWaits = 0;
+    std::uint64_t vendorAllocationsMadeResident = 0;
     std::uint32_t vendorMappedPages = 0, peakVendorMappedPages = 0;
     unsigned completedVendorMaps = 0, failedVendorMaps = 0, completedVendorMapWaits = 0;
     unsigned completedVendorAllocations = 0, destroyedVendorAllocations = 0, failedVendorAllocations = 0;
@@ -116,8 +125,8 @@ class KmtDriver : public Driver {
     }
 public:
     KmtDriver(std::string sectionName, std::uint32_t sectionBytes, bool enableContexts, bool enableQueries,
-              driver_qemu::Runtime* ownedRuntime = nullptr, bool enableAllocations = false, bool enableGpuVa = false)
-        : runtime(ownedRuntime), allocationsEnabled(enableAllocations), gpuVaEnabled(enableGpuVa), contextsEnabled(enableContexts), queriesEnabled(enableQueries),
+              driver_qemu::Runtime* ownedRuntime = nullptr, bool enableAllocations = false, bool enableGpuVa = false, bool enableResidency = false)
+        : runtime(ownedRuntime), allocationsEnabled(enableAllocations), gpuVaEnabled(enableGpuVa), residencyEnabled(enableResidency), contextsEnabled(enableContexts), queriesEnabled(enableQueries),
           guestSectionName(std::move(sectionName)), guestBytes(sectionBytes) {
         const std::string prefix = "Local\\7Wdev-WDDM-";
         if (!guestSectionName.empty()) {
@@ -161,7 +170,8 @@ public:
         // allocations. No arbitrary guest command stream or scanout support.
         return {Version, (guestSectionName.empty() ? 7u : 31u) | (contextsEnabled ? ContextCapability : 0u) |
                 (queriesEnabled ? QueryCapability : 0u) | (runtime ? GuestPagingCapability : 0u) |
-                (allocationsEnabled ? VendorAllocationCapability : 0u) | (gpuVaEnabled ? VendorGpuVaCapability : 0u),
+                (allocationsEnabled ? VendorAllocationCapability : 0u) | (gpuVaEnabled ? VendorGpuVaCapability : 0u) |
+                (residencyEnabled ? VendorResidencyCapability : 0u),
                 description.VendorId, description.DeviceId};
     }
     Result openAdapter() override {
@@ -250,15 +260,59 @@ public:
         if (status >= 0) {
             for (const auto handle : handles) {
                 vendorMappedPages -= static_cast<std::uint32_t>(vendorAllocations.at(handle).pages);
+                vendorResidencyAttempts -= vendorAllocations.at(handle).residencyAttempts;
                 vendorAllocations.erase(handle);
             }
             destroyedVendorAllocations += static_cast<unsigned>(handles.size());
         } else ++cleanupFailures;
         return {status, 0, 0};
     }
+    ResidentResult makeVendorResident(std::uint32_t queue, ResidentDesc desc, const std::vector<std::uint32_t>& handles,
+                                     const std::vector<std::uint32_t>& priorities) override {
+        const auto paging = pagingFences.find(queue);
+        if (!residencyEnabled || !validResident(desc) || paging == pagingFences.end() || handles.size() != desc.count ||
+            priorities.size() != (desc.priorities ? desc.count : 0)) return {{Invalid, 0, 0}, {0, 0, 0}};
+        for (std::size_t n = 0; n < handles.size(); ++n) {
+            const auto allocation = vendorAllocations.find(handles[n]);
+            if (allocation == vendorAllocations.end() || allocation->second.device != paging->second.device ||
+                std::find(handles.begin(), handles.begin() + n, handles[n]) != handles.begin() + n ||
+                allocation->second.residencyAttempts >= MaxVendorResidencyAttempts) return {{Invalid, 0, 0}, {0, 0, 0}};
+        }
+        if (!reportedGpuUsageAcceptable()) {
+            ++failedVendorResidency;
+            return {{static_cast<std::int32_t>(0xc0000017u), 0, 0}, {0, 0, 0}};
+        }
+        D3DDDI_MAKERESIDENT a{}; a.hPagingQueue = queue; a.NumAllocations = desc.count;
+        a.AllocationList = handles.data(); a.PriorityList = priorities.empty() ? nullptr : priorities.data();
+        a.Flags.Value = desc.flags;
+        // Even a failing list operation may affect a subset. Bound every
+        // attempt until synchronous allocation destruction releases ownership.
+        for (const auto handle : handles) ++vendorAllocations.at(handle).residencyAttempts;
+        vendorResidencyAttempts += desc.count;
+        peakVendorResidencyAttempts = (std::max)(peakVendorResidencyAttempts, vendorResidencyAttempts);
+        const auto status = D3DKMTMakeResident(&a);
+        if (a.NumAllocations > desc.count || (status >= 0 && status != 0 && status != 0x103))
+            throw std::runtime_error("Unexpected native residency output");
+        if (status >= 0 && !waitPaging(queue, a.PagingFenceValue)) {
+            ++failedVendorResidency;
+            throw std::runtime_error("Native residency paging deadline exceeded");
+        }
+        if (!reportedGpuUsageAcceptable()) {
+            ++failedVendorResidency;
+            // Keep all allocations owned. The server stops its VM before
+            // session destruction, including after partial native failure.
+            throw std::runtime_error("Reported GPU usage limit after residency");
+        }
+        if (status >= 0) {
+            ++completedVendorResidency; ++completedVendorResidencyWaits;
+            vendorAllocationsMadeResident += a.NumAllocations;
+        } else ++failedVendorResidency;
+        return {{status, 0, a.PagingFenceValue}, {a.NumAllocations, 0, a.NumBytesToTrim}};
+    }
     GpuVaResult mapVendorAllocation(std::uint32_t allocation, std::uint32_t queue, GpuVaDesc desc) override {
         const auto entry = vendorAllocations.find(allocation);
         if (!gpuVaEnabled || !validGpuVa(desc) || entry == vendorAllocations.end() || !pagingFences.count(queue) ||
+            entry->second.device != pagingFences.at(queue).device ||
             entry->second.pages || entry->second.address || desc.sizePages > MaxVendorMappedPages - vendorMappedPages)
             return {{Invalid, 0, 0}, 0};
         if (desc.base) {
@@ -303,7 +357,7 @@ public:
         const auto status = D3DKMTCreatePagingQueue(&a);
         if (status >= 0) {
             try { pagingFences.emplace(a.hPagingQueue, Paging{
-                static_cast<volatile std::uint64_t*>(a.FenceValueCPUVirtualAddress), a.hSyncObject, std::nullopt}); }
+                static_cast<volatile std::uint64_t*>(a.FenceValueCPUVirtualAddress), a.hSyncObject, std::nullopt, device}); }
             catch (...) {
                 D3DDDI_DESTROYPAGINGQUEUE cleanup{}; cleanup.hPagingQueue = a.hPagingQueue;
                 if (D3DKMTDestroyPagingQueue(&cleanup) < 0) ++cleanupFailures;
@@ -548,6 +602,7 @@ public:
     }
     bool clean() const {
         return !activeAdapters && !activeDevices && !activeContexts && pagingFences.empty() && allocations.empty() && vendorAllocations.empty() &&
+               !vendorMappedPages && !vendorResidencyAttempts &&
                !guestMemory && !guestSection && !copyDevice && !copyHeap && !copyQueue && !copyFence && !copyEvent && !cleanupFailures;
     }
     void reportCleanup() const {
@@ -571,6 +626,12 @@ public:
                   << ",\"completedVendorGpuVaWaits\":" << completedVendorMapWaits
                   << ",\"liveVendorMappedPages\":" << vendorMappedPages
                   << ",\"peakVendorMappedPages\":" << peakVendorMappedPages
+                  << ",\"completedVendorResidencyRequests\":" << completedVendorResidency
+                  << ",\"failedVendorResidencyRequests\":" << failedVendorResidency
+                  << ",\"completedVendorResidencyWaits\":" << completedVendorResidencyWaits
+                  << ",\"vendorAllocationsMadeResident\":" << vendorAllocationsMadeResident
+                  << ",\"liveVendorResidencyAttempts\":" << vendorResidencyAttempts
+                  << ",\"peakVendorResidencyAttempts\":" << peakVendorResidencyAttempts
                   << ",\"peakReportedGpuUsageBytes\":" << peakReportedGpuUsage
                   << ",\"reportedGpuUsageLimitBytes\":" << ReportedGpuUsageLimit
                   << ",\"hardVendorAllocationByteQuotaImplemented\":false}\n";
@@ -615,8 +676,8 @@ public:
     }
 };
 static void serve(Stream& stream, const std::string& sectionName = {}, std::uint32_t sectionBytes = 0,
-                  bool contexts = false, bool queries = false, driver_qemu::Runtime* runtime = nullptr, bool allocations = false, bool gpuVa = false) {
-    KmtDriver driver(sectionName, sectionBytes, contexts, queries, runtime, allocations, gpuVa);
+                  bool contexts = false, bool queries = false, driver_qemu::Runtime* runtime = nullptr, bool allocations = false, bool gpuVa = false, bool residency = false) {
+    KmtDriver driver(sectionName, sectionBytes, contexts, queries, runtime, allocations, gpuVa, residency);
     std::exception_ptr failure;
     {
       Session session(driver);
@@ -649,27 +710,29 @@ int main(int argc, char** argv) {
     try {
         // Explicit experimental opt-in; keep the existing allocation endpoint
         // closed to vendor-private context data unless requested by its owner.
-        bool contexts = false, queries = false, allocations = false, gpuVa = false;
+        bool contexts = false, queries = false, allocations = false, gpuVa = false, residency = false;
         while (argc > 1) {
             const auto option = std::string(argv[argc - 1]);
             if (option == "--driver-contexts" && !contexts) contexts = true;
             else if (option == "--driver-queries" && !queries) queries = true;
             else if (option == "--driver-allocations" && !allocations) allocations = true;
             else if (option == "--driver-gpuva" && !gpuVa) gpuVa = true;
+            else if (option == "--driver-residency" && !residency) residency = true;
             else break;
             --argc;
         }
         if (allocations && (!contexts || !queries)) throw std::runtime_error("Vendor allocations require explicit query/context opt-ins");
         if (gpuVa && !allocations) throw std::runtime_error("Vendor GPU-address mappings require explicit allocation opt-in");
+        if (residency && !allocations) throw std::runtime_error("Vendor residency requires explicit allocation opt-in");
         if (argc == 2 && std::string(argv[1]) == "--stdio") {
             if (_setmode(_fileno(stdin), _O_BINARY) == -1 || _setmode(_fileno(stdout), _O_BINARY) == -1)
                 throw std::runtime_error("Cannot set binary stdio mode");
-            Stream stream; serve(stream, {}, 0, contexts, queries, nullptr, allocations, gpuVa); return 0;
+            Stream stream; serve(stream, {}, 0, contexts, queries, nullptr, allocations, gpuVa, residency); return 0;
         }
         const bool ownedRuntime = argc == 7 && std::string(argv[1]) == "--run-qemu";
         if (!ownedRuntime && ((argc != 3 && argc != 7) || std::string(argv[1]) != "--listen")) {
             std::cerr << "Usage: driver-bridge.exe --stdio | --listen port [--guest-section name --guest-ram-bytes count] "
-                "[--driver-contexts] [--driver-queries] [--driver-allocations] [--driver-gpuva]\n"
+                "[--driver-contexts] [--driver-queries] [--driver-allocations] [--driver-gpuva] [--driver-residency]\n"
                 "       driver-bridge.exe --run-qemu qemu firmware kernel initramfs fresh-log --driver-contexts --driver-queries\n"; return 2;
         }
         if (ownedRuntime && (!contexts || !queries)) throw std::runtime_error("Owned QEMU runtime requires explicit query/context opt-ins");
@@ -708,7 +771,7 @@ int main(int argc, char** argv) {
         if (setsockopt(client.value, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&milliseconds), sizeof milliseconds) ||
             setsockopt(client.value, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&milliseconds), sizeof milliseconds))
             throw std::runtime_error("Cannot set socket timeouts");
-        Stream stream(client.value); serve(stream, sectionName, sectionBytes, contexts, queries, runtime.get(), allocations, gpuVa);
+        Stream stream(client.value); serve(stream, sectionName, sectionBytes, contexts, queries, runtime.get(), allocations, gpuVa, residency);
         if (runtime) {
             runtime->report();
             if (!runtime->cleanExit()) throw std::runtime_error("Owned QEMU runtime did not exit cleanly");

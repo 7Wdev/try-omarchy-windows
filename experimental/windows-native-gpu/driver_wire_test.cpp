@@ -16,6 +16,10 @@ struct Fake : Driver {
     int badPagingReply = 0;
     bool vendorEnabled = false;
     bool gpuVaEnabled = false;
+    bool residencyEnabled = false;
+    int badResidentReply = 0;
+    unsigned residentCalls = 0;
+    std::vector<std::uint32_t> lastResidentPriorities, lastResidentHandles;
     int badGpuVaReply = 0;
     int badVendorReply = 0;
     std::map<std::uint32_t, std::uint32_t> vendorOwners;
@@ -24,7 +28,7 @@ struct Fake : Driver {
     native_gpu::Capabilities capabilities() const override {
         return {1, 31u | (contextsEnabled ? ContextCapability : 0u) | (queriesEnabled ? QueryCapability : 0u) |
                 (guestPagingEnabled ? GuestPagingCapability : 0u) | (vendorEnabled ? VendorAllocationCapability : 0u) |
-                (gpuVaEnabled ? VendorGpuVaCapability : 0u), 0x10de, 123};
+                (gpuVaEnabled ? VendorGpuVaCapability : 0u) | (residencyEnabled ? VendorResidencyCapability : 0u), 0x10de, 123};
     }
     Result created() { ++calls; return {fail ? -123 : 0, ++next, 0}; }
     Result openAdapter() override { return created(); }
@@ -64,6 +68,15 @@ struct Fake : Driver {
         const auto address = desc.base ? desc.base : (desc.minimum ? desc.minimum : 65536ull) + (allocation - 500) * 1048576ull;
         return {{badGpuVaReply == 4 ? 1 : 0x103, badGpuVaReply == 5 ? 777u : 0u,
                  badGpuVaReply == 1 ? 0ull : badGpuVaReply == 2 ? address + 1 : badGpuVaReply == 3 ? MaxGpuAddress : address}, 7019};
+    }
+    ResidentResult makeVendorResident(std::uint32_t queue, ResidentDesc desc, const std::vector<std::uint32_t>& handles,
+                                     const std::vector<std::uint32_t>& priorities) override {
+        require(queue > 500 && validResident(desc) && handles.size() == desc.count && priorities.size() == (desc.priorities ? desc.count : 0));
+        for (const auto handle : handles) require(vendorOwners.count(handle));
+        ++calls; ++residentCalls; lastResidentPriorities = priorities; lastResidentHandles = handles;
+        if (fail) return {{static_cast<std::int32_t>(0xc0000017u), 0, 7009}, {desc.count - 1, 0, 65536}};
+        return {{badResidentReply == 1 ? 1 : 259, badResidentReply == 2 ? 777u : 0u, 7011},
+                {badResidentReply == 3 ? desc.count + 1 : desc.count, badResidentReply == 4 ? 1u : 0u, 0}};
     }
     GuestPagingResult createGuestPagingQueue(std::uint32_t h) override {
         require(h > 500);
@@ -575,6 +588,85 @@ int main() {
         // Disconnect releases all mapped native allocations before their devices.
     }
     require(gpuVa.vendorOwners.empty());
+    Fake resident; resident.vendorEnabled = true;
+    {
+        Session s(resident);
+        auto make = [&](std::uint32_t queue, const std::vector<std::uint32_t>& ids, std::uint32_t flags = 1,
+                        const std::vector<std::uint32_t>& priorities = std::vector<std::uint32_t>{}) {
+            auto packet = request(Op::MakeVendorResident, queue, ResidentDesc{static_cast<std::uint32_t>(ids.size()), flags, priorities.empty() ? 0u : 1u, 0});
+            for (const auto& values : {ids, priorities}) {
+                const auto start = packet.size(); packet.resize(start + values.size() * 4);
+                if (!values.empty()) std::memcpy(packet.data() + start, values.data(), values.size() * 4);
+            }
+            return packet;
+        };
+        auto create = [&](std::uint32_t device) {
+            auto packet = request(Op::CreateVendorAllocation, device, VendorAllocationDesc{4, 0x78100000, 0, 586, 0, 0});
+            packet.insert(packet.end(), 586, 0); return header(s.dispatch(packet)).handle;
+        };
+        auto release = [&](std::uint32_t device, std::uint32_t id) {
+            auto packet = request(Op::DestroyVendorAllocations, device, DestroyVendorDesc{1, 0});
+            const auto start = packet.size(); packet.resize(start + 4); std::memcpy(packet.data() + start, &id, 4);
+            return s.dispatch(packet);
+        };
+        require(header(s.dispatch(make(3, {4}))).status == -71);
+        s.dispatch(hello());
+        const auto adapter = header(s.dispatch(request(Op::OpenAdapter))).handle;
+        const auto device = header(s.dispatch(request(Op::CreateDevice, adapter))).handle;
+        const auto queue = header(s.dispatch(request(Op::CreatePagingQueue, device))).handle;
+        const auto first = create(device), second = create(device);
+        auto before = resident.calls;
+        require(header(s.dispatch(make(queue, {first}))).status == -95 && resident.calls == before);
+        resident.residencyEnabled = true;
+        require(header(s.dispatch(make(queue, {}))).status == -22);
+        require(header(s.dispatch(make(queue, std::vector<std::uint32_t>(17, first)))).status == -22);
+        require(header(s.dispatch(make(queue, {first}, 2))).status == -22);
+        require(header(s.dispatch(make(queue, {first}, 4))).status == -22);
+        require(header(s.dispatch(make(queue, {first, first}))).status == -22);
+        auto truncated = make(queue, {first}, 1, {0x78100000}); truncated.pop_back();
+        require(header(s.dispatch(truncated)).status == -22);
+        require(header(s.dispatch(make(queue, {first, second}, 1, {0x78100000}))).status == -22);
+        auto invalid = make(queue, {first}); invalid[28] = 1; // reserved field
+        require(header(s.dispatch(invalid)).status == -22);
+        invalid = make(queue, {first}); invalid[24] = 2; // priority-present is boolean
+        require(header(s.dispatch(invalid)).status == -22);
+        require(header(s.dispatch(make(device, {first}))).status == -9);
+        require(header(s.dispatch(make(queue, {device}))).status == -9);
+        require(header(s.dispatch(make(queue, {999}))).status == -9 && resident.calls == before);
+        const auto other = header(s.dispatch(request(Op::CreateDevice, adapter))).handle;
+        const auto foreign = create(other);
+        before = resident.calls;
+        require(header(s.dispatch(make(queue, {first, foreign}))).status == -9 && resident.calls == before);
+        resident.fail = true;
+        auto packet = s.dispatch(make(queue, {first, second}, 1, {0x78100000, 0x78000000}));
+        Reply nt{}; ResidentReply out{};
+        require(packet.size() == sizeof(Header) + sizeof(Reply) + sizeof(ResidentReply) && header(packet).handle == queue && !header(packet).status);
+        std::memcpy(&nt, packet.data() + sizeof(Header), sizeof nt); std::memcpy(&out, packet.data() + sizeof(Header) + sizeof(Reply), sizeof out);
+        require(nt.ntstatus == static_cast<std::int32_t>(0xc0000017u) && nt.value == 7009 && out.count == 1 && out.bytesToTrim == 65536);
+        require(resident.lastResidentHandles.size() == 2 && resident.lastResidentHandles[0] > 500 &&
+                resident.lastResidentPriorities == std::vector<std::uint32_t>{0x78100000, 0x78000000});
+        resident.fail = false;
+        for (int n = 1; n <= 4; ++n) {
+            resident.badResidentReply = n; require(header(s.dispatch(make(queue, {first}))).status == -5);
+        }
+        resident.badResidentReply = 0;
+        packet = s.dispatch(make(queue, {first}, 0));
+        std::memcpy(&nt, packet.data() + sizeof(Header), sizeof nt); std::memcpy(&out, packet.data() + sizeof(Header) + sizeof(Reply), sizeof out);
+        require(!header(packet).status && nt.ntstatus == 259 && nt.value == 7011 && out.count == 1 && !out.reserved && !out.bytesToTrim);
+        // Failed native destruction retains ownership and admits another call.
+        resident.fail = true; release(device, first); resident.fail = false;
+        require(header(s.dispatch(make(queue, {first}))).status == 0);
+        require(header(release(device, first)).status == 0);
+        before = resident.calls;
+        require(header(s.dispatch(make(queue, {first}))).status == -9 && resident.calls == before);
+        const auto capped = create(device);
+        for (unsigned n = 0; n < MaxVendorResidencyAttempts; ++n)
+            require(header(s.dispatch(make(queue, {capped}))).status == 0);
+        before = resident.calls;
+        require(header(s.dispatch(make(queue, {capped}))).status == -24 && resident.calls == before);
+        // EOF releases all allocations, including those with successful or failed residency.
+    }
+    require(resident.vendorOwners.empty());
     Fake pagingQuota; pagingQuota.guestPagingEnabled = true;
     {
         Session s(pagingQuota); s.dispatch(hello());

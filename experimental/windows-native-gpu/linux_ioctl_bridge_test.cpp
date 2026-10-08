@@ -20,6 +20,29 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (fd < 0) return failed("open");
+    if (!std::strncmp(mode, "resident-", 9)) {
+        D3DKMT_HANDLE allocation = 10;
+        UINT priority = 0x78100000;
+        D3DDDI_MAKERESIDENT resident{}; resident.hPagingQueue = 9; resident.NumAllocations = 1;
+        resident.AllocationList = &allocation; resident.PriorityList = &priority; resident.Flags.Value = 1;
+        if (!std::strcmp(mode, "resident-disabled")) {
+            if (ioctl(fd, _IOWR('G', 11, D3DDDI_MAKERESIDENT), &resident) != -1 || errno != ENOSYS) return failed("disabled residency");
+        } else {
+            for (unsigned n = 0; n < 5; ++n) {
+                auto invalid = resident;
+                switch (n) {
+                    case 0: invalid.NumAllocations = 0; break;
+                    case 1: invalid.NumAllocations = 17; break;
+                    case 2: invalid.Flags.Value = 2; break;
+                    case 3: invalid.Flags.Value = 4; break;
+                    default: invalid.AllocationList = nullptr; break;
+                }
+                if (ioctl(fd, _IOWR('G', 11, D3DDDI_MAKERESIDENT), &invalid) != -1 || errno != EINVAL) return failed("invalid residency descriptor");
+            }
+            if (ioctl(fd, _IOWR('G', 11, D3DDDI_MAKERESIDENT), &resident) != -1 || errno != EBADF) return failed("residency unowned queue");
+        }
+        close(fd); return 0;
+    }
     if (!std::strncmp(mode, "gpuva-", 6)) {
         D3DDDI_MAPGPUVIRTUALADDRESS map{}; map.hPagingQueue = 9; map.hAllocation = 10;
         map.MinimumAddress = 67108864; map.MaximumAddress = 1099511627776ull;

@@ -6,8 +6,9 @@ them resident and maps GPU addresses. Shared guest RAM and bounded, fenced GPU
 copies passed physical acceptance. Opt-in virtual context lifecycle support is
 also tested, including locally captured Linux NVIDIA initialization data.
 Live NVIDIA Linux runtime initialization now reaches native paging and graphics
-context creation, standalone video-memory allocation and GPU-address mapping
-through QEMU, then fails at the unsupported live residency interface. Direct guest
+context creation, standalone video-memory allocation, GPU-address mapping and
+residency through QEMU, then fails at the unsupported CPU allocation access
+interface (Lock2). Direct guest
 fence reads, synchronous allocation destruction and acknowledged unmap passed physical testing. Omarchy
 desktop acceleration remains unimplemented. Read the
 [investigation](../../docs/WINDOWS-NVIDIA-BACKEND.md).
@@ -50,6 +51,9 @@ The [live GPU-address route](../../docs/LIVE-GPUVA-BRIDGE.md) adds
 `--driver-gpuva`, typed queue/allocation ownership, preserved positive NTSTATUS
 and direct guest verification of paging completion. The page limit bounds
 mapped GPU VA rather than opaque vendor allocation bytes.
+The [live residency route](../../docs/LIVE-RESIDENCY-BRIDGE.md) adds
+`--driver-residency`, owned allocation lists, preserved paging/count/trim
+outputs and a conservative bound on residency attempts.
 
 The framing reference is pinned in `sources.json`. No upstream implementation
 is vendored from virtio-nvgpu; these new files use the repository's MIT license.
