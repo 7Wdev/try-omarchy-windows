@@ -15,11 +15,16 @@
 #include <cstdint>
 #include <cstring>
 #include <vector>
+#include "whp_fence_test.h"
 using Microsoft::WRL::ComPtr;
 struct ContextHeader { std::uint32_t magic, node, engine, flags, clientHint, bytes; };
 int main(int argc,char** argv) {
+    if(argc>=2 && std::strcmp(argv[1],"--whp-fence-child")==0)
+        return whp_fence::childMain(argc,argv);
+    const bool whpFences=argc==6 && std::strcmp(argv[5],"--whp-fences")==0;
+    if(whpFences) --argc;
     if(argc!=5) {
-        std::fputs("Usage: queue-dependency-probe context-input queue-input allocation-input allocation-map\n",stderr);
+        std::fputs("Usage: queue-dependency-probe context-input queue-input allocation-input allocation-map [--whp-fences]\n",stderr);
         return 2;
     }
     FILE* file=nullptr;
@@ -146,6 +151,21 @@ int main(int argc,char** argv) {
                     const bool mapped=queue.HwQueueProgressFenceCPUVirtualAddress && queue.HwQueueProgressFenceGPUVirtualAddress && queue.hHwQueueProgressFence;
                     const auto fence=mapped?*static_cast<volatile UINT64*>(queue.HwQueueProgressFenceCPUVirtualAddress):0;
                     std::printf("\"queueFenceMapped\":%s,\"initialQueueFence\":%llu,",mapped?"true":"false",fence);
+                    if(whpFences) {
+                        auto pagingFence=static_cast<volatile UINT64*>(paging.FenceValueCPUVirtualAddress);
+                        auto queueFence=static_cast<volatile UINT64*>(queue.HwQueueProgressFenceCPUVirtualAddress);
+                        const auto pagingValue=pagingFence?*pagingFence:0;
+                        const auto pagingRead=whp_fence::runChild(pagingFence,whp_fence::Mode::Read);
+                        const auto queueRead=whp_fence::runChild(queueFence,whp_fence::Mode::Read);
+                        const auto unmapped=whp_fence::runChild(pagingFence,whp_fence::Mode::UnmappedRead);
+                        const auto pagingWrite=whp_fence::runChild(pagingFence,whp_fence::Mode::ReadOnlyWrite);
+                        const auto queueWrite=whp_fence::runChild(queueFence,whp_fence::Mode::ReadOnlyWrite);
+                        std::printf("\"pagingFenceValue\":%llu,\"pagingFenceGuestReadExit\":%lu,"
+                            "\"queueFenceGuestReadExit\":%lu,\"unmappedReadControlExit\":%lu,"
+                            "\"pagingFenceWriteDeniedExit\":%lu,\"queueFenceWriteDeniedExit\":%lu,",
+                            pagingValue,pagingRead,queueRead,unmapped,pagingWrite,queueWrite);
+                        ok=ok && pagingValue && !pagingRead && !queueRead && !unmapped && !pagingWrite && !queueWrite;
+                    }
                     ok=ok && mapped;
                     D3DKMT_DESTROYHWQUEUE dq{}; dq.hHwQueue=queue.hHwQueue;
                     status=D3DKMTDestroyHwQueue(&dq); ok=ok && status>=0;

@@ -63,6 +63,19 @@ allocation, 586 private bytes, zero global/runtime data, no supplied system
 memory and the OverridePriority flag. This observed profile is not a universal
 NVIDIA ABI.
 
+An isolated Windows Hypervisor Platform test also mapped those driver-owned
+fence pages into a separate guest process using Microsoft's
+[WHvMapGpaRange2](https://learn.microsoft.com/en-us/virtualization/api/hypervisor-platform/funcs/whvmapgparange2).
+Across all four queue cases, eight guest loads matched the real paging and
+queue fences, eight attempted writes exited on read-only protection, and four
+unmapped controls exited on missing mappings. The paging values were nonzero;
+the queue values were zero because this test submitted no commands. Each
+child removed its mapping and partition before the parent destroyed the driver
+objects. See [WHP fence evidence](evidence/WHP-WDDM-FENCES-2026-10-08.json).
+This establishes cross-process mapping on this machine, not QEMU integration
+or live GPU completion under a guest workload. The tested API provides a
+possible route to expose fences without copying each poll through an RPC.
+
 The next integration must create UMD-requested allocations and their GPU
 address mappings in the Windows worker, return those addresses to the live
 Linux UMD, implement typed allocation-handle translation, and then use the queue
@@ -135,3 +148,12 @@ Select corresponding files using the profile's `contextSequence` and
 1/1, 2/6, 3/15 and 6/52. Both the 64 KiB allocation size and the observed
 180-byte queue layout are diagnostic constraints; this is not a generic UMD
 queue implementation.
+
+Add `--whp-fences` to the allocation-aware diagnostic to run five tiny,
+disk-free WHP guests for that queue: paging-fence read, queue-fence read,
+unmapped control, and read-only write checks for both fences. Windows Hypervisor
+Platform must already be available. The test creates hidden child processes
+with an explicit inherited-handle allowlist, a five-second VP cancellation
+deadline and a ten-second child deadline. The parent holds all backing objects
+until the children have exited. No host process addresses or private driver
+buffers are written into the evidence report.
