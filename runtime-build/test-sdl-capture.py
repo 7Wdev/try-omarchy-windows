@@ -8,7 +8,11 @@ import tempfile
 
 parser = argparse.ArgumentParser()
 parser.add_argument('source', type=Path, help='patched QEMU source directory')
-root = parser.parse_args().source
+cases = ('unplug-between-get-put', 'reacquire-between-get-put',
+         'failed-open-backoff', 'route-open-backoff')
+parser.add_argument('--case', choices=cases, help='run one regression case')
+args = parser.parse_args()
+root = args.source
 source = (root / 'audio/sdlaudio.c').read_text(encoding='utf-8')
 mixeng = (root / 'audio/audio-mixeng-be.c').read_text(encoding='utf-8')
 internal = (root / 'audio/audio_int.h').read_text(encoding='utf-8')
@@ -64,6 +68,7 @@ typedef struct {
 #define SDL_AUDIO_PAUSED 2
 static int capture_count, enumerations, opens, closes, failures, status;
 static bool fail_open, incompatible;
+static gint64 failed_open_us;
 static const char *last_name;
 #define warn_report(...) ((void)0)
 #define error_report(...) (failures++)
@@ -77,10 +82,13 @@ static const char *SDL_GetAudioDeviceName(int index, int rec) {
 }
 static SDL_AudioDeviceID SDL_OpenAudioDevice(const char *name, int rec,
         SDL_AudioSpec *req, SDL_AudioSpec *obt, int changes) {
-    /* Opening an empty inventory is the eight-second WASAPI failure path. */
+    /* Preflight must avoid opening an empty inventory. */
     opens++; assert(rec == 1 && capture_count > 0 && changes == 0);
     last_name = name;
-    if (fail_open || (name && strcmp(name, "Microphone"))) { return 0; }
+    if (fail_open || (name && strcmp(name, "Microphone"))) {
+        host_us += failed_open_us; /* real failed activation can take eight seconds */
+        return 0;
+    }
     *obt = *req;
     if (incompatible) { obt->freq++; }
     status = SDL_AUDIO_PAUSED;
@@ -134,7 +142,7 @@ static size_t consume(SDLVoiceIn *sdl, unsigned char expected) {
     }
     return total;
 }
-int main(void) {
+int main(int argc, char **argv) {
     unsigned char storage[8192], captured[1920];
     SDLVoiceIn sdl = {0};
     sdl.hw.info = (struct audio_pcm_info){4, 192000, 2, AUDIO_FORMAT_S16, false};
@@ -144,16 +152,109 @@ int main(void) {
     g_unsetenv("OMARCHY_SDL_AUDIO_CONTROL_DIRECTORY");
     memset(storage, 0x55, sizeof(storage));
 
+    if (argc == 2 && !strcmp(argv[1], "unplug-between-get-put")) {
+        capture_count = 1;
+        sdl_enable_in(&sdl.hw, true);
+        memset(captured, 0x23, sizeof(captured));
+        sdl_callback_in(&sdl, captured, sizeof(captured));
+        size_t size = sizeof(captured);
+        void *buf = sdl_get_buffer_in(&sdl.hw, &size);
+        assert(size == sizeof(captured));
+        status = SDL_AUDIO_STOPPED;
+        capture_count = 0;
+        /* Unplug must not discard the outstanding buffer before consumption. */
+        sdl_put_buffer_in(&sdl.hw, buf, size);
+        assert(sdl.hw.pending_emul == 0 && sdl.devid == 17 && closes == 0);
+        assert(consume(&sdl, 0) == 0);
+        assert(!sdl.devid && closes == 1);
+        advance(10); assert(consume(&sdl, 0) == 1920);
+        puts("ok - unplug between get_buffer_in and put_buffer_in");
+        return 0;
+    }
+    if (argc == 2 && !strcmp(argv[1], "reacquire-between-get-put")) {
+        sdl_enable_in(&sdl.hw, true);
+        advance(10);
+        size_t size = sizeof(captured);
+        void *buf = sdl_get_buffer_in(&sdl.hw, &size);
+        assert(size == sizeof(captured));
+        capture_count = 1;
+        advance(1000); /* the retry becomes due while a silence buffer is held */
+        sdl_put_buffer_in(&sdl.hw, buf, size);
+        assert(sdl.hw.pending_emul == 0 && !sdl.devid && opens == 0);
+        assert(consume(&sdl, 0) == 0);
+        assert(sdl.devid == 17 && opens == 1);
+        memset(captured, 0, sizeof(captured));
+        sdl_callback_in(&sdl, captured, sizeof(captured));
+        assert(consume(&sdl, 0) == sizeof(captured));
+        puts("ok - reacquire deferred until after put_buffer_in");
+        return 0;
+    }
+    if (argc == 2 && !strcmp(argv[1], "failed-open-backoff")) {
+        capture_count = 1;
+        fail_open = true;
+        failed_open_us = 8 * G_USEC_PER_SEC;
+        sdl_enable_in(&sdl.hw, true);
+        assert(opens == 1 && failures == 1 && !sdl.devid);
+        /* The ten-second deadline starts after the slow failed activation. */
+        assert(sdl.next_route_check == host_us + 10 * G_USEC_PER_SEC);
+        for (int i = 0; i < 999; i++) {
+            advance(10); assert(consume(&sdl, 0) == 1920);
+            sdl_enable_in(&sdl.hw, false); sdl_enable_in(&sdl.hw, true);
+        }
+        assert(opens == 1);
+        advance(10); consume(&sdl, 0);
+        assert(opens == 2 && failures == 2 && !sdl.devid);
+        assert(sdl.next_route_check == host_us + 10 * G_USEC_PER_SEC);
+        fail_open = false;
+        advance(10000); consume(&sdl, 0);
+        assert(opens == 3 && sdl.devid == 17);
+        /* Successful capture clears the long backoff for an empty unplug. */
+        status = SDL_AUDIO_STOPPED; capture_count = 0;
+        consume(&sdl, 0);
+        assert(sdl.next_route_check == host_us + G_USEC_PER_SEC);
+        capture_count = 1;
+        advance(999); consume(&sdl, 0); assert(opens == 3);
+        advance(1); consume(&sdl, 0); assert(opens == 4 && sdl.devid == 17);
+        puts("ok - failed listed endpoint backs off ten seconds after open, resets on success");
+        return 0;
+    }
+    if (argc == 2 && !strcmp(argv[1], "route-open-backoff")) {
+        capture_count = 1;
+        sdl_enable_in(&sdl.hw, true);
+        g_autofree char *directory = g_dir_make_tmp("tryomarchy-capture-XXXXXX", NULL);
+        assert(directory);
+        g_autofree char *input = g_build_filename(directory, "input", NULL);
+        g_setenv("OMARCHY_SDL_AUDIO_CONTROL_DIRECTORY", directory, TRUE);
+        assert(g_file_set_contents(input, "bWlzc2luZw==\n", -1, NULL));
+        fail_open = true;
+        failed_open_us = 8 * G_USEC_PER_SEC;
+        advance(250); consume(&sdl, 0);
+        assert(opens == 3 && failures == 1 && sdl.devid == 17);
+        assert(sdl.next_route_check == host_us + 10 * G_USEC_PER_SEC);
+        advance(9999); consume(&sdl, 0); assert(opens == 3);
+        advance(1); consume(&sdl, 0); assert(opens == 5 && failures == 2);
+        fail_open = false;
+        failed_open_us = 0;
+        advance(10000); consume(&sdl, 0);
+        assert(opens == 7 && sdl.devid == 17 && !sdl.route_matches);
+        assert(sdl.next_route_check == host_us + 250 * 1000);
+        assert(remove(input) == 0);
+        assert(remove(directory) == 0);
+        puts("ok - failed live capture route opens use the same ten-second backoff");
+        return 0;
+    }
+    assert(argc == 1);
+
     /* No host mic: no WASAPI open, and capture periods advance at 48 kHz. */
     sdl_enable_in(&sdl.hw, true);
-    assert(sdl.enabled && !sdl.devid && opens == 0 && enumerations == 1);
+    assert(sdl.enabled && !sdl.devid && opens == 0 && enumerations == 2);
     assert(consume(&sdl, 0) == 0);
     for (int i = 0; i < 50; i++) {
         advance(10);
         assert(consume(&sdl, 0) == 1920);
         assert(consume(&sdl, 0) == 0); /* no clock advance, no extra samples */
     }
-    assert(enumerations == 1 && opens == 0);
+    assert(enumerations == 2 && opens == 0);
     int before = enumerations;
     for (int i = 0; i < 10; i++) {
         sdl_enable_in(&sdl.hw, false);
@@ -164,7 +265,7 @@ int main(void) {
     /* Enumeration errors also avoid an open; later active hotplug recovers. */
     capture_count = -1;
     advance(500); consume(&sdl, 0);
-    assert(opens == 0 && enumerations == before + 1);
+    assert(opens == 0 && enumerations == before + 2);
     capture_count = 1;
     advance(1000); consume(&sdl, 0);
     assert(opens == 1 && sdl.devid == 17 && status == SDL_AUDIO_PLAYING);
@@ -181,7 +282,7 @@ int main(void) {
     advance(2000); capture_count = 1;
     assert(consume(&sdl, 0) == 0 && opens == 1); /* disabled mic stays closed */
 
-    /* Nonempty inventory, failed open: one retry per second across stream starts. */
+    /* Nonempty inventory, failed open: ten-second backoff across stream starts. */
     fail_open = true;
     sdl_enable_in(&sdl.hw, true);
     assert(opens == 2 && failures == 1 && !sdl.devid);
@@ -191,7 +292,7 @@ int main(void) {
     }
     assert(opens == 2);
     fail_open = false;
-    advance(1000); consume(&sdl, 0);
+    advance(10000); consume(&sdl, 0);
     assert(opens == 3 && sdl.devid == 17);
     sdl_enable_in(&sdl.hw, false);
 
@@ -230,4 +331,9 @@ with tempfile.TemporaryDirectory(prefix='tryomarchy-sdl-capture-') as temporary:
                     '-Wno-unused-parameter', '-Wno-unused-function',
                     '-Werror', str(test / 'test.c'), '-o', str(test / 'test'),
                     *flags], check=True)
-    subprocess.run([str(test / 'test')], check=True)
+    selected = (args.case,) if args.case else (None, *cases)
+    for case in selected:
+        command = [str(test / 'test')]
+        if case:
+            command.append(case)
+        subprocess.run(command, check=True)
