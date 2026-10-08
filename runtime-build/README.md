@@ -149,3 +149,18 @@ runtime provenance declares the patch, then chains host-owned Win events through
 fixture covers default behavior, the exact opt-out and hint priority.
 
 Neither candidate changes `guest-build/runtime.lock.json` or publishes a release.
+
+`0022-keep-sdl-capture-running-without-a-microphone.patch` skips Windows SDL capture
+opens when no recording endpoint is enumerated. Without an endpoint it keeps
+guest capture periods moving with format-aware silence paced by QEMU's virtual
+clock, and retries once per second so reconnecting a microphone can resume an
+active stream. Stopped capture devices return to this same path. Playback and
+working capture routes retain their existing behavior.
+
+The build runs `test-sdl-capture.py <patched-qemu-directory>` against the actual
+capture functions with mocked SDL endpoints and deterministic clocks. It covers
+empty and failed inventories, silence pacing, repeated stream starts, failed
+opens, active hotplug, unplug, idle gating, route fallback and unsigned PCM ring
+wrap. Windows no-microphone menu behavior and physical hotplug remain to verify.
+An endpoint disappearing between enumeration and open can still enter SDL's
+WASAPI retry; this patch avoids the stable empty-inventory case.

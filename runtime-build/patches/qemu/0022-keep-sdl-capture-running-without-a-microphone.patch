@@ -1,0 +1,104 @@
+--- a/audio/sdlaudio.c
++++ b/audio/sdlaudio.c
+@@ -75,6 +75,7 @@
+     gint64 next_route_check;
+     bool route_matches;
+     bool enabled;
++    RateCtl silence_rate;
+ } SDLVoiceIn;
+ 
+ static int aud_to_sdlfmt (AudioFormat fmt)
+@@ -257,7 +258,16 @@
+                                   bool *route_matches)
+ {
+     SDL_AudioDeviceID devid;
+-#ifndef _WIN32
++#ifdef _WIN32
++    /* WASAPI retries E_NOTFOUND for eight seconds. An empty capture
++     * inventory is normal while a headset is disconnected, not an open error.
++     * Check again on the next route poll so microphone hotplug keeps working.
++     */
++    if (rec && SDL_GetNumAudioDevices(rec) <= 0) {
++        *route_matches = false;
++        return 0;
++    }
++#else
+     int err;
+     sigset_t new, old;
+ 
+@@ -539,6 +549,26 @@
+     return true;
+ }
+ 
++/* Keep virtio-sound capture periods moving even without a host microphone.
++ * Use the same virtual-clock pacing and format-aware silence as audio-none.
++ */
++static void sdl_silence_in(SDLVoiceIn *sdl)
++{
++    HWVoiceIn *hw = &sdl->hw;
++    size_t bytes = audio_rate_get_bytes(&sdl->silence_rate, &hw->info,
++                                       hw->size_emul - hw->pending_emul);
++
++    while (bytes) {
++        size_t len = MIN(bytes, hw->size_emul - hw->pos_emul);
++
++        audio_pcm_info_clear_buf(&hw->info, hw->buf_emul + hw->pos_emul,
++                                 len / hw->info.bytes_per_frame);
++        hw->pos_emul = (hw->pos_emul + len) % hw->size_emul;
++        hw->pending_emul += len;
++        bytes -= len;
++    }
++}
++
+ static void sdl_refresh_route_In(SDLVoiceIn *sdl)
+ {
+     g_autofree char *requested = NULL;
+@@ -548,11 +578,27 @@
+     bool route_matches;
+     bool stopped;
+ 
++    if (sdl->devid &&
++        SDL_GetAudioDeviceStatus(sdl->devid) == SDL_AUDIO_STOPPED) {
++        sdl_release_in(sdl);
++        sdl->hw.pos_emul = sdl->hw.pending_emul = 0;
++        audio_rate_start(&sdl->silence_rate);
++    }
+     if (!sdl->devid) {
+-        if (sdl->enabled && sdl_route_check_due(&sdl->next_route_check) &&
+-            sdl_acquire_in(sdl)) {
+-            SDL_PauseAudioDevice(sdl->devid, 0);
++        if (!sdl->enabled) {
++            return;
+         }
++        if (sdl_route_check_due(&sdl->next_route_check)) {
++            if (sdl_acquire_in(sdl)) {
++                /* Discard queued silence before real capture resumes. */
++                sdl->hw.pos_emul = sdl->hw.pending_emul = 0;
++                SDL_PauseAudioDevice(sdl->devid, 0);
++                return;
++            }
++            /* A failed open must not retry on every stream start or buffer. */
++            sdl->next_route_check = g_get_monotonic_time() + G_USEC_PER_SEC;
++        }
++        sdl_silence_in(sdl);
+         return;
+     }
+     if (!sdl_route_check_due(&sdl->next_route_check)) {
+@@ -787,12 +833,11 @@
+     sdl->enabled = enable;
+     if (!enable) {
+         sdl_release_in(sdl);
+-        return;
+-    }
+-    if (!sdl->devid && !sdl_acquire_in(sdl)) {
+-        return;
+-    }
+-    SDL_PauseAudioDevice(sdl->devid, 0);
++        hw->pos_emul = hw->pending_emul = 0;
++        return;
++    }
++    audio_rate_start(&sdl->silence_rate);
++    sdl_refresh_route_In(sdl);
+ }
+ 
+ static bool audio_sdl_realize(AudioBackend *abe, Audiodev *dev, Error **errp)
