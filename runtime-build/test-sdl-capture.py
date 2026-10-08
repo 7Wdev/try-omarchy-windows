@@ -23,6 +23,7 @@ def section(text, start, end):
 harness = r'''
 #include <assert.h>
 #include <glib.h>
+#include <glib/gstdio.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -238,8 +239,8 @@ int main(int argc, char **argv) {
         advance(10000); consume(&sdl, 0);
         assert(opens == 7 && sdl.devid == 17 && !sdl.route_matches);
         assert(sdl.next_route_check == host_us + 250 * 1000);
-        assert(remove(input) == 0);
-        assert(remove(directory) == 0);
+        assert(g_remove(input) == 0);
+        assert(g_rmdir(directory) == 0);
         puts("ok - failed live capture route opens use the same ten-second backoff");
         return 0;
     }
