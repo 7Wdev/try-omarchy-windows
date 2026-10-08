@@ -7,7 +7,9 @@ GPU. The current code additionally implements shared guest RAM registration and
 a bounded NVIDIA GPU buffer copy through a Windows section-backed D3D12 heap.
 The integrated QEMU shared-memory GPU copy passed six hardware cycles on
 2026-10-08, with all objects released after disconnect. This remains a **partial driver
-bridge**, with no guest rendering support.
+bridge**, with no guest rendering support. Opt-in virtual context lifecycle
+support also passed QEMU acceptance on 2026-10-08; see the
+[Linux UMD compatibility experiment](UMD-CONTEXT-COMPATIBILITY.md).
 The Omarchy launcher does not select this backend yet.
 
 ## Implemented path
@@ -33,8 +35,12 @@ connection; data copies are bounded to 4064 bytes per request. The TCP listener 
 timeouts. This development endpoint has no authentication and should run only
 for the test's lifetime. Stdio is available for process-owned transport.
 
-Requests never contain Windows handles, host CPU addresses, pointer-bearing KMT
-structures, arbitrary ioctl codes, or vendor-private escape data. The worker
+Requests never contain raw KMT object handles, host CPU pointer fields,
+pointer-bearing KMT structures, arbitrary ioctl codes, or vendor-private escape
+data. The opt-in context operation carries up to 4000 opaque driver-private
+bytes supplied by a compatible PV-aware UMD. This payload is not interpreted or
+sanitized by the bridge; the endpoint is not validated for untrusted guests.
+The worker
 constructs fixed, documented KMT structures. Local object IDs are scoped to
 the connection, never reused, checked for type and parent ownership, and
 released in child-before-parent order when the connection ends. Windows process
@@ -55,7 +61,7 @@ all unrelated operations are rejected without a driver call.
 | 0x2001 | zero object ID, no payload | D3DKMTOpenAdapterFromLuid, selected host NVIDIA adapter. |
 | 0x2002 | adapter ID | D3DKMTQueryAdapterInfo, only KMTQAITYPE_DRIVERVERSION. |
 | 0x2003 | adapter ID | D3DKMTCloseAdapter; live children cause EBUSY. |
-| 0x2004 | adapter ID | D3DKMTCreateDevice, zero flags. |
+| 0x2004 | adapter ID | D3DKMTCreateDevice, zero flags; RequestVSync when context mode is enabled. |
 | 0x2005 | device ID | D3DKMTDestroyDevice; live children cause EBUSY. |
 | 0x2006 | device ID | D3DKMTCreatePagingQueue, normal priority, physical index zero. |
 | 0x2007 | queue ID | Read the host-only paging fence mapping; return value, never its address. |
@@ -69,6 +75,8 @@ all unrelated operations are rejected without a driver call.
 | 0x2016 | allocation ID | D3DKMTDestroyAllocation2; then release CPU backing. |
 | 0x2017 | device ID + offset u64, size u32, reserved zero u32 | Register pages from the configured QEMU Windows section as a standard existing heap. |
 | 0x2018 | destination allocation ID + source ID u32, source offset u32, destination offset u32, count u32 | Synchronous D3D12 GPU buffer copy between two nonoverlapping shared allocations of the same device. |
+| 0x2020 | device ID + six u32 fields: node, engine affinity, flags, client hint, private-data byte count, reserved zero; then private bytes | Opt-in D3DKMTCreateContextVirtual; return private bytes after the normal reply on success. |
+| 0x2021 | context ID, no payload | D3DKMTDestroyContext. |
 
 Hello capability bit 0 means adapter/device lifecycle; bit 1 means paging queue
 and fence query; bit 2 means bounded host-backed allocation operations. When a
@@ -76,6 +84,13 @@ RAM section is configured, bit 3 means shared RAM imports and bit 4 means GPU
 buffer copy. GPU copy requires NVIDIA D3D12 Device3 and 64 KiB-aligned allocation
 offsets and sizes. It does not accept shader code, arbitrary driver commands,
 vendor escapes or scanout requests.
+Bit 5 advertises virtual contexts only when the owner starts the worker with
+`--driver-contexts` as the final argument. Synchronization-only contexts require
+node/engine/client hint zero, flags 8, and empty private data. Graphics contexts
+require node <64, engine affinity 1, D3D12 client hint 12, flags 0 or 16, and
+1..4000 private bytes. Timeout-disabling, test and unknown flags are rejected.
+This mode sets the device's documented RequestVSync flag. The ordinary mode
+keeps zero device flags and rejects both context operations.
 The allocation's queue must belong to the same device. Bounds and byte budget
 are checked before driver calls and again before native memory access.
 Other successful dispatches return a 16-byte body containing
@@ -206,7 +221,7 @@ shows the remaining requirements:
 | Guest process/device/context ownership | ioctl.c and dxgvmbus.c; current worker covers only its own process and typed device lifecycle. |
 | Allocation backing | Worker-owned KMT allocations, the QEMU Windows section backend and shared guest GPU copies passed physical acceptance. Production pinning and scatter/gather page registration remain absent. |
 | GPU virtual addresses and residency | Typed make-resident/map and bounded paging waits are tested. Full reserve/update/eviction and guest monitored fences remain absent. |
-| Actual command submission | Bounded synchronous D3D12 GPU copies are implemented. Guest UMD context/hardware queue creation, arbitrary command buffers, submit and completion remain absent. |
+| Actual command submission | Bounded synchronous D3D12 GPU copies and opt-in virtual context lifecycle are implemented. Hardware queue creation, live UMD command buffers, submit and completion remain absent. |
 | Guest synchronization | Host events, mapped monitored fences, sync files/dma-fences; current fence query does not implement these. |
 | Linux graphics userspace | WDDM-aware runtime/UMD, matching driver files and ABI; ordinary Linux NVIDIA RM userspace cannot use these messages. |
 | Interactive desktop | DRM buffer sharing and compositor allocation, plus fenced scanout into the existing QEMU SDL window, resizing/input and crash recovery; not implemented. |

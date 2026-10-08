@@ -1,1 +1,7 @@
 /build/
+*.bin
+*.cpio
+*.so
+*.obj
+*.exe
+/umd-context-probe

@@ -28,6 +28,8 @@ driver-wire-test.exe
 if errorlevel 1 exit /b 1
 cl /nologo /std:c++17 /EHsc /W4 /WX /O2 /DUNICODE /D_UNICODE "$PSScriptRoot\driver_bridge.cpp" /Fe:driver-bridge.exe /link d3d12.lib dxgi.lib gdi32.lib ws2_32.lib
 if errorlevel 1 exit /b 1
+cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\context_native_probe.cpp" /Fe:context-native-probe.exe /link dxgi.lib gdi32.lib
+if errorlevel 1 exit /b 1
 cl /nologo /std:c++17 /EHsc /W4 /WX /O2 /DUNICODE /D_UNICODE "$PSScriptRoot\native_gpu.cpp" /Fe:native-gpu.exe /link d3d12.lib dxgi.lib user32.lib gdi32.lib
 exit /b %errorlevel%
 "@ | Set-Content -LiteralPath $batch -Encoding ascii

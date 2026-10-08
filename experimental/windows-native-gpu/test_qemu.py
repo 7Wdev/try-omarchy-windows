@@ -20,7 +20,11 @@ def main():
         parser.add_argument(f'--{name}', type=pathlib.Path, required=True)
     parser.add_argument('--firmware', type=pathlib.Path)
     parser.add_argument('--shared-memory', action='store_true', help='Use the experimental section-backed QEMU RAM fixture')
+    parser.add_argument('--driver-contexts', action='store_true', help='Enable and require experimental WDDM context lifecycle checks')
+    parser.add_argument('--expected-driver-contexts', type=int, default=0, help='Required vendor contexts in an optional local fixture')
     args = parser.parse_args()
+    if not 0 <= args.expected_driver_contexts <= 16 or (args.expected_driver_contexts and not args.driver_contexts):
+        parser.error('Expected driver contexts must be 0..16 and require --driver-contexts')
     for path in (args.qemu, args.kernel, args.initramfs, args.bridge):
         if not path.is_file():
             parser.error(f'Missing file: {path}')
@@ -31,6 +35,8 @@ def main():
     helper_command = [str(args.bridge.resolve()), '--listen', '0']
     if section:
         helper_command += ['--guest-section', section, '--guest-ram-bytes', str(512 * 1024 * 1024)]
+    if args.driver_contexts:
+        helper_command += ['--driver-contexts']
     helper = subprocess.Popen(helper_command,
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                               creationflags=hidden)
@@ -64,10 +70,14 @@ def main():
         allocation_checks = re.findall(r'BRIDGE_ALLOCATION bytes=65536 cpuRoundtrip=true gpuVaMapped=true residency=[12]', log)
         shared_check = re.search(r'BRIDGE_SHARED_ALLOCATION bytes=65536 guestToHost=true hostToGuest=true gpuVaMapped=true residency=[12]', log)
         gpu_check = re.search(r'BRIDGE_GPU_COPY cycles=6 bytes=(\d+) guestToGpuToGuest=true guards=true fenceCompleted=true', log)
+        sync_contexts = re.findall(r'BRIDGE_SYNC_CONTEXT created=true', log)
+        driver_contexts = re.findall(r'BRIDGE_DRIVER_CONTEXT node=(\d+) privateBytes=(\d+) created=true replyBytesVerified=true', log)
         success = (qemu.returncode == 0 and helper.returncode == 0 and
                    'PASS: QEMU guest WDDM allocation bridge, 5 lifecycle cycles' in log and
                    'BRIDGE_GUEST_EXIT=0' in log and identity is not None and
                    len(allocation_checks) == 6 and
+                   (not args.driver_contexts or (len(sync_contexts) == 6 and cleanup.get('liveContexts') == 0)) and
+                   len(driver_contexts) == args.expected_driver_contexts and
                    (not section or (shared_check is not None and gpu_check is not None and
                                     cleanup.get('completedGpuCopies') == 6 and
                                     cleanup.get('gpuCopiedBytes') == int(gpu_check[1]))) and
@@ -85,6 +95,9 @@ def main():
                   'qemuSha256': sha256(args.qemu),
                   'allocationCycles': len(allocation_checks), 'allocationBytesPerCycle': 65536,
                   'cpuRoundtripBytes': len(allocation_checks) * 65536,
+                  'synchronizationContextsVerified': len(sync_contexts),
+                  'vendorContextFixturesVerified': [{'node': int(n), 'privateBytes': int(b)} for n, b in driver_contexts],
+                  'liveGuestGraphicsRuntimeVerified': False,
                   'hostBackedAllocationOperationsImplemented': True,
                   'sharedGuestRamMappingVerified': shared_check is not None,
                   'sharedGuestRamBytesVerified': 65536 if shared_check else 0,

@@ -9,6 +9,7 @@
 #include <atomic>
 #include <cerrno>
 #include <iostream>
+#include <fstream>
 #include <stdexcept>
 using namespace driver_bridge;
 struct Port {
@@ -55,6 +56,37 @@ static Response exchange(Port& port, std::vector<std::uint8_t> requestPacket, st
 }
 static std::uint32_t operation(Port& port, Op op, std::uint32_t handle = 0) {
     return exchange(port, request(op, handle)).header.handle;
+}
+static std::uint32_t syncContext(Port& port, std::uint32_t device) {
+    const auto reply = exchange(port, request(Op::CreateContext, device, ContextDesc{0, 0, 8, 0, 0, 0}));
+    if (!reply.header.handle) throw std::runtime_error("Missing synchronization context");
+    std::cout << "BRIDGE_SYNC_CONTEXT created=true\n";
+    return reply.header.handle;
+}
+static void contextFixtureTest(Port& port, std::uint32_t device) {
+    // Optional local fixture generated from this host's installed Linux UMD.
+    // Private data is neither checked in nor evidence of a live guest runtime.
+    std::ifstream input("/driver-contexts.bin", std::ios::binary);
+    if (!input) return;
+    std::uint32_t count = 0;
+    if (!input.read(reinterpret_cast<char*>(&count), sizeof count) || !count || count > 16)
+        throw std::runtime_error("Invalid context fixture count");
+    for (std::uint32_t i = 0; i < count; ++i) {
+        ContextDesc desc{};
+        if (!input.read(reinterpret_cast<char*>(&desc), sizeof desc) || !validContext(desc) || !desc.privateBytes)
+            throw std::runtime_error("Invalid context fixture descriptor");
+        auto packet = request(Op::CreateContext, device, desc);
+        const auto start = packet.size(); packet.resize(start + desc.privateBytes);
+        if (!input.read(reinterpret_cast<char*>(packet.data() + start), desc.privateBytes))
+            throw std::runtime_error("Truncated context fixture");
+        const auto response = exchange(port, packet, desc.privateBytes);
+        if (!response.header.handle) throw std::runtime_error("Missing NVIDIA graphics context");
+        // The final context deliberately survives until disconnect.
+        if (i + 1 < count) operation(port, Op::DestroyContext, response.header.handle);
+        std::cout << "BRIDGE_DRIVER_CONTEXT node=" << desc.node << " privateBytes=" << desc.privateBytes
+                  << " created=true replyBytesVerified=true\n";
+    }
+    if (input.peek() != std::char_traits<char>::eof()) throw std::runtime_error("Trailing context fixture data");
 }
 static std::uint32_t allocationTest(Port& port, std::uint32_t device, std::uint32_t queue, unsigned seed) {
     constexpr std::uint32_t size = 65536;
@@ -169,6 +201,14 @@ int main(int argc, char** argv) {
             const auto adapter = operation(port, Op::OpenAdapter);
             operation(port, Op::QueryDriverVersion, adapter);
             const auto device = operation(port, Op::CreateDevice, adapter);
+            if (caps.flags & ContextCapability) {
+                const auto context = syncContext(port, device);
+                if (unpack(port.exchange(request(Op::DestroyDevice, device))).status != -16)
+                    throw std::runtime_error("Device destroyed with live context");
+                operation(port, Op::DestroyContext, context);
+                if (unpack(port.exchange(request(Op::DestroyContext, context))).status != -9)
+                    throw std::runtime_error("Stale context accepted");
+            }
             const auto queue = operation(port, Op::CreatePagingQueue, device);
             operation(port, Op::ReadPagingFence, queue);
             const auto allocation = allocationTest(port, device, queue, cycle);
@@ -183,6 +223,10 @@ int main(int argc, char** argv) {
         // Leave a live hierarchy to verify cleanup when the VM disconnects.
         const auto abandonedAdapter = operation(port, Op::OpenAdapter);
         const auto abandonedDevice = operation(port, Op::CreateDevice, abandonedAdapter);
+        if (caps.flags & ContextCapability) {
+            syncContext(port, abandonedDevice);
+            contextFixtureTest(port, abandonedDevice);
+        }
         const auto abandonedQueue = operation(port, Op::CreatePagingQueue, abandonedDevice);
         allocationTest(port, abandonedDevice, abandonedQueue, 5);
         if (caps.flags & 8) sharedAllocationTest(port, abandonedDevice, abandonedQueue, (caps.flags & 16) != 0);

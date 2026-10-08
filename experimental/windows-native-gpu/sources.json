@@ -23,6 +23,11 @@
     "commit": "fb7a095c85d88e706d6fedaca2ab295b0c9aadc2",
     "use": "Documented lifecycle reference; no sample implementation vendored"
   },
+  "directxHeaders": {
+    "repository": "https://github.com/microsoft/DirectX-Headers",
+    "commit": "adbd6f3ba40795c46a8d0f33af00bcb57ff0f0a4",
+    "use": "MIT DirectX/WSL headers and dxguids source for the optional local Linux UMD probe; not vendored"
+  },
   "historicalPvgpu": {
     "repository": "https://github.com/templarsco/limiar",
     "commit": "5fbf6b9fe05c9a88e8a45f47f2a7c2a96540a73b",

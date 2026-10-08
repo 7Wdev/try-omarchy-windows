@@ -8,14 +8,21 @@ static Header header(const std::vector<std::uint8_t>& p) {
     require(p.size() >= sizeof(Header)); Header h{}; std::memcpy(&h, p.data(), sizeof h); return h;
 }
 struct Fake : Driver {
-    int calls = 0; std::uint32_t next = 500; bool fail = false, shortRead = false;
+    int calls = 0; std::uint32_t next = 500; bool fail = false, shortRead = false, badContextReply = false;
+    bool contextsEnabled = true;
     std::map<std::uint32_t, std::vector<std::uint8_t>> buffers;
     std::vector<Kind> destroyed;
-    native_gpu::Capabilities capabilities() const override { return {1, 31, 0x10de, 123}; }
+    native_gpu::Capabilities capabilities() const override { return {1, contextsEnabled ? 63u : 31u, 0x10de, 123}; }
     Result created() { ++calls; return {fail ? -123 : 0, ++next, 0}; }
     Result openAdapter() override { return created(); }
     Result queryVersion(std::uint32_t h) override { require(h > 500); ++calls; return {0, 0, 3200}; }
     Result createDevice(std::uint32_t h) override { require(h > 500); return created(); }
+    Result createContext(std::uint32_t h, ContextDesc desc, std::vector<std::uint8_t>& data) override {
+        require(h > 500 && validContext(desc) && data.size() == desc.privateBytes);
+        if (!data.empty()) data[0] ^= 255;
+        if (badContextReply) data.push_back(0);
+        return created();
+    }
     Result createPagingQueue(std::uint32_t h) override { require(h > 500); return created(); }
     Result readPagingFence(std::uint32_t h) override { require(h > 500); ++calls; return {0, 0, 42}; }
     Result createAllocation(std::uint32_t h, std::uint32_t size) override {
@@ -88,6 +95,47 @@ int main() {
         // Disconnect without explicit close: reverse child-before-parent cleanup.
     }
     require(driver.destroyed == std::vector<Kind>{Kind::PagingQueue, Kind::Device, Kind::Adapter});
+    Fake contexts;
+    {
+        Session s(contexts);
+        auto sync = request(Op::CreateContext, 2, ContextDesc{0, 0, 8, 0, 0, 0});
+        require(header(s.dispatch(sync)).status == -71);
+        s.dispatch(hello());
+        const auto a = header(s.dispatch(request(Op::OpenAdapter))).handle;
+        const auto d = header(s.dispatch(request(Op::CreateDevice, a))).handle;
+        require(d == 2);
+        auto before = contexts.calls;
+        contexts.contextsEnabled = false;
+        require(header(s.dispatch(sync)).status == -95 && contexts.calls == before);
+        contexts.contextsEnabled = true;
+        require(header(s.dispatch(request(Op::CreateContext, a, ContextDesc{0, 0, 8, 0, 0, 0}))).status == -9);
+        for (const auto desc : {ContextDesc{0, 1, 4, 12, 0, 0}, ContextDesc{0, 0, 8, 0, 0, 1},
+                               ContextDesc{0, 1, 16, 12, MaxContextPrivateBytes + 1, 0},
+                               ContextDesc{64, 1, 16, 12, 1, 0}, ContextDesc{0, 1, 16, 12, 1, 0}})
+            require(header(s.dispatch(request(Op::CreateContext, d, desc))).status == -22);
+        require(contexts.calls == before);
+        auto c = header(s.dispatch(sync)).handle; require(c != 0);
+        require(header(s.dispatch(request(Op::DestroyDevice, d))).status == -16);
+        require(header(s.dispatch(request(Op::CreatePagingQueue, c))).status == -9);
+        auto p = request(Op::CreateContext, d, ContextDesc{0, 1, 16, 12, 3, 0});
+        p.insert(p.end(), {11, 22, 33});
+        const auto output = s.dispatch(p);
+        require(output.size() == sizeof(Header) + sizeof(Reply) + 3 && output.back() == 33);
+        require(output[sizeof(Header) + sizeof(Reply)] == (11 ^ 255));
+        contexts.fail = true;
+        const auto failed = s.dispatch(p);
+        Reply body{}; std::memcpy(&body, failed.data() + sizeof(Header), sizeof body);
+        require(header(failed).handle == 0 && body.ntstatus == -123 && failed.size() == sizeof(Header) + sizeof(Reply));
+        contexts.fail = false; contexts.badContextReply = true;
+        require(header(s.dispatch(p)).status == -5 && contexts.destroyed.back() == Kind::Context);
+        contexts.badContextReply = false;
+        require(header(s.dispatch(request(Op::DestroyContext, c, std::uint32_t{0}))).status == -22);
+        require(header(s.dispatch(request(Op::DestroyContext, c))).status == 0);
+        before = contexts.calls;
+        require(header(s.dispatch(request(Op::DestroyContext, c))).status == -9 && contexts.calls == before);
+        // Leave the second context alive: disconnect destroys it before device.
+    }
+    require(contexts.destroyed == std::vector<Kind>{Kind::Context, Kind::Context, Kind::Context, Kind::Device, Kind::Adapter});
     Fake memory;
     {
         Session s(memory); s.dispatch(hello());

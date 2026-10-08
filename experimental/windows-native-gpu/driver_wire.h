@@ -11,13 +11,29 @@ constexpr std::size_t MaxObjects = 64;
 constexpr std::uint32_t MaxAllocation = 1024 * 1024;
 constexpr std::uint32_t MaxAllocatedBytes = 16 * 1024 * 1024;
 constexpr std::uint32_t MaxChunk = 4064;
+constexpr std::uint32_t ContextCapability = 32;
+constexpr std::uint32_t MaxContextPrivateBytes = 4000;
 enum class Op : std::uint32_t {
     Hello = 0x2000, OpenAdapter, QueryDriverVersion, CloseAdapter,
     CreateDevice, DestroyDevice, CreatePagingQueue, ReadPagingFence, DestroyPagingQueue,
     CreateAllocation = 0x2010, WriteAllocation, ReadAllocation, MakeResident,
-    MapAllocation, QueryResidency, DestroyAllocation, CreateSharedAllocation, CopySharedAllocation
+    MapAllocation, QueryResidency, DestroyAllocation, CreateSharedAllocation, CopySharedAllocation,
+    CreateContext = 0x2020, DestroyContext
 };
-enum class Kind { Adapter, Device, PagingQueue, Allocation };
+enum class Kind { Adapter, Device, PagingQueue, Allocation, Context };
+struct ContextDesc {
+    std::uint32_t node, engine, flags, clientHint, privateBytes, reserved;
+};
+static_assert(sizeof(ContextDesc) == 24, "fixed context layout");
+inline bool validContext(ContextDesc d) {
+    if (d.reserved || d.privateBytes > MaxContextPrivateBytes) return false;
+    // Synchronization-only contexts do not require vendor initialization data.
+    if (d.flags == 8) return d.node == 0 && d.engine == 0 && d.clientHint == 0 && !d.privateBytes;
+    // Initial graphics bridge scope: D3D12 virtual contexts. In particular,
+    // never forward DisableGpuTimeout, TestContext or unknown flag bits.
+    return d.node < 64 && d.engine == 1 && (d.flags == 0 || d.flags == 16) &&
+           d.clientHint == 12 && d.privateBytes;
+}
 struct Range { std::uint32_t offset; std::uint32_t size; };
 static_assert(sizeof(Range) == 8, "fixed transfer layout");
 struct GuestRange { std::uint64_t offset; std::uint32_t size; std::uint32_t reserved; };
@@ -25,7 +41,9 @@ static_assert(sizeof(GuestRange) == 16, "fixed guest range layout");
 struct CopyRange { std::uint32_t source; std::uint32_t sourceOffset; std::uint32_t destinationOffset; std::uint32_t size; };
 static_assert(sizeof(CopyRange) == 16, "fixed GPU copy layout");
 struct Result { std::int32_t ntstatus; std::uint32_t nativeHandle; std::uint64_t value; };
-// Native handles and pointers never cross the wire. NTSTATUS is preserved in
+// Native KMT object fields use local IDs, never raw handles/pointers. Opt-in
+// context private data is opaque and requires a compatible PV-aware UMD.
+// NTSTATUS is preserved in
 // this fixed payload; Header.status is a negative errno for protocol errors.
 struct Reply { std::int32_t ntstatus; std::uint32_t reserved; std::uint64_t value; };
 static_assert(sizeof(Reply) == 16, "fixed reply layout");
@@ -36,6 +54,7 @@ public:
     virtual Result openAdapter() = 0;
     virtual Result queryVersion(std::uint32_t adapter) = 0;
     virtual Result createDevice(std::uint32_t adapter) = 0;
+    virtual Result createContext(std::uint32_t device, ContextDesc desc, std::vector<std::uint8_t>& data) = 0;
     virtual Result createPagingQueue(std::uint32_t device) = 0;
     virtual Result readPagingFence(std::uint32_t queue) = 0;
     virtual Result createAllocation(std::uint32_t device, std::uint32_t size) = 0;
@@ -104,6 +123,32 @@ public:
             negotiated = true;
             auto out = reply(h, 0); out.resize(sizeof h + sizeof caps);
             std::memcpy(out.data() + sizeof h, &caps, sizeof caps);
+            return out;
+        }
+        if (op == Op::CreateContext || op == Op::DestroyContext) {
+            if (!negotiated) return reply(h, -71);
+            if (!(driver.capabilities().flags & ContextCapability)) return reply(h, -95);
+            const auto entry = objects.find(h.handle);
+            const auto required = op == Op::CreateContext ? Kind::Device : Kind::Context;
+            if (entry == objects.end() || entry->second.kind != required) return reply(h, -9);
+            if (op == Op::DestroyContext) {
+                if (packet.size() != sizeof h) return reply(h, -22);
+                const auto result = driver.destroy(Kind::Context, entry->second.nativeHandle);
+                if (result.ntstatus >= 0) objects.erase(entry);
+                return reply(h, 0, h.handle, &result);
+            }
+            if (packet.size() < sizeof h + sizeof(ContextDesc)) return reply(h, -22);
+            ContextDesc desc{}; std::memcpy(&desc, packet.data() + sizeof h, sizeof desc);
+            if (!validContext(desc) || packet.size() != sizeof h + sizeof desc + desc.privateBytes) return reply(h, -22);
+            if (objects.size() >= MaxObjects || nextId == UINT32_MAX) return reply(h, -24);
+            std::vector<std::uint8_t> data(packet.begin() + sizeof h + sizeof desc, packet.end());
+            const auto result = driver.createContext(entry->second.nativeHandle, desc, data);
+            if (data.size() != desc.privateBytes) {
+                if (result.ntstatus >= 0 && result.nativeHandle) driver.destroy(Kind::Context, result.nativeHandle);
+                return reply(h, -5);
+            }
+            auto out = insert(h, Kind::Context, h.handle, result);
+            if (result.ntstatus >= 0 && result.nativeHandle) out.insert(out.end(), data.begin(), data.end());
             return out;
         }
         const bool memoryOp = op >= Op::CreateAllocation && op <= Op::CopySharedAllocation;

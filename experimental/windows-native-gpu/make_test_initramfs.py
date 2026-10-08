@@ -9,6 +9,7 @@ def main():
     parser.add_argument('--init', type=pathlib.Path, required=True)
     parser.add_argument('--probe', type=pathlib.Path, required=True)
     parser.add_argument('--output', type=pathlib.Path, required=True)
+    parser.add_argument('--context-fixture', type=pathlib.Path, help='Optional local UMD context data; never redistribute captured vendor data')
     args = parser.parse_args()
     for source in (args.init, args.probe):
         if source.read_bytes()[:4] != b'\x7fELF':
@@ -29,6 +30,11 @@ def main():
     entry('dev/console', stat.S_IFCHR | 0o600, major=5, minor=1)
     entry('init', stat.S_IFREG | 0o755, args.init.read_bytes())
     entry('guest-probe', stat.S_IFREG | 0o755, args.probe.read_bytes())
+    if args.context_fixture:
+        data = args.context_fixture.read_bytes()
+        if len(data) > 16 * 4024 + 4:
+            parser.error('Context fixture exceeds bounded test size')
+        entry('driver-contexts.bin', stat.S_IFREG | 0o600, data)
     entry('TRAILER!!!', 0)
     args.output.write_bytes(archive)
     print(f'Created {args.output}: {len(archive)} bytes; no disk image')
