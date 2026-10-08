@@ -31,7 +31,7 @@ bool wddm_fence_lab_mapping(MemoryRegion *mr, void **process, void **source)
         object_dynamic_cast(owner, TYPE_WDDM_FENCE_LAB) : NULL;
 
     if (!s || mr != &s->fence || !s->process) {
-        return false;
+        return wddm_fence_hub_mapping(mr, process, source);
     }
     *process = s->process;
     *source = (void *)(uintptr_t)(s->source_address & ~4095ULL);

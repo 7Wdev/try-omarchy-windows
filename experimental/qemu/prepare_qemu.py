@@ -23,9 +23,11 @@ def prepare(source):
     shutil.copyfile(recipe / 'hostmem-win32-section.c', source / 'backends/hostmem-win32-section.c')
     shutil.copyfile(recipe / 'wddm-fence-lab.c', source / 'hw/misc/wddm-fence-lab.c')
     shutil.copyfile(recipe / 'wddm-fence-lab.h', source / 'include/hw/misc/wddm-fence-lab.h')
+    shutil.copyfile(recipe / 'wddm-fence-hub.c', source / 'hw/misc/wddm-fence-hub.c')
+    shutil.copyfile(recipe / 'wddm-fence-map.h', source / 'include/hw/misc/wddm-fence-map.h')
     device_meson = source / 'hw/misc/meson.build'
     device_meson.write_text(device_meson.read_text() +
-        "\nif host_os == 'windows'\n  system_ss.add(when: 'CONFIG_WHPX', if_true: files('wddm-fence-lab.c'))\nendif\n",
+        "\nif host_os == 'windows'\n  system_ss.add(when: 'CONFIG_WHPX', if_true: files('wddm-fence-lab.c', 'wddm-fence-hub.c'))\nendif\n",
         newline='\n')
     meson = source / 'backends/meson.build'
     original = meson.read_text()

@@ -71,3 +71,21 @@ The device
 uses private lab PCI identifiers, disables hotplug and migration, and requires
 WHPX. The parent must keep driver objects alive until QEMU has exited. It is
 not a graphics device, command-submission interface or production fence ABI.
+
+## Dynamic fence hub under development
+
+`wddm-fence-hub` adds 64 initially unmapped, read-only 4 KiB slots in a PCI BAR.
+The owning host controls the `fence-mapping` QOM property over QMP with
+`map:slot:source-address:generation` and `unmap:slot:generation`. Only its fixed
+inherited source-process handle is used. Commands are bounded, require an
+aligned readable source, reject occupied slots and stale generations, and
+acknowledge unmapping only after the memory listener transaction completes.
+The guest sees slot offsets and reads; it cannot provide a host address.
+Migration and hotplug are blocked. `fence-state` reports mapped count,
+generation and emulated-read count without source addresses.
+
+This new hub is not yet a verified live paging-queue integration. Portable
+command/generation tests exist; its QEMU build and physical dynamic mapping,
+native queue lifetime and guest runtime acceptance still need to pass. The
+Windows owner must retain each native fence through successful QMP unmapping,
+or stop and reap its owned QEMU process before releasing driver objects.
