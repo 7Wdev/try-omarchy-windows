@@ -7,8 +7,9 @@ copies passed physical acceptance. Opt-in virtual context lifecycle support is
 also tested, including locally captured Linux NVIDIA initialization data.
 Live NVIDIA Linux runtime initialization now reaches native paging and graphics
 context creation, standalone video-memory allocation, GPU-address mapping,
-residency, direct CPU allocation access and hardware queue creation through
-QEMU. Physical testing created three hardware queues and 16 allocations before
+residency, direct CPU allocation access, hardware queues and synchronization
+objects through QEMU. Physical testing created eight monitored fences, eight
+mutexes, three hardware queues and 16 allocations before
 the diagnostic allocation-count limit; guest command submission is still
 unsupported. Direct guest
 fence reads, synchronous allocation destruction and acknowledged unmap passed physical testing. Omarchy
@@ -69,7 +70,10 @@ public operations still resolve to typed owned wire objects. Direct queue
 fences, queue-before-allocation cleanup and guest exit with a queue held passed
 physical testing. Exact committed CPU subregions of 4, 16, 64 and 128 KiB work,
 including subregions inside larger reservations. Live runtime writes reached
-eight views. General allocation layouts, synchronization, command submission,
+eight views. The [live synchronization route](../../docs/LIVE-SYNCHRONIZATION-BRIDGE.md)
+adds `--driver-syncs`, typed monitored-fence/mutex ownership, direct fence reads,
+acknowledged destruction and native cleanup after abrupt guest exit.
+General allocation layouts, synchronization signal/wait operations, command submission,
 scanout and desktop integration remain unfinished.
 
 The framing reference is pinned in `sources.json`. No upstream implementation

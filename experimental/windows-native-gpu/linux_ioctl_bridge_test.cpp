@@ -20,6 +20,60 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (fd < 0) return failed("open");
+    if (!std::strncmp(mode, "sync-", 5)) {
+        D3DKMT_OPENADAPTERFROMLUID adapter{}; adapter.AdapterLuid.LowPart = 0x57475055;
+        if (ioctl(fd, _IOWR('G', 1, D3DKMT_OPENADAPTERFROMLUID), &adapter)) return failed("sync adapter");
+        D3DKMT_CREATEDEVICE device{}; device.hAdapter = adapter.hAdapter; device.Flags.RequestVSync = 1;
+        if (ioctl(fd, _IOWR('G', 2, D3DKMT_CREATEDEVICE), &device)) return failed("sync device");
+        const bool mutex = !std::strcmp(mode, "sync-mutex") || !std::strcmp(mode, "sync-failed-destroy") ||
+                           !std::strcmp(mode, "sync-mutex-bad-map") || !std::strncmp(mode, "sync-destroy-", 13);
+        D3DKMT_CREATESYNCHRONIZATIONOBJECT2 create{}; create.hDevice = device.hDevice;
+        create.Info.Type = mutex ? D3DDDI_SYNCHRONIZATION_MUTEX : D3DDDI_MONITORED_FENCE;
+        if (mutex) create.Info.SynchronizationMutex.InitialState = 1;
+        else { create.Info.MonitoredFence.InitialFenceValue = 42; create.Info.MonitoredFence.EngineAffinity = 1; }
+        if (!std::strcmp(mode, "sync-invalid")) {
+            for (unsigned n = 0; n < 8; ++n) {
+                auto invalid = create;
+                switch (n) {
+                    case 0: invalid.Info.Flags.Value = 1; break;
+                    case 1: invalid.Info.MonitoredFence.EngineAffinity = 2; break;
+                    case 2: invalid.Info.MonitoredFence.Padding = 1; break;
+                    case 3: invalid.Info.Type = D3DDDI_SYNCHRONIZATION_MUTEX; invalid.Info.SynchronizationMutex.InitialState = 2; break;
+                    case 4: invalid.Info.Type = D3DDDI_CPU_NOTIFICATION; break;
+                    case 5: invalid.Info.Type = D3DDDI_SEMAPHORE; break;
+                    case 6: invalid.hDevice = 999; break;
+                    default: invalid.hDevice = adapter.hAdapter; break;
+                }
+                const auto expected = n < 4 ? EINVAL : n < 6 ? ENOSYS : EBADF;
+                if (ioctl(fd, _IOWR('G', 16, D3DKMT_CREATESYNCHRONIZATIONOBJECT2), &invalid) != -1 || errno != expected) return failed("sync invalid input");
+            }
+            D3DKMT_DESTROYSYNCHRONIZATIONOBJECT release{}; release.hSyncObject = device.hDevice;
+            if (ioctl(fd, _IOWR('G', 29, D3DKMT_DESTROYSYNCHRONIZATIONOBJECT), &release) != -1 || errno != EBADF) return failed("sync wrong-kind destruction");
+        } else if (mutex && std::strcmp(mode, "sync-mutex-bad-map")) {
+            if (ioctl(fd, _IOWR('G', 16, D3DKMT_CREATESYNCHRONIZATIONOBJECT2), &create) || create.hSyncObject != 3 || create.Info.SharedHandle)
+                return failed("sync mutex creation");
+            D3DKMT_DESTROYSYNCHRONIZATIONOBJECT release{}; release.hSyncObject = create.hSyncObject;
+            if (!std::strncmp(mode, "sync-destroy-", 13)) {
+                if (ioctl(fd, _IOWR('G', 29, D3DKMT_DESTROYSYNCHRONIZATIONOBJECT), &release) != -1 || errno != EPROTO)
+                    return failed("sync malformed destruction");
+                if (open("/dev/dxg", O_RDONLY) != -1 || errno != EIO) return failed("sync broken destruction reused");
+            } else {
+                if (!std::strcmp(mode, "sync-failed-destroy") &&
+                    (ioctl(fd, _IOWR('G', 29, D3DKMT_DESTROYSYNCHRONIZATIONOBJECT), &release) != -1 || errno != EINVAL))
+                    return failed("sync failed destruction");
+                if (ioctl(fd, _IOWR('G', 29, D3DKMT_DESTROYSYNCHRONIZATIONOBJECT), &release)) return failed("sync destruction retry");
+                if (ioctl(fd, _IOWR('G', 29, D3DKMT_DESTROYSYNCHRONIZATIONOBJECT), &release) != -1 || errno != EBADF) return failed("sync stale handle");
+            }
+        } else {
+            const auto expected = !std::strcmp(mode, "sync-disabled") ? ENOSYS : !std::strcmp(mode, "sync-nt-failure") ? EINVAL :
+                                  !std::strcmp(mode, "sync-no-hub") ? EIO : EPROTO;
+            if (ioctl(fd, _IOWR('G', 16, D3DKMT_CREATESYNCHRONIZATIONOBJECT2), &create) != -1 || errno != expected || create.hSyncObject || create.Info.SharedHandle ||
+                (!mutex && (create.Info.MonitoredFence.FenceValueCPUVirtualAddress || create.Info.MonitoredFence.FenceValueGPUVirtualAddress)))
+                return failed("sync malformed response");
+            if ((expected == EPROTO || expected == EIO) && (open("/dev/dxg", O_RDONLY) != -1 || errno != EIO)) return failed("sync broken transport reused");
+        }
+        close(fd); return 0;
+    }
     if (!std::strncmp(mode, "hwqueue-", 8)) {
         D3DKMT_OPENADAPTERFROMLUID adapter{}; adapter.AdapterLuid.LowPart = 0x57475055;
         if (ioctl(fd, _IOWR('G', 1, D3DKMT_OPENADAPTERFROMLUID), &adapter)) return failed("queue adapter");

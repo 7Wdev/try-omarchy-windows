@@ -24,6 +24,14 @@ constexpr std::uint32_t VendorResidencyCapability = 1024;
 constexpr std::uint32_t VendorCpuCapability = 2048;
 constexpr std::uint32_t VendorTranslationCapability = 4096;
 constexpr std::uint32_t HwQueueCapability = 8192;
+constexpr std::uint32_t SyncCapability = 16384;
+constexpr std::size_t MaxSyncObjects = 16;
+struct SyncDesc { std::uint32_t type, flags, affinity, reserved; std::uint64_t initial; };
+struct SyncReply { std::uint64_t offset, gpuAddress; };
+static_assert(sizeof(SyncDesc) == 24 && sizeof(SyncReply) == 16, "fixed synchronization layouts");
+inline bool validSync(SyncDesc d) {
+    return !d.flags && !d.reserved && ((d.type == 1 && !d.affinity && d.initial <= 1) || (d.type == 5 && d.affinity <= 1));
+}
 constexpr std::size_t MaxHwQueues = 8;
 struct HwQueueDesc { std::uint32_t flags, privateBytes, reserved, reserved2; };
 struct HwQueueReply { std::uint32_t sync, reserved; std::uint64_t offset, gpuAddress; };
@@ -126,9 +134,10 @@ enum class Op : std::uint32_t {
     CreateGuestPagingQueue = 0x2040,
     CreateVendorAllocation = 0x2050, DestroyVendorAllocations, MapVendorAllocation, MakeVendorResident,
     LockVendorAllocation, UnlockVendorAllocation, TranslateVendorAllocation,
-    CreateHwQueue = 0x2060, DestroyHwQueue
+    CreateHwQueue = 0x2060, DestroyHwQueue,
+    CreateSync = 0x2070, DestroySync
 };
-enum class Kind { Adapter, Device, PagingQueue, Allocation, Context, PagingSync, VendorAllocation, HwQueue, HwQueueSync };
+enum class Kind { Adapter, Device, PagingQueue, Allocation, Context, PagingSync, VendorAllocation, HwQueue, HwQueueSync, Sync };
 struct ContextDesc {
     std::uint32_t node, engine, flags, clientHint, privateBytes, reserved;
 };
@@ -156,6 +165,7 @@ struct VendorCpuResult { Result lock; VendorCpuReply output; };
 // of the queue owns its lifetime; no native handle is exposed to the guest.
 struct GuestPagingResult { Result queue; std::uint32_t sync; std::uint64_t offset; };
 struct HwQueueResult { Result queue; std::uint32_t sync; std::uint64_t offset, gpuAddress; };
+struct SyncResult { Result object; SyncReply output; };
 struct PagingReply { std::uint32_t sync, reserved; std::uint64_t offset; };
 static_assert(sizeof(PagingReply) == 16, "fixed guest paging reply");
 // Native KMT object fields use local IDs, never raw handles/pointers. Opt-in
@@ -202,6 +212,9 @@ public:
     virtual HwQueueResult createHwQueue(std::uint32_t, HwQueueDesc, std::vector<std::uint8_t>&) {
         return {{static_cast<std::int32_t>(0xc00000bbu), 0, 0}, 0, 0, 0};
     }
+    virtual SyncResult createSync(std::uint32_t, SyncDesc) {
+        return {{static_cast<std::int32_t>(0xc00000bbu), 0, 0}, {0, 0}};
+    }
     virtual Result readPagingFence(std::uint32_t queue) = 0;
     virtual Result createAllocation(std::uint32_t device, std::uint32_t size) = 0;
     virtual Result createSharedAllocation(std::uint32_t device, GuestRange range) = 0;
@@ -225,6 +238,7 @@ class Session {
         std::uint64_t cpuOffset = 0;
         std::uint32_t driverToken = 0;
         std::uint32_t contextFlags = 0;
+        std::uint32_t syncType = 0;
     };
     Driver& driver;
     std::map<std::uint32_t, Object> objects;
@@ -447,6 +461,47 @@ public:
             } catch (...) {
                 objects.erase(sync); objects.erase(queue);
                 if (native.queue.nativeHandle) driver.destroy(Kind::HwQueue, native.queue.nativeHandle);
+                throw;
+            }
+        }
+        if (op == Op::CreateSync || op == Op::DestroySync) {
+            if (!negotiated) return reply(h, -71);
+            if (!(driver.capabilities().flags & SyncCapability)) return reply(h, -95);
+            const auto entry = objects.find(h.handle);
+            if (entry == objects.end() || entry->second.kind != (op == Op::CreateSync ? Kind::Device : Kind::Sync)) return reply(h, -9);
+            if (op == Op::DestroySync) {
+                if (packet.size() != sizeof h) return reply(h, -22);
+                const auto result = driver.destroy(Kind::Sync, entry->second.nativeHandle);
+                if (result.ntstatus > 0 || result.nativeHandle || result.value) return reply(h, -5);
+                if (result.ntstatus == 0) objects.erase(entry);
+                return reply(h, 0, h.handle, &result);
+            }
+            if (packet.size() != sizeof h + sizeof(SyncDesc)) return reply(h, -22);
+            SyncDesc desc{}; std::memcpy(&desc, packet.data() + sizeof h, sizeof desc);
+            if (!validSync(desc)) return reply(h, -22);
+            const auto count = std::count_if(objects.begin(), objects.end(), [](const auto& item) { return item.second.kind == Kind::Sync; });
+            if (objects.size() >= MaxObjects || nextId == UINT32_MAX || static_cast<std::size_t>(count) >= MaxSyncObjects) return reply(h, -24);
+            const auto native = driver.createSync(entry->second.nativeHandle, desc);
+            if (native.object.value || (native.object.ntstatus >= 0 && (native.object.ntstatus != 0 || !native.object.nativeHandle ||
+                    (desc.type == 1 && (native.output.offset || native.output.gpuAddress)) ||
+                    (desc.type == 5 && (native.output.offset % 8 || native.output.offset >= FenceApertureBytes ||
+                        !native.output.gpuAddress || native.output.gpuAddress % 8 || native.output.gpuAddress >= MaxGpuAddress)))) ||
+                (native.object.ntstatus < 0 && (native.object.nativeHandle || native.output.offset || native.output.gpuAddress))) {
+                if (native.object.nativeHandle) driver.destroy(Kind::Sync, native.object.nativeHandle);
+                return reply(h, -5);
+            }
+            const auto id = native.object.ntstatus == 0 ? nextId++ : 0;
+            try {
+                auto out = reply(h, 0, id, &native.object);
+                const auto start = out.size(); out.resize(start + sizeof native.output);
+                std::memcpy(out.data() + start, &native.output, sizeof native.output);
+                if (id) {
+                    Object owned{Kind::Sync, h.handle, native.object.nativeHandle, 0, 0, false}; owned.syncType = desc.type;
+                    objects.emplace(id, owned);
+                }
+                return out;
+            } catch (...) {
+                if (native.object.nativeHandle) driver.destroy(Kind::Sync, native.object.nativeHandle);
                 throw;
             }
         }

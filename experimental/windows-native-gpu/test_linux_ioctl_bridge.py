@@ -25,6 +25,7 @@ def send(op, handle, value=0, data=b'', padding=0, hello=False, ntstatus=0):
     caps |= 256 if mode.startswith('translation-') else 0
     caps |= 4096 if mode.startswith('translation-') and mode != 'translation-disabled' else 0
     caps |= 8192 if mode.startswith('hwqueue-') and mode != 'hwqueue-disabled' else 0
+    caps |= 16384 if mode.startswith('sync-') and mode != 'sync-disabled' else 0
     packet += struct.pack('<IIII',1,caps,4318,11352) if hello else struct.pack('<iIQ',ntstatus,0,value) + data
     sys.stdout.buffer.write(struct.pack('<I',len(packet)) + packet)
     sys.stdout.buffer.flush()
@@ -49,6 +50,25 @@ try:
         elif op == 0x2003: send(op,handle)
         elif op == 0x2004: send(op,2)
         elif op == 0x2005: send(op,handle)
+        elif op == 0x2070:
+            mutex = mode in ('sync-mutex', 'sync-failed-destroy', 'sync-mutex-bad-map') or mode.startswith('sync-destroy-')
+            assert handle == 2 and packet[16:] == struct.pack('<IIIIQ',1 if mutex else 5,0,0 if mutex else 1,0,1 if mutex else 42)
+            failed = mode in ('sync-nt-failure','sync-bad-failure')
+            identity = 0 if failed or mode == 'sync-bad-id' else 3
+            offset = 0 if failed or mutex else 1 if mode == 'sync-bad-alignment' else 262144 if mode == 'sync-bad-offset' else 8192
+            gpu = 0 if failed or mutex or mode == 'sync-zero-gpu' else 65537 if mode == 'sync-bad-gpu-alignment' else 1 << 48 if mode == 'sync-bad-gpu-range' else 65536
+            if mode in ('sync-bad-failure', 'sync-mutex-bad-map'): offset = 8192
+            data = struct.pack('<QQ',offset,gpu)
+            if mode == 'sync-short': data = data[:-1]
+            send(op,identity,value=1 if mode == 'sync-bad-value' else 0,data=data,
+                 ntstatus=-1073741811 if failed else 259 if mode == 'sync-bad-status' else 0)
+        elif op == 0x2071:
+            assert handle == 3 and len(packet) == 16
+            failed = mode == 'sync-failed-destroy' and operations.count(op) == 1
+            send(op,0 if mode == 'sync-destroy-bad-id' else handle,
+                 value=1 if mode == 'sync-destroy-bad-value' else 0,
+                 data=b'X' if mode == 'sync-destroy-long' else b'',
+                 ntstatus=-1073741811 if failed else 259 if mode == 'sync-destroy-bad-status' else 0)
         elif op == 0x2020:
             assert handle == 2
             desc = struct.unpack_from('<6I',packet,16)
@@ -131,6 +151,10 @@ if mode in ('translation-normal','translation-invalid','translation-disabled','t
 if mode.startswith('translation-'): assert 0x2016 not in operations, operations
 if mode in ('hwqueue-disabled','hwqueue-invalid','hwqueue-sync-context'): assert 0x2060 not in operations, operations
 if mode == 'hwqueue-no-hub': assert operations[-2:] == [0x2060,0x2061], operations
+if mode in ('sync-disabled','sync-invalid'): assert 0x2070 not in operations and 0x2071 not in operations, operations
+if mode == 'sync-no-hub': assert operations[-2:] == [0x2070,0x2071], operations
+if mode == 'sync-mutex' or mode.startswith('sync-destroy-'): assert operations.count(0x2071) == 1, operations
+if mode == 'sync-failed-destroy': assert operations.count(0x2071) == 2, operations
 print('FAKE_WORKER_EOF=true',file=sys.stderr)
 '''
 
@@ -158,7 +182,11 @@ def main():
                      'hwqueue-disabled', 'hwqueue-invalid', 'hwqueue-sync-context', 'hwqueue-nt-failure', 'hwqueue-bad-failure',
                      'hwqueue-bad-id', 'hwqueue-bad-sync', 'hwqueue-same-sync', 'hwqueue-bad-alignment', 'hwqueue-bad-offset',
                      'hwqueue-zero-gpu', 'hwqueue-bad-gpu-alignment', 'hwqueue-bad-gpu-range', 'hwqueue-bad-reserved',
-                     'hwqueue-short', 'hwqueue-bad-value', 'hwqueue-bad-status', 'hwqueue-no-hub'):
+                     'hwqueue-short', 'hwqueue-bad-value', 'hwqueue-bad-status', 'hwqueue-no-hub',
+                     'sync-mutex', 'sync-failed-destroy', 'sync-disabled', 'sync-invalid', 'sync-nt-failure', 'sync-bad-failure',
+                     'sync-bad-id', 'sync-bad-alignment', 'sync-bad-offset', 'sync-zero-gpu', 'sync-bad-gpu-alignment',
+                     'sync-bad-gpu-range', 'sync-short', 'sync-bad-value', 'sync-bad-status', 'sync-no-hub', 'sync-mutex-bad-map',
+                     'sync-destroy-bad-id', 'sync-destroy-bad-value', 'sync-destroy-long', 'sync-destroy-bad-status'):
             environment = {k: v for k, v in os.environ.items() if not k.startswith('WDDM_BRIDGE_') and k != 'LD_PRELOAD'}
             environment['LD_PRELOAD'] = str(args.shim.resolve())
             environment['BRIDGE_FAULT_TEST'] = mode

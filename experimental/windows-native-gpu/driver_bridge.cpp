@@ -41,6 +41,16 @@ class KmtDriver : public Driver {
     std::map<std::uint32_t, HwQueue> hwQueues;
     bool hwQueuesEnabled = false;
     unsigned completedHwQueues = 0, destroyedHwQueues = 0, failedHwQueues = 0, hwQueuesReleasedAfterVmExit = 0;
+    struct Synchronization {
+        std::uint32_t device, type;
+        volatile std::uint64_t* fence;
+        std::uint64_t gpuAddress;
+        std::optional<driver_qemu::FenceLease> lease;
+    };
+    std::map<std::uint32_t, Synchronization> syncObjects;
+    bool syncEnabled = false;
+    unsigned completedSyncs = 0, destroyedSyncs = 0, failedSyncs = 0, monitoredSyncs = 0, mutexSyncs = 0;
+    unsigned syncsReleasedAfterVmExit = 0;
     driver_qemu::Runtime* runtime = nullptr;
     struct Allocation {
         std::uint32_t device, resource, size;
@@ -161,11 +171,12 @@ class KmtDriver : public Driver {
     }
 public:
     KmtDriver(std::string sectionName, std::uint32_t sectionBytes, bool enableContexts, bool enableQueries,
-              driver_qemu::Runtime* ownedRuntime = nullptr, bool enableAllocations = false, bool enableGpuVa = false, bool enableResidency = false, bool enableCpu = false, bool testCpuStores = false, bool enableTranslation = false, bool enableHwQueues = false)
+              driver_qemu::Runtime* ownedRuntime = nullptr, bool enableAllocations = false, bool enableGpuVa = false, bool enableResidency = false, bool enableCpu = false, bool testCpuStores = false, bool enableTranslation = false, bool enableHwQueues = false, bool enableSync = false)
         : runtime(ownedRuntime), allocationsEnabled(enableAllocations), gpuVaEnabled(enableGpuVa), residencyEnabled(enableResidency), cpuEnabled(enableCpu), cpuStoreTest(testCpuStores), contextsEnabled(enableContexts), queriesEnabled(enableQueries),
           guestSectionName(std::move(sectionName)), guestBytes(sectionBytes) {
         translationEnabled = enableTranslation;
         hwQueuesEnabled = enableHwQueues;
+        syncEnabled = enableSync;
         const std::string prefix = "Local\\7Wdev-WDDM-";
         if (!guestSectionName.empty()) {
             if (guestSectionName.size() != prefix.size() + 32 || guestSectionName.compare(0, prefix.size(), prefix) ||
@@ -210,7 +221,8 @@ public:
                 (queriesEnabled ? QueryCapability : 0u) | (runtime ? GuestPagingCapability : 0u) |
                 (allocationsEnabled ? VendorAllocationCapability : 0u) | (gpuVaEnabled ? VendorGpuVaCapability : 0u) |
                 (residencyEnabled ? VendorResidencyCapability : 0u) | (cpuEnabled ? VendorCpuCapability : 0u) |
-                (translationEnabled ? VendorTranslationCapability : 0u) | (hwQueuesEnabled ? HwQueueCapability : 0u),
+                (translationEnabled ? VendorTranslationCapability : 0u) | (hwQueuesEnabled ? HwQueueCapability : 0u) |
+                (syncEnabled ? SyncCapability : 0u),
                 description.VendorId, description.DeviceId};
     }
     Result openAdapter() override {
@@ -308,6 +320,42 @@ public:
             ++failedHwQueues;
             runtime->stop(0); destroy(Kind::HwQueue, a.hHwQueue);
             throw;
+        }
+    }
+    SyncResult createSync(std::uint32_t device, SyncDesc desc) override {
+        if (!syncEnabled || !runtime || !validSync(desc) || !deviceAdapters.count(device) || syncObjects.size() >= MaxSyncObjects)
+            return {{Invalid, 0, 0}, {0, 0}};
+        D3DKMT_CREATESYNCHRONIZATIONOBJECT2 a{}; a.hDevice = device;
+        a.Info.Type = static_cast<D3DDDI_SYNCHRONIZATIONOBJECT_TYPE>(desc.type);
+        if (desc.type == 1) a.Info.SynchronizationMutex.InitialState = static_cast<BOOL>(desc.initial);
+        else { a.Info.MonitoredFence.InitialFenceValue = desc.initial; a.Info.MonitoredFence.EngineAffinity = desc.affinity; }
+        const auto status = D3DKMTCreateSynchronizationObject2(&a);
+        if (status < 0) { ++failedSyncs; return {{status, 0, 0}, {0, 0}}; }
+        Synchronization owned{device, desc.type, nullptr, 0, std::nullopt};
+        if (desc.type == 5) {
+            owned.fence = static_cast<volatile std::uint64_t*>(a.Info.MonitoredFence.FenceValueCPUVirtualAddress);
+            owned.gpuAddress = a.Info.MonitoredFence.FenceValueGPUVirtualAddress;
+        }
+        try {
+            if (!a.hSyncObject || !syncObjects.emplace(a.hSyncObject, owned).second)
+                throw std::runtime_error("Unexpected native synchronization identity");
+        } catch (...) {
+            D3DKMT_DESTROYSYNCHRONIZATIONOBJECT cleanup{}; cleanup.hSyncObject = a.hSyncObject;
+            if (D3DKMTDestroySynchronizationObject(&cleanup) < 0) ++cleanupFailures;
+            throw;
+        }
+        auto& retained = syncObjects.at(a.hSyncObject);
+        try {
+            if (status != 0 || a.Info.Type != static_cast<D3DDDI_SYNCHRONIZATIONOBJECT_TYPE>(desc.type) ||
+                a.Info.Flags.Value || a.Info.SharedHandle || (desc.type == 5 && (!retained.fence || !retained.gpuAddress ||
+                    retained.gpuAddress % 8 || retained.gpuAddress >= MaxGpuAddress)))
+                throw std::runtime_error("Unexpected native synchronization output");
+            if (desc.type == 5) retained.lease = runtime->map(retained.fence);
+            ++completedSyncs;
+            if (desc.type == 5) ++monitoredSyncs; else ++mutexSyncs;
+            return {{status, a.hSyncObject, 0}, {retained.lease ? retained.lease->offset : 0, retained.gpuAddress}};
+        } catch (...) {
+            ++failedSyncs; runtime->stop(0); destroy(Kind::Sync, a.hSyncObject); throw;
         }
     }
     Result createVendorAllocation(std::uint32_t device, VendorAllocationDesc desc, std::vector<std::uint8_t>& data) override {
@@ -798,6 +846,21 @@ public:
             }
         } else if (kind == Kind::HwQueueSync) {
             return {0, 0, 0}; // Borrowed progress sync, owned by the hardware queue.
+        } else if (kind == Kind::Sync) {
+            const auto object = syncObjects.find(handle);
+            if (object == syncObjects.end() || !runtime) return {Invalid, 0, 0};
+            const bool afterVmExit = runtime->hasStopped();
+            if (object->second.lease) {
+                try { runtime->unmap(*object->second.lease); }
+                catch (...) { runtime->stop(0); }
+                object->second.lease.reset();
+            }
+            D3DKMT_DESTROYSYNCHRONIZATIONOBJECT a{}; a.hSyncObject = handle;
+            status = D3DKMTDestroySynchronizationObject(&a);
+            if (status == 0) {
+                syncObjects.erase(object); ++destroyedSyncs;
+                if (afterVmExit) ++syncsReleasedAfterVmExit;
+            }
         } else if (kind == Kind::Context) {
             if (!contextOwners.count(handle)) return {Invalid, 0, 0};
             for (const auto& queue : hwQueues) if (queue.second.context == handle) return {Invalid, 0, 0};
@@ -832,7 +895,7 @@ public:
     bool clean() const {
         return !activeAdapters && !activeDevices && !activeContexts && pagingFences.empty() && allocations.empty() && vendorAllocations.empty() &&
                !vendorMappedPages && !vendorResidencyAttempts && !vendorCpuBytes && deviceAdapters.empty() && translatedAllocations.empty() &&
-               contextOwners.empty() && hwQueues.empty() &&
+               contextOwners.empty() && hwQueues.empty() && syncObjects.empty() &&
                !guestMemory && !guestSection && !copyDevice && !copyHeap && !copyQueue && !copyFence && !copyEvent && !cleanupFailures;
     }
     void reportCleanup() const {
@@ -842,6 +905,10 @@ public:
                   << ",\"liveHwQueues\":" << hwQueues.size() << ",\"completedHwQueues\":" << completedHwQueues
                   << ",\"destroyedHwQueues\":" << destroyedHwQueues << ",\"failedHwQueues\":" << failedHwQueues
                   << ",\"hwQueuesReleasedAfterVmExit\":" << hwQueuesReleasedAfterVmExit
+                  << ",\"liveSyncObjects\":" << syncObjects.size() << ",\"completedSyncObjects\":" << completedSyncs
+                  << ",\"destroyedSyncObjects\":" << destroyedSyncs << ",\"failedSyncObjects\":" << failedSyncs
+                  << ",\"completedMonitoredFences\":" << monitoredSyncs << ",\"completedSynchronizationMutexes\":" << mutexSyncs
+                  << ",\"syncObjectsReleasedAfterVmExit\":" << syncsReleasedAfterVmExit
                   << ",\"livePagingQueues\":" << pagingFences.size() << ",\"liveAllocations\":" << allocations.size()
                   << ",\"allocatedBytes\":" << allocatedBytes << ",\"cleanupFailures\":" << cleanupFailures
                   << ",\"liveGuestMappings\":" << (guestMemory ? 1 : 0) << ",\"liveGuestSections\":" << (guestSection ? 1 : 0)
@@ -923,8 +990,8 @@ public:
     }
 };
 static void serve(Stream& stream, const std::string& sectionName = {}, std::uint32_t sectionBytes = 0,
-                  bool contexts = false, bool queries = false, driver_qemu::Runtime* runtime = nullptr, bool allocations = false, bool gpuVa = false, bool residency = false, bool cpu = false, bool cpuStoreTest = false, bool translation = false, bool hwQueues = false) {
-    KmtDriver driver(sectionName, sectionBytes, contexts, queries, runtime, allocations, gpuVa, residency, cpu, cpuStoreTest, translation, hwQueues);
+                  bool contexts = false, bool queries = false, driver_qemu::Runtime* runtime = nullptr, bool allocations = false, bool gpuVa = false, bool residency = false, bool cpu = false, bool cpuStoreTest = false, bool translation = false, bool hwQueues = false, bool sync = false) {
+    KmtDriver driver(sectionName, sectionBytes, contexts, queries, runtime, allocations, gpuVa, residency, cpu, cpuStoreTest, translation, hwQueues, sync);
     std::exception_ptr failure;
     {
       Session session(driver);
@@ -957,7 +1024,7 @@ int main(int argc, char** argv) {
     try {
         // Explicit experimental opt-in; keep the existing allocation endpoint
         // closed to vendor-private context data unless requested by its owner.
-        bool contexts = false, queries = false, allocations = false, gpuVa = false, residency = false, cpu = false, cpuStoreTest = false, cpuEofTest = false, translation = false, hwQueues = false, hwQueueEofTest = false;
+        bool contexts = false, queries = false, allocations = false, gpuVa = false, residency = false, cpu = false, cpuStoreTest = false, cpuEofTest = false, translation = false, hwQueues = false, hwQueueEofTest = false, sync = false;
         while (argc > 1) {
             const auto option = std::string(argv[argc - 1]);
             if (option == "--driver-contexts" && !contexts) contexts = true;
@@ -971,6 +1038,7 @@ int main(int argc, char** argv) {
             else if (option == "--driver-translation" && !translation) translation = true;
             else if (option == "--driver-hwqueues" && !hwQueues) hwQueues = true;
             else if (option == "--hwqueue-eof-test" && !hwQueueEofTest) hwQueueEofTest = true;
+            else if (option == "--driver-syncs" && !sync) sync = true;
             else break;
             --argc;
         }
@@ -980,6 +1048,8 @@ int main(int argc, char** argv) {
         if (translation && !allocations) throw std::runtime_error("Allocation translation requires explicit allocation opt-in");
         if (hwQueues && (!contexts || !translation || argc != 7 || std::string(argv[1]) != "--run-qemu"))
             throw std::runtime_error("Hardware queues require context and allocation translation opt-ins in an owned QEMU runtime");
+        if (sync && (argc != 7 || std::string(argv[1]) != "--run-qemu"))
+            throw std::runtime_error("Synchronization objects require an owned QEMU runtime");
         if (cpu && (!gpuVa || argc != 7 || std::string(argv[1]) != "--run-qemu"))
             throw std::runtime_error("Vendor CPU locks require GPU-address mappings and an owned QEMU runtime");
         if (cpuStoreTest && !cpu) throw std::runtime_error("CPU store control requires explicit CPU-lock opt-in");
@@ -994,7 +1064,7 @@ int main(int argc, char** argv) {
         const bool ownedRuntime = argc == 7 && std::string(argv[1]) == "--run-qemu";
         if (!ownedRuntime && ((argc != 3 && argc != 7) || std::string(argv[1]) != "--listen")) {
             std::cerr << "Usage: driver-bridge.exe --stdio | --listen port [--guest-section name --guest-ram-bytes count] "
-                "[--driver-contexts] [--driver-queries] [--driver-allocations] [--driver-gpuva] [--driver-residency] [--driver-cpu] [--driver-translation] [--driver-hwqueues] [--cpu-store-test | --cpu-eof-test | --hwqueue-eof-test]\n"
+                "[--driver-contexts] [--driver-queries] [--driver-allocations] [--driver-gpuva] [--driver-residency] [--driver-cpu] [--driver-translation] [--driver-hwqueues] [--driver-syncs] [--cpu-store-test | --cpu-eof-test | --hwqueue-eof-test]\n"
                 "       driver-bridge.exe --run-qemu qemu firmware kernel initramfs fresh-log --driver-contexts --driver-queries\n"; return 2;
         }
         if (ownedRuntime && (!contexts || !queries)) throw std::runtime_error("Owned QEMU runtime requires explicit query/context opt-ins");
@@ -1033,7 +1103,7 @@ int main(int argc, char** argv) {
         if (setsockopt(client.value, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&milliseconds), sizeof milliseconds) ||
             setsockopt(client.value, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&milliseconds), sizeof milliseconds))
             throw std::runtime_error("Cannot set socket timeouts");
-        Stream stream(client.value); serve(stream, sectionName, sectionBytes, contexts, queries, runtime.get(), allocations, gpuVa, residency, cpu, cpuStoreTest, translation, hwQueues);
+        Stream stream(client.value); serve(stream, sectionName, sectionBytes, contexts, queries, runtime.get(), allocations, gpuVa, residency, cpu, cpuStoreTest, translation, hwQueues, sync);
         if (runtime) {
             runtime->report();
             if (!runtime->cleanExit()) throw std::runtime_error("Owned QEMU runtime did not exit cleanly");

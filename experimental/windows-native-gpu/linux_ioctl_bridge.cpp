@@ -210,6 +210,7 @@ class Bridge {
     Transport transport;
     guest_paging::Fences pagingFences;
     guest_paging::Fences hwQueueFences;
+    guest_paging::Fences syncFences;
     guest_allocation::Memory allocationMemory;
     std::set<std::uint32_t> cpuLocks;
     bool negotiated = false;
@@ -222,6 +223,8 @@ class Bridge {
     struct Context { std::uint32_t device, flags; };
     std::map<std::uint32_t, Context> contextOwners;
     std::map<std::uint32_t, std::uint32_t> hwQueueContexts;
+    struct Synchronization { std::uint32_t device, type; };
+    std::map<std::uint32_t, Synchronization> syncObjects;
     static constexpr std::uint32_t GuestLuidLow = 0x57475055;
     static constexpr std::int32_t GuestLuidHigh = 0;
     Response call(const std::vector<std::uint8_t>& requestPacket, std::uint32_t bytes = 0, bool preserveNativeFailure = false) {
@@ -727,6 +730,80 @@ public:
                     _exit(1);
                 }
                 return 0;
+            }
+            case 16: {
+                auto& a = args<D3DKMT_CREATESYNCHRONIZATIONOBJECT2>(requestNumber, pointer);
+                std::fprintf(stderr, "LINUX_BRIDGE synchronizationInput type=%u flags=%u ownedDevice=%u hasSharedInput=%u\n",
+                             static_cast<unsigned>(a.Info.Type), a.Info.Flags.Value, deviceAdapters.count(a.hDevice) ? 1u : 0u,
+                             a.Info.SharedHandle ? 1u : 0u);
+                if (a.Info.Type == D3DDDI_MONITORED_FENCE)
+                    std::fprintf(stderr, "LINUX_BRIDGE monitoredFenceInput initial=%llu affinity=%u padding=%u hasCpuInput=%u hasGpuInput=%u\n",
+                                 static_cast<unsigned long long>(a.Info.MonitoredFence.InitialFenceValue), a.Info.MonitoredFence.EngineAffinity,
+                                 a.Info.MonitoredFence.Padding, a.Info.MonitoredFence.FenceValueCPUVirtualAddress ? 1u : 0u,
+                                 a.Info.MonitoredFence.FenceValueGPUVirtualAddress ? 1u : 0u);
+                if (a.Info.Type == D3DDDI_CPU_NOTIFICATION)
+                    std::fprintf(stderr, "LINUX_BRIDGE cpuNotificationInput hasEvent=%u\n", a.Info.CPUNotification.Event ? 1u : 0u);
+                if (!(caps.flags & SyncCapability)) {
+                    std::fprintf(stderr, "LINUX_BRIDGE unsupported nr=16 bytes=%zu\n", sizeof a); throw Error(ENOSYS);
+                }
+                SyncDesc desc{static_cast<unsigned>(a.Info.Type), a.Info.Flags.Value, 0, 0, 0};
+                if (desc.type == 1) desc.initial = static_cast<std::uint64_t>(a.Info.SynchronizationMutex.InitialState);
+                else if (desc.type == 5) {
+                    desc.initial = a.Info.MonitoredFence.InitialFenceValue; desc.affinity = a.Info.MonitoredFence.EngineAffinity;
+                    if (a.Info.MonitoredFence.Padding) throw Error(EINVAL);
+                } else throw Error(ENOSYS);
+                if (!validSync(desc)) throw Error(EINVAL);
+                if (!deviceAdapters.count(a.hDevice)) throw Error(EBADF);
+                if (syncObjects.size() >= MaxSyncObjects) throw Error(EMFILE);
+                const auto result = call(request(Op::CreateSync, a.hDevice, desc), sizeof(SyncReply), true);
+                SyncReply output{}; std::memcpy(&output, result.data.data(), sizeof output);
+                if (result.result.ntstatus > 0 || result.result.value ||
+                    (result.result.ntstatus == 0 && (!result.header.handle || syncObjects.count(result.header.handle) ||
+                        (desc.type == 1 && (output.offset || output.gpuAddress)) ||
+                        (desc.type == 5 && (output.offset % 8 || output.offset >= FenceApertureBytes || !output.gpuAddress ||
+                            output.gpuAddress % 8 || output.gpuAddress >= MaxGpuAddress)))) ||
+                    (result.result.ntstatus < 0 && (result.header.handle || output.offset || output.gpuAddress))) {
+                    transport.fail(); throw Error(EPROTO);
+                }
+                checkNt(result.result.ntstatus);
+                void* fence = nullptr;
+                if (desc.type == 5) {
+                    try { fence = syncFences.map(result.header.handle, output.offset, "monitored"); }
+                    catch (...) { destroy(Op::DestroySync, result.header.handle); throw; }
+                }
+                if (!syncObjects.emplace(result.header.handle, Synchronization{a.hDevice, desc.type}).second) {
+                    transport.fail(); throw Error(EPROTO);
+                }
+                a.hSyncObject = result.header.handle; a.Info.SharedHandle = 0;
+                if (desc.type == 5) {
+                    a.Info.MonitoredFence.FenceValueCPUVirtualAddress = fence;
+                    a.Info.MonitoredFence.FenceValueGPUVirtualAddress = output.gpuAddress;
+                }
+                std::fprintf(stderr, "LINUX_BRIDGE nativeSynchronizationCreated=true type=%u\n", desc.type); return 0;
+            }
+            case 29: {
+                auto& a = args<D3DKMT_DESTROYSYNCHRONIZATIONOBJECT>(requestNumber, pointer);
+                if (!(caps.flags & SyncCapability)) {
+                    std::fprintf(stderr, "LINUX_BRIDGE unsupported nr=29 bytes=%zu\n", sizeof a); throw Error(ENOSYS);
+                }
+                const auto owned = syncObjects.find(a.hSyncObject);
+                // Paging and queue progress synchronization handles are borrowed.
+                // Only independent synchronization objects reach this native destroy.
+                if (owned == syncObjects.end()) throw Error(EBADF);
+                if (syncFences.contains(a.hSyncObject)) syncFences.unmap(a.hSyncObject);
+                const auto result = call(request(Op::DestroySync, a.hSyncObject), 0, true);
+                if (result.header.handle != a.hSyncObject || result.result.value || result.result.ntstatus > 0) { transport.fail(); throw Error(EPROTO); }
+                checkNt(result.result.ntstatus);
+                std::fprintf(stderr, "LINUX_BRIDGE nativeSynchronizationDestroyed=true type=%u\n", owned->second.type);
+                syncObjects.erase(owned); return 0;
+            }
+            case 52: {
+                auto& a = args<D3DKMT_SUBMITCOMMANDTOHWQUEUE>(requestNumber, pointer);
+                std::fprintf(stderr, "LINUX_BRIDGE submitInput ownedQueue=%u commandBytes=%u privateBytes=%u primaries=%u hasCommand=%u hasPrivateData=%u fence=%llu\n",
+                             hwQueueContexts.count(a.hHwQueue) ? 1u : 0u, a.CommandLength, a.PrivateDriverDataSize, a.NumPrimaries,
+                             a.CommandBuffer ? 1u : 0u, a.pPrivateDriverData ? 1u : 0u,
+                             static_cast<unsigned long long>(a.HwQueueProgressFenceId));
+                std::fprintf(stderr, "LINUX_BRIDGE unsupported nr=52 bytes=%zu\n", sizeof a); throw Error(ENOSYS);
             }
             case 27: {
                 auto& a = args<D3DKMT_DESTROYHWQUEUE>(requestNumber, pointer);

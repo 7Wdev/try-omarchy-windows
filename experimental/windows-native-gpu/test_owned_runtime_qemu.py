@@ -37,6 +37,9 @@ def main():
     parser.add_argument('--minimum-allocation-translations', type=int, default=0)
     parser.add_argument('--driver-hwqueues', action='store_true')
     parser.add_argument('--minimum-hwqueues', type=int, default=0)
+    parser.add_argument('--driver-syncs', action='store_true')
+    parser.add_argument('--minimum-monitored-fences', type=int, default=0)
+    parser.add_argument('--minimum-sync-mutexes', type=int, default=0)
     parser.add_argument('--expected-allocation-limit', type=int, default=0, help='Require the observed diagnostic allocation-count boundary')
     parser.add_argument('--cpu-store-test', action='store_true', help='Explicit first/last-word diagnostic stores, checked and restored by Windows')
     parser.add_argument('--cpu-eof-test', action='store_true', help='Exit the guest probe while it owns the CPU lock; require VM-exit-first native teardown')
@@ -59,6 +62,8 @@ def main():
         parser.error('Hardware queue acceptance requires allocation translation and hardware queue opt-ins')
     if args.expected_allocation_limit < 0 or (args.expected_allocation_limit and not args.driver_allocations):
         parser.error('An allocation-limit boundary requires allocation opt-in')
+    if min(args.minimum_monitored_fences, args.minimum_sync_mutexes) < 0 or ((args.minimum_monitored_fences or args.minimum_sync_mutexes) and not args.driver_syncs):
+        parser.error('Synchronization acceptance requires the explicit synchronization opt-in')
     if args.cpu_eof_test and (not args.driver_cpu or args.cpu_store_test):
         parser.error('CPU EOF control requires CPU locks and a separate run from store control')
     if args.hwqueue_eof_test and (not args.driver_hwqueues or args.cpu_eof_test or args.cpu_store_test):
@@ -85,6 +90,7 @@ def main():
                              (['--driver-residency'] if args.driver_residency else []) + (['--driver-cpu'] if args.driver_cpu else []) +
                              (['--driver-translation'] if args.driver_translation else []) +
                              (['--driver-hwqueues'] if args.driver_hwqueues else []) +
+                             (['--driver-syncs'] if args.driver_syncs else []) +
                              (['--cpu-store-test'] if args.cpu_store_test else []) + (['--cpu-eof-test'] if args.cpu_eof_test else []) +
                              (['--hwqueue-eof-test'] if args.hwqueue_eof_test else []),
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
@@ -144,6 +150,10 @@ def main():
         hwqueues = log.count('LINUX_BRIDGE nativeHwQueueCreated=true')
         hwqueue_unmaps = log.count('LINUX_BRIDGE nativeHwQueueDestroyed=true')
         hwqueue_fences = [{'offset': int(o), 'value': int(v)} for o, v in re.findall(r'hwQueueFenceMapped=true direct=true loads=10000 offset=(\d+) value=(\d+)', log)]
+        sync_types = [int(t) for t in re.findall(r'LINUX_BRIDGE nativeSynchronizationCreated=true type=(\d+)', log)]
+        sync_destroyed = [int(t) for t in re.findall(r'LINUX_BRIDGE nativeSynchronizationDestroyed=true type=(\d+)', log)]
+        monitored_fences = [{'offset': int(o), 'value': int(v)} for o, v in re.findall(r'monitoredFenceMapped=true direct=true loads=10000 offset=(\d+) value=(\d+)', log)]
+        total_fence_mappings = len(fences) + len(hwqueue_fences) + len(monitored_fences)
         gpuva = [{'pages': int(p), 'status': int(s), 'fence': int(f)} for p, s, f in
                  re.findall(r'nativeVendorGpuVaMapped=true pages=(\d+) status=(\d+) fence=(\d+)', log)]
         retirements = [{'target': int(t), 'observed': int(o), 'operation': op or 'gpuva'} for t, o, op in
@@ -171,8 +181,8 @@ def main():
                     {'type': 0, 'bytes': 50616} in completed and
                     control.get('ownedQemuExited') is True and control.get('qemuExit') == 0 and
                     control.get('qemuForcedStop') is False and control.get('fenceControlFailed') is False and
-                    control.get('liveFenceMappings') == 0 and control.get('fenceMappingsCreated') == len(fences) + len(hwqueue_fences) and
-                    control.get('fenceUnmapAcknowledgements') == (0 if guest_eof else len(fences) + len(hwqueue_fences)) and
+                    control.get('liveFenceMappings') == 0 and control.get('fenceMappingsCreated') == total_fence_mappings and
+                    control.get('fenceUnmapAcknowledgements') == (0 if guest_eof else total_fence_mappings) and
                     cleanup.get('driverCleanupVerified') is True and cleanup.get('failedAdapterQueries') == 0 and
                     cleanup.get('completedAdapterQueries') == len(completed) and
                     'transport=virtio-port' in log and 'BRIDGE_RUNTIME_EXIT=1' in log and
@@ -201,6 +211,15 @@ def main():
             accepted = (accepted and hwqueues >= args.minimum_hwqueues and hwqueues == len(hwqueue_fences) and hwqueue_unmaps == (0 if args.hwqueue_eof_test else hwqueues) and
                         cleanup.get('completedHwQueues') == hwqueues and cleanup.get('destroyedHwQueues') == hwqueues and
                         cleanup.get('failedHwQueues') == 0 and cleanup.get('liveHwQueues') == 0 and 24 not in unsupported and 27 not in unsupported)
+        if args.driver_syncs:
+            accepted = (accepted and sync_types.count(5) >= args.minimum_monitored_fences and sync_types.count(1) >= args.minimum_sync_mutexes and
+                        all(t in (1, 5) for t in sync_types) and sync_types.count(5) == len(monitored_fences) and
+                        cleanup.get('completedSyncObjects') == len(sync_types) and cleanup.get('destroyedSyncObjects') == len(sync_types) and
+                        cleanup.get('completedMonitoredFences') == sync_types.count(5) and cleanup.get('completedSynchronizationMutexes') == sync_types.count(1) and
+                        cleanup.get('failedSyncObjects') == 0 and cleanup.get('liveSyncObjects') == 0 and 16 not in unsupported and 29 not in unsupported and
+                        (not guest_eof or not sync_destroyed) and
+                        len(sync_destroyed) + cleanup.get('syncObjectsReleasedAfterVmExit', 0) == len(sync_types) and
+                        (guest_eof or sorted(sync_destroyed) == sorted(sync_types)))
         if args.driver_residency:
             accepted = (accepted and len(residency) >= args.minimum_vendor_residency_requests and 11 not in unsupported and
                         all(r['count'] > 0 and r['status'] in (0, 259) for r in residency) and
@@ -233,6 +252,7 @@ def main():
         report = {'schema': 1, 'diagnosticAccepted': bool(accepted), 'runtimeInitializationComplete': False,
                   'stage': 'owned VM exit before native hardware queue and CPU lock cleanup' if args.hwqueue_eof_test else
                            'owned VM exit before native CPU lock cleanup' if args.cpu_eof_test else
+                           'live NVIDIA runtime with native Windows synchronization objects' if args.driver_syncs else
                            'live NVIDIA runtime with native Windows hardware queues' if args.driver_hwqueues else
                            'live NVIDIA runtime with Windows allocation CPU locks' if args.driver_cpu else
                            'live NVIDIA runtime with Windows allocation residency' if args.driver_residency else
@@ -251,6 +271,9 @@ def main():
                   'hardwareQueueOptIn': args.driver_hwqueues, 'nativeHardwareQueuesCreatedByLiveRuntime': hwqueues,
                   'minimumHardwareQueuesRequired': args.minimum_hwqueues, 'directHardwareQueueFences': hwqueue_fences,
                   'nativeHardwareQueueDestructionsAcknowledged': hwqueue_unmaps,
+                  'synchronizationOptIn': args.driver_syncs, 'nativeSynchronizationTypesCreated': sync_types,
+                  'nativeSynchronizationTypesDestroyedByGuest': sync_destroyed, 'directMonitoredFences': monitored_fences,
+                  'minimumMonitoredFencesRequired': args.minimum_monitored_fences, 'minimumSynchronizationMutexesRequired': args.minimum_sync_mutexes,
                   'vendorGpuVaOptIn': args.driver_gpuva, 'nativeVendorGpuVaMappings': gpuva,
                   'directGuestPagingRetirementChecks': retirements,
                   'minimumVendorGpuVaMappingsRequired': args.minimum_vendor_gpuva_maps,
@@ -265,7 +288,7 @@ def main():
                   'diagnosticCpuEofRequested': args.cpu_eof_test,
                   'diagnosticHardwareQueueEofRequested': args.hwqueue_eof_test,
                   'nativeCpuRegionChecks': [json.loads(line) for line in errors if line.startswith('{') and 'vendorCpuRegionCandidate' in line],
-                  'directGuestFenceLoads': (len(fences) + len(hwqueue_fences) + len(retirements)) * 10000,
+                  'directGuestFenceLoads': (total_fence_mappings + len(retirements)) * 10000,
                   'expectedInitializationBoundary': None if guest_eof else args.expected_unimplemented_ioctl,
                   'firstUnsupportedIoctlAfterAcceptedStage': first_unsupported_after_stage,
                   'unsupportedIoctls': unsupported, 'completedNativeQueries': completed,

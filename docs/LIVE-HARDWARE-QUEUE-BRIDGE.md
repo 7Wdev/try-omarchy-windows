@@ -9,7 +9,9 @@ eight allocation views without diagnostic stores. Queue progress fences passed
 
 This remains an initialization experiment. The live run reached the diagnostic
 16-allocation object limit and unsupported GPU command submission (ioctl 52).
-Private escapes, synchronization objects and eviction are also incomplete.
+Private escapes, synchronization operations and eviction are also incomplete.
+The subsequent [synchronization bridge](LIVE-SYNCHRONIZATION-BRIDGE.md) adds
+monitored-fence/mutex creation and destruction with direct fence mappings.
 D3D12 device creation returned `80004005`. Omarchy/Hyprland acceleration,
 stability and near-native performance have not been established.
 

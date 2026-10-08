@@ -25,6 +25,10 @@ struct Fake : Driver {
     bool hwQueuesEnabled = false;
     int badHwQueueReply = 0;
     std::map<std::uint32_t, std::uint32_t> hwQueueParents;
+    bool syncEnabled = false;
+    int badSyncReply = 0;
+    SyncDesc lastSyncDesc{};
+    std::map<std::uint32_t, std::uint32_t> syncParents;
     unsigned cpuLocks = 0, cpuUnlocks = 0;
     int badCpuReply = 0;
     int badResidentReply = 0;
@@ -40,7 +44,7 @@ struct Fake : Driver {
                 (guestPagingEnabled ? GuestPagingCapability : 0u) | (vendorEnabled ? VendorAllocationCapability : 0u) |
                 (gpuVaEnabled ? VendorGpuVaCapability : 0u) | (residencyEnabled ? VendorResidencyCapability : 0u) |
                 (cpuEnabled ? VendorCpuCapability : 0u) | (translationEnabled ? VendorTranslationCapability : 0u) |
-                (hwQueuesEnabled ? HwQueueCapability : 0u), 0x10de, 123};
+                (hwQueuesEnabled ? HwQueueCapability : 0u) | (syncEnabled ? SyncCapability : 0u), 0x10de, 123};
     }
     Result created() { ++calls; return {fail ? -123 : 0, ++next, 0}; }
     Result openAdapter() override { return created(); }
@@ -122,6 +126,15 @@ struct Fake : Driver {
                 badHwQueueReply == 5 ? 1ull : badHwQueueReply == 6 ? FenceApertureBytes : 8192ull,
                 badHwQueueReply == 7 ? 0ull : badHwQueueReply == 8 ? 65537ull : badHwQueueReply == 9 ? MaxGpuAddress : 65536ull};
     }
+    SyncResult createSync(std::uint32_t device, SyncDesc desc) override {
+        require(device > 500 && validSync(desc)); ++calls; lastSyncDesc = desc;
+        if (fail) return {{-123, 0, 0}, {badSyncReply == 10 ? 1ull : 0ull, 0}};
+        const auto handle = badSyncReply == 2 ? 0u : ++next;
+        if (handle) syncParents.emplace(handle, device);
+        return {{badSyncReply == 1 ? 259 : 0, handle, badSyncReply == 3 ? 1ull : 0ull},
+                {desc.type == 1 && badSyncReply != 9 ? 0ull : badSyncReply == 4 ? 1ull : badSyncReply == 5 ? FenceApertureBytes : 8192ull,
+                 desc.type == 1 || badSyncReply == 6 ? 0ull : badSyncReply == 7 ? 65537ull : badSyncReply == 8 ? MaxGpuAddress : 65536ull}};
+    }
     GuestPagingResult createGuestPagingQueue(std::uint32_t h) override {
         require(h > 500);
         auto queue = created();
@@ -170,6 +183,7 @@ struct Fake : Driver {
             destroyed.push_back(k);
             if (k == Kind::Allocation) require(buffers.erase(h) == 1);
             if (k == Kind::HwQueue) require(hwQueueParents.erase(h) == 1);
+            if (k == Kind::Sync) require(syncParents.erase(h) == 1);
         }
         return {fail ? -123 : 0, 0, 0};
     }
@@ -889,6 +903,54 @@ int main() {
     require(hardware.hwQueueParents.empty() && hardware.vendorOwners.empty() && hardware.destroyed.size() >= MaxHwQueues + 5);
     for (std::size_t n = 0; n < MaxHwQueues; ++n) require(hardware.destroyed[n] == Kind::HwQueue);
     require(hardware.destroyed[MaxHwQueues] == Kind::VendorAllocation);
+    Fake synchronization; synchronization.syncEnabled = synchronization.guestPagingEnabled = true;
+    {
+        Session s(synchronization);
+        require(header(s.dispatch(request(Op::CreateSync, 2, SyncDesc{5, 0, 0, 0, 0}))).status == -71);
+        s.dispatch(hello());
+        const auto adapter = header(s.dispatch(request(Op::OpenAdapter))).handle;
+        const auto device = header(s.dispatch(request(Op::CreateDevice, adapter))).handle;
+        const auto syncPaging = s.dispatch(request(Op::CreateGuestPagingQueue, device)); PagingReply borrowed{};
+        std::memcpy(&borrowed, syncPaging.data() + sizeof(Header) + sizeof(Reply), sizeof borrowed);
+        const auto create = request(Op::CreateSync, device, SyncDesc{5, 0, 1, 0, 42});
+        const auto before = synchronization.calls;
+        synchronization.syncEnabled = false; require(header(s.dispatch(create)).status == -95); synchronization.syncEnabled = true;
+        require(header(s.dispatch(request(Op::CreateSync, adapter, SyncDesc{5, 0, 0, 0, 0}))).status == -9);
+        require(header(s.dispatch(request(Op::CreateSync, device))).status == -22);
+        for (const auto desc : {SyncDesc{4, 0, 0, 0, 0}, SyncDesc{5, 1, 0, 0, 0}, SyncDesc{5, 0, 2, 0, 0},
+                               SyncDesc{5, 0, 0, 1, 0}, SyncDesc{1, 0, 0, 0, 2}, SyncDesc{1, 0, 1, 0, 0}})
+            require(header(s.dispatch(request(Op::CreateSync, device, desc))).status == -22);
+        require(header(s.dispatch(request(Op::DestroySync, borrowed.sync))).status == -9 && synchronization.calls == before);
+        synchronization.fail = true;
+        auto out = s.dispatch(create); Reply body{}; SyncReply view{};
+        std::memcpy(&body, out.data() + sizeof(Header), sizeof body);
+        std::memcpy(&view, out.data() + sizeof(Header) + sizeof body, sizeof view);
+        require(header(out).status == 0 && !header(out).handle && body.ntstatus == -123 && !view.offset && !view.gpuAddress);
+        synchronization.badSyncReply = 10; require(header(s.dispatch(create)).status == -5);
+        synchronization.fail = false;
+        for (int malformedSync = 1; malformedSync <= 8; ++malformedSync) {
+            synchronization.badSyncReply = malformedSync; require(header(s.dispatch(create)).status == -5 && synchronization.syncParents.empty());
+        }
+        synchronization.badSyncReply = 9;
+        require(header(s.dispatch(request(Op::CreateSync, device, SyncDesc{1, 0, 0, 0, 0}))).status == -5 && synchronization.syncParents.empty());
+        synchronization.badSyncReply = 0;
+        out = s.dispatch(create); const auto fence = header(out).handle;
+        std::memcpy(&view, out.data() + sizeof(Header) + sizeof body, sizeof view);
+        require(fence && view.offset == 8192 && view.gpuAddress == 65536 && synchronization.lastSyncDesc.initial == 42 && synchronization.lastSyncDesc.affinity == 1);
+        const auto mutex = header(s.dispatch(request(Op::CreateSync, device, SyncDesc{1, 0, 0, 0, 1}))).handle;
+        require(mutex && synchronization.lastSyncDesc.initial == 1);
+        require(header(s.dispatch(request(Op::DestroyDevice, device))).status == -16);
+        synchronization.fail = true;
+        out = s.dispatch(request(Op::DestroySync, mutex)); std::memcpy(&body, out.data() + sizeof(Header), sizeof body);
+        require(header(out).status == 0 && body.ntstatus == -123 && synchronization.syncParents.size() == 2);
+        synchronization.fail = false;
+        require(header(s.dispatch(request(Op::DestroySync, mutex))).status == 0);
+        require(header(s.dispatch(request(Op::DestroySync, mutex))).status == -9);
+        for (std::size_t n = 1; n < MaxSyncObjects; ++n)
+            require(header(s.dispatch(request(Op::CreateSync, device, SyncDesc{1, 0, 0, 0, 0}))).handle != 0);
+        require(header(s.dispatch(create)).status == -24);
+    }
+    require(synchronization.syncParents.empty());
     Fake pagingQuota; pagingQuota.guestPagingEnabled = true;
     {
         Session s(pagingQuota); s.dispatch(hello());
