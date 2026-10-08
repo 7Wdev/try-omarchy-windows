@@ -157,3 +157,23 @@ with an explicit inherited-handle allowlist, a five-second VP cancellation
 deadline and a ten-second child deadline. The parent holds all backing objects
 until the children have exited. No host process addresses or private driver
 buffers are written into the evidence report.
+
+For the QEMU integration under test, build the recipe in `experimental/qemu`
+and run `build_guest.sh` to produce the separate `fence-test.cpio`. Replace
+`--whp-fences` with the following six arguments:
+
+```powershell
+--qemu-fences C:\qemu-lab\bin\qemu-system-x86_64.exe `
+  C:\qemu-lab\share\qemu C:\local-kernel\vmlinuz-linux `
+  C:\local-build\fence-test.cpio C:\local-results\new-fence-run.log
+```
+
+The log must not already exist. The parent starts one hidden, disk-free QEMU
+with two read-only PCI apertures and an explicit inherited-handle allowlist.
+The Linux init maps each BAR, checks 10,000 loads against the idle fence value,
+and requires the emulation counter to remain unchanged. The test requires
+both the guest success marker and a zero QEMU exit code, then destroys the
+NVIDIA objects. A 60-second deadline kills only its owned QEMU child before
+cleanup. An older QEMU without the device was verified to fail this harness
+while all NVIDIA destruction calls still succeeded. The successful standalone
+WHP test does not imply this QEMU integration has passed.

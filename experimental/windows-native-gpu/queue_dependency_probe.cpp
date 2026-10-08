@@ -16,15 +16,20 @@
 #include <cstring>
 #include <vector>
 #include "whp_fence_test.h"
+#include "qemu_fence_test.h"
 using Microsoft::WRL::ComPtr;
 struct ContextHeader { std::uint32_t magic, node, engine, flags, clientHint, bytes; };
 int main(int argc,char** argv) {
     if(argc>=2 && std::strcmp(argv[1],"--whp-fence-child")==0)
         return whp_fence::childMain(argc,argv);
     const bool whpFences=argc==6 && std::strcmp(argv[5],"--whp-fences")==0;
+    const bool qemuFences=argc==11 && std::strcmp(argv[5],"--qemu-fences")==0;
+    qemu_fence::Paths qemuPaths{};
+    if(qemuFences) { qemuPaths={argv[6],argv[7],argv[8],argv[9],argv[10]}; argc=5; }
     if(whpFences) --argc;
     if(argc!=5) {
-        std::fputs("Usage: queue-dependency-probe context-input queue-input allocation-input allocation-map [--whp-fences]\n",stderr);
+        std::fputs("Usage: queue-dependency-probe context-input queue-input allocation-input allocation-map "
+            "[--whp-fences | --qemu-fences qemu firmware kernel initramfs new-log]\n",stderr);
         return 2;
     }
     FILE* file=nullptr;
@@ -167,6 +172,12 @@ int main(int argc,char** argv) {
                         ok=ok && pagingValue && !pagingRead && !queueRead && !unmapped && !pagingWrite && !queueWrite;
                     }
                     ok=ok && mapped;
+                    if(qemuFences) {
+                        const auto guest=qemu_fence::run(static_cast<volatile UINT64*>(paging.FenceValueCPUVirtualAddress),
+                            static_cast<volatile UINT64*>(queue.HwQueueProgressFenceCPUVirtualAddress),qemuPaths);
+                        std::printf("\"qemuFenceGuestExit\":%lu,",guest);
+                        ok=ok && guest==0;
+                    }
                     D3DKMT_DESTROYHWQUEUE dq{}; dq.hHwQueue=queue.hHwQueue;
                     status=D3DKMTDestroyHwQueue(&dq); ok=ok && status>=0;
                     std::printf("\"destroyQueueStatus\":\"%08lx\",",static_cast<unsigned long>(status));
