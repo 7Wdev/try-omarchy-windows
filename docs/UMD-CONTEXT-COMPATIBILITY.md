@@ -42,9 +42,31 @@ the replay process. This is evidence of a dependency that the bridge must
 preserve, **not proof that this field is the sole cause of the failure**.
 The protocol does not add a hardcoded NVIDIA-private relocation rule.
 
+The subsequent dependency diagnostic passed four native hardware queues.
+Recreating each 64 KiB allocation and mapping it to the captured GPU address
+alone still failed. The trace additionally identified a documented
+`TRANSLATEALLOCATIONHANDLE` call before each queue. Its returned handle appeared
+at private-data offset 36. Calling that translation for the **new Windows
+allocation** and using its result resolved queue creation in all four cases.
+Each returned a valid CPU/GPU progress-fence mapping, initially zero. All
+queues, allocations, paging queues, contexts, devices and adapters were
+destroyed successfully; see [native queue evidence](evidence/NATIVE-WDDM-QUEUE-2026-10-08.json).
+
+This diagnostic intentionally patches one captured field for the observed
+driver version. It submits no GPU commands and is not part of the bridge
+protocol. The reusable interface is Microsoft's
+[allocation-handle translation operation](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/d3dukmdt/ne-d3dukmdt-_d3dddi_driverescapetype),
+which returns a handle suitable for the driver's kernel callbacks. A live UMD
+must receive this token and construct its own private data. The trace found
+67 allocation requests during device/copy-queue initialization, each with one
+allocation, 586 private bytes, zero global/runtime data, no supplied system
+memory and the OverridePriority flag. This observed profile is not a universal
+NVIDIA ABI.
+
 The next integration must create UMD-requested allocations and their GPU
 address mappings in the Windows worker, return those addresses to the live
-Linux UMD, and then use the queue data it generates. Context creation alone is
+Linux UMD, implement typed allocation-handle translation, and then use the queue
+data it generates. Context creation alone is
 not sufficient. Monitored fences, allocation CPU mappings, process ownership,
 driver queries and completion must share that same lifetime model.
 
@@ -96,3 +118,20 @@ experimental/windows-native-gpu/build/context-native-probe.exe `
 Omit the queue argument for context-only acceptance. A queue failure is a
 nonzero result and its NTSTATUS is preserved in JSON. The diagnostic destroys
 each successfully created queue, context, device and adapter before exit.
+
+The allocation-aware native queue diagnostic additionally takes the allocation
+initializer and mapping captured by the tracer:
+
+```powershell
+experimental/windows-native-gpu/build/queue-dependency-probe.exe `
+  C:\local-capture\wsl-context-input-1.bin `
+  C:\local-capture\wsl-queue-input-1.bin `
+  C:\local-capture\wsl-allocation-input-1.bin `
+  C:\local-capture\wsl-allocation-map-1.bin
+```
+
+Select corresponding files using the profile's `contextSequence` and
+`allocationSequence` metadata. The recorded run used context/allocation pairs
+1/1, 2/6, 3/15 and 6/52. Both the 64 KiB allocation size and the observed
+180-byte queue layout are diagnostic constraints; this is not a generic UMD
+queue implementation.
