@@ -24,6 +24,7 @@ var (
 	updateAvailable       atomic.Bool
 	restartForUpdate      atomic.Bool
 	intentionalUpdateQuit atomic.Bool
+	updateDownloadNotice  updateDownloadNotices
 	backgroundUpdates     struct {
 		sync.Mutex
 		start  func()
@@ -61,6 +62,8 @@ func configureBackgroundUpdates(cfg *config, feed string, enabled bool, ownPaylo
 							logf("launcher payload staging skipped: %v", err)
 							if errors.Is(err, errInsufficientDiskSpace) {
 								showTrayNotice(uiText("update.notice.title"), uiTextWith("update.notice.space", map[string]string{"error": err.Error()}))
+							} else if updateDownloadNotice.shouldShow(err) {
+								showTrayNotice(uiText("update.notice.title"), uiText("update.notice.download_failed"))
 							}
 						}
 					} else if failedUpdateVersion(snapshot.dir) != currentVersion {
@@ -95,6 +98,8 @@ func configureBackgroundUpdates(cfg *config, feed string, enabled bool, ownPaylo
 						logf("background update skipped: %v", err)
 						if errors.Is(err, errInsufficientDiskSpace) {
 							showTrayNotice(uiText("update.notice.title"), uiTextWith("update.notice.space", map[string]string{"error": err.Error()}))
+						} else if updateDownloadNotice.shouldShow(err) {
+							showTrayNotice(uiText("update.notice.title"), uiText("update.notice.download_failed"))
 						}
 					}
 					return
