@@ -13,12 +13,38 @@ constexpr std::uint32_t MaxAllocatedBytes = 16 * 1024 * 1024;
 constexpr std::uint32_t MaxChunk = 4064;
 constexpr std::uint32_t ContextCapability = 32;
 constexpr std::uint32_t MaxContextPrivateBytes = 4000;
+constexpr std::uint32_t QueryCapability = 64;
+constexpr std::uint32_t MaxQueryBytes = 65536;
+constexpr std::size_t MaxActiveQueries = 2;
+struct QueryDesc { std::uint32_t type, bytes, reserved, reserved2; };
+static_assert(sizeof(QueryDesc) == 16, "fixed query layout");
+inline bool validQuery(QueryDesc d) {
+    if (d.reserved || d.reserved2 || !d.bytes || d.bytes > MaxQueryBytes) return false;
+    // Inline WDDM x64/UTF-16 layouts observed during Linux D3D12 startup.
+    // Pointer-bearing PnP queries, registry queries and SetWorkingSet are
+    // deliberately absent. Opaque UMD data requires an explicit host opt-in.
+    switch (d.type) {
+        case 0: return true;
+        case 1: return d.bytes == 524;
+        case 3: return d.bytes == 24;
+        case 13: case 15: case 24: case 27: case 30: case 55: case 56: return d.bytes == 4;
+        case 17: case 34: return d.bytes == 12;
+        case 18: return d.bytes == 8;
+        case 31: return d.bytes == 28;
+        case 60: return d.bytes == 80;
+        case 61: return d.bytes == 56;
+        case 62: return d.bytes == 64;
+        case 66: return d.bytes == 8192;
+        default: return false;
+    }
+}
 enum class Op : std::uint32_t {
     Hello = 0x2000, OpenAdapter, QueryDriverVersion, CloseAdapter,
     CreateDevice, DestroyDevice, CreatePagingQueue, ReadPagingFence, DestroyPagingQueue,
     CreateAllocation = 0x2010, WriteAllocation, ReadAllocation, MakeResident,
     MapAllocation, QueryResidency, DestroyAllocation, CreateSharedAllocation, CopySharedAllocation,
-    CreateContext = 0x2020, DestroyContext
+    CreateContext = 0x2020, DestroyContext,
+    BeginAdapterQuery = 0x2030, WriteAdapterQuery, RunAdapterQuery, ReadAdapterQuery, EndAdapterQuery
 };
 enum class Kind { Adapter, Device, PagingQueue, Allocation, Context };
 struct ContextDesc {
@@ -53,6 +79,7 @@ public:
     virtual native_gpu::Capabilities capabilities() const = 0;
     virtual Result openAdapter() = 0;
     virtual Result queryVersion(std::uint32_t adapter) = 0;
+    virtual Result queryAdapter(std::uint32_t adapter, QueryDesc desc, std::vector<std::uint8_t>& data) = 0;
     virtual Result createDevice(std::uint32_t adapter) = 0;
     virtual Result createContext(std::uint32_t device, ContextDesc desc, std::vector<std::uint8_t>& data) = 0;
     virtual Result createPagingQueue(std::uint32_t device) = 0;
@@ -74,6 +101,11 @@ class Session {
     };
     Driver& driver;
     std::map<std::uint32_t, Object> objects;
+    struct Query {
+        QueryDesc desc; std::vector<std::uint8_t> data;
+        std::uint32_t written = 0; bool executed = false; Result result{};
+    };
+    std::map<std::uint32_t, Query> queries;
     std::uint32_t nextId = 1;
     std::uint32_t allocatedBytes = 0;
     bool negotiated = false;
@@ -104,6 +136,7 @@ public:
     // A disconnect releases child objects before their parents. The Windows
     // worker is also one process per connection, so OS teardown is a backstop.
     ~Session() {
+        queries.clear();
         for (auto i = objects.rbegin(); i != objects.rend(); ++i)
             driver.destroy(i->second.kind, i->second.nativeHandle);
     }
@@ -124,6 +157,54 @@ public:
             auto out = reply(h, 0); out.resize(sizeof h + sizeof caps);
             std::memcpy(out.data() + sizeof h, &caps, sizeof caps);
             return out;
+        }
+        if (op >= Op::BeginAdapterQuery && op <= Op::EndAdapterQuery) {
+            if (!negotiated) return reply(h, -71);
+            if (!(driver.capabilities().flags & QueryCapability)) return reply(h, -95);
+            const auto adapter = objects.find(h.handle);
+            if (adapter == objects.end() || adapter->second.kind != Kind::Adapter) return reply(h, -9);
+            if (op == Op::BeginAdapterQuery) {
+                if (packet.size() != sizeof h + sizeof(QueryDesc)) return reply(h, -22);
+                QueryDesc desc{}; std::memcpy(&desc, packet.data() + sizeof h, sizeof desc);
+                if (!validQuery(desc)) return reply(h, -22);
+                if (queries.count(h.handle)) return reply(h, -16);
+                if (queries.size() >= MaxActiveQueries) return reply(h, -24);
+                queries.emplace(h.handle, Query{desc, std::vector<std::uint8_t>(desc.bytes)});
+                const Result result{0, 0, desc.bytes}; return reply(h, 0, h.handle, &result);
+            }
+            const auto entry = queries.find(h.handle);
+            if (entry == queries.end()) return reply(h, -2);
+            auto& query = entry->second;
+            if (op == Op::WriteAdapterQuery || op == Op::ReadAdapterQuery) {
+                if (packet.size() < sizeof h + sizeof(Range)) return reply(h, -22);
+                Range range{}; std::memcpy(&range, packet.data() + sizeof h, sizeof range);
+                const bool write = op == Op::WriteAdapterQuery;
+                if (!range.size || range.size > MaxChunk || range.size > query.desc.bytes ||
+                    range.offset > query.desc.bytes - range.size ||
+                    packet.size() != sizeof h + sizeof range + (write ? range.size : 0)) return reply(h, -22);
+                if (write) {
+                    // A complete, ordered initializer is mandatory. Reject
+                    // holes, overlap, retries and writes after execution.
+                    if (query.executed || range.offset != query.written) return reply(h, -71);
+                    std::memcpy(query.data.data() + range.offset, packet.data() + sizeof h + sizeof range, range.size);
+                    query.written += range.size;
+                    const Result result{0, 0, query.written}; return reply(h, 0, h.handle, &result);
+                }
+                if (!query.executed) return reply(h, -71);
+                auto out = reply(h, 0, h.handle, &query.result);
+                out.insert(out.end(), query.data.begin() + range.offset, query.data.begin() + range.offset + range.size);
+                return out;
+            }
+            if (packet.size() != sizeof h) return reply(h, -22);
+            if (op == Op::EndAdapterQuery) {
+                queries.erase(entry);
+                const Result result{}; return reply(h, 0, h.handle, &result);
+            }
+            if (query.executed || query.written != query.desc.bytes) return reply(h, -71);
+            query.result = driver.queryAdapter(adapter->second.nativeHandle, query.desc, query.data);
+            query.executed = true;
+            if (query.data.size() != query.desc.bytes) { queries.erase(entry); return reply(h, -5); }
+            return reply(h, 0, h.handle, &query.result);
         }
         if (op == Op::CreateContext || op == Op::DestroyContext) {
             if (!negotiated) return reply(h, -71);
@@ -245,6 +326,7 @@ public:
                                                        : driver.createPagingQueue(object.nativeHandle);
             return insert(h, op == Op::CreateDevice ? Kind::Device : Kind::PagingQueue, h.handle, result);
         }
+        if (queries.count(h.handle)) return reply(h, -16);
         for (const auto& child : objects)
             if (child.second.parent == h.handle) return reply(h, -16);
         const auto result = driver.destroy(object.kind, object.nativeHandle);

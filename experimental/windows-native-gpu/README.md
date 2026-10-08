@@ -28,6 +28,11 @@ The host rendering test does not boot a VM. The separate disk-free QEMU control
 test and its build instructions are in [WDDM bridge](../../docs/WDDM-BRIDGE.md).
 The [Linux UMD context experiment](../../docs/UMD-CONTEXT-COMPATIBILITY.md)
 records the context acceptance and hardware queue dependency investigation.
+The [adapter query bridge](../../docs/ADAPTER-QUERY-BRIDGE.md) adds an independent
+`--driver-queries` opt-in, bounded large-buffer transactions, and a reusable
+Linux query client. Physical QEMU acceptance includes the NVIDIA runtime's
+50,616-byte initialization query. Guest UMD loading and ABI adaptation remain
+unfinished.
 
 The framing reference is pinned in `sources.json`. No upstream implementation
 is vendored; these new files use the repository's MIT license. Future copied

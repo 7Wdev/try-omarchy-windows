@@ -17,6 +17,8 @@ namespace {
 std::mutex traceGuard;
 unsigned contextSequence = 0;
 unsigned allocationSequence = 0;
+unsigned querySequence = 0;
+std::map<unsigned,unsigned> queryAdapterIds;
 unsigned counts[256]{};
 std::map<unsigned,unsigned> contextIds;
 std::map<unsigned,unsigned> allocationIds;
@@ -49,10 +51,28 @@ extern "C" int ioctl(int fd, unsigned long request, ...) noexcept {
     unsigned sequence = 0;
     unsigned allocSequence = 0;
     unsigned translatedSequence = 0;
+    unsigned queryNumber = 0, queryAdapter = 0;
     if(_IOC_TYPE(request)=='G' && data) {
         std::lock_guard<std::mutex> lock(traceGuard);
         ++counts[_IOC_NR(request)];
-        if(_IOC_NR(request)==6) {
+        if(_IOC_NR(request)==9 && _IOC_SIZE(request)==sizeof(D3DKMT_QUERYADAPTERINFO)) {
+            const auto& a=*static_cast<D3DKMT_QUERYADAPTERINFO*>(data);
+            queryNumber=++querySequence;
+            auto entry=queryAdapterIds.find(a.hAdapter);
+            if(entry==queryAdapterIds.end())
+                entry=queryAdapterIds.emplace(a.hAdapter,static_cast<unsigned>(queryAdapterIds.size()+1)).first;
+            queryAdapter=entry->second;
+            std::fprintf(stderr,"DXG queryInput sequence=%u adapterSequence=%u type=%u bytes=%u\n",
+                queryNumber,queryAdapter,static_cast<unsigned>(a.Type),a.PrivateDriverDataSize);
+            if(a.pPrivateDriverData && a.PrivateDriverDataSize && a.PrivateDriverDataSize<=65536) {
+                char path[80]; std::snprintf(path,sizeof path,"wsl-query-input-%u.bin",queryNumber);
+                if(auto file=std::fopen(path,"wb")) {
+                    const unsigned header[]{0x31595141,queryNumber,static_cast<unsigned>(a.Type),a.PrivateDriverDataSize,queryAdapter,0};
+                    std::fwrite(header,1,sizeof header,file);
+                    std::fwrite(a.pPrivateDriverData,1,a.PrivateDriverDataSize,file); std::fclose(file);
+                }
+            }
+        } else if(_IOC_NR(request)==6) {
             if(_IOC_SIZE(request)!=sizeof(D3DKMT_CREATEALLOCATION)) {
                 std::fprintf(stderr,"DXG allocation ABI bytes=%u expected=%u\n",static_cast<unsigned>(_IOC_SIZE(request)),static_cast<unsigned>(sizeof(D3DKMT_CREATEALLOCATION)));
             } else {
@@ -137,6 +157,18 @@ extern "C" int ioctl(int fd, unsigned long request, ...) noexcept {
     }
     const auto result=real(fd,request,data);
     const int savedErrno=errno;
+    if(queryNumber) {
+        const auto& a=*static_cast<D3DKMT_QUERYADAPTERINFO*>(data);
+        std::lock_guard<std::mutex> lock(traceGuard);
+        std::fprintf(stderr,"DXG queryOutput sequence=%u adapterSequence=%u type=%u bytes=%u result=%d errno=%d\n",
+            queryNumber,queryAdapter,static_cast<unsigned>(a.Type),a.PrivateDriverDataSize,result,result<0?savedErrno:0);
+        if(result>=0 && a.pPrivateDriverData && a.PrivateDriverDataSize && a.PrivateDriverDataSize<=65536) {
+            char path[80]; std::snprintf(path,sizeof path,"wsl-query-output-%u.bin",queryNumber);
+            if(auto file=std::fopen(path,"wb")) {
+                std::fwrite(a.pPrivateDriverData,1,a.PrivateDriverDataSize,file); std::fclose(file);
+            }
+        }
+    }
     if(result>=0 && _IOC_TYPE(request)=='G' && _IOC_NR(request)==13 && _IOC_SIZE(request)==sizeof(D3DKMT_ESCAPE) && data) {
         const auto& a=*static_cast<D3DKMT_ESCAPE*>(data);
         if(a.Flags.DriverKnownEscape && a.pPrivateDriverData && a.PrivateDriverDataSize==8) {

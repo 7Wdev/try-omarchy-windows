@@ -36,6 +36,8 @@ class KmtDriver : public Driver {
     unsigned activeAdapters = 0, activeDevices = 0, cleanupFailures = 0;
     unsigned activeContexts = 0;
     bool contextsEnabled = false;
+    bool queriesEnabled = false;
+    unsigned completedQueries = 0, failedQueries = 0;
     std::string guestSectionName;
     std::uint32_t guestBytes = 0;
     HANDLE guestSection = nullptr;
@@ -79,8 +81,9 @@ class KmtDriver : public Driver {
         allocatedBytes += size; return {status, info.hAllocation, size};
     }
 public:
-    KmtDriver(std::string sectionName, std::uint32_t sectionBytes, bool enableContexts)
-        : contextsEnabled(enableContexts), guestSectionName(std::move(sectionName)), guestBytes(sectionBytes) {
+    KmtDriver(std::string sectionName, std::uint32_t sectionBytes, bool enableContexts, bool enableQueries)
+        : contextsEnabled(enableContexts), queriesEnabled(enableQueries),
+          guestSectionName(std::move(sectionName)), guestBytes(sectionBytes) {
         const std::string prefix = "Local\\7Wdev-WDDM-";
         if (!guestSectionName.empty()) {
             if (guestSectionName.size() != prefix.size() + 32 || guestSectionName.compare(0, prefix.size(), prefix) ||
@@ -119,7 +122,8 @@ public:
         // Bit 2: bounded host-backed allocations. Bit 3: configured section
         // imports. Bit 4: bounded, synchronous GPU buffer copy between shared
         // allocations. No arbitrary guest command stream or scanout support.
-        return {Version, (guestSectionName.empty() ? 7u : 31u) | (contextsEnabled ? ContextCapability : 0u),
+        return {Version, (guestSectionName.empty() ? 7u : 31u) | (contextsEnabled ? ContextCapability : 0u) |
+                (queriesEnabled ? QueryCapability : 0u),
                 description.VendorId, description.DeviceId};
     }
     Result openAdapter() override {
@@ -142,6 +146,17 @@ public:
         const auto status = D3DKMTCreateDevice(&a);
         if (status >= 0) ++activeDevices;
         return {status, a.hDevice, 0};
+    }
+    Result queryAdapter(std::uint32_t adapter, QueryDesc desc, std::vector<std::uint8_t>& data) override {
+        if (!queriesEnabled || !validQuery(desc) || data.size() != desc.bytes) return {Invalid, 0, 0};
+        D3DKMT_QUERYADAPTERINFO query{}; query.hAdapter = adapter;
+        query.Type = static_cast<KMTQUERYADAPTERINFOTYPE>(desc.type);
+        query.pPrivateDriverData = data.data(); query.PrivateDriverDataSize = desc.bytes;
+        const auto status = D3DKMTQueryAdapterInfo(&query);
+        if (status >= 0) ++completedQueries; else ++failedQueries;
+        // Native data is returned unchanged. Linux UMD filename selection,
+        // UTF-16 conversion and virtual adapter flags belong to the guest API.
+        return {status, 0, desc.bytes};
     }
     Result createContext(std::uint32_t device, ContextDesc desc, std::vector<std::uint8_t>& data) override {
         if (!contextsEnabled || !validContext(desc) || data.size() != desc.privateBytes) return {Invalid, 0, 0};
@@ -371,7 +386,9 @@ public:
                   << ",\"liveGuestMappings\":" << (guestMemory ? 1 : 0) << ",\"liveGuestSections\":" << (guestSection ? 1 : 0)
                   << ",\"liveGpuCopyObjects\":" << (!!copyDevice + !!copyHeap + !!copyQueue + !!copyFence + !!copyEvent)
                   << ",\"completedGpuCopies\":" << completedCopies << ",\"gpuCopiedBytes\":" << gpuCopiedBytes
-                  << ",\"lastGpuCopyHresult\":" << static_cast<std::uint32_t>(lastCopyError) << "}\n";
+                  << ",\"lastGpuCopyHresult\":" << static_cast<std::uint32_t>(lastCopyError)
+                  << ",\"completedAdapterQueries\":" << completedQueries
+                  << ",\"failedAdapterQueries\":" << failedQueries << "}\n";
     }
 };
 struct Socket {
@@ -412,8 +429,9 @@ public:
         if (socket == INVALID_SOCKET && std::fflush(stdout)) throw std::runtime_error("Flush failed");
     }
 };
-static void serve(Stream& stream, const std::string& sectionName = {}, std::uint32_t sectionBytes = 0, bool contexts = false) {
-    KmtDriver driver(sectionName, sectionBytes, contexts);
+static void serve(Stream& stream, const std::string& sectionName = {}, std::uint32_t sectionBytes = 0,
+                  bool contexts = false, bool queries = false) {
+    KmtDriver driver(sectionName, sectionBytes, contexts, queries);
     std::exception_ptr failure;
     try {
       Session session(driver);
@@ -439,15 +457,22 @@ int main(int argc, char** argv) {
     try {
         // Explicit experimental opt-in; keep the existing allocation endpoint
         // closed to vendor-private context data unless requested by its owner.
-        bool contexts = argc > 1 && std::string(argv[argc - 1]) == "--driver-contexts";
-        if (contexts) --argc;
+        bool contexts = false, queries = false;
+        while (argc > 1) {
+            const auto option = std::string(argv[argc - 1]);
+            if (option == "--driver-contexts" && !contexts) contexts = true;
+            else if (option == "--driver-queries" && !queries) queries = true;
+            else break;
+            --argc;
+        }
         if (argc == 2 && std::string(argv[1]) == "--stdio") {
             if (_setmode(_fileno(stdin), _O_BINARY) == -1 || _setmode(_fileno(stdout), _O_BINARY) == -1)
                 throw std::runtime_error("Cannot set binary stdio mode");
-            Stream stream; serve(stream, {}, 0, contexts); return 0;
+            Stream stream; serve(stream, {}, 0, contexts, queries); return 0;
         }
         if ((argc != 3 && argc != 7) || std::string(argv[1]) != "--listen") {
-            std::cerr << "Usage: driver-bridge.exe --stdio | --listen port [--guest-section name --guest-ram-bytes count] [--driver-contexts]\n"; return 2;
+            std::cerr << "Usage: driver-bridge.exe --stdio | --listen port [--guest-section name --guest-ram-bytes count] "
+                "[--driver-contexts] [--driver-queries]\n"; return 2;
         }
         std::size_t end{}; const auto port = std::stoul(argv[2], &end);
         if (end != std::string(argv[2]).size() || port > 65535) throw std::runtime_error("Invalid port");
@@ -481,6 +506,6 @@ int main(int argc, char** argv) {
         if (setsockopt(client.value, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&milliseconds), sizeof milliseconds) ||
             setsockopt(client.value, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&milliseconds), sizeof milliseconds))
             throw std::runtime_error("Cannot set socket timeouts");
-        Stream stream(client.value); serve(stream, sectionName, sectionBytes, contexts); return 0;
+        Stream stream(client.value); serve(stream, sectionName, sectionBytes, contexts, queries); return 0;
     } catch (const std::exception& error) { std::cerr << "FAIL: " << error.what() << '\n'; return 1; }
 }

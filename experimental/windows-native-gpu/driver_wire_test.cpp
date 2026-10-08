@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "driver_wire.h"
+#include "adapter_query_client.h"
 #include <iostream>
 #include <stdexcept>
 using namespace driver_bridge;
@@ -10,12 +11,21 @@ static Header header(const std::vector<std::uint8_t>& p) {
 struct Fake : Driver {
     int calls = 0; std::uint32_t next = 500; bool fail = false, shortRead = false, badContextReply = false;
     bool contextsEnabled = true;
+    bool queriesEnabled = true, badQueryReply = false;
     std::map<std::uint32_t, std::vector<std::uint8_t>> buffers;
     std::vector<Kind> destroyed;
-    native_gpu::Capabilities capabilities() const override { return {1, contextsEnabled ? 63u : 31u, 0x10de, 123}; }
+    native_gpu::Capabilities capabilities() const override {
+        return {1, 31u | (contextsEnabled ? ContextCapability : 0u) | (queriesEnabled ? QueryCapability : 0u), 0x10de, 123};
+    }
     Result created() { ++calls; return {fail ? -123 : 0, ++next, 0}; }
     Result openAdapter() override { return created(); }
     Result queryVersion(std::uint32_t h) override { require(h > 500); ++calls; return {0, 0, 3200}; }
+    Result queryAdapter(std::uint32_t h, QueryDesc desc, std::vector<std::uint8_t>& data) override {
+        require(h > 500 && validQuery(desc) && data.size() == desc.bytes); ++calls;
+        for (auto& byte : data) byte ^= 255;
+        if (badQueryReply) data.pop_back();
+        return {fail ? -123 : 0, 0, desc.bytes};
+    }
     Result createDevice(std::uint32_t h) override { require(h > 500); return created(); }
     Result createContext(std::uint32_t h, ContextDesc desc, std::vector<std::uint8_t>& data) override {
         require(h > 500 && validContext(desc) && data.size() == desc.privateBytes);
@@ -136,6 +146,117 @@ int main() {
         // Leave the second context alive: disconnect destroys it before device.
     }
     require(contexts.destroyed == std::vector<Kind>{Kind::Context, Kind::Context, Kind::Context, Kind::Device, Kind::Adapter});
+    Fake adapterQueries;
+    {
+        Session s(adapterQueries);
+        const QueryDesc desc{0, 50616, 0, 0};
+        require(header(s.dispatch(request(Op::BeginAdapterQuery, 1, desc))).status == -71);
+        s.dispatch(hello());
+        const auto a = header(s.dispatch(request(Op::OpenAdapter))).handle;
+        const auto device = header(s.dispatch(request(Op::CreateDevice, a))).handle;
+        const auto before = adapterQueries.calls;
+        adapterQueries.queriesEnabled = false;
+        require(header(s.dispatch(request(Op::BeginAdapterQuery, a, desc))).status == -95);
+        adapterQueries.queriesEnabled = true;
+        require(header(s.dispatch(request(Op::BeginAdapterQuery, device, desc))).status == -9);
+        for (const auto invalid : {QueryDesc{0, 0, 0, 0}, QueryDesc{0, MaxQueryBytes + 1, 0, 0},
+                QueryDesc{0, 4, 1, 0}, QueryDesc{0, 4, 0, 1}, QueryDesc{13, 8, 0, 0},
+                QueryDesc{7, 4, 0, 0}, QueryDesc{41, 24, 0, 0}, QueryDesc{48, 552, 0, 0}})
+            require(header(s.dispatch(request(Op::BeginAdapterQuery, a, invalid))).status == -22);
+        require(adapterQueries.calls == before);
+        require(header(s.dispatch(request(Op::BeginAdapterQuery, a, desc))).status == 0);
+        require(header(s.dispatch(request(Op::BeginAdapterQuery, a, desc))).status == -16);
+        require(header(s.dispatch(request(Op::CloseAdapter, a))).status == -16);
+        require(header(s.dispatch(request(Op::RunAdapterQuery, a))).status == -71);
+        require(header(s.dispatch(request(Op::ReadAdapterQuery, a, Range{0, 4}))).status == -71);
+        auto hole = request(Op::WriteAdapterQuery, a, Range{1, 1}); hole.push_back(9);
+        require(header(s.dispatch(hole)).status == -71);
+        for (std::uint32_t offset = 0; offset < desc.bytes;) {
+            const auto count = std::min(MaxChunk, desc.bytes - offset);
+            auto input = request(Op::WriteAdapterQuery, a, Range{offset, count});
+            for (std::uint32_t i = 0; i < count; ++i) input.push_back(static_cast<std::uint8_t>((offset + i) % 251));
+            require(header(s.dispatch(input)).status == 0);
+            require(header(s.dispatch(input)).status == -71); // overlap/retry
+            offset += count;
+        }
+        auto output = s.dispatch(request(Op::RunAdapterQuery, a));
+        Reply result{}; std::memcpy(&result, output.data() + sizeof(Header), sizeof result);
+        require(header(output).status == 0 && result.ntstatus == 0 && result.value == desc.bytes);
+        require(adapterQueries.calls == before + 1);
+        require(header(s.dispatch(request(Op::RunAdapterQuery, a))).status == -71);
+        hole = request(Op::WriteAdapterQuery, a, Range{0, 1}); hole.push_back(9);
+        require(header(s.dispatch(hole)).status == -71);
+        for (std::uint32_t offset = 0; offset < desc.bytes;) {
+            const auto count = std::min(MaxChunk, desc.bytes - offset);
+            output = s.dispatch(request(Op::ReadAdapterQuery, a, Range{offset, count}));
+            require(output.size() == sizeof(Header) + sizeof(Reply) + count && output.size() <= native_gpu::MaxPacket);
+            for (std::uint32_t i = 0; i < count; ++i)
+                require(output[sizeof(Header) + sizeof(Reply) + i] == static_cast<std::uint8_t>(((offset + i) % 251) ^ 255));
+            offset += count;
+        }
+        require(header(s.dispatch(request(Op::ReadAdapterQuery, a, Range{UINT32_MAX, 4}))).status == -22);
+        require(header(s.dispatch(request(Op::EndAdapterQuery, a, std::uint32_t{0}))).status == -22);
+        require(header(s.dispatch(request(Op::EndAdapterQuery, a))).status == 0);
+        require(header(s.dispatch(request(Op::EndAdapterQuery, a))).status == -2);
+        // Cancellation frees staging memory before adapter teardown.
+        const auto b = header(s.dispatch(request(Op::OpenAdapter))).handle;
+        const auto c = header(s.dispatch(request(Op::OpenAdapter))).handle;
+        for (const auto id : {a, b})
+            require(header(s.dispatch(request(Op::BeginAdapterQuery, id, QueryDesc{0, MaxQueryBytes, 0, 0}))).status == 0);
+        require(header(s.dispatch(request(Op::BeginAdapterQuery, c, desc))).status == -24);
+        require(header(s.dispatch(request(Op::EndAdapterQuery, a))).status == 0);
+        require(header(s.dispatch(request(Op::BeginAdapterQuery, c, desc))).status == 0);
+        require(header(s.dispatch(request(Op::CloseAdapter, c))).status == -16);
+        require(header(s.dispatch(request(Op::EndAdapterQuery, c))).status == 0);
+        auto prepare = [&] {
+            require(header(s.dispatch(request(Op::BeginAdapterQuery, a, QueryDesc{13, 4, 0, 0}))).status == 0);
+            auto input = request(Op::WriteAdapterQuery, a, Range{0, 4}); input.insert(input.end(), {1, 2, 3, 4});
+            require(header(s.dispatch(input)).status == 0);
+        };
+        prepare(); adapterQueries.fail = true;
+        output = s.dispatch(request(Op::RunAdapterQuery, a));
+        std::memcpy(&result, output.data() + sizeof(Header), sizeof result);
+        require(result.ntstatus == -123);
+        output = s.dispatch(request(Op::ReadAdapterQuery, a, Range{0, 4}));
+        std::memcpy(&result, output.data() + sizeof(Header), sizeof result);
+        require(result.ntstatus == -123 && output.back() == (4 ^ 255));
+        adapterQueries.fail = false;
+        require(header(s.dispatch(request(Op::EndAdapterQuery, a))).status == 0);
+        prepare(); adapterQueries.badQueryReply = true;
+        require(header(s.dispatch(request(Op::RunAdapterQuery, a))).status == -5);
+        adapterQueries.badQueryReply = false;
+        prepare(); // malformed native reply discarded the staging object
+        require(header(s.dispatch(request(Op::EndAdapterQuery, a))).status == 0);
+        require(header(s.dispatch(request(Op::DestroyDevice, device))).status == 0);
+        require(header(s.dispatch(request(Op::CloseAdapter, a))).status == 0);
+        // b deliberately retains an unfinished 64 KiB query on disconnect.
+    }
+    require(adapterQueries.destroyed == std::vector<Kind>{Kind::Device, Kind::Adapter, Kind::Adapter, Kind::Adapter});
+    Fake queryClient;
+    {
+        Session s(queryClient); s.dispatch(hello());
+        const auto a = header(s.dispatch(request(Op::OpenAdapter))).handle;
+        std::vector<std::uint8_t> input(50616);
+        for (std::size_t i = 0; i < input.size(); ++i) input[i] = static_cast<std::uint8_t>(i % 251);
+        auto exchange = [&](const std::vector<std::uint8_t>& packet) { return s.dispatch(packet); };
+        const auto result = adapterQuery(exchange, a, 0, input);
+        require(result.ntstatus == 0 && result.data.size() == input.size());
+        for (std::size_t i = 0; i < input.size(); ++i) require(result.data[i] == (input[i] ^ 255));
+        queryClient.fail = true;
+        require(adapterQuery(exchange, a, 0, input).ntstatus == -123);
+        queryClient.fail = false;
+        bool corrupted = false;
+        auto corrupt = [&](const std::vector<std::uint8_t>& packet) {
+            auto output = s.dispatch(packet);
+            if (header(packet).type == static_cast<std::uint32_t>(Op::ReadAdapterQuery)) output.pop_back();
+            return output;
+        };
+        try { adapterQuery(corrupt, a, 0, input); } catch (const QueryProtocolError&) { corrupted = true; }
+        require(corrupted);
+        // A malformed reply cancels the staging object; a fresh query works.
+        require(adapterQuery(exchange, a, 13, {0, 0, 0, 0}).ntstatus == 0);
+        require(header(s.dispatch(request(Op::CloseAdapter, a))).status == 0);
+    }
     Fake memory;
     {
         Session s(memory); s.dispatch(hello());
@@ -240,5 +361,5 @@ int main() {
     require(s.dispatch({1, 2, 3}).empty() && malformed.calls == 0);
     require(header(s.dispatch(hello(2))).status == -93);
     require(header(s.dispatch(request(Op::OpenAdapter))).status == -71);
-    std::cout << "PASS: WDDM wire ownership, allocation bounds/budget, NTSTATUS, cleanup, ABI rejection\n";
+    std::cout << "PASS: WDDM wire ownership, allocation bounds/budget, chunked queries, NTSTATUS, cleanup, ABI rejection\n";
 }

@@ -10,6 +10,7 @@ def main():
     parser.add_argument('--probe', type=pathlib.Path, required=True)
     parser.add_argument('--output', type=pathlib.Path, required=True)
     parser.add_argument('--context-fixture', type=pathlib.Path, help='Optional local UMD context data; never redistribute captured vendor data')
+    parser.add_argument('--query-fixture', type=pathlib.Path, help='Optional local adapter query data; never redistribute captured vendor data')
     args = parser.parse_args()
     for source in (args.init, args.probe):
         if source.read_bytes()[:4] != b'\x7fELF':
@@ -35,6 +36,11 @@ def main():
         if len(data) > 16 * 4024 + 4:
             parser.error('Context fixture exceeds bounded test size')
         entry('driver-contexts.bin', stat.S_IFREG | 0o600, data)
+    if args.query_fixture:
+        data = args.query_fixture.read_bytes()
+        if len(data) > 32 * (65536 + 16) + 4:
+            parser.error('Query fixture exceeds bounded test size')
+        entry('driver-queries.bin', stat.S_IFREG | 0o600, data)
     entry('TRAILER!!!', 0)
     args.output.write_bytes(archive)
     print(f'Created {args.output}: {len(archive)} bytes; no disk image')

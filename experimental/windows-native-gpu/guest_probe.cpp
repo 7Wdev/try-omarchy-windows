@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Linux QEMU guest client. Tests driver memory and GPU copy, not rendering.
 #include "driver_wire.h"
+#include "adapter_query_client.h"
 #include <fcntl.h>
 #include <poll.h>
 #include <sys/mman.h>
@@ -87,6 +88,37 @@ static void contextFixtureTest(Port& port, std::uint32_t device) {
                   << " created=true replyBytesVerified=true\n";
     }
     if (input.peek() != std::char_traits<char>::eof()) throw std::runtime_error("Trailing context fixture data");
+}
+static void adapterQueryTest(Port& port, std::uint32_t adapter, native_gpu::Capabilities caps) {
+    auto call = [&](const std::vector<std::uint8_t>& packet) { return port.exchange(packet); };
+    const auto version = adapterQuery(call, adapter, 13, std::vector<std::uint8_t>(4));
+    const auto identity = adapterQuery(call, adapter, 31, std::vector<std::uint8_t>(28));
+    std::uint32_t model = 0, vendor = 0, device = 0;
+    std::memcpy(&model, version.data.data(), 4);
+    std::memcpy(&vendor, identity.data.data() + 4, 4);
+    std::memcpy(&device, identity.data.data() + 8, 4);
+    if (version.ntstatus < 0 || identity.ntstatus < 0 || model < 2000 || vendor != caps.vendor || device != caps.device)
+        throw std::runtime_error("Adapter query identity/version mismatch");
+    std::cout << "BRIDGE_ADAPTER_QUERY identityVerified=true versionVerified=true\n";
+}
+static void queryFixtureTest(Port& port, std::uint32_t adapter) {
+    std::ifstream input("/driver-queries.bin", std::ios::binary);
+    if (!input) return;
+    std::uint32_t count = 0;
+    if (!input.read(reinterpret_cast<char*>(&count), sizeof count) || !count || count > 32)
+        throw std::runtime_error("Invalid query fixture count");
+    auto call = [&](const std::vector<std::uint8_t>& packet) { return port.exchange(packet); };
+    for (std::uint32_t i = 0; i < count; ++i) {
+        QueryDesc desc{};
+        if (!input.read(reinterpret_cast<char*>(&desc), sizeof desc) || !validQuery(desc))
+            throw std::runtime_error("Invalid query fixture descriptor");
+        std::vector<std::uint8_t> data(desc.bytes);
+        if (!input.read(reinterpret_cast<char*>(data.data()), desc.bytes)) throw std::runtime_error("Truncated query fixture");
+        const auto result = adapterQuery(call, adapter, desc.type, data);
+        if (result.ntstatus < 0 || result.data.size() != desc.bytes) throw std::runtime_error("Native adapter query failed");
+        std::cout << "BRIDGE_DRIVER_QUERY type=" << desc.type << " bytes=" << desc.bytes << " buffersComplete=true\n";
+    }
+    if (input.peek() != std::char_traits<char>::eof()) throw std::runtime_error("Trailing query fixture data");
 }
 static std::uint32_t allocationTest(Port& port, std::uint32_t device, std::uint32_t queue, unsigned seed) {
     constexpr std::uint32_t size = 65536;
@@ -200,6 +232,9 @@ int main(int argc, char** argv) {
         for (unsigned cycle = 0; cycle < 5; ++cycle) {
             const auto adapter = operation(port, Op::OpenAdapter);
             operation(port, Op::QueryDriverVersion, adapter);
+            if (caps.flags & QueryCapability) adapterQueryTest(port, adapter, caps);
+            else if (unpack(port.exchange(request(Op::BeginAdapterQuery, adapter, QueryDesc{13, 4, 0, 0}))).status != -95)
+                throw std::runtime_error("Unadvertised driver queries accepted");
             const auto device = operation(port, Op::CreateDevice, adapter);
             if (caps.flags & ContextCapability) {
                 const auto context = syncContext(port, device);
@@ -222,6 +257,7 @@ int main(int argc, char** argv) {
         }
         // Leave a live hierarchy to verify cleanup when the VM disconnects.
         const auto abandonedAdapter = operation(port, Op::OpenAdapter);
+        if (caps.flags & QueryCapability) queryFixtureTest(port, abandonedAdapter);
         const auto abandonedDevice = operation(port, Op::CreateDevice, abandonedAdapter);
         if (caps.flags & ContextCapability) {
             syncContext(port, abandonedDevice);
@@ -230,6 +266,8 @@ int main(int argc, char** argv) {
         const auto abandonedQueue = operation(port, Op::CreatePagingQueue, abandonedDevice);
         allocationTest(port, abandonedDevice, abandonedQueue, 5);
         if (caps.flags & 8) sharedAllocationTest(port, abandonedDevice, abandonedQueue, (caps.flags & 16) != 0);
+        if (caps.flags & QueryCapability)
+            exchange(port, request(Op::BeginAdapterQuery, abandonedAdapter, QueryDesc{0, MaxQueryBytes, 0, 0}));
         std::cout << "PASS: QEMU guest WDDM allocation bridge, 5 lifecycle cycles; guest rendering=false\n";
         return 0;
     } catch (const std::exception& error) { std::cerr << "FAIL: " << error.what() << '\n'; return 1; }

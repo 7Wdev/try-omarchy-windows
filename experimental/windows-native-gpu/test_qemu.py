@@ -22,9 +22,13 @@ def main():
     parser.add_argument('--shared-memory', action='store_true', help='Use the experimental section-backed QEMU RAM fixture')
     parser.add_argument('--driver-contexts', action='store_true', help='Enable and require experimental WDDM context lifecycle checks')
     parser.add_argument('--expected-driver-contexts', type=int, default=0, help='Required vendor contexts in an optional local fixture')
+    parser.add_argument('--driver-queries', action='store_true', help='Enable bounded adapter query transactions')
+    parser.add_argument('--expected-driver-queries', type=int, default=0, help='Required queries in an optional local fixture')
     args = parser.parse_args()
     if not 0 <= args.expected_driver_contexts <= 16 or (args.expected_driver_contexts and not args.driver_contexts):
         parser.error('Expected driver contexts must be 0..16 and require --driver-contexts')
+    if not 0 <= args.expected_driver_queries <= 32 or (args.expected_driver_queries and not args.driver_queries):
+        parser.error('Expected driver queries must be 0..32 and require --driver-queries')
     for path in (args.qemu, args.kernel, args.initramfs, args.bridge):
         if not path.is_file():
             parser.error(f'Missing file: {path}')
@@ -37,6 +41,8 @@ def main():
         helper_command += ['--guest-section', section, '--guest-ram-bytes', str(512 * 1024 * 1024)]
     if args.driver_contexts:
         helper_command += ['--driver-contexts']
+    if args.driver_queries:
+        helper_command += ['--driver-queries']
     helper = subprocess.Popen(helper_command,
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                               creationflags=hidden)
@@ -72,12 +78,18 @@ def main():
         gpu_check = re.search(r'BRIDGE_GPU_COPY cycles=6 bytes=(\d+) guestToGpuToGuest=true guards=true fenceCompleted=true', log)
         sync_contexts = re.findall(r'BRIDGE_SYNC_CONTEXT created=true', log)
         driver_contexts = re.findall(r'BRIDGE_DRIVER_CONTEXT node=(\d+) privateBytes=(\d+) created=true replyBytesVerified=true', log)
+        adapter_queries = re.findall(r'BRIDGE_ADAPTER_QUERY identityVerified=true versionVerified=true', log)
+        driver_queries = re.findall(r'BRIDGE_DRIVER_QUERY type=(\d+) bytes=(\d+) buffersComplete=true', log)
         success = (qemu.returncode == 0 and helper.returncode == 0 and
                    'PASS: QEMU guest WDDM allocation bridge, 5 lifecycle cycles' in log and
                    'BRIDGE_GUEST_EXIT=0' in log and identity is not None and
                    len(allocation_checks) == 6 and
                    (not args.driver_contexts or (len(sync_contexts) == 6 and cleanup.get('liveContexts') == 0)) and
                    len(driver_contexts) == args.expected_driver_contexts and
+                   len(driver_queries) == args.expected_driver_queries and
+                   (not args.driver_queries or (len(adapter_queries) == 5 and
+                    cleanup.get('completedAdapterQueries') == 10 + args.expected_driver_queries and
+                    cleanup.get('failedAdapterQueries') == 0)) and
                    (not section or (shared_check is not None and gpu_check is not None and
                                     cleanup.get('completedGpuCopies') == 6 and
                                     cleanup.get('gpuCopiedBytes') == int(gpu_check[1]))) and
@@ -97,6 +109,8 @@ def main():
                   'cpuRoundtripBytes': len(allocation_checks) * 65536,
                   'synchronizationContextsVerified': len(sync_contexts),
                   'vendorContextFixturesVerified': [{'node': int(n), 'privateBytes': int(b)} for n, b in driver_contexts],
+                  'adapterQueryIdentityChecks': len(adapter_queries),
+                  'vendorQueryFixturesVerified': [{'type': int(t), 'bytes': int(b)} for t, b in driver_queries],
                   'liveGuestGraphicsRuntimeVerified': False,
                   'hostBackedAllocationOperationsImplemented': True,
                   'sharedGuestRamMappingVerified': shared_check is not None,
