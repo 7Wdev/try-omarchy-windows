@@ -47,3 +47,20 @@ Adding it to a general VM requires a defined memory layout and allocation
 lifetime contract before guests can register RAM ranges with Windows. A
 section-backed CPU mapping alone does not produce GPU commands, Linux DRM or
 SDL scanout.
+
+## Read-only driver fence aperture (integration under test)
+
+The recipe also adds `wddm-fence-lab`, a diagnostic PCI device with one 4 KiB
+read-only BAR. Its source process handle and idle fence address come only from
+the owning Windows test process. A WHPX listener maps that page directly using
+`WHvMapGpaRange2`; ordinary QEMU accesses use a bounded `ReadProcessMemory`
+callback. The PCI configuration reports the fence offset, expected idle value,
+and callback count, so a Linux acceptance test can distinguish direct guest
+loads from emulation. It exposes no host pointer in PCI configuration.
+
+This extension follows the successful standalone
+[WHP mapping/protection tests](../../docs/evidence/WHP-WDDM-FENCES-2026-10-08.json).
+Its QEMU build and Linux guest integration require separate validation. It
+uses private lab PCI identifiers, disables hotplug and migration, and requires
+WHPX. The parent must keep driver objects alive until QEMU has exited. It is
+not a graphics device, command-submission interface or production fence ABI.
