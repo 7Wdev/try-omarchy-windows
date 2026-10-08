@@ -46,12 +46,32 @@ class KmtDriver : public Driver {
         std::uint32_t device;
         std::uint64_t address = 0, pages = 0;
         std::uint32_t residencyAttempts = 0;
+        std::uint64_t offsetPages = 0;
+        bool locked = false;
+        void* cpuData = nullptr;
+        std::uint32_t cpuBytes = 0;
+        std::uint64_t initialCpuFingerprint = 0;
+        std::uint64_t firstWord = 0, lastWord = 0;
+        std::optional<driver_qemu::AllocationLease> cpuLease;
     };
     std::map<std::uint32_t, VendorAllocation> vendorAllocations;
     ComPtr<IDXGIAdapter3> allocationBudgetAdapter;
     bool allocationsEnabled = false;
     bool gpuVaEnabled = false;
     bool residencyEnabled = false;
+    bool cpuEnabled = false;
+    std::uint32_t vendorCpuBytes = 0, peakVendorCpuBytes = 0;
+    unsigned completedVendorLocks = 0, completedVendorUnlocks = 0, failedVendorLocks = 0, failedVendorUnlocks = 0;
+    unsigned vendorCpuContentsChanged = 0;
+    bool cpuStoreTest = false;
+    unsigned completedCpuStoreTests = 0, failedCpuStoreTests = 0;
+    unsigned cpuLocksReleasedAfterVmExit = 0;
+    static std::uint64_t fingerprint(void* memory, std::uint32_t bytes) {
+        const auto data = static_cast<volatile const unsigned char*>(memory);
+        std::uint64_t hash = 14695981039346656037ull;
+        for (std::uint32_t n = 0; n < bytes; ++n) hash = (hash ^ data[n]) * 1099511628211ull;
+        return hash;
+    }
     std::uint32_t vendorResidencyAttempts = 0, peakVendorResidencyAttempts = 0;
     unsigned completedVendorResidency = 0, failedVendorResidency = 0, completedVendorResidencyWaits = 0;
     std::uint64_t vendorAllocationsMadeResident = 0;
@@ -125,8 +145,8 @@ class KmtDriver : public Driver {
     }
 public:
     KmtDriver(std::string sectionName, std::uint32_t sectionBytes, bool enableContexts, bool enableQueries,
-              driver_qemu::Runtime* ownedRuntime = nullptr, bool enableAllocations = false, bool enableGpuVa = false, bool enableResidency = false)
-        : runtime(ownedRuntime), allocationsEnabled(enableAllocations), gpuVaEnabled(enableGpuVa), residencyEnabled(enableResidency), contextsEnabled(enableContexts), queriesEnabled(enableQueries),
+              driver_qemu::Runtime* ownedRuntime = nullptr, bool enableAllocations = false, bool enableGpuVa = false, bool enableResidency = false, bool enableCpu = false, bool testCpuStores = false)
+        : runtime(ownedRuntime), allocationsEnabled(enableAllocations), gpuVaEnabled(enableGpuVa), residencyEnabled(enableResidency), cpuEnabled(enableCpu), cpuStoreTest(testCpuStores), contextsEnabled(enableContexts), queriesEnabled(enableQueries),
           guestSectionName(std::move(sectionName)), guestBytes(sectionBytes) {
         const std::string prefix = "Local\\7Wdev-WDDM-";
         if (!guestSectionName.empty()) {
@@ -171,7 +191,7 @@ public:
         return {Version, (guestSectionName.empty() ? 7u : 31u) | (contextsEnabled ? ContextCapability : 0u) |
                 (queriesEnabled ? QueryCapability : 0u) | (runtime ? GuestPagingCapability : 0u) |
                 (allocationsEnabled ? VendorAllocationCapability : 0u) | (gpuVaEnabled ? VendorGpuVaCapability : 0u) |
-                (residencyEnabled ? VendorResidencyCapability : 0u),
+                (residencyEnabled ? VendorResidencyCapability : 0u) | (cpuEnabled ? VendorCpuCapability : 0u),
                 description.VendorId, description.DeviceId};
     }
     Result openAdapter() override {
@@ -232,7 +252,10 @@ public:
             if (D3DKMTDestroyAllocation2(&release) < 0) ++cleanupFailures;
             throw std::runtime_error("Unexpected native vendor-allocation result");
         }
-        try { vendorAllocations.emplace(info.hAllocation, VendorAllocation{device, info.GpuVirtualAddress, 0}); }
+        try {
+            VendorAllocation owned{}; owned.device = device; owned.address = info.GpuVirtualAddress;
+            vendorAllocations.emplace(info.hAllocation, owned);
+        }
         catch (...) {
             D3DKMT_DESTROYALLOCATION2 release{}; release.hDevice = device; release.phAllocationList = &info.hAllocation;
             release.AllocationCount = 1; release.Flags.SynchronousDestroy = 1;
@@ -253,6 +276,14 @@ public:
             const auto found = vendorAllocations.find(handles[n]);
             if (found == vendorAllocations.end() || found->second.device != device ||
                 std::find(handles.begin(), handles.begin() + n, handles[n]) != handles.begin() + n) return {Invalid, 0, 0};
+        }
+        // Explicit protocol destruction rejects locked objects. EOF cleanup
+        // reaches this path only after the server has reaped its owned VM.
+        for (const auto handle : handles) {
+            if (vendorAllocations.at(handle).locked) {
+                const auto released = unlockVendorAllocation(handle, device);
+                if (released.ntstatus < 0) return released;
+            }
         }
         D3DKMT_DESTROYALLOCATION2 a{}; a.hDevice = device; a.phAllocationList = handles.data();
         a.AllocationCount = static_cast<UINT>(handles.size()); a.Flags.SynchronousDestroy = 1;
@@ -333,6 +364,7 @@ public:
         // Record ownership before any validation/wait can throw. Destruction
         // releases this VA even if paging fails; retries cannot create a leak.
         entry->second.address = a.VirtualAddress; entry->second.pages = desc.sizePages;
+        entry->second.offsetPages = desc.offsetPages;
         vendorMappedPages += static_cast<std::uint32_t>(desc.sizePages);
         peakVendorMappedPages = (std::max)(peakVendorMappedPages, vendorMappedPages);
         if ((status != 0 && status != 0x103) || !validGpuVaOutput(desc, a.VirtualAddress))
@@ -351,6 +383,85 @@ public:
         // Preserve STATUS_PENDING even though our native wait already retired
         // the fence. The Linux KMT thunk preserves positive ioctl statuses.
         return {{status, 0, a.VirtualAddress}, a.PagingFenceValue};
+    }
+    VendorCpuResult lockVendorAllocation(std::uint32_t allocation, std::uint32_t device) override {
+        const auto entry = vendorAllocations.find(allocation);
+        if (!cpuEnabled || !runtime || entry == vendorAllocations.end() || entry->second.device != device ||
+            entry->second.locked || !entry->second.pages || entry->second.offsetPages)
+            return {{Invalid, 0, 0}, {0, 0, 0}};
+        auto& owned = entry->second;
+        const auto bytes = static_cast<std::uint32_t>(owned.pages * 4096);
+        if (!bytes || bytes > MaxAllocation || bytes > MaxAllocatedBytes - vendorCpuBytes || !reportedGpuUsageAcceptable())
+            return {{static_cast<std::int32_t>(0xc0000017u), 0, 0}, {0, 0, 0}};
+        D3DKMT_LOCK2 a{}; a.hDevice = device; a.hAllocation = allocation;
+        const auto status = D3DKMTLock2(&a);
+        if (status < 0) { ++failedVendorLocks; return {{status, 0, 0}, {0, 0, 0}}; }
+        // Retain the native lock before validation/control can fail. No host
+        // CPU address leaves this process; the guest receives a BAR lease.
+        owned.locked = true; owned.cpuData = a.pData;
+        MEMORY_BASIC_INFORMATION region{}, next{};
+        const auto source = reinterpret_cast<std::uintptr_t>(a.pData);
+        const bool dedicated = source && source % 4096 == 0 && source <= (1ull << 47) - bytes &&
+            VirtualQuery(a.pData, &region, sizeof region) == sizeof region &&
+            region.BaseAddress == a.pData && region.AllocationBase == a.pData && region.RegionSize == bytes &&
+            region.Type == MEM_PRIVATE && region.State == MEM_COMMIT &&
+            (region.Protect == PAGE_READWRITE || region.Protect == (PAGE_READWRITE | PAGE_WRITECOMBINE)) &&
+            VirtualQuery(reinterpret_cast<void*>(source + bytes), &next, sizeof next) == sizeof next &&
+            (next.AllocationBase != a.pData || next.State == MEM_RESERVE);
+        std::cerr << "{\"vendorCpuRegionCandidate\":true,\"status\":" << status << ",\"expectedBytes\":" << bytes
+                  << ",\"regionBytes\":" << region.RegionSize << ",\"type\":" << region.Type << ",\"state\":" << region.State
+                  << ",\"protection\":" << region.Protect << ",\"baseMatches\":" << (region.BaseAddress == a.pData ? "true" : "false")
+                  << ",\"allocationBaseMatches\":" << (region.AllocationBase == a.pData ? "true" : "false")
+                  << ",\"nextState\":" << next.State << ",\"nextAllocationBaseMatches\":" << (next.AllocationBase == a.pData ? "true" : "false") << "}\n";
+        // A reserved tail of the same address reservation is never mapped.
+        // VirtualQuery checks only this committed region's eligibility,
+        // not a public decoder for the size of arbitrary vendor allocations.
+        if (status != 0 || !dedicated || !reportedGpuUsageAcceptable()) {
+            ++failedVendorLocks;
+            const auto released = unlockVendorAllocation(allocation, device);
+            if (released.ntstatus < 0) throw std::runtime_error("Cannot release ineligible native CPU lock");
+            return {{static_cast<std::int32_t>(0xc00000bbu), 0, 0}, {0, 0, 0}};
+        }
+        owned.cpuBytes = bytes; vendorCpuBytes += bytes;
+        peakVendorCpuBytes = (std::max)(peakVendorCpuBytes, vendorCpuBytes);
+        owned.initialCpuFingerprint = fingerprint(owned.cpuData, bytes);
+        owned.firstWord = *static_cast<volatile std::uint64_t*>(owned.cpuData);
+        owned.lastWord = *reinterpret_cast<volatile std::uint64_t*>(static_cast<char*>(owned.cpuData) + bytes - 8);
+        owned.cpuLease = runtime->mapAllocation(a.pData, bytes);
+        ++completedVendorLocks;
+        return {{status, 0, owned.cpuLease->offset}, {bytes, 0, owned.cpuLease->generation}};
+    }
+    Result unlockVendorAllocation(std::uint32_t allocation, std::uint32_t device) override {
+        const auto entry = vendorAllocations.find(allocation);
+        if (!cpuEnabled || !runtime || entry == vendorAllocations.end() || entry->second.device != device || !entry->second.locked)
+            return {Invalid, 0, 0};
+        auto& owned = entry->second;
+        const bool afterVmExit = owned.cpuLease.has_value() && runtime->hasStopped();
+        if (owned.cpuLease) {
+            // A control failure reaps QEMU before throwing. Retain native
+            // ownership until that boundary is proved; never free live pages.
+            runtime->unmapAllocation(*owned.cpuLease);
+            owned.cpuLease.reset();
+        }
+        MemoryBarrier();
+        const bool changed = owned.cpuBytes && fingerprint(owned.cpuData, owned.cpuBytes) != owned.initialCpuFingerprint;
+        if (cpuStoreTest && owned.cpuBytes) {
+            auto first = static_cast<volatile std::uint64_t*>(owned.cpuData);
+            auto last = reinterpret_cast<volatile std::uint64_t*>(static_cast<char*>(owned.cpuData) + owned.cpuBytes - 8);
+            const bool matched = *first == CpuStoreFirstMarker && *last == CpuStoreLastMarker;
+            *first = owned.firstWord; *last = owned.lastWord; MemoryBarrier();
+            const bool restored = *first == owned.firstWord && *last == owned.lastWord;
+            if (matched && restored) ++completedCpuStoreTests; else ++failedCpuStoreTests;
+        }
+        D3DKMT_UNLOCK2 a{}; a.hDevice = device; a.hAllocation = allocation;
+        const auto status = D3DKMTUnlock2(&a);
+        if (status < 0) { ++failedVendorUnlocks; return {status, 0, 0}; }
+        if (status != 0) throw std::runtime_error("Unexpected native CPU unlock status");
+        if (afterVmExit) ++cpuLocksReleasedAfterVmExit;
+        if (changed) ++vendorCpuContentsChanged;
+        vendorCpuBytes -= owned.cpuBytes; owned.cpuBytes = 0;
+        owned.cpuData = nullptr; owned.locked = false; ++completedVendorUnlocks;
+        return {status, 0, 0};
     }
     Result createPagingQueue(std::uint32_t device) override {
         D3DKMT_CREATEPAGINGQUEUE a{}; a.hDevice = device; a.Priority = D3DDDI_PAGINGQUEUE_PRIORITY_NORMAL;
@@ -602,7 +713,7 @@ public:
     }
     bool clean() const {
         return !activeAdapters && !activeDevices && !activeContexts && pagingFences.empty() && allocations.empty() && vendorAllocations.empty() &&
-               !vendorMappedPages && !vendorResidencyAttempts &&
+               !vendorMappedPages && !vendorResidencyAttempts && !vendorCpuBytes &&
                !guestMemory && !guestSection && !copyDevice && !copyHeap && !copyQueue && !copyFence && !copyEvent && !cleanupFailures;
     }
     void reportCleanup() const {
@@ -632,6 +743,16 @@ public:
                   << ",\"vendorAllocationsMadeResident\":" << vendorAllocationsMadeResident
                   << ",\"liveVendorResidencyAttempts\":" << vendorResidencyAttempts
                   << ",\"peakVendorResidencyAttempts\":" << peakVendorResidencyAttempts
+                  << ",\"completedVendorCpuLocks\":" << completedVendorLocks
+                  << ",\"completedVendorCpuUnlocks\":" << completedVendorUnlocks
+                  << ",\"failedVendorCpuLocks\":" << failedVendorLocks
+                  << ",\"failedVendorCpuUnlocks\":" << failedVendorUnlocks
+                  << ",\"liveVendorCpuBytes\":" << vendorCpuBytes
+                  << ",\"peakVendorCpuBytes\":" << peakVendorCpuBytes
+                  << ",\"vendorCpuContentsChanged\":" << vendorCpuContentsChanged
+                  << ",\"cpuStoreTestRequested\":" << (cpuStoreTest ? "true" : "false")
+                  << ",\"completedCpuStoreTests\":" << completedCpuStoreTests << ",\"failedCpuStoreTests\":" << failedCpuStoreTests
+                  << ",\"cpuLocksReleasedAfterVmExit\":" << cpuLocksReleasedAfterVmExit
                   << ",\"peakReportedGpuUsageBytes\":" << peakReportedGpuUsage
                   << ",\"reportedGpuUsageLimitBytes\":" << ReportedGpuUsageLimit
                   << ",\"hardVendorAllocationByteQuotaImplemented\":false}\n";
@@ -676,8 +797,8 @@ public:
     }
 };
 static void serve(Stream& stream, const std::string& sectionName = {}, std::uint32_t sectionBytes = 0,
-                  bool contexts = false, bool queries = false, driver_qemu::Runtime* runtime = nullptr, bool allocations = false, bool gpuVa = false, bool residency = false) {
-    KmtDriver driver(sectionName, sectionBytes, contexts, queries, runtime, allocations, gpuVa, residency);
+                  bool contexts = false, bool queries = false, driver_qemu::Runtime* runtime = nullptr, bool allocations = false, bool gpuVa = false, bool residency = false, bool cpu = false, bool cpuStoreTest = false) {
+    KmtDriver driver(sectionName, sectionBytes, contexts, queries, runtime, allocations, gpuVa, residency, cpu, cpuStoreTest);
     std::exception_ptr failure;
     {
       Session session(driver);
@@ -710,7 +831,7 @@ int main(int argc, char** argv) {
     try {
         // Explicit experimental opt-in; keep the existing allocation endpoint
         // closed to vendor-private context data unless requested by its owner.
-        bool contexts = false, queries = false, allocations = false, gpuVa = false, residency = false;
+        bool contexts = false, queries = false, allocations = false, gpuVa = false, residency = false, cpu = false, cpuStoreTest = false, cpuEofTest = false;
         while (argc > 1) {
             const auto option = std::string(argv[argc - 1]);
             if (option == "--driver-contexts" && !contexts) contexts = true;
@@ -718,12 +839,19 @@ int main(int argc, char** argv) {
             else if (option == "--driver-allocations" && !allocations) allocations = true;
             else if (option == "--driver-gpuva" && !gpuVa) gpuVa = true;
             else if (option == "--driver-residency" && !residency) residency = true;
+            else if (option == "--driver-cpu" && !cpu) cpu = true;
+            else if (option == "--cpu-store-test" && !cpuStoreTest) cpuStoreTest = true;
+            else if (option == "--cpu-eof-test" && !cpuEofTest) cpuEofTest = true;
             else break;
             --argc;
         }
         if (allocations && (!contexts || !queries)) throw std::runtime_error("Vendor allocations require explicit query/context opt-ins");
         if (gpuVa && !allocations) throw std::runtime_error("Vendor GPU-address mappings require explicit allocation opt-in");
         if (residency && !allocations) throw std::runtime_error("Vendor residency requires explicit allocation opt-in");
+        if (cpu && (!gpuVa || argc != 7 || std::string(argv[1]) != "--run-qemu"))
+            throw std::runtime_error("Vendor CPU locks require GPU-address mappings and an owned QEMU runtime");
+        if (cpuStoreTest && !cpu) throw std::runtime_error("CPU store control requires explicit CPU-lock opt-in");
+        if (cpuEofTest && (!cpu || cpuStoreTest)) throw std::runtime_error("CPU EOF control requires CPU locks and a separate run from store control");
         if (argc == 2 && std::string(argv[1]) == "--stdio") {
             if (_setmode(_fileno(stdin), _O_BINARY) == -1 || _setmode(_fileno(stdout), _O_BINARY) == -1)
                 throw std::runtime_error("Cannot set binary stdio mode");
@@ -732,7 +860,7 @@ int main(int argc, char** argv) {
         const bool ownedRuntime = argc == 7 && std::string(argv[1]) == "--run-qemu";
         if (!ownedRuntime && ((argc != 3 && argc != 7) || std::string(argv[1]) != "--listen")) {
             std::cerr << "Usage: driver-bridge.exe --stdio | --listen port [--guest-section name --guest-ram-bytes count] "
-                "[--driver-contexts] [--driver-queries] [--driver-allocations] [--driver-gpuva] [--driver-residency]\n"
+                "[--driver-contexts] [--driver-queries] [--driver-allocations] [--driver-gpuva] [--driver-residency] [--driver-cpu] [--cpu-store-test | --cpu-eof-test]\n"
                 "       driver-bridge.exe --run-qemu qemu firmware kernel initramfs fresh-log --driver-contexts --driver-queries\n"; return 2;
         }
         if (ownedRuntime && (!contexts || !queries)) throw std::runtime_error("Owned QEMU runtime requires explicit query/context opt-ins");
@@ -762,7 +890,7 @@ int main(int argc, char** argv) {
         std::cout << "{\"port\":" << ntohs(address.sin_port) << ",\"transport\":\"tcp-loopback\"}\n" << std::flush;
         std::unique_ptr<driver_qemu::Runtime> runtime;
         if (ownedRuntime) runtime = std::make_unique<driver_qemu::Runtime>(ntohs(address.sin_port),
-            qemu_fence::Paths{argv[2], argv[3], argv[4], argv[5], argv[6]});
+            qemu_fence::Paths{argv[2], argv[3], argv[4], argv[5], argv[6]}, cpu, cpuStoreTest, cpuEofTest);
         fd_set reads; FD_ZERO(&reads); FD_SET(listener.value, &reads); timeval timeout{60, 0};
         if (select(0, &reads, nullptr, nullptr, &timeout) != 1) throw std::runtime_error("Connection timed out");
         Socket client; client.value = accept(listener.value, nullptr, nullptr);
@@ -771,7 +899,7 @@ int main(int argc, char** argv) {
         if (setsockopt(client.value, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&milliseconds), sizeof milliseconds) ||
             setsockopt(client.value, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&milliseconds), sizeof milliseconds))
             throw std::runtime_error("Cannot set socket timeouts");
-        Stream stream(client.value); serve(stream, sectionName, sectionBytes, contexts, queries, runtime.get(), allocations, gpuVa, residency);
+        Stream stream(client.value); serve(stream, sectionName, sectionBytes, contexts, queries, runtime.get(), allocations, gpuVa, residency, cpu, cpuStoreTest);
         if (runtime) {
             runtime->report();
             if (!runtime->cleanExit()) throw std::runtime_error("Owned QEMU runtime did not exit cleanly");

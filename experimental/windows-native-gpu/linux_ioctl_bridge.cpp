@@ -6,6 +6,7 @@
 #include <dxg/d3dkmthk.h>
 #include "adapter_query_client.h"
 #include "guest_paging_fence.h"
+#include "guest_allocation_memory.h"
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -28,6 +29,7 @@
 #include <cstring>
 #include <map>
 #include <mutex>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -207,6 +209,8 @@ struct Response { Header header; Reply result; std::vector<std::uint8_t> data; }
 class Bridge {
     Transport transport;
     guest_paging::Fences pagingFences;
+    guest_allocation::Memory allocationMemory;
+    std::set<std::uint32_t> cpuLocks;
     bool negotiated = false;
     native_gpu::Capabilities caps{};
     unsigned counts[256]{}, completedQueries = 0, privateQueries = 0, contexts = 0;
@@ -278,6 +282,17 @@ class Bridge {
         if (_IOC_SIZE(requestNumber) != sizeof(T)) throw Error(EINVAL);
         return *static_cast<T*>(pointer);
     }
+    void unlockCpu(std::uint32_t allocation, std::uint32_t device, bool force = false) {
+        if (!cpuLocks.count(allocation)) throw Error(EBADF);
+        try { if (!allocationMemory.release(allocation, force)) return; }
+        catch (...) { transport.fail(); throw; }
+        const auto result = call(request(Op::UnlockVendorAllocation, allocation, VendorCpuDesc{device, 0}), 0, true);
+        if (result.header.handle != allocation || result.result.value || result.result.ntstatus > 0) {
+            transport.fail(); throw Error(EPROTO);
+        }
+        checkNt(result.result.ntstatus); cpuLocks.erase(allocation);
+        std::fprintf(stderr, "LINUX_BRIDGE nativeVendorCpuUnlocked=true\n");
+    }
 public:
     std::mutex guard;
     ~Bridge() {
@@ -285,6 +300,8 @@ public:
                      completedQueries, privateQueries, contexts);
         std::fprintf(stderr, "LINUX_BRIDGE pagingSummary queues=%u directLoads=%llu\n", pagingFences.total(),
                      static_cast<unsigned long long>(pagingFences.directLoads()));
+        std::fprintf(stderr, "LINUX_BRIDGE allocationCpuSummary mapped=%u unmapped=%u directLoads=%llu\n",
+                     allocationMemory.total(), allocationMemory.released(), static_cast<unsigned long long>(allocationMemory.directLoads()));
         for (unsigned n = 0; n < 256; ++n)
             if (counts[n]) std::fprintf(stderr, "LINUX_BRIDGE ioctlSummary nr=%u count=%u\n", n, counts[n]);
         for (const auto& entry : descriptors) rawClose(entry.first);
@@ -460,6 +477,8 @@ public:
                         if (a.phAllocationList[previous] == a.phAllocationList[n]) throw Error(EINVAL);
                 }
                 auto packet = request(Op::DestroyVendorAllocations, a.hDevice, DestroyVendorDesc{a.AllocationCount, 0});
+                for (unsigned n = 0; n < a.AllocationCount; ++n)
+                    if (cpuLocks.count(a.phAllocationList[n])) unlockCpu(a.phAllocationList[n], a.hDevice, true);
                 const auto begin = reinterpret_cast<const std::uint8_t*>(a.phAllocationList);
                 packet.insert(packet.end(), begin, begin + a.AllocationCount * sizeof(a.phAllocationList[0]));
                 const auto result = call(packet);
@@ -540,7 +559,53 @@ public:
                 std::fprintf(stderr, "LINUX_BRIDGE lock2Input flags=%u ownedAllocation=%u hasInputData=%u\n",
                              a.Flags.Value, allocation != vendorOwners.end() && allocation->second == a.hDevice ? 1u : 0u,
                              a.pData ? 1u : 0u);
-                std::fprintf(stderr, "LINUX_BRIDGE unsupported nr=37 bytes=%zu\n", sizeof a); throw Error(ENOSYS);
+                if (!(caps.flags & VendorCpuCapability)) {
+                    std::fprintf(stderr, "LINUX_BRIDGE unsupported nr=37 bytes=%zu\n", sizeof a); throw Error(ENOSYS);
+                }
+                if (a.Flags.Value) throw Error(EINVAL);
+                if (allocation == vendorOwners.end() || allocation->second != a.hDevice) throw Error(EBADF);
+                if (allocationMemory.contains(a.hAllocation)) {
+                    a.pData = allocationMemory.retain(a.hAllocation); return 0;
+                }
+                if (cpuLocks.count(a.hAllocation)) throw Error(EBUSY);
+                const auto result = call(request(Op::LockVendorAllocation, a.hAllocation, VendorCpuDesc{a.hDevice, 0}), sizeof(VendorCpuReply), true);
+                VendorCpuReply output{}; std::memcpy(&output, result.data.data(), sizeof output);
+                if (result.header.handle != a.hAllocation || result.result.ntstatus > 0 ||
+                    (result.result.ntstatus >= 0 && !validVendorCpuReply(result.result.value, output)) ||
+                    (result.result.ntstatus < 0 && (result.result.value || output.bytes || output.reserved || output.generation))) {
+                    transport.fail(); throw Error(EPROTO);
+                }
+                checkNt(result.result.ntstatus);
+                try {
+                    cpuLocks.insert(a.hAllocation);
+                    a.pData = allocationMemory.map(a.hAllocation, result.result.value, output);
+                } catch (...) { transport.fail(); throw; }
+                const auto referenceTest = std::getenv("WDDM_BRIDGE_CPU_REFERENCE_TEST");
+                if (referenceTest && !std::strcmp(referenceTest, "1")) {
+                    D3DKMT_LOCK2 repeated = a;
+                    D3DKMT_UNLOCK2 release{}; release.hDevice = a.hDevice; release.hAllocation = a.hAllocation;
+                    if (dispatch(_IOWR('G', 37, D3DKMT_LOCK2), &repeated) || repeated.pData != a.pData ||
+                        dispatch(_IOWR('G', 55, D3DKMT_UNLOCK2), &release) || !allocationMemory.contains(a.hAllocation)) {
+                        transport.fail(); throw Error(EPROTO);
+                    }
+                    std::fprintf(stderr, "LINUX_BRIDGE allocationCpuReferenceTest=true sameGuestPointer=true intermediateUnlockRetained=true\n");
+                }
+                std::fprintf(stderr, "LINUX_BRIDGE nativeVendorCpuLocked=true bytes=%u\n", output.bytes);
+                const auto eofTest = std::getenv("WDDM_BRIDGE_CPU_EOF_TEST");
+                if (eofTest && !std::strcmp(eofTest, "1")) {
+                    std::fprintf(stderr, "LINUX_BRIDGE allocationCpuEofTest=true exitingWithLockOwned=true\n");
+                    _exit(1); // Deliberately bypass C++/UMD teardown in this private diagnostic.
+                }
+                return 0;
+            }
+            case 55: {
+                auto& a = args<D3DKMT_UNLOCK2>(requestNumber, pointer);
+                if (!(caps.flags & VendorCpuCapability)) {
+                    std::fprintf(stderr, "LINUX_BRIDGE unsupported nr=55 bytes=%zu\n", sizeof a); throw Error(ENOSYS);
+                }
+                const auto allocation = vendorOwners.find(a.hAllocation);
+                if (allocation == vendorOwners.end() || allocation->second != a.hDevice) throw Error(EBADF);
+                unlockCpu(a.hAllocation, a.hDevice); return 0;
             }
             default:
                 std::fprintf(stderr, "LINUX_BRIDGE unsupported nr=%u bytes=%u\n", nr, static_cast<unsigned>(_IOC_SIZE(requestNumber)));

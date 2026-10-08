@@ -21,6 +21,17 @@ constexpr std::uint32_t MaxVendorPrivateBytes = 4000;
 constexpr std::size_t MaxVendorAllocations = 16;
 constexpr std::uint32_t VendorGpuVaCapability = 512;
 constexpr std::uint32_t VendorResidencyCapability = 1024;
+constexpr std::uint32_t VendorCpuCapability = 2048;
+constexpr std::uint64_t VendorCpuSlotBytes = MaxAllocation;
+constexpr std::uint64_t VendorCpuApertureBytes = MaxVendorAllocations * VendorCpuSlotBytes;
+constexpr std::uint64_t CpuStoreFirstMarker = 0x4350554649525354ull, CpuStoreLastMarker = 0x4350554c41535421ull;
+struct VendorCpuDesc { std::uint32_t device, flags; };
+struct VendorCpuReply { std::uint32_t bytes, reserved; std::uint64_t generation; };
+static_assert(sizeof(VendorCpuDesc) == 8 && sizeof(VendorCpuReply) == 16, "fixed CPU lock layouts");
+inline bool validVendorCpuReply(std::uint64_t offset, VendorCpuReply r) {
+    return r.bytes && r.bytes <= MaxAllocation && !(r.bytes % 4096) && !r.reserved && r.generation &&
+           !(offset % VendorCpuSlotBytes) && offset < VendorCpuApertureBytes;
+}
 constexpr std::uint32_t MaxVendorResidencyAttempts = 64;
 struct ResidentDesc { std::uint32_t count, flags, priorities, reserved; };
 static_assert(sizeof(ResidentDesc) == 16, "fixed residency descriptor");
@@ -102,7 +113,8 @@ enum class Op : std::uint32_t {
     CreateContext = 0x2020, DestroyContext,
     BeginAdapterQuery = 0x2030, WriteAdapterQuery, RunAdapterQuery, ReadAdapterQuery, EndAdapterQuery,
     CreateGuestPagingQueue = 0x2040,
-    CreateVendorAllocation = 0x2050, DestroyVendorAllocations, MapVendorAllocation, MakeVendorResident
+    CreateVendorAllocation = 0x2050, DestroyVendorAllocations, MapVendorAllocation, MakeVendorResident,
+    LockVendorAllocation, UnlockVendorAllocation
 };
 enum class Kind { Adapter, Device, PagingQueue, Allocation, Context, PagingSync, VendorAllocation };
 struct ContextDesc {
@@ -127,6 +139,7 @@ static_assert(sizeof(CopyRange) == 16, "fixed GPU copy layout");
 struct Result { std::int32_t ntstatus; std::uint32_t nativeHandle; std::uint64_t value; };
 struct GpuVaResult { Result map; std::uint64_t fence; };
 struct ResidentResult { Result residency; ResidentReply output; };
+struct VendorCpuResult { Result lock; VendorCpuReply output; };
 // The synchronization object is borrowed from the paging queue. Destruction
 // of the queue owns its lifetime; no native handle is exposed to the guest.
 struct GuestPagingResult { Result queue; std::uint32_t sync; std::uint64_t offset; };
@@ -164,6 +177,12 @@ public:
     virtual GuestPagingResult createGuestPagingQueue(std::uint32_t) {
         return {{static_cast<std::int32_t>(0xc00000bbu), 0, 0}, 0, 0};
     }
+    virtual VendorCpuResult lockVendorAllocation(std::uint32_t, std::uint32_t) {
+        return {{static_cast<std::int32_t>(0xc00000bbu), 0, 0}, {0, 0, 0}};
+    }
+    virtual Result unlockVendorAllocation(std::uint32_t, std::uint32_t) {
+        return {static_cast<std::int32_t>(0xc00000bbu), 0, 0};
+    }
     virtual Result readPagingFence(std::uint32_t queue) = 0;
     virtual Result createAllocation(std::uint32_t device, std::uint32_t size) = 0;
     virtual Result createSharedAllocation(std::uint32_t device, GuestRange range) = 0;
@@ -182,6 +201,9 @@ class Session {
         std::uint32_t gpuPages = 0;
         std::uint64_t gpuAddress = 0;
         std::uint32_t residencyAttempts = 0;
+        std::uint64_t gpuOffsetPages = 0;
+        std::uint32_t cpuBytes = 0;
+        std::uint64_t cpuOffset = 0;
     };
     Driver& driver;
     std::map<std::uint32_t, Object> objects;
@@ -193,6 +215,7 @@ class Session {
     std::uint32_t nextId = 1;
     std::uint32_t allocatedBytes = 0;
     std::uint32_t vendorMappedPages = 0;
+    std::uint32_t vendorCpuBytes = 0;
     bool negotiated = false;
     static std::vector<std::uint8_t> reply(Header h, std::int32_t error,
                                          std::uint32_t id = 0, const Result* result = nullptr) {
@@ -363,6 +386,7 @@ public:
                     if (entry == objects.end() || entry->second.kind != Kind::VendorAllocation || entry->second.parent != h.handle)
                         return reply(h, -9);
                     if (std::find(ids.begin(), ids.begin() + n, ids[n]) != ids.begin() + n) return reply(h, -22);
+                    if (entry->second.cpuBytes) return reply(h, -16);
                     native[n] = entry->second.nativeHandle;
                 }
                 const auto result = driver.destroyVendorAllocations(device->second.nativeHandle, native);
@@ -393,6 +417,42 @@ public:
                 if (result.nativeHandle) driver.destroy(Kind::VendorAllocation, result.nativeHandle);
                 throw;
             }
+        }
+        if (op == Op::LockVendorAllocation || op == Op::UnlockVendorAllocation) {
+            if (!negotiated) return reply(h, -71);
+            if (!(driver.capabilities().flags & VendorCpuCapability)) return reply(h, -95);
+            if (packet.size() != sizeof h + sizeof(VendorCpuDesc)) return reply(h, -22);
+            VendorCpuDesc desc{}; std::memcpy(&desc, packet.data() + sizeof h, sizeof desc);
+            if (!desc.device || desc.flags) return reply(h, -22);
+            const auto allocation = objects.find(h.handle), device = objects.find(desc.device);
+            if (allocation == objects.end() || allocation->second.kind != Kind::VendorAllocation ||
+                device == objects.end() || device->second.kind != Kind::Device || allocation->second.parent != desc.device)
+                return reply(h, -9);
+            auto& object = allocation->second;
+            if (op == Op::UnlockVendorAllocation) {
+                if (!object.cpuBytes) return reply(h, -9);
+                const auto result = driver.unlockVendorAllocation(object.nativeHandle, device->second.nativeHandle);
+                if (result.nativeHandle || result.value || (result.ntstatus >= 0 && result.ntstatus != 0)) return reply(h, -5);
+                if (result.ntstatus >= 0) { vendorCpuBytes -= object.cpuBytes; object.cpuBytes = 0; object.cpuOffset = 0; }
+                return reply(h, 0, h.handle, &result);
+            }
+            if (object.cpuBytes) return reply(h, -16);
+            if (!object.gpuPages || object.gpuOffsetPages) return reply(h, -95);
+            const auto bytes = object.gpuPages * 4096u;
+            if (bytes > MaxAllocatedBytes - vendorCpuBytes) return reply(h, -24);
+            const auto native = driver.lockVendorAllocation(object.nativeHandle, device->second.nativeHandle);
+            if (native.lock.nativeHandle || (native.lock.ntstatus >= 0 && (native.lock.ntstatus != 0 ||
+                !validVendorCpuReply(native.lock.value, native.output) || native.output.bytes != bytes)) ||
+                (native.lock.ntstatus < 0 && (native.lock.value || native.output.bytes || native.output.reserved || native.output.generation)))
+                return reply(h, -5);
+            if (native.lock.ntstatus >= 0) {
+                for (const auto& item : objects) if (item.second.cpuBytes && item.second.cpuOffset == native.lock.value)
+                    return reply(h, -5);
+                object.cpuBytes = native.output.bytes; object.cpuOffset = native.lock.value; vendorCpuBytes += object.cpuBytes;
+            }
+            auto out = reply(h, 0, h.handle, &native.lock);
+            const auto start = out.size(); out.resize(start + sizeof(VendorCpuReply));
+            std::memcpy(out.data() + start, &native.output, sizeof native.output); return out;
         }
         if (op == Op::MakeVendorResident) {
             if (!negotiated) return reply(h, -71);
@@ -452,6 +512,7 @@ public:
                 (result.map.ntstatus < 0 && (result.map.value || result.fence))) return reply(h, -5);
             if (result.map.ntstatus >= 0) {
                 object.gpuPages = static_cast<std::uint32_t>(desc.sizePages); object.gpuAddress = result.map.value;
+                object.gpuOffsetPages = desc.offsetPages;
                 vendorMappedPages += object.gpuPages;
             }
             auto out = reply(h, 0, h.handle, &result.map);

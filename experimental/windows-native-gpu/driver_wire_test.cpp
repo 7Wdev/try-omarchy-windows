@@ -17,6 +17,9 @@ struct Fake : Driver {
     bool vendorEnabled = false;
     bool gpuVaEnabled = false;
     bool residencyEnabled = false;
+    bool cpuEnabled = false;
+    unsigned cpuLocks = 0, cpuUnlocks = 0;
+    int badCpuReply = 0;
     int badResidentReply = 0;
     unsigned residentCalls = 0;
     std::vector<std::uint32_t> lastResidentPriorities, lastResidentHandles;
@@ -28,7 +31,8 @@ struct Fake : Driver {
     native_gpu::Capabilities capabilities() const override {
         return {1, 31u | (contextsEnabled ? ContextCapability : 0u) | (queriesEnabled ? QueryCapability : 0u) |
                 (guestPagingEnabled ? GuestPagingCapability : 0u) | (vendorEnabled ? VendorAllocationCapability : 0u) |
-                (gpuVaEnabled ? VendorGpuVaCapability : 0u) | (residencyEnabled ? VendorResidencyCapability : 0u), 0x10de, 123};
+                (gpuVaEnabled ? VendorGpuVaCapability : 0u) | (residencyEnabled ? VendorResidencyCapability : 0u) |
+                (cpuEnabled ? VendorCpuCapability : 0u), 0x10de, 123};
     }
     Result created() { ++calls; return {fail ? -123 : 0, ++next, 0}; }
     Result openAdapter() override { return created(); }
@@ -77,6 +81,18 @@ struct Fake : Driver {
         if (fail) return {{static_cast<std::int32_t>(0xc0000017u), 0, 7009}, {desc.count - 1, 0, 65536}};
         return {{badResidentReply == 1 ? 1 : 259, badResidentReply == 2 ? 777u : 0u, 7011},
                 {badResidentReply == 3 ? desc.count + 1 : desc.count, badResidentReply == 4 ? 1u : 0u, 0}};
+    }
+    VendorCpuResult lockVendorAllocation(std::uint32_t allocation, std::uint32_t device) override {
+        require(allocation > 500 && device > 500 && vendorOwners.at(allocation) == device); ++calls; ++cpuLocks;
+        if (fail) return {{-123, 0, 0}, {0, 0, 0}};
+        return {{badCpuReply == 1 ? 259 : 0, badCpuReply == 2 ? 777u : 0u,
+                 badCpuReply == 3 ? 1ull : badCpuReply == 4 ? VendorCpuApertureBytes : 0ull},
+                {badCpuReply == 5 ? 0u : badCpuReply == 6 ? 4097u : badCpuReply == 7 ? MaxAllocation + 4096u :
+                 badCpuReply == 8 ? 8192u : 65536u, badCpuReply == 9 ? 1u : 0u, badCpuReply == 10 ? 0ull : 1ull}};
+    }
+    Result unlockVendorAllocation(std::uint32_t allocation, std::uint32_t device) override {
+        require(allocation > 500 && device > 500 && vendorOwners.at(allocation) == device); ++calls; ++cpuUnlocks;
+        return {fail ? -123 : badCpuReply == 1 ? 259 : 0, badCpuReply == 2 ? 777u : 0u, badCpuReply == 3 ? 1ull : 0ull};
     }
     GuestPagingResult createGuestPagingQueue(std::uint32_t h) override {
         require(h > 500);
@@ -667,6 +683,69 @@ int main() {
         // EOF releases all allocations, including those with successful or failed residency.
     }
     require(resident.vendorOwners.empty());
+    Fake cpu; cpu.vendorEnabled = cpu.gpuVaEnabled = cpu.cpuEnabled = true;
+    {
+        Session s(cpu);
+        require(header(s.dispatch(request(Op::LockVendorAllocation, 1, VendorCpuDesc{2, 0}))).status == -71);
+        s.dispatch(hello());
+        const auto adapter = header(s.dispatch(request(Op::OpenAdapter))).handle;
+        const auto device = header(s.dispatch(request(Op::CreateDevice, adapter))).handle;
+        const auto other = header(s.dispatch(request(Op::CreateDevice, adapter))).handle;
+        const auto queue = header(s.dispatch(request(Op::CreatePagingQueue, device))).handle;
+        auto create = [&] {
+            auto packet = request(Op::CreateVendorAllocation, device, VendorAllocationDesc{0, 0, 0, 1, 0, 0});
+            packet.push_back(1); return header(s.dispatch(packet)).handle;
+        };
+        auto mapped = [&](std::uint32_t allocation, std::uint64_t offset = 0) {
+            return s.dispatch(request(Op::MapVendorAllocation, allocation, GpuVaDesc{queue, 0, 0, 65536, 1ull << 40, offset, 16, 1, 0}));
+        };
+        const auto allocation = create(); require(allocation != 0);
+        const auto lock = request(Op::LockVendorAllocation, allocation, VendorCpuDesc{device, 0});
+        const auto unlock = request(Op::UnlockVendorAllocation, allocation, VendorCpuDesc{device, 0});
+        auto before = cpu.calls;
+        cpu.cpuEnabled = false; require(header(s.dispatch(lock)).status == -95); cpu.cpuEnabled = true;
+        require(header(s.dispatch(request(Op::LockVendorAllocation, allocation))).status == -22);
+        require(header(s.dispatch(request(Op::LockVendorAllocation, allocation, VendorCpuDesc{device, 1}))).status == -22);
+        require(header(s.dispatch(request(Op::LockVendorAllocation, allocation, VendorCpuDesc{0, 0}))).status == -22);
+        require(header(s.dispatch(request(Op::LockVendorAllocation, allocation, VendorCpuDesc{other, 0}))).status == -9);
+        require(header(s.dispatch(request(Op::LockVendorAllocation, device, VendorCpuDesc{device, 0}))).status == -9);
+        require(header(s.dispatch(lock)).status == -95 && header(s.dispatch(unlock)).status == -9 && cpu.calls == before);
+        require(header(mapped(allocation)).status == 0);
+        const auto subrange = create(); require(header(mapped(subrange, 1)).status == 0);
+        before = cpu.calls;
+        require(header(s.dispatch(request(Op::LockVendorAllocation, subrange, VendorCpuDesc{device, 0}))).status == -95 && cpu.calls == before);
+        cpu.fail = true;
+        auto out = s.dispatch(lock); Reply reply{}; std::memcpy(&reply, out.data() + sizeof(Header), sizeof reply);
+        require(header(out).status == 0 && reply.ntstatus == -123 && reply.value == 0 && out.size() == sizeof(Header) + sizeof(Reply) + sizeof(VendorCpuReply));
+        cpu.fail = false;
+        for (int malformedCpu = 1; malformedCpu <= 10; ++malformedCpu) {
+            cpu.badCpuReply = malformedCpu; require(header(s.dispatch(lock)).status == -5);
+        }
+        cpu.badCpuReply = 0;
+        out = s.dispatch(lock); VendorCpuReply body{};
+        std::memcpy(&reply, out.data() + sizeof(Header), sizeof reply);
+        std::memcpy(&body, out.data() + sizeof(Header) + sizeof reply, sizeof body);
+        require(header(out).handle == allocation && reply.value == 0 && body.bytes == 65536 && body.generation == 1);
+        before = cpu.calls; require(header(s.dispatch(lock)).status == -16 && cpu.calls == before);
+        auto release = request(Op::DestroyVendorAllocations, device, DestroyVendorDesc{1, 0});
+        const auto bytes = reinterpret_cast<const std::uint8_t*>(&allocation); release.insert(release.end(), bytes, bytes + 4);
+        require(header(s.dispatch(release)).status == -16 && cpu.calls == before);
+        const auto duplicate = create(); require(header(mapped(duplicate)).status == 0);
+        require(header(s.dispatch(request(Op::LockVendorAllocation, duplicate, VendorCpuDesc{device, 0}))).status == -5);
+        cpu.fail = true; out = s.dispatch(unlock); std::memcpy(&reply, out.data() + sizeof(Header), sizeof reply);
+        require(header(out).status == 0 && reply.ntstatus == -123);
+        cpu.fail = false;
+        require(header(s.dispatch(lock)).status == -16);
+        for (int malformedCpu = 1; malformedCpu <= 3; ++malformedCpu) {
+            cpu.badCpuReply = malformedCpu; require(header(s.dispatch(unlock)).status == -5);
+        }
+        cpu.badCpuReply = 0;
+        require(header(s.dispatch(unlock)).status == 0);
+        before = cpu.calls; require(header(s.dispatch(unlock)).status == -9 && cpu.calls == before);
+        require(header(s.dispatch(lock)).status == 0); // A new lease can reuse the slot after unlock.
+        // EOF retains the vendor allocation for native child-before-parent destruction.
+    }
+    require(cpu.vendorOwners.empty() && cpu.cpuLocks > 0 && cpu.cpuUnlocks > 0);
     Fake pagingQuota; pagingQuota.guestPagingEnabled = true;
     {
         Session s(pagingQuota); s.dispatch(hello());

@@ -20,6 +20,8 @@ def send(op, handle, value=0, data=b'', padding=0, hello=False, ntstatus=0):
     caps |= 256 if mode.startswith('gpuva-') else 0
     caps |= 512 if mode == 'gpuva-invalid' else 0
     caps |= 1024 if mode == 'resident-invalid' else 0
+    caps |= 256 if mode.startswith('cpu-') else 0
+    caps |= 2048 if mode.startswith('cpu-') and mode != 'cpu-disabled' else 0
     packet += struct.pack('<IIII',1,caps,4318,11352) if hello else struct.pack('<iIQ',ntstatus,0,value) + data
     sys.stdout.buffer.write(struct.pack('<I',len(packet)) + packet)
     sys.stdout.buffer.flush()
@@ -63,6 +65,18 @@ try:
         elif op == 0x2051:
             assert handle == 2 and packet[16:] == struct.pack('<III',1,0,3)
             send(op,handle,ntstatus=-1073741811 if mode == 'allocation-failed-destroy' and operations.count(op) == 1 else 0)
+        elif op == 0x2054:
+            assert handle == 3 and packet[16:] == struct.pack('<II',2,0)
+            native_failure = mode in ('cpu-nt-failure','cpu-bad-failure')
+            size = 0 if native_failure or mode == 'cpu-bad-bytes' else 65537 if mode == 'cpu-bad-alignment' else 65536
+            reserved = 1 if mode == 'cpu-bad-reserved' else 0
+            generation = 0 if native_failure or mode == 'cpu-bad-generation' else 1
+            offset = 16777216 if mode == 'cpu-bad-offset' else 1 if mode == 'cpu-bad-slot' else 0
+            if mode == 'cpu-bad-failure': size = 4096
+            data = struct.pack('<IIQ',size,reserved,generation)
+            if mode == 'cpu-short': data = data[:-1]
+            send(op,0 if mode == 'cpu-bad-id' else handle,value=offset,data=data,
+                 ntstatus=-1073741811 if native_failure else 259 if mode == 'cpu-bad-status' else 0)
         elif op in (0x2030,0x2031,0x2032): send(op,handle,4)
         elif op == 0x2033: send(op,handle,4,struct.pack('<I',0x231b))
         elif op == 0x2034: send(op,handle)
@@ -77,6 +91,8 @@ if mode == 'allocation-normal': assert operations.count(0x2051) == 1, operations
 if mode == 'allocation-failed-destroy': assert operations.count(0x2051) == 2, operations
 if mode.startswith('gpuva-'): assert operations == [0x2000], operations
 if mode.startswith('resident-'): assert operations == [0x2000], operations
+if mode in ('cpu-disabled','cpu-invalid'): assert 0x2054 not in operations, operations
+if mode.startswith('cpu-'): assert 0x2055 not in operations, operations
 print('FAKE_WORKER_EOF=true',file=sys.stderr)
 '''
 
@@ -94,7 +110,10 @@ def main():
                      'paging-bad-reserved', 'paging-bad-value', 'paging-short', 'paging-no-hub',
                      'allocation-normal', 'allocation-disabled', 'allocation-invalid', 'allocation-nt-failure',
                      'allocation-bad-id', 'allocation-bad-va', 'allocation-short', 'allocation-failed-destroy',
-                     'gpuva-disabled', 'gpuva-invalid', 'resident-disabled', 'resident-invalid'):
+                     'gpuva-disabled', 'gpuva-invalid', 'resident-disabled', 'resident-invalid',
+                     'cpu-disabled', 'cpu-invalid', 'cpu-nt-failure', 'cpu-bad-failure', 'cpu-bad-id',
+                     'cpu-bad-bytes', 'cpu-bad-alignment', 'cpu-bad-reserved', 'cpu-bad-generation',
+                     'cpu-bad-offset', 'cpu-bad-slot', 'cpu-short', 'cpu-bad-status', 'cpu-no-hub'):
             environment = {k: v for k, v in os.environ.items() if not k.startswith('WDDM_BRIDGE_') and k != 'LD_PRELOAD'}
             environment['LD_PRELOAD'] = str(args.shim.resolve())
             environment['BRIDGE_FAULT_TEST'] = mode

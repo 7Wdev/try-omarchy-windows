@@ -6,9 +6,9 @@ them resident and maps GPU addresses. Shared guest RAM and bounded, fenced GPU
 copies passed physical acceptance. Opt-in virtual context lifecycle support is
 also tested, including locally captured Linux NVIDIA initialization data.
 Live NVIDIA Linux runtime initialization now reaches native paging and graphics
-context creation, standalone video-memory allocation, GPU-address mapping and
-residency through QEMU, then fails at the unsupported CPU allocation access
-interface (Lock2). Direct guest
+context creation, standalone video-memory allocation, GPU-address mapping,
+residency and direct CPU allocation access through QEMU, then fails at hardware
+queue creation (ioctl 24). Direct guest
 fence reads, synchronous allocation destruction and acknowledged unmap passed physical testing. Omarchy
 desktop acceleration remains unimplemented. Read the
 [investigation](../../docs/WINDOWS-NVIDIA-BACKEND.md).
@@ -56,8 +56,12 @@ The [live residency route](../../docs/LIVE-RESIDENCY-BRIDGE.md) adds
 outputs and a conservative bound on residency attempts.
 The [native Lock2 investigation](../../docs/NATIVE-LOCK2-INVESTIGATION.md)
 adds a standalone CPU-sharing probe and a separate writable QEMU allocation
-hub. Native WHP read/write acceptance passed on the observed 64 KiB allocation;
-live Lock2/Unlock2 session wiring and QEMU hardware acceptance remain unfinished.
+hub. The [live CPU allocation route](../../docs/LIVE-CPU-ALLOCATION-BRIDGE.md)
+adds `--driver-cpu` only to an owned QEMU runtime. Physical tests passed direct
+reads, first/last-word stores restored by Windows, repeated guest references,
+capability-disabled behavior and native cleanup after VM exit with a lock held.
+This covers the observed 64 KiB allocation; general allocation layouts,
+hardware queues, command submission and desktop integration remain unfinished.
 
 The framing reference is pinned in `sources.json`. No upstream implementation
 is vendored from virtio-nvgpu; these new files use the repository's MIT license.

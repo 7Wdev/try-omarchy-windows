@@ -31,6 +31,10 @@ def main():
     parser.add_argument('--minimum-vendor-gpuva-maps', type=int, default=0)
     parser.add_argument('--driver-residency', action='store_true')
     parser.add_argument('--minimum-vendor-residency-requests', type=int, default=0)
+    parser.add_argument('--driver-cpu', action='store_true')
+    parser.add_argument('--minimum-vendor-cpu-locks', type=int, default=0)
+    parser.add_argument('--cpu-store-test', action='store_true', help='Explicit first/last-word diagnostic stores, checked and restored by Windows')
+    parser.add_argument('--cpu-eof-test', action='store_true', help='Exit the guest probe while it owns the CPU lock; require VM-exit-first native teardown')
     args = parser.parse_args()
     if args.minimum_vendor_allocations < 0 or (args.minimum_vendor_allocations and not args.driver_allocations):
         parser.error('Minimum allocation acceptance requires the explicit allocation opt-in')
@@ -38,6 +42,12 @@ def main():
         parser.error('GPU-address mapping acceptance requires explicit allocation and GPU-address opt-ins')
     if args.minimum_vendor_residency_requests < 0 or (args.driver_residency and not args.driver_allocations) or (args.minimum_vendor_residency_requests and not args.driver_residency):
         parser.error('Residency acceptance requires explicit allocation and residency opt-ins')
+    if args.minimum_vendor_cpu_locks < 0 or (args.driver_cpu and not args.driver_gpuva) or (args.minimum_vendor_cpu_locks and not args.driver_cpu):
+        parser.error('CPU-lock acceptance requires explicit CPU and GPU-address opt-ins')
+    if args.cpu_store_test and not args.driver_cpu:
+        parser.error('CPU store control requires explicit CPU-lock opt-in')
+    if args.cpu_eof_test and (not args.driver_cpu or args.cpu_store_test):
+        parser.error('CPU EOF control requires CPU locks and a separate run from store control')
     if sys.platform != 'win32':
         parser.error('Run on the Windows NVIDIA host')
     for path in (args.qemu, args.kernel, args.initramfs, args.bridge):
@@ -57,7 +67,8 @@ def main():
                               str(args.firmware.resolve()), str(args.kernel.resolve()), str(args.initramfs.resolve()),
                               str(log_path.resolve()), '--driver-contexts', '--driver-queries'] +
                              (['--driver-allocations'] if args.driver_allocations else []) + (['--driver-gpuva'] if args.driver_gpuva else []) +
-                             (['--driver-residency'] if args.driver_residency else []),
+                             (['--driver-residency'] if args.driver_residency else []) + (['--driver-cpu'] if args.driver_cpu else []) +
+                             (['--cpu-store-test'] if args.cpu_store_test else []) + (['--cpu-eof-test'] if args.cpu_eof_test else []),
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                              creationflags=subprocess.CREATE_NO_WINDOW)
     output, errors, observer_errors = [], [], []
@@ -102,7 +113,7 @@ def main():
         if reader.is_alive() or error_reader.is_alive() or observer_errors:
             raise RuntimeError('Owner output observation failed: ' + '; '.join(observer_errors))
         control = next((json.loads(line) for line in output if 'ownedQemuExited' in line), {})
-        cleanup = next((json.loads(line) for line in errors if line.startswith('{')), {})
+        cleanup = next((json.loads(line) for line in errors if line.startswith('{') and 'driverCleanupVerified' in line), {})
         log = log_path.read_text(encoding='utf-8', errors='replace') if log_path.exists() else ''
         unsupported = sorted(set(int(n) for n in re.findall(r'LINUX_BRIDGE unsupported nr=(\d+)', log)))
         completed = [{'type': int(t), 'bytes': int(b)} for t, b in re.findall(r'LINUX_BRIDGE queryCompleted type=(\d+) bytes=(\d+)', log)]
@@ -117,9 +128,14 @@ def main():
                        re.findall(r'pagingFenceRetired=true direct=true loads=10000 target=(\d+) observed=(\d+)(?: operation=(\w+))?', log)]
         residency = [{'count': int(c), 'status': int(s), 'fence': int(f), 'bytesToTrim': int(b)} for c, s, f, b in
                      re.findall(r'nativeVendorResident=true count=(\d+) status=(\d+) fence=(\d+) bytesToTrim=(\d+)', log)]
+        cpu = [{'bytes': int(b), 'offset': int(o), 'generation': int(g)} for b, o, g in
+               re.findall(r'allocationCpuMapped=true direct=true loads=10000 bytes=(\d+) offset=(\d+) generation=(\d+)', log)]
+        cpu_unlocks = log.count('nativeVendorCpuUnlocked=true')
+        cpu_unmaps = log.count('allocationCpuUnmapped=true direct=true mmioReads=0 mmioWrites=0')
         map_retirements = [r for r in retirements if r['operation'] == 'gpuva']
         resident_retirements = [r for r in retirements if r['operation'] == 'residency']
-        accepted_stage_marker = ('nativeVendorResident=true' if args.driver_residency else
+        accepted_stage_marker = ('nativeVendorCpuLocked=true' if args.driver_cpu else
+                                 'nativeVendorResident=true' if args.driver_residency else
                                  'nativeVendorGpuVaMapped=true' if args.driver_gpuva else
                                  'nativeVendorAllocationCreated=true' if args.driver_allocations else
                                  'nativeContextCreated=true')
@@ -131,12 +147,12 @@ def main():
                     control.get('ownedQemuExited') is True and control.get('qemuExit') == 0 and
                     control.get('qemuForcedStop') is False and control.get('fenceControlFailed') is False and
                     control.get('liveFenceMappings') == 0 and control.get('fenceMappingsCreated') == len(fences) and
-                    control.get('fenceUnmapAcknowledgements') == len(fences) and
+                    control.get('fenceUnmapAcknowledgements') == (0 if args.cpu_eof_test else len(fences)) and
                     cleanup.get('driverCleanupVerified') is True and cleanup.get('failedAdapterQueries') == 0 and
                     cleanup.get('completedAdapterQueries') == len(completed) and
                     'transport=virtio-port' in log and 'BRIDGE_RUNTIME_EXIT=1' in log and
-                    first_unsupported_after_stage == args.expected_unimplemented_ioctl and
-                    result is not None and int(result[1], 16) & 0x80000000)
+                    (args.cpu_eof_test or first_unsupported_after_stage == args.expected_unimplemented_ioctl) and
+                    (args.cpu_eof_test or (result is not None and int(result[1], 16) & 0x80000000)))
         if args.driver_allocations:
             accepted = (accepted and allocations >= args.minimum_vendor_allocations and
                         cleanup.get('liveVendorAllocations') == 0 and cleanup.get('failedVendorAllocations') == 0 and
@@ -156,8 +172,26 @@ def main():
                         cleanup.get('vendorAllocationsMadeResident') == sum(r['count'] for r in residency) and
                         len(resident_retirements) == len(residency) and
                         all(retired['target'] == made['fence'] and retired['observed'] >= made['fence'] for retired, made in zip(resident_retirements, residency)))
+        if args.driver_cpu:
+            accepted = (accepted and len(cpu) >= args.minimum_vendor_cpu_locks and 37 not in unsupported and 55 not in unsupported and
+                        cpu_unlocks == (0 if args.cpu_eof_test else len(cpu)) and cpu_unmaps == (0 if args.cpu_eof_test else len(cpu)) and
+                        cleanup.get('completedVendorCpuLocks') == len(cpu) and cleanup.get('completedVendorCpuUnlocks') == len(cpu) and
+                        cleanup.get('failedVendorCpuLocks') == 0 and cleanup.get('failedVendorCpuUnlocks') == 0 and
+                        cleanup.get('liveVendorCpuBytes') == 0 and control.get('liveAllocationMappings') == 0 and
+                        control.get('liveAllocationMappedBytes') == 0 and control.get('allocationMappingsCreated') == len(cpu) and
+                        control.get('allocationUnmapAcknowledgements') == (0 if args.cpu_eof_test else len(cpu)))
+        if args.cpu_eof_test:
+            accepted = (accepted and len(cpu) > 0 and 'allocationCpuEofTest=true exitingWithLockOwned=true' in log and
+                        cleanup.get('cpuLocksReleasedAfterVmExit') == len(cpu) and result is None)
+        if args.cpu_store_test:
+            accepted = (accepted and len(cpu) > 0 and cleanup.get('cpuStoreTestRequested') is True and
+                        cleanup.get('completedCpuStoreTests') == len(cpu) and cleanup.get('failedCpuStoreTests') == 0 and
+                        log.count('allocationCpuStoreTest=true firstLastReadback=true') == len(cpu) and
+                        log.count('allocationCpuReferenceTest=true sameGuestPointer=true intermediateUnlockRetained=true') == len(cpu))
         report = {'schema': 1, 'diagnosticAccepted': bool(accepted), 'runtimeInitializationComplete': False,
-                  'stage': 'live NVIDIA runtime with Windows allocation residency' if args.driver_residency else
+                  'stage': 'owned VM exit before native CPU lock cleanup' if args.cpu_eof_test else
+                           'live NVIDIA runtime with Windows allocation CPU locks' if args.driver_cpu else
+                           'live NVIDIA runtime with Windows allocation residency' if args.driver_residency else
                            'live NVIDIA runtime with Windows GPU-address mappings' if args.driver_gpuva else
                            'live NVIDIA runtime with Windows video-memory allocation' if args.driver_allocations else
                            'live NVIDIA runtime with dynamic Windows paging fence mappings',
@@ -171,7 +205,15 @@ def main():
                   'minimumVendorGpuVaMappingsRequired': args.minimum_vendor_gpuva_maps,
                   'vendorResidencyOptIn': args.driver_residency, 'nativeVendorResidencyRequests': residency,
                   'minimumVendorResidencyRequestsRequired': args.minimum_vendor_residency_requests,
-                  'directGuestFenceLoads': (len(fences) + len(retirements)) * 10000, 'expectedInitializationBoundary': args.expected_unimplemented_ioctl,
+                  'vendorCpuOptIn': args.driver_cpu, 'nativeVendorCpuLocks': cpu,
+                  'minimumVendorCpuLocksRequired': args.minimum_vendor_cpu_locks,
+                  'guestCpuViewsUnmapped': cpu_unmaps, 'nativeVendorCpuLocksReleased': cpu_unlocks,
+                  'directGuestAllocationLoads': len(cpu) * 10000,
+                  'diagnosticCpuStoresRequested': args.cpu_store_test,
+                  'diagnosticCpuEofRequested': args.cpu_eof_test,
+                  'nativeCpuRegionChecks': [json.loads(line) for line in errors if line.startswith('{') and 'vendorCpuRegionCandidate' in line],
+                  'directGuestFenceLoads': (len(fences) + len(retirements)) * 10000,
+                  'expectedInitializationBoundary': None if args.cpu_eof_test else args.expected_unimplemented_ioctl,
                   'firstUnsupportedIoctlAfterAcceptedStage': first_unsupported_after_stage,
                   'unsupportedIoctls': unsupported, 'completedNativeQueries': completed,
                   'd3d12DeviceHresult': result[1] if result else None, 'ownedQemuControl': control, 'disconnectCleanup': cleanup,

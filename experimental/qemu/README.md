@@ -120,7 +120,11 @@ The [native Lock2 investigation](../../docs/NATIVE-LOCK2-INVESTIGATION.md)
 proved that the observed NVIDIA allocation can be mapped read/write into a
 WHP partition: guest writes at both ends of its 64 KiB CPU region reached
 Windows directly and were restored after child teardown. This is a narrower
-native diagnostic using one local captured private input. The QEMU hub still
-needs hardware acceptance, native session wiring and live guest Lock2/Unlock2
-integration; it is not enabled by the launcher and does not supply desktop
+native diagnostic using one local captured private input. The separate
+[live CPU allocation route](../../docs/LIVE-CPU-ALLOCATION-BRIDGE.md) passed
+physical QEMU reads, first/last-word stores, repeated guest references and
+VM-exit-first cleanup using the live NVIDIA runtime. It exposes only the
+validated committed CPU range, preserves native lock ownership, and removes
+guest and WHPX mappings before native unlock. It is not enabled by the launcher
+and does not supply desktop
 acceleration.

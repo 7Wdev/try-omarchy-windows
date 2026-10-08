@@ -20,6 +20,15 @@ int main(void) {
     if (mount("devtmpfs", "/dev", "devtmpfs", 0, NULL) && errno != EBUSY) perror("devtmpfs");
     mount("proc", "/proc", "proc", 0, NULL); mount("sysfs", "/sys", "sysfs", 0, NULL);
     mkdir("/dev/shm", 01777); mount("tmpfs", "/dev/shm", "tmpfs", 0, "mode=1777");
+    char command[512] = {0};
+    FILE* cmdline = fopen("/proc/cmdline", "rb");
+    if (cmdline) { const size_t bytes = fread(command, 1, sizeof(command) - 1, cmdline); command[bytes] = 0; fclose(cmdline); }
+    const char* store_option = strstr(command, " wddm_cpu_store_test=1");
+    const size_t option_bytes = sizeof(" wddm_cpu_store_test=1") - 1;
+    const int cpu_store_test = store_option && (store_option[option_bytes] == 0 || store_option[option_bytes] == ' ' || store_option[option_bytes] == '\n');
+    const char* eof_option = strstr(command, " wddm_cpu_eof_test=1");
+    const size_t eof_bytes = sizeof(" wddm_cpu_eof_test=1") - 1;
+    const int cpu_eof_test = eof_option && (eof_option[eof_bytes] == 0 || eof_option[eof_bytes] == ' ' || eof_option[eof_bytes] == '\n');
     const char* port = "/dev/vport0p1";
     for (int i = 0; i < 200 && access(port, F_OK); ++i) usleep(50000);
     char module[130] = {0};
@@ -30,6 +39,11 @@ int main(void) {
         pid_t child = fork();
         if (child == 0) {
             setenv("WDDM_BRIDGE_PORT", port, 1);
+            if (cpu_store_test) {
+                setenv("WDDM_BRIDGE_CPU_STORE_TEST", "1", 1);
+                setenv("WDDM_BRIDGE_CPU_REFERENCE_TEST", "1", 1);
+            }
+            if (cpu_eof_test) setenv("WDDM_BRIDGE_CPU_EOF_TEST", "1", 1);
             setenv("WDDM_BRIDGE_LINUX_UMD_NAME", module, 1);
             setenv("LD_PRELOAD", "/linux-ioctl-bridge.so", 1);
             setenv("LD_LIBRARY_PATH", "/usr/lib/wsl/lib:/usr/lib/x86_64-linux-gnu", 1);

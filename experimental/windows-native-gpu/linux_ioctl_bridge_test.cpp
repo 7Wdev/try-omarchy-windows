@@ -20,6 +20,36 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (fd < 0) return failed("open");
+    if (!std::strncmp(mode, "cpu-", 4)) {
+        D3DKMT_OPENADAPTERFROMLUID adapter{}; adapter.AdapterLuid.LowPart = 0x57475055;
+        if (ioctl(fd, _IOWR('G', 1, D3DKMT_OPENADAPTERFROMLUID), &adapter)) return failed("CPU adapter");
+        D3DKMT_CREATEDEVICE device{}; device.hAdapter = adapter.hAdapter; device.Flags.RequestVSync = 1;
+        if (ioctl(fd, _IOWR('G', 2, D3DKMT_CREATEDEVICE), &device)) return failed("CPU device");
+        unsigned char data[]{37, 38, 39, 40};
+        D3DDDI_ALLOCATIONINFO2 info{}; info.Flags.Value = 4; info.Priority = 0x78100000;
+        info.pPrivateDriverData = data; info.PrivateDriverDataSize = sizeof data;
+        D3DKMT_CREATEALLOCATION allocation{}; allocation.hDevice = device.hDevice; allocation.NumAllocations = 1;
+        allocation.pAllocationInfo2 = &info;
+        if (ioctl(fd, _IOWR('G', 6, D3DKMT_CREATEALLOCATION), &allocation) || info.hAllocation != 3) return failed("CPU allocation");
+        D3DKMT_LOCK2 lock{}; lock.hDevice = device.hDevice; lock.hAllocation = info.hAllocation;
+        D3DKMT_UNLOCK2 unlock{}; unlock.hDevice = device.hDevice; unlock.hAllocation = info.hAllocation;
+        if (!std::strcmp(mode, "cpu-invalid")) {
+            if (ioctl(fd, _IOWR('G', 55, D3DKMT_UNLOCK2), &unlock) != -1 || errno != EBADF) return failed("CPU unlock before lock");
+            lock.Flags.Value = 1;
+            if (ioctl(fd, _IOWR('G', 37, D3DKMT_LOCK2), &lock) != -1 || errno != EINVAL) return failed("CPU reserved flags");
+            lock.Flags.Value = 0; lock.hDevice = 999;
+            if (ioctl(fd, _IOWR('G', 37, D3DKMT_LOCK2), &lock) != -1 || errno != EBADF) return failed("CPU wrong device");
+            lock.hDevice = device.hDevice; lock.hAllocation = 999;
+            if (ioctl(fd, _IOWR('G', 37, D3DKMT_LOCK2), &lock) != -1 || errno != EBADF) return failed("CPU wrong allocation");
+            if (ioctl(fd, _IOWR('G', 37, unsigned), &lock) != -1 || errno != EINVAL) return failed("CPU wrong ABI size");
+        } else {
+            const auto expected = !std::strcmp(mode, "cpu-disabled") ? ENOSYS : !std::strcmp(mode, "cpu-nt-failure") ? EINVAL :
+                                  !std::strcmp(mode, "cpu-no-hub") ? EIO : EPROTO;
+            if (ioctl(fd, _IOWR('G', 37, D3DKMT_LOCK2), &lock) != -1 || errno != expected || lock.pData) return failed("CPU malformed response");
+            if ((expected == EPROTO || expected == EIO) && (open("/dev/dxg", O_RDONLY) != -1 || errno != EIO)) return failed("CPU broken connection reused");
+        }
+        close(fd); return 0;
+    }
     if (!std::strncmp(mode, "resident-", 9)) {
         D3DKMT_HANDLE allocation = 10;
         UINT priority = 0x78100000;

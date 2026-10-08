@@ -133,19 +133,30 @@ public:
         const auto reply = call("qom-set", {{"path", "/machine/peripheral/wddm-fences"}, {"property", "fence-mapping"}, {"value", command}});
         if (!reply.is_object() || !reply.empty()) throw std::runtime_error("QMP mapping acknowledgement invalid");
     }
+    void allocationMapping(const std::string& command) {
+        const auto reply = call("qom-set", {{"path", "/machine/peripheral/wddm-allocations"}, {"property", "allocation-mapping"}, {"value", command}});
+        if (!reply.is_object() || !reply.empty()) throw std::runtime_error("QMP allocation acknowledgement invalid");
+    }
 };
 struct FenceLease { std::uint32_t slot; std::uint64_t generation, offset; };
+struct AllocationLease { std::uint32_t slot, bytes; std::uint64_t generation, offset; };
 class Runtime {
     Handle job;
     OwnedProcess process;
     std::unique_ptr<Qmp> qmp;
     std::array<std::optional<FenceLease>, 64> leases;
+    std::array<std::optional<AllocationLease>, 16> allocationLeases;
+    std::uint64_t allocationGeneration = 0;
+    unsigned allocationMapped = 0, allocationMappedTotal = 0, allocationUnmappedTotal = 0;
+    std::uint32_t allocationMappedBytes = 0;
+    bool allocationsEnabled = false;
     std::uint64_t generation = 0;
     unsigned mapped = 0, mappedTotal = 0, unmappedTotal = 0;
     bool stopped = false, failed = false;
     std::filesystem::path logfile;
 public:
-    Runtime(unsigned short driverPort, const qemu_fence::Paths& paths) : logfile(std::filesystem::absolute(paths.log)) {
+    Runtime(unsigned short driverPort, const qemu_fence::Paths& paths, bool enableCpu = false, bool cpuStoreTest = false, bool cpuEofTest = false)
+        : allocationsEnabled(enableCpu), logfile(std::filesystem::absolute(paths.log)) {
         const auto executable = std::filesystem::absolute(paths.qemu).wstring();
         job.value = CreateJobObjectW(nullptr, nullptr);
         JOBOBJECT_EXTENDED_LIMIT_INFORMATION limit{};
@@ -174,12 +185,19 @@ public:
         std::vector<std::wstring> args{executable, L"-machine", L"q35,accel=whpx", L"-cpu", L"host", L"-m", L"512", L"-smp", L"1",
             L"-display", L"none", L"-monitor", L"none", L"-serial", L"stdio", L"-nodefaults", L"-no-reboot",
             L"-L", std::filesystem::absolute(paths.firmware).wstring(), L"-kernel", std::filesystem::absolute(paths.kernel).wstring(),
-            L"-initrd", std::filesystem::absolute(paths.initramfs).wstring(), L"-append", L"console=ttyS0 rdinit=/init panic=1",
+            L"-initrd", std::filesystem::absolute(paths.initramfs).wstring(), L"-append",
+            cpuStoreTest ? L"console=ttyS0 rdinit=/init panic=1 wddm_cpu_store_test=1" :
+            cpuEofTest ? L"console=ttyS0 rdinit=/init panic=1 wddm_cpu_eof_test=1" : L"console=ttyS0 rdinit=/init panic=1",
             L"-name", std::wstring(name.begin(), name.end()), L"-qmp", L"tcp:127.0.0.1:" + std::to_wstring(qmpPort) + L",server=on,wait=off",
             L"-device", L"wddm-fence-hub,id=wddm-fences,source-process=" + std::to_wstring(reinterpret_cast<std::uintptr_t>(source.value)),
             L"-device", L"virtio-serial-pci,id=bridge-serial", L"-chardev",
             L"socket,id=wddm,host=127.0.0.1,port=" + std::to_wstring(driverPort), L"-device",
             L"virtserialport,bus=bridge-serial.0,chardev=wddm,name=org.7wdev.wddm"};
+        if (allocationsEnabled) {
+            args.push_back(L"-device");
+            args.push_back(L"wddm-allocation-hub,id=wddm-allocations,source-process=" +
+                           std::to_wstring(reinterpret_cast<std::uintptr_t>(source.value)));
+        }
         std::wstring command;
         for (const auto& argument : args) { if (!command.empty()) command += L' '; command += qemu_fence::quote(argument); }
         STARTUPINFOEXW startup{}; startup.StartupInfo.cb = sizeof startup; startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
@@ -225,16 +243,46 @@ public:
         process.stop(grace); // Every driver owner must outlive this step.
         qmp.reset();
         for (auto& lease : leases) lease.reset();
+        for (auto& lease : allocationLeases) lease.reset();
+        allocationMapped = allocationMappedBytes = 0;
         mapped = 0; stopped = true;
     }
     bool cleanExit() const { return stopped && !failed && !process.forced && process.exit == 0; }
+    bool hasStopped() const { return stopped; }
     unsigned liveMappings() const { return mapped; }
+    AllocationLease mapAllocation(void* data, std::uint32_t bytes) {
+        const auto source = reinterpret_cast<std::uintptr_t>(data);
+        if (!allocationsEnabled || stopped || !source || source % 4096 || !bytes || bytes % 4096 || bytes > 1024 * 1024 ||
+            source > (1ull << 47) - bytes || allocationGeneration == UINT64_MAX)
+            throw std::runtime_error("Invalid owned allocation mapping");
+        std::uint32_t slot = 0;
+        for (; slot < allocationLeases.size(); ++slot) if (!allocationLeases[slot]) break;
+        if (slot == allocationLeases.size()) throw std::runtime_error("Allocation slot quota exceeded");
+        const AllocationLease lease{slot, bytes, ++allocationGeneration, slot * 1024ull * 1024};
+        try { qmp->allocationMapping("map:" + std::to_string(slot) + ':' + std::to_string(source) + ':' +
+                                     std::to_string(bytes) + ':' + std::to_string(lease.generation)); }
+        catch (...) { failed = true; stop(0); throw; }
+        allocationLeases[slot] = lease; ++allocationMapped; ++allocationMappedTotal; allocationMappedBytes += bytes;
+        return lease;
+    }
+    void unmapAllocation(AllocationLease lease) {
+        if (stopped) return; // VM exit was proved before its foreign pages were cleared.
+        if (lease.slot >= allocationLeases.size() || !allocationLeases[lease.slot] ||
+            allocationLeases[lease.slot]->generation != lease.generation || allocationLeases[lease.slot]->bytes != lease.bytes)
+            throw std::runtime_error("Native allocation lease ownership mismatch");
+        try { qmp->allocationMapping("unmap:" + std::to_string(lease.slot) + ':' + std::to_string(lease.generation)); }
+        catch (...) { failed = true; stop(0); throw; }
+        allocationLeases[lease.slot].reset(); --allocationMapped; ++allocationUnmappedTotal; allocationMappedBytes -= lease.bytes;
+    }
     void report() const {
         std::cout << "{\"ownedQemuExited\":" << (stopped ? "true" : "false") << ",\"qemuExit\":" << process.exit
                   << ",\"qemuForcedStop\":" << (process.forced ? "true" : "false")
                   << ",\"fenceControlFailed\":" << (failed ? "true" : "false")
                   << ",\"liveFenceMappings\":" << mapped << ",\"fenceMappingsCreated\":" << mappedTotal
-                  << ",\"fenceUnmapAcknowledgements\":" << unmappedTotal << "}\n";
+                  << ",\"fenceUnmapAcknowledgements\":" << unmappedTotal
+                  << ",\"liveAllocationMappings\":" << allocationMapped << ",\"liveAllocationMappedBytes\":" << allocationMappedBytes
+                  << ",\"allocationMappingsCreated\":" << allocationMappedTotal
+                  << ",\"allocationUnmapAcknowledgements\":" << allocationUnmappedTotal << "}\n";
     }
 };
 } // namespace driver_qemu

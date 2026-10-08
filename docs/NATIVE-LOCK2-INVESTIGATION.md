@@ -17,9 +17,9 @@ This is a native dependency experiment with one captured private input, not
 a live UMD or QEMU acceptance run. It submits no GPU command stream. It does
 not prove that arbitrary NVIDIA allocations are safely shareable, determine
 their opaque allocation sizes, establish a hard GPU-memory quota, measure
-desktop performance or accelerate Hyprland. The live QEMU runtime currently
-stops at `Lock2` (ioctl 37) after successful allocation, GPU VA and residency.
-Its [live request observation](evidence/QEMU-LIVE-LOCK2-INPUT-2026-10-08.json)
+desktop performance or accelerate Hyprland. The earlier live QEMU runtime
+stopped at `Lock2` (ioctl 37) after successful allocation, GPU VA and residency.
+That [live request observation](evidence/QEMU-LIVE-LOCK2-INPUT-2026-10-08.json)
 confirmed flags zero, an owned allocation from the matching device and a null
 input data pointer. That disk-free QEMU run preserved native residency and
 30,000 direct paging-fence loads, then cleaned up successfully. The writable
@@ -56,7 +56,7 @@ accessible virtual memory; it is not a general vendor allocation-size decoder.
 The utility outputs metadata and result codes, without host addresses,
 private bytes or memory contents. Hosted CI builds it without vendor binaries.
 
-## QEMU route under implementation
+## Live QEMU route
 
 The new `wddm-allocation-hub` supplies a separate, bounded writable PCI aperture
 and WHPX foreign mapping path. It retains the existing read-only fence path.
@@ -65,11 +65,13 @@ owner must still validate the locked CPU extent and device/allocation identity.
 Portable tests cover malformed, stale, occupied, unaligned, oversize and
 overflowing commands. The pinned QEMU recipe applies in an isolated checkout.
 
-Required next acceptance is a live guest `Lock2`/`Unlock2` route that returns a
-guest CPU pointer into these actual pages. It must preserve native failures,
-balance repeated lock references, remove guest and WHPX mappings before native
-unlock/destruction, and stop/reap owned QEMU before freeing pages after transport
-or control failure. Capability-disabled controls and physical read/write,
-disconnect and memory regressions remain required. Kernel/DRM integration,
-command submission, scanout, Hyprland, recovery, stability and performance
-testing still remain beyond this initialization work.
+The [live CPU allocation bridge](LIVE-CPU-ALLOCATION-BRIDGE.md) now returns a
+guest pointer into the actual locked NVIDIA pages. Its physical QEMU/WHPX tests
+passed 10,000 direct reads, first/last-word writes observed and restored by
+Windows, repeated lock references, capability-disabled behavior and cleanup
+after guest exit with a lock still owned. Native Lock2 succeeds with a committed
+64 KiB region followed by reserved pages from the same address reservation;
+only the committed region is eligible and exposed. The live initialization
+boundary is now hardware queue creation (ioctl 24). Kernel/DRM integration,
+command submission, scanout, Hyprland, reset recovery, sustained stability and
+performance testing remain unfinished.
