@@ -11,6 +11,9 @@ bridge**, with no guest rendering support. Opt-in virtual context lifecycle
 support also passed QEMU acceptance on 2026-10-08; see the
 [Linux UMD compatibility experiment](UMD-CONTEXT-COMPATIBILITY.md).
 The Omarchy launcher does not select this backend yet.
+The [live NVIDIA runtime diagnostic](LIVE-NVIDIA-RUNTIME.md) loads the local
+Linux UMD inside QEMU and reaches native device creation before the unsupported
+paging-queue interface. It does not complete D3D12 device initialization.
 
 ## Implemented path
 
@@ -25,8 +28,10 @@ Linux guest-probe
 
 The transport reuses QEMU's existing virtio serial device. It does not advertise
 virtio-nvgpu device ID 45 or implement a custom virtio GPU. The guest program
-uses a private experimental protocol; it does not expose `/dev/nvidia*`,
-`/dev/dxg`, a DRM render node, or NVIDIA Linux user-mode driver compatibility.
+uses a private experimental protocol. The new explicitly preloaded diagnostic
+adapts a subset of the `/dev/dxg` ioctl ABI within its own process. There is no
+guest kernel `/dev/dxg` device, `/dev/nvidia*`, DRM render node or full NVIDIA
+Linux user-mode driver compatibility.
 
 The worker selects hardware NVIDIA using DXGI. Software adapters are refused.
 Each process serves one connection, with at most 64 live objects and 10,000

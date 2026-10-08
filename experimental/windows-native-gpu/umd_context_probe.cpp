@@ -6,7 +6,14 @@
 #include <wsl/wrladapter.h>
 #include <dxguids/dxguids.h>
 #include <cstdio>
+#include <cstring>
+#include <link.h>
 using Microsoft::WRL::ComPtr;
+static int moduleLoaded(struct dl_phdr_info* info, size_t bytes, void* data) {
+    (void)bytes;
+    if (info->dlpi_name && std::strstr(info->dlpi_name, "/libnvwgf2umx.so")) *static_cast<bool*>(data) = true;
+    return 0;
+}
 int main() {
     ComPtr<IDXCoreAdapterFactory> factory;
     auto hr=DXCoreCreateAdapterFactory(IID_PPV_ARGS(&factory));
@@ -20,6 +27,8 @@ int main() {
         if(id.vendorID != 0x10de) continue;
         std::printf("nvidia vendor=%u device=%u\n",id.vendorID,id.deviceID);
         ComPtr<ID3D12Device> device; hr=D3D12CreateDevice(adapter.Get(),D3D_FEATURE_LEVEL_11_0,IID_PPV_ARGS(&device));
+        bool loaded = false; dl_iterate_phdr(moduleLoaded, &loaded);
+        std::printf("LINUX_RUNTIME_NVIDIA_UMD_STILL_LOADED=%s\n", loaded ? "true" : "false");
         std::printf("device=%08x\n",static_cast<unsigned>(hr)); if(FAILED(hr)) return 1;
         D3D12_COMMAND_QUEUE_DESC q{}; q.Type=D3D12_COMMAND_LIST_TYPE_COPY;
         ComPtr<ID3D12CommandQueue> queue; hr=device->CreateCommandQueue(&q,IID_PPV_ARGS(&queue));

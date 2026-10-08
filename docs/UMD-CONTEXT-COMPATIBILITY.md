@@ -10,7 +10,8 @@ run passed six fenced GPU buffer copies totaling 262,443 bytes.
 
 [QEMU evidence](evidence/QEMU-WDDM-CONTEXT-2026-10-08.json) records the exact
 worker, guest image, kernel and QEMU hashes. This is a captured-input context
-fixture. A live graphics runtime has not run through this bridge, and it does
+fixture. The separate [live runtime diagnostic](LIVE-NVIDIA-RUNTIME.md) now
+reaches native device creation from the installed NVIDIA Linux UMD, but does
 not establish rendering, hardware queue submission, Hyprland acceleration,
 desktop stability or near-native performance.
 

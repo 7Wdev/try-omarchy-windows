@@ -16,6 +16,12 @@ runtime-generated input buffers, but the hardware acceptance used local
 captures. No guest GPU command submission, Hyprland rendering or performance
 claim follows from adapter query acceptance.
 
+The separate [live runtime diagnostic](LIVE-NVIDIA-RUNTIME.md) subsequently
+loaded the installed NVIDIA Linux UMD inside QEMU and completed 19 live native
+queries without captured input fixtures. That run reaches native device
+creation and stops at the unsupported paging-queue interface; full graphics
+initialization and rendering remain unfinished.
+
 ## Wire and lifetime
 
 The host must explicitly enable `--driver-queries`; capability bit 64 advertises
@@ -51,13 +57,15 @@ quota, adapter ownership and unsupported layouts. A separate physical
 [default-disabled regression](evidence/QEMU-QUERIES-DISABLED-2026-10-08.json)
 verified zero native query calls while normal GPU copies still passed.
 
-## Guest ABI adaptations still required
+## Guest ABI adaptations
 
 Native adapter queries return Windows data unchanged. The runtime reference
 returned `libnvwgf2umx.so` in the UMD filename; the corresponding native query
 returned `nvldumdx.dll` in the same driver-store directory. A guest library must
 select its compatible, locally supplied Linux UMD rather than loading the
 Windows DLL. This project does not redistribute vendor driver binaries.
+The diagnostic guest interposer implements explicit local module selection;
+production runtime packaging and compatibility checks remain required.
 
 The WSL adapter type also differs from the physical Windows adapter type.
 Microsoft's [pinned WSL source](https://github.com/microsoft/WSL2-Linux-Kernel/blob/d504d40ab83839cb61942a812a99d183c42227b9/drivers/hv/dxgkrnl/dxgvmbus.c#L4276)
@@ -67,6 +75,9 @@ requires an explicit guest API adaptation; it is not a reason to patch
 undocumented NVIDIA-private bytes. The native private reply differed from the
 WSL reply at 16 byte positions; the diagnostic records difference counts only,
 and no private relocation rule is implemented.
+The live diagnostic applies those public flags for a render-capable, non-compute
+guest interface. It does not claim physical Windows display outputs as guest
+outputs.
 
 ## Reproduce
 
