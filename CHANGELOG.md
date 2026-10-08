@@ -4,6 +4,8 @@
 
 - When the Omarchy system update can't be downloaded, the tray now says so
   instead of failing silently (#277).
+- Choosing the raw VirtIO audio device in Omarchy's audio menu no longer turns
+  off volume sync; Omarchy switches back to the Windows device (#277).
 
 ## v0.10.1 - 2026-10-06
 

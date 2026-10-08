@@ -167,6 +167,15 @@ The receiver checks fixed-length slices for CR and frame prefixes, then streams
 base64 into the decoder. This integration file is delivered by the compatibility
 overlay and does not require a runtime package release bump.
 
+Patch 0141 keeps volume sync working when the raw QEMU transport device is
+chosen in Omarchy's audio panel. While the Windows endpoint mirror is active,
+the bridge switches a default sink or source that points at the raw VirtIO
+transport back to the mirror for the currently selected Windows device, and
+leaves other guest devices alone. Compatibility revision 59 delivers the bridge
+to existing disks before login, including revision-58 disks. This integration
+file is delivered by the compatibility overlay and does not require a runtime
+package release bump.
+
 Patch 0116 stops the launcher's initramfs from copying `vdso/` into
 `/usr/lib/modules/<version>` on the disk. `linux-headers` owns that directory,
 and an unowned copy made pacman refuse the next `linux-headers` upgrade, which
