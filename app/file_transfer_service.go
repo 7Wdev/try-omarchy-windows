@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -142,6 +143,11 @@ func (s *fileTransferService) Status(id string) (fileTransferStatus, bool) {
 func (s *fileTransferService) acquire(ctx context.Context) error {
 	select {
 	case s.ioSlot <- struct{}{}:
+		// select picks randomly when a cancellation is also ready; don't start disk work for it.
+		if err := cmp.Or(ctx.Err(), s.ctx.Err()); err != nil {
+			<-s.ioSlot
+			return err
+		}
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()

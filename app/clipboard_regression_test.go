@@ -120,6 +120,8 @@ func TestClipboardBlockedArchiveAllowsTextAndReconnect(t *testing.T) {
 	if line, err := bufio.NewReader(reconnected).ReadString('\n'); err != nil || line != encodeClipFrame(textItem("new text")) {
 		t.Fatal(line, err)
 	}
+	// Close while still holding the slot so cancelled preparations never touch the temp dir.
+	service.Close()
 	<-service.ioSlot
 	b.mu.Lock()
 	b.pullConn.Close()
