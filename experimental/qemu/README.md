@@ -93,3 +93,34 @@ or stops and reaps its owned QEMU process before releasing driver objects.
 Portable command/generation tests cover stale and occupied slots. Slot-reuse
 stress, GPU resets, runtime allocations/submission and desktop acceleration
 remain unverified or unimplemented; the result is partial initialization.
+
+## Writable allocation hub
+
+`wddm-allocation-hub` adds 16 initially unmapped slots, each with a 1 MiB
+stride, in a separate 16 MiB PCI BAR (`1234:11fc`, layout `ALH1`). The fixed
+native owner controls `allocation-mapping` over QMP with
+`map:slot:source-address:bytes:generation` and `unmap:slot:generation`.
+Source and byte count must be aligned to 4 KiB; each active range is at most
+1 MiB, lies below the Windows user-address limit and cannot overlap another
+active source. The native owner is responsible for validating allocation
+ownership, accessible extent and the lifetime of every locked source page.
+The guest cannot select a host process, address or access permission.
+
+WHPX maps active allocation pages with read/write permissions and no execute
+permission using `WHvMapGpaRange2`. The rest of each slot remains unmapped.
+Read-only synchronization pages keep their existing separate device and
+permissions. Unmap acknowledgement follows completion of the WHPX memory
+listener transaction; the owner must retain the allocation until that
+acknowledgement or confirmed VM exit. Migration and hotplug are blocked.
+PCI configuration exposes slot count at `0x44`, stride at `0x48` and emulated
+read/write counters at `0x4c`/`0x50`. `allocation-state` reports counts and
+generation without source addresses.
+
+The [native Lock2 investigation](../../docs/NATIVE-LOCK2-INVESTIGATION.md)
+proved that the observed NVIDIA allocation can be mapped read/write into a
+WHP partition: guest writes at both ends of its 64 KiB CPU region reached
+Windows directly and were restored after child teardown. This is a narrower
+native diagnostic using one local captured private input. The QEMU hub still
+needs hardware acceptance, native session wiring and live guest Lock2/Unlock2
+integration; it is not enabled by the launcher and does not supply desktop
+acceleration.

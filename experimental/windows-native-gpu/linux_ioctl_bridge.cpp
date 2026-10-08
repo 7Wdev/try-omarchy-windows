@@ -534,6 +534,14 @@ public:
                              static_cast<unsigned long long>(desc.sizePages), result.result.ntstatus, static_cast<unsigned long long>(fence.fence));
                 return result.result.ntstatus;
             }
+            case 37: {
+                auto& a = args<D3DKMT_LOCK2>(requestNumber, pointer);
+                const auto allocation = vendorOwners.find(a.hAllocation);
+                std::fprintf(stderr, "LINUX_BRIDGE lock2Input flags=%u ownedAllocation=%u hasInputData=%u\n",
+                             a.Flags.Value, allocation != vendorOwners.end() && allocation->second == a.hDevice ? 1u : 0u,
+                             a.pData ? 1u : 0u);
+                std::fprintf(stderr, "LINUX_BRIDGE unsupported nr=37 bytes=%zu\n", sizeof a); throw Error(ENOSYS);
+            }
             default:
                 std::fprintf(stderr, "LINUX_BRIDGE unsupported nr=%u bytes=%u\n", nr, static_cast<unsigned>(_IOC_SIZE(requestNumber)));
                 throw Error(ENOSYS);

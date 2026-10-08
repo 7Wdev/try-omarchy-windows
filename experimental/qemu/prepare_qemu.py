@@ -25,9 +25,12 @@ def prepare(source):
     shutil.copyfile(recipe / 'wddm-fence-lab.h', source / 'include/hw/misc/wddm-fence-lab.h')
     shutil.copyfile(recipe / 'wddm-fence-hub.c', source / 'hw/misc/wddm-fence-hub.c')
     shutil.copyfile(recipe / 'wddm-fence-map.h', source / 'include/hw/misc/wddm-fence-map.h')
+    shutil.copyfile(recipe / 'wddm-allocation-hub.c', source / 'hw/misc/wddm-allocation-hub.c')
+    shutil.copyfile(recipe / 'wddm-allocation-hub.h', source / 'include/hw/misc/wddm-allocation-hub.h')
+    shutil.copyfile(recipe / 'wddm-allocation-map.h', source / 'include/hw/misc/wddm-allocation-map.h')
     device_meson = source / 'hw/misc/meson.build'
     device_meson.write_text(device_meson.read_text() +
-        "\nif host_os == 'windows'\n  system_ss.add(when: 'CONFIG_WHPX', if_true: files('wddm-fence-lab.c', 'wddm-fence-hub.c'))\nendif\n",
+        "\nif host_os == 'windows'\n  system_ss.add(when: 'CONFIG_WHPX', if_true: files('wddm-fence-lab.c', 'wddm-fence-hub.c', 'wddm-allocation-hub.c'))\nendif\n",
         newline='\n')
     meson = source / 'backends/meson.build'
     original = meson.read_text()
@@ -36,7 +39,7 @@ def prepare(source):
         raise RuntimeError('Pinned QEMU backend build layout changed')
     addition = "if host_os == 'windows'\n  system_ss.add(files('hostmem-win32-section.c'))\nendif\n"
     meson.write_text(original.replace(marker, addition + marker), newline='\n')
-    print(f'Prepared QEMU {pinned} with Windows section memory and read-only fence lab')
+    print(f'Prepared QEMU {pinned} with Windows section memory, read-only fences and a bounded writable allocation hub')
 
 
 if __name__ == '__main__':

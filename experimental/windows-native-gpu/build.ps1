@@ -38,6 +38,8 @@ cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\query_native_probe.cpp" /
 if errorlevel 1 exit /b 1
 cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\queue_dependency_probe.cpp" /Fe:queue-dependency-probe.exe /link dxgi.lib gdi32.lib WinHvPlatform.lib
 if errorlevel 1 exit /b 1
+cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\vendor_lock_probe.cpp" /Fe:vendor-lock-probe.exe /link dxgi.lib gdi32.lib WinHvPlatform.lib
+if errorlevel 1 exit /b 1
 cl /nologo /std:c++17 /EHsc /W4 /WX /O2 /DUNICODE /D_UNICODE "$PSScriptRoot\native_gpu.cpp" /Fe:native-gpu.exe /link d3d12.lib dxgi.lib user32.lib gdi32.lib
 exit /b %errorlevel%
 "@ | Set-Content -LiteralPath $batch -Encoding ascii

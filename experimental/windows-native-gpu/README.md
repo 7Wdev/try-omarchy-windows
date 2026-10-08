@@ -54,6 +54,10 @@ mapped GPU VA rather than opaque vendor allocation bytes.
 The [live residency route](../../docs/LIVE-RESIDENCY-BRIDGE.md) adds
 `--driver-residency`, owned allocation lists, preserved paging/count/trim
 outputs and a conservative bound on residency attempts.
+The [native Lock2 investigation](../../docs/NATIVE-LOCK2-INVESTIGATION.md)
+adds a standalone CPU-sharing probe and a separate writable QEMU allocation
+hub. Native WHP read/write acceptance passed on the observed 64 KiB allocation;
+live Lock2/Unlock2 session wiring and QEMU hardware acceptance remain unfinished.
 
 The framing reference is pinned in `sources.json`. No upstream implementation
 is vendored from virtio-nvgpu; these new files use the repository's MIT license.
