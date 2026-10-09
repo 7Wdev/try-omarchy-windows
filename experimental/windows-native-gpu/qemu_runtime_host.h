@@ -157,7 +157,7 @@ class Runtime {
     bool stopped = false, failed = false;
     std::filesystem::path logfile;
 public:
-    Runtime(unsigned short driverPort, const qemu_fence::Paths& paths, bool enableCpu = false, bool cpuStoreTest = false, bool cpuEofTest = false, bool hwQueueEofTest = false, std::size_t cpuSlots = driver_bridge::DefaultVendorCpuSlots, bool syncEofTest = false)
+    Runtime(unsigned short driverPort, const qemu_fence::Paths& paths, bool enableCpu = false, bool cpuStoreTest = false, bool cpuEofTest = false, bool hwQueueEofTest = false, std::size_t cpuSlots = driver_bridge::DefaultVendorCpuSlots, bool syncEofTest = false, bool reservationEofTest = false)
         : allocationSlots(cpuSlots), allocationsEnabled(enableCpu), logfile(std::filesystem::absolute(paths.log)) {
         if (!driver_bridge::validVendorCpuSlots(cpuSlots) || (!enableCpu && cpuSlots != driver_bridge::DefaultVendorCpuSlots))
             throw std::runtime_error("Invalid configured allocation aperture capacity");
@@ -192,6 +192,7 @@ public:
             L"-initrd", std::filesystem::absolute(paths.initramfs).wstring(), L"-append",
             cpuStoreTest ? L"console=ttyS0 rdinit=/init panic=1 wddm_cpu_store_test=1" :
             syncEofTest ? L"console=ttyS0 rdinit=/init panic=1 wddm_sync_eof_test=1" :
+            reservationEofTest ? L"console=ttyS0 rdinit=/init panic=1 wddm_reservation_eof_test=1" :
             hwQueueEofTest ? L"console=ttyS0 rdinit=/init panic=1 wddm_hwqueue_eof_test=1" :
             cpuEofTest ? L"console=ttyS0 rdinit=/init panic=1 wddm_cpu_eof_test=1" : L"console=ttyS0 rdinit=/init panic=1",
             L"-name", std::wstring(name.begin(), name.end()), L"-qmp", L"tcp:127.0.0.1:" + std::to_wstring(qmpPort) + L",server=on,wait=off",

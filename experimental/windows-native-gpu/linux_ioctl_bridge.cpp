@@ -221,6 +221,10 @@ class Bridge {
     struct VendorGpuRange { std::uint64_t address, bytes; };
     std::map<std::uint32_t, VendorGpuRange> vendorGpuRanges;
     std::map<std::uint32_t, std::uint32_t> vendorWireIds, deviceAdapters;
+    std::set<std::uint32_t> ownedAdapters;
+    struct GpuReservation { std::uint32_t adapter; std::uint64_t address, bytes; };
+    std::map<std::uint32_t, GpuReservation> gpuReservations;
+    std::uint64_t gpuReservedBytes = 0;
     std::map<std::uint32_t, std::uint32_t> pagingOwners;
     struct Context { std::uint32_t device, flags; };
     std::map<std::uint32_t, Context> contextOwners;
@@ -263,6 +267,7 @@ class Bridge {
     std::uint32_t create(Op op, std::uint32_t parent = 0) {
         const auto out = call(request(op, parent));
         if (!out.header.handle) { transport.fail(); throw Error(EPROTO); }
+        if (op == Op::OpenAdapter && !ownedAdapters.emplace(out.header.handle).second) { transport.fail(); throw Error(EPROTO); }
         return out.header.handle;
     }
     void destroy(Op op, std::uint32_t handle) {
@@ -364,7 +369,11 @@ public:
                 if (a.AdapterLuid.LowPart != GuestLuidLow || a.AdapterLuid.HighPart != GuestLuidHigh) throw Error(ENODEV);
                 a.hAdapter = create(Op::OpenAdapter); return 0;
             }
-            case 21: { auto& a = args<D3DKMT_CLOSEADAPTER>(requestNumber, pointer); destroy(Op::CloseAdapter, a.hAdapter); return 0; }
+            case 21: {
+                auto& a = args<D3DKMT_CLOSEADAPTER>(requestNumber, pointer);
+                if (!ownedAdapters.count(a.hAdapter)) throw Error(EBADF);
+                destroy(Op::CloseAdapter, a.hAdapter); ownedAdapters.erase(a.hAdapter); return 0;
+            }
             case 9: {
                 auto& a = args<D3DKMT_QUERYADAPTERINFO>(requestNumber, pointer);
                 const auto type = static_cast<unsigned>(a.Type);
@@ -583,14 +592,67 @@ public:
                 return result.result.ntstatus;
             }
             case 8: {
-                const auto& a = args<D3DDDI_RESERVEGPUVIRTUALADDRESS>(requestNumber, pointer);
+                auto& a = args<D3DDDI_RESERVEGPUVIRTUALADDRESS>(requestNumber, pointer);
                 std::fprintf(stderr, "LINUX_BRIDGE reserveGpuVaInput ownedAdapter=%u ownedPagingQueue=%u base=%llu minimum=%llu maximum=%llu bytes=%llu reserved0=%u reserved1=%llu reserved2=%llu\n",
-                    std::any_of(deviceAdapters.begin(), deviceAdapters.end(), [&a](const auto& item) { return item.second == a.hAdapter; }) ? 1u : 0u,
+                    ownedAdapters.count(a.hAdapter) ? 1u : 0u,
                     pagingOwners.count(a.hPagingQueue) ? 1u : 0u,
                     static_cast<unsigned long long>(a.BaseAddress), static_cast<unsigned long long>(a.MinimumAddress),
                     static_cast<unsigned long long>(a.MaximumAddress), static_cast<unsigned long long>(a.Size), a.Reserved0,
                     static_cast<unsigned long long>(a.Reserved1), static_cast<unsigned long long>(a.Reserved2));
-                std::fprintf(stderr, "LINUX_BRIDGE unsupported nr=8 bytes=%zu\n", sizeof a); throw Error(ENOSYS);
+                if (!(caps.flags & GpuReservationCapability)) {
+                    std::fprintf(stderr, "LINUX_BRIDGE unsupported nr=8 bytes=%zu\n", sizeof a); throw Error(ENOSYS);
+                }
+                const GpuReservationDesc desc{a.BaseAddress, a.MinimumAddress, a.MaximumAddress, a.Size};
+                if (a.Reserved0 || a.Reserved1 || a.Reserved2 || !validGpuReservation(desc)) throw Error(EINVAL);
+                if (!ownedAdapters.count(a.hAdapter)) throw Error(EBADF);
+                if (gpuReservations.size() >= MaxGpuReservations || desc.bytes > MaxGpuReservedBytes - gpuReservedBytes) throw Error(EMFILE);
+                if (desc.base) for (const auto& range : gpuReservations)
+                    if (gpuRangesOverlap(desc.base, desc.bytes, range.second.address, range.second.bytes)) throw Error(EBUSY);
+                const auto result = call(request(Op::ReserveGpuAddress, a.hAdapter, desc), 0, true);
+                if ((result.result.ntstatus >= 0 && (result.result.ntstatus != 0 || !result.header.handle ||
+                        gpuReservations.count(result.header.handle) || !validGpuReservationOutput(desc, result.result.value))) ||
+                    (result.result.ntstatus < 0 && (result.header.handle || result.result.value))) {
+                    transport.fail(); throw Error(EPROTO);
+                }
+                checkNt(result.result.ntstatus);
+                for (const auto& range : gpuReservations)
+                    if (gpuRangesOverlap(result.result.value, desc.bytes, range.second.address, range.second.bytes)) {
+                        transport.fail(); throw Error(EPROTO);
+                    }
+                try { gpuReservations.emplace(result.header.handle, GpuReservation{a.hAdapter, result.result.value, desc.bytes}); }
+                catch (...) { transport.fail(); throw; } // Host retains ownership until its VM has exited.
+                gpuReservedBytes += desc.bytes; a.VirtualAddress = result.result.value;
+                std::fprintf(stderr, "LINUX_BRIDGE nativeGpuReserved=true bytes=%llu\n", static_cast<unsigned long long>(desc.bytes));
+                const auto eofTest = std::getenv("WDDM_BRIDGE_RESERVATION_EOF_TEST");
+                if (eofTest && !std::strcmp(eofTest, "1")) {
+                    std::fprintf(stderr, "LINUX_BRIDGE reservationEofTest=true exitingWithGpuReservationOwned=true\n"); _exit(1);
+                }
+                return 0;
+            }
+            case 32: {
+                const auto& a = args<D3DKMT_FREEGPUVIRTUALADDRESS>(requestNumber, pointer);
+                if (!(caps.flags & GpuReservationCapability)) throw Error(ENOSYS);
+                if (!a.BaseAddress || a.BaseAddress % 4096 || !a.Size || a.Size % 4096 ||
+                    a.Size > MaxGpuAddress || a.BaseAddress > MaxGpuAddress - a.Size) throw Error(EINVAL);
+                if (!ownedAdapters.count(a.hAdapter)) throw Error(EBADF);
+                const auto range = std::find_if(gpuReservations.begin(), gpuReservations.end(), [&a](const auto& item) {
+                    return item.second.adapter == a.hAdapter && item.second.address == a.BaseAddress && item.second.bytes == a.Size;
+                });
+                if (range == gpuReservations.end()) throw Error(EBADF);
+                for (const auto& mapped : vendorGpuRanges)
+                    if (gpuRangesOverlap(range->second.address, range->second.bytes, mapped.second.address, mapped.second.bytes) &&
+                        !gpuRangeContains(range->second.address, range->second.bytes, mapped.second.address, mapped.second.bytes)) throw Error(EBUSY);
+                const auto result = call(request(Op::FreeGpuReservation, range->first, FreeGpuReservationDesc{a.hAdapter, 0}), 0, true);
+                if (result.header.handle != range->first || result.result.ntstatus > 0 || result.result.value) {
+                    transport.fail(); throw Error(EPROTO);
+                }
+                checkNt(result.result.ntstatus);
+                for (auto mapped = vendorGpuRanges.begin(); mapped != vendorGpuRanges.end();)
+                    if (gpuRangesOverlap(range->second.address, range->second.bytes, mapped->second.address, mapped->second.bytes)) mapped = vendorGpuRanges.erase(mapped);
+                    else ++mapped;
+                gpuReservedBytes -= range->second.bytes; gpuReservations.erase(range);
+                std::fprintf(stderr, "LINUX_BRIDGE nativeGpuReservationFreed=true bytes=%llu\n", static_cast<unsigned long long>(a.Size));
+                return 0;
             }
             case 12: {
                 auto& a = args<D3DDDI_MAPGPUVIRTUALADDRESS>(requestNumber, pointer);

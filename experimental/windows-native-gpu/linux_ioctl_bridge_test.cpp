@@ -21,6 +21,76 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (fd < 0) return failed("open");
+    if (!std::strncmp(mode, "reservation-", 12)) {
+        D3DKMT_OPENADAPTERFROMLUID adapter{}; adapter.AdapterLuid.LowPart = 0x57475055;
+        if (ioctl(fd, _IOWR('G', 1, D3DKMT_OPENADAPTERFROMLUID), &adapter)) return failed("reservation adapter");
+        D3DDDI_RESERVEGPUVIRTUALADDRESS reserve{}; reserve.hAdapter = adapter.hAdapter;
+        reserve.MinimumAddress = 67108864; reserve.MaximumAddress = 1ull << 40; reserve.Size = 65536;
+        if (!std::strcmp(mode, "reservation-invalid")) {
+            for (unsigned n = 0; n < 16; ++n) {
+                auto invalid = reserve;
+                switch (n) {
+                    case 0: invalid.Size = 0; break;
+                    case 1: ++invalid.Size; break;
+                    case 2: invalid.Size = (4ull << 30) + 65536; break;
+                    case 3: invalid.BaseAddress = 1; break;
+                    case 4: ++invalid.MinimumAddress; break;
+                    case 5: ++invalid.MaximumAddress; break;
+                    case 6: invalid.BaseAddress = 1ull << 48; break;
+                    case 7: invalid.MinimumAddress = 1ull << 48; break;
+                    case 8: invalid.MaximumAddress = (1ull << 48) + 65536; break;
+                    case 9: invalid.MaximumAddress = invalid.MinimumAddress; break;
+                    case 10: invalid.BaseAddress = (1ull << 48) - 65536; invalid.Size = 131072; break;
+                    case 11: invalid.Reserved0 = 1; break;
+                    case 12: invalid.Reserved1 = 1; break;
+                    case 13: invalid.Reserved2 = 1; break;
+                    case 14: invalid.hAdapter = 0; break;
+                    default: invalid.hAdapter = 999; break;
+                }
+                if (ioctl(fd, _IOWR('G', 8, D3DDDI_RESERVEGPUVIRTUALADDRESS), &invalid) != -1 || errno != (n < 14 ? EINVAL : EBADF))
+                    return failed("reservation invalid input");
+            }
+        } else if (!std::strcmp(mode, "reservation-quota") || !std::strcmp(mode, "reservation-byte-quota")) {
+            const bool byteQuota = !std::strcmp(mode, "reservation-byte-quota");
+            if (byteQuota) reserve.Size = 4ull << 30;
+            for (unsigned n = 0; n < (byteQuota ? 4u : 8u); ++n)
+                if (ioctl(fd, _IOWR('G', 8, D3DDDI_RESERVEGPUVIRTUALADDRESS), &reserve) || !reserve.VirtualAddress) return failed("reservation quota setup");
+            reserve.Size = 65536;
+            if (ioctl(fd, _IOWR('G', 8, D3DDDI_RESERVEGPUVIRTUALADDRESS), &reserve) != -1 || errno != EMFILE) return failed("reservation quota exceeded");
+        } else if (!std::strcmp(mode, "reservation-duplicate") || !std::strcmp(mode, "reservation-reply-overlap")) {
+            if (ioctl(fd, _IOWR('G', 8, D3DDDI_RESERVEGPUVIRTUALADDRESS), &reserve)) return failed("reservation duplicate setup");
+            if (ioctl(fd, _IOWR('G', 8, D3DDDI_RESERVEGPUVIRTUALADDRESS), &reserve) != -1 || errno != EPROTO) return failed("reservation duplicate output");
+            if (open("/dev/dxg", O_RDONLY) != -1 || errno != EIO) return failed("reservation broken transport reused");
+        } else if (!std::strcmp(mode, "reservation-normal") || !std::strcmp(mode, "reservation-failed-free") ||
+                   !std::strcmp(mode, "reservation-overlap") || !std::strncmp(mode, "reservation-free-", 17)) {
+            if (ioctl(fd, _IOWR('G', 8, D3DDDI_RESERVEGPUVIRTUALADDRESS), &reserve) || !reserve.VirtualAddress || reserve.VirtualAddress % 65536)
+                return failed("reservation setup");
+            if (!std::strcmp(mode, "reservation-overlap")) {
+                auto overlap = reserve; overlap.BaseAddress = reserve.VirtualAddress; overlap.MinimumAddress = overlap.MaximumAddress = 0;
+                if (ioctl(fd, _IOWR('G', 8, D3DDDI_RESERVEGPUVIRTUALADDRESS), &overlap) != -1 || errno != EBUSY) return failed("reservation overlapping request");
+            }
+            D3DKMT_FREEGPUVIRTUALADDRESS release{}; release.hAdapter = adapter.hAdapter; release.BaseAddress = reserve.VirtualAddress; release.Size = reserve.Size;
+            auto partial = release; partial.Size = 4096;
+            if (ioctl(fd, _IOWR('G', 32, D3DKMT_FREEGPUVIRTUALADDRESS), &partial) != -1 || errno != EBADF) return failed("reservation partial release");
+            auto foreign = release; foreign.hAdapter = 999;
+            if (ioctl(fd, _IOWR('G', 32, D3DKMT_FREEGPUVIRTUALADDRESS), &foreign) != -1 || errno != EBADF) return failed("reservation foreign release");
+            if (!std::strncmp(mode, "reservation-free-", 17)) {
+                if (ioctl(fd, _IOWR('G', 32, D3DKMT_FREEGPUVIRTUALADDRESS), &release) != -1 || errno != EPROTO) return failed("reservation malformed free reply");
+                if (open("/dev/dxg", O_RDONLY) != -1 || errno != EIO) return failed("reservation broken free reused");
+            } else {
+                if (!std::strcmp(mode, "reservation-failed-free") &&
+                    (ioctl(fd, _IOWR('G', 32, D3DKMT_FREEGPUVIRTUALADDRESS), &release) != -1 || errno != EINVAL)) return failed("reservation failed release");
+                if (ioctl(fd, _IOWR('G', 32, D3DKMT_FREEGPUVIRTUALADDRESS), &release)) return failed("reservation release retry");
+                if (ioctl(fd, _IOWR('G', 32, D3DKMT_FREEGPUVIRTUALADDRESS), &release) != -1 || errno != EBADF) return failed("reservation stale range");
+            }
+        } else {
+            const auto expected = !std::strcmp(mode, "reservation-disabled") ? ENOSYS : !std::strcmp(mode, "reservation-nt-failure") ? EINVAL : EPROTO;
+            if (ioctl(fd, _IOWR('G', 8, D3DDDI_RESERVEGPUVIRTUALADDRESS), &reserve) != -1 || errno != expected || reserve.VirtualAddress)
+                return failed("reservation invalid reply");
+            if (expected == EPROTO && (open("/dev/dxg", O_RDONLY) != -1 || errno != EIO)) return failed("reservation broken reply reused");
+        }
+        close(fd); return 0;
+    }
     if (!std::strncmp(mode, "submit-", 7)) {
         unsigned char data[]{37, 38, 39, 40};
         D3DKMT_SUBMITCOMMANDTOHWQUEUE submit{}; submit.hHwQueue = 999; submit.CommandBuffer = 65536;
@@ -274,7 +344,7 @@ int main(int argc, char** argv) {
                     case 0: invalid.Reserved0 = 1; break;
                     case 1: invalid.Reserved1 = 1; break;
                     case 2: invalid.SizeInPages = 0; break;
-                    case 3: invalid.SizeInPages = 257; break;
+                    case 3: invalid.SizeInPages = driver_bridge::MaxVendorMapPages + 1; break;
                     case 4: invalid.OffsetInPages = ~0ull; break;
                     case 5: invalid.Protection.Value = 16; break;
                     case 6: invalid.DriverProtection = 1; break;
@@ -297,19 +367,22 @@ int main(int argc, char** argv) {
         info.pPrivateDriverData = data; info.PrivateDriverDataSize = sizeof data;
         D3DKMT_CREATEALLOCATION allocation{}; allocation.hDevice = device.hDevice; allocation.NumAllocations = 1;
         allocation.pAllocationInfo2 = &info;
+        if (!std::strcmp(mode, "allocation-maximum")) info.Priority = D3DDDI_ALLOCATIONPRIORITY_MAXIMUM;
         if (!std::strcmp(mode, "allocation-invalid")) {
             info.pSystemMem = data;
             if (ioctl(fd, _IOWR('G', 6, D3DKMT_CREATEALLOCATION), &allocation) != -1 || errno != EINVAL) return failed("guest CPU pointer accepted");
             info.pSystemMem = nullptr; info.Reserved[0] = 1;
             if (ioctl(fd, _IOWR('G', 6, D3DKMT_CREATEALLOCATION), &allocation) != -1 || errno != EINVAL) return failed("reserved input accepted");
-            info.Reserved[0] = 0; allocation.hResource = 999;
+            info.Reserved[0] = 0; info.Priority = 0xc8000001;
+            if (ioctl(fd, _IOWR('G', 6, D3DKMT_CREATEALLOCATION), &allocation) != -1 || errno != EINVAL) return failed("out-of-range priority accepted");
+            info.Priority = 0x78100000; allocation.hResource = 999;
             if (ioctl(fd, _IOWR('G', 6, D3DKMT_CREATEALLOCATION), &allocation) != -1 || errno != ENOSYS) return failed("resource accepted");
         } else if (!std::strcmp(mode, "allocation-disabled")) {
             if (ioctl(fd, _IOWR('G', 6, D3DKMT_CREATEALLOCATION), &allocation) != -1 || errno != ENOSYS) return failed("disabled allocation accepted");
         } else if (!std::strcmp(mode, "allocation-nt-failure")) {
             if (ioctl(fd, _IOWR('G', 6, D3DKMT_CREATEALLOCATION), &allocation) != -1 || errno != EINVAL ||
                 data[0] != (37 ^ 255) || info.hAllocation) return failed("native failure lost in/out");
-        } else if (!std::strcmp(mode, "allocation-normal") || !std::strcmp(mode, "allocation-failed-destroy") || !std::strncmp(mode, "allocation-destroy-", 19)) {
+        } else if (!std::strcmp(mode, "allocation-normal") || !std::strcmp(mode, "allocation-maximum") || !std::strcmp(mode, "allocation-failed-destroy") || !std::strncmp(mode, "allocation-destroy-", 19)) {
             if (ioctl(fd, _IOWR('G', 6, D3DKMT_CREATEALLOCATION), &allocation) || info.hAllocation != 3 || info.GpuVirtualAddress ||
                 data[0] != (37 ^ 255) || allocation.hResource || allocation.hGlobalShare) return failed("allocation response");
             D3DKMT_HANDLE duplicates[]{3, 3};

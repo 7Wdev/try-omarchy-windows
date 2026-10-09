@@ -25,6 +25,9 @@ struct Fake : Driver {
     std::vector<std::uint32_t> lastTranslationHandles;
     bool hwQueuesEnabled = false;
     bool retirementEnabled = false;
+    bool reservationEnabled = false;
+    int badReservationReply = 0, badReservationDestroyReply = 0;
+    std::map<std::uint32_t, std::uint32_t> reservationParents;
     int badHwQueueReply = 0;
     std::map<std::uint32_t, std::uint32_t> hwQueueParents;
     bool syncEnabled = false;
@@ -50,9 +53,21 @@ struct Fake : Driver {
                 (gpuVaEnabled ? VendorGpuVaCapability : 0u) | (residencyEnabled ? VendorResidencyCapability : 0u) |
                 (cpuEnabled ? VendorCpuCapability : 0u) | (translationEnabled ? VendorTranslationCapability : 0u) |
                 (hwQueuesEnabled ? HwQueueCapability : 0u) | (syncEnabled ? SyncCapability : 0u) |
-                (submitEnabled ? HwSubmitCapability : 0u) | (retirementEnabled ? VendorRetirementCapability : 0u), 0x10de, 123};
+                (submitEnabled ? HwSubmitCapability : 0u) | (retirementEnabled ? VendorRetirementCapability : 0u) |
+                (reservationEnabled ? GpuReservationCapability : 0u), 0x10de, 123};
     }
     Result created() { ++calls; return {fail ? -123 : 0, ++next, 0}; }
+    Result reserveGpuAddress(std::uint32_t adapter, GpuReservationDesc desc) override {
+        require(adapter > 500 && validGpuReservation(desc)); ++calls;
+        if (fail && badReservationReply != 10) return {-123, 0, badReservationReply == 9 ? 65536ull : 0ull};
+        const auto id = badReservationReply == 2 ? 0u : ++next;
+        if (id) reservationParents.emplace(id, adapter);
+        const auto address = desc.base ? desc.base : desc.minimum + (next - 500) * MaxGpuReservationBytes;
+        return {fail ? -123 : badReservationReply == 1 ? 259 : 0, id,
+                badReservationReply == 3 ? 0ull : badReservationReply == 4 ? address + 1 :
+                badReservationReply == 5 ? MaxGpuAddress : badReservationReply == 6 ? desc.minimum - 65536 :
+                badReservationReply == 7 ? desc.maximum : badReservationReply == 8 ? address + 65536 : address};
+    }
     Result openAdapter() override { return created(); }
     Result queryVersion(std::uint32_t h) override { require(h > 500); ++calls; return {0, 0, 3200}; }
     Result queryAdapter(std::uint32_t h, QueryDesc desc, std::vector<std::uint8_t>& data) override {
@@ -196,16 +211,150 @@ struct Fake : Driver {
         require(h > 500); ++calls;
         if (k == Kind::PagingSync || k == Kind::HwQueueSync) return {0, 0, 0}; // borrowed
         if (k == Kind::VendorAllocation) return destroyVendorAllocations(vendorOwners.at(h), {h});
+        if (k == Kind::GpuReservation && badReservationDestroyReply)
+            return {badReservationDestroyReply == 1 ? 259 : 0, badReservationDestroyReply == 2 ? 777u : 0u,
+                    badReservationDestroyReply == 3 ? 1ull : 0ull};
         if (!fail) {
             destroyed.push_back(k);
             if (k == Kind::Allocation) require(buffers.erase(h) == 1);
             if (k == Kind::HwQueue) require(hwQueueParents.erase(h) == 1);
             if (k == Kind::Sync) require(syncParents.erase(h) == 1);
+            if (k == Kind::GpuReservation) require(reservationParents.erase(h) == 1);
         }
         return {fail ? -123 : 0, 0, 0};
     }
 };
 int main() {
+    const GpuReservationDesc reservationInput{0, 67108864, 1ull << 40, 65536};
+    Fake reservation;
+    {
+        Session s(reservation);
+        require(header(s.dispatch(request(Op::ReserveGpuAddress, 1, reservationInput))).status == -71);
+        s.dispatch(hello());
+        const auto adapter = header(s.dispatch(request(Op::OpenAdapter))).handle;
+        const auto other = header(s.dispatch(request(Op::OpenAdapter))).handle;
+        const auto device = header(s.dispatch(request(Op::CreateDevice, adapter))).handle;
+        auto before = reservation.calls;
+        require(header(s.dispatch(request(Op::ReserveGpuAddress, adapter, reservationInput))).status == -95 && reservation.calls == before);
+        reservation.reservationEnabled = true;
+        require(header(s.dispatch(request(Op::ReserveGpuAddress, device, reservationInput))).status == -9);
+        require(header(s.dispatch(request(Op::ReserveGpuAddress, 501, reservationInput))).status == -9);
+        for (unsigned n = 0; n < 11; ++n) {
+            auto bad = reservationInput;
+            switch (n) {
+                case 0: bad.bytes = 0; break;
+                case 1: ++bad.bytes; break;
+                case 2: bad.bytes = MaxGpuReservationBytes + 65536; break;
+                case 3: bad.base = 1; break;
+                case 4: ++bad.minimum; break;
+                case 5: ++bad.maximum; break;
+                case 6: bad.base = MaxGpuAddress; break;
+                case 7: bad.minimum = MaxGpuAddress; break;
+                case 8: bad.maximum = MaxGpuAddress + 65536; break;
+                case 9: bad.maximum = bad.minimum; break;
+                default: bad.base = MaxGpuAddress - 65536; bad.bytes = 131072; break;
+            }
+            require(header(s.dispatch(request(Op::ReserveGpuAddress, adapter, bad))).status == -22 && reservation.calls == before);
+        }
+        auto shortPacket = request(Op::ReserveGpuAddress, adapter, reservationInput); shortPacket.pop_back();
+        require(header(s.dispatch(shortPacket)).status == -22);
+        reservation.fail = true;
+        auto failure = s.dispatch(request(Op::ReserveGpuAddress, adapter, reservationInput)); Reply nt{};
+        std::memcpy(&nt, failure.data() + sizeof(Header), sizeof nt);
+        require(!header(failure).status && !header(failure).handle && nt.ntstatus == -123 && !nt.value);
+        reservation.badReservationReply = 9;
+        require(header(s.dispatch(request(Op::ReserveGpuAddress, adapter, reservationInput))).status == -5);
+        reservation.fail = false;
+        for (int n = 1; n <= 7; ++n) {
+            reservation.badReservationReply = n;
+            require(header(s.dispatch(request(Op::ReserveGpuAddress, adapter, reservationInput))).status == -5 && reservation.reservationParents.empty());
+        }
+        reservation.badReservationReply = 8;
+        require(header(s.dispatch(request(Op::ReserveGpuAddress, adapter, GpuReservationDesc{67108864, 0, 0, 65536}))).status == -5);
+        reservation.badReservationReply = 0;
+        const auto reservedPacket = s.dispatch(request(Op::ReserveGpuAddress, adapter, reservationInput));
+        const auto reserved = header(reservedPacket).handle;
+        std::memcpy(&nt, reservedPacket.data() + sizeof(Header), sizeof nt);
+        require(reserved && reserved < 500 && nt.ntstatus == 0 && validGpuReservationOutput(reservationInput, nt.value));
+        before = reservation.calls;
+        require(header(s.dispatch(request(Op::CloseAdapter, adapter))).status == -16);
+        require(header(s.dispatch(request(Op::ReserveGpuAddress, adapter, GpuReservationDesc{nt.value, 0, 0, 65536}))).status == -16);
+        require(header(s.dispatch(request(Op::FreeGpuReservation, reserved, FreeGpuReservationDesc{other, 0}))).status == -9);
+        require(header(s.dispatch(request(Op::FreeGpuReservation, reserved, FreeGpuReservationDesc{adapter, 1}))).status == -22);
+        require(header(s.dispatch(request(Op::FreeGpuReservation, device, FreeGpuReservationDesc{adapter, 0}))).status == -9 && reservation.calls == before);
+        for (int n = 1; n <= 3; ++n) {
+            reservation.badReservationDestroyReply = n;
+            require(header(s.dispatch(request(Op::FreeGpuReservation, reserved, FreeGpuReservationDesc{adapter, 0}))).status == -5 && reservation.reservationParents.size() == 1);
+        }
+        reservation.badReservationDestroyReply = 0; reservation.fail = true;
+        failure = s.dispatch(request(Op::FreeGpuReservation, reserved, FreeGpuReservationDesc{adapter, 0}));
+        std::memcpy(&nt, failure.data() + sizeof(Header), sizeof nt);
+        require(!header(failure).status && nt.ntstatus == -123 && reservation.reservationParents.size() == 1);
+        reservation.fail = false;
+        require(!header(s.dispatch(request(Op::FreeGpuReservation, reserved, FreeGpuReservationDesc{adapter, 0}))).status);
+        before = reservation.calls;
+        require(header(s.dispatch(request(Op::FreeGpuReservation, reserved, FreeGpuReservationDesc{adapter, 0}))).status == -9 && reservation.calls == before);
+        for (std::size_t n = 0; n < MaxGpuReservations; ++n)
+            require(header(s.dispatch(request(Op::ReserveGpuAddress, adapter, reservationInput))).handle != 0);
+        before = reservation.calls;
+        require(header(s.dispatch(request(Op::ReserveGpuAddress, adapter, reservationInput))).status == -24 && reservation.calls == before);
+    }
+    require(reservation.reservationParents.empty() && reservation.destroyed.back() == Kind::Adapter);
+    Fake reservationBudget; reservationBudget.reservationEnabled = true;
+    {
+        Session s(reservationBudget); s.dispatch(hello());
+        const auto adapter = header(s.dispatch(request(Op::OpenAdapter))).handle;
+        auto maximumRange = reservationInput; maximumRange.bytes = MaxGpuReservationBytes;
+        for (unsigned n = 0; n < 4; ++n) require(header(s.dispatch(request(Op::ReserveGpuAddress, adapter, maximumRange))).handle != 0);
+        const auto before = reservationBudget.calls;
+        require(header(s.dispatch(request(Op::ReserveGpuAddress, adapter, reservationInput))).status == -24 && reservationBudget.calls == before);
+    }
+    Fake reservationOverlap; reservationOverlap.reservationEnabled = reservationOverlap.vendorEnabled = reservationOverlap.gpuVaEnabled = true;
+    {
+        Session s(reservationOverlap); s.dispatch(hello());
+        const auto adapter = header(s.dispatch(request(Op::OpenAdapter))).handle;
+        const auto device = header(s.dispatch(request(Op::CreateDevice, adapter))).handle;
+        const auto queue = header(s.dispatch(request(Op::CreatePagingQueue, device))).handle;
+        auto allocationPacket = request(Op::CreateVendorAllocation, device, VendorAllocationDesc{0, 0, 0, 4, 0, 0});
+        allocationPacket.insert(allocationPacket.end(), 4, 0);
+        const auto allocation = header(s.dispatch(allocationPacket)).handle;
+        const auto owned = header(s.dispatch(request(Op::ReserveGpuAddress, adapter, GpuReservationDesc{67108864, 0, 0, 65536}))).handle;
+        require(owned && !header(s.dispatch(request(Op::MapVendorAllocation, allocation, GpuVaDesc{queue, 0, 67108864, 0, 0, 0, 32, 1, 0}))).status);
+        const auto before = reservationOverlap.calls;
+        require(header(s.dispatch(request(Op::FreeGpuReservation, owned, FreeGpuReservationDesc{adapter, 0}))).status == -16 && reservationOverlap.calls == before);
+        // The reservation was created last; disconnect still destroys its
+        // mapped allocation before releasing the address range and adapter.
+    }
+    require(reservationOverlap.reservationParents.empty() && reservationOverlap.vendorOwners.empty());
+    const auto allocationDestroyed = std::find(reservationOverlap.destroyed.begin(), reservationOverlap.destroyed.end(), Kind::VendorAllocation);
+    const auto rangeDestroyed = std::find(reservationOverlap.destroyed.begin(), reservationOverlap.destroyed.end(), Kind::GpuReservation);
+    require(allocationDestroyed < rangeDestroyed && rangeDestroyed < reservationOverlap.destroyed.end() - 1 && reservationOverlap.destroyed.back() == Kind::Adapter);
+    Fake reservationMapped; reservationMapped.reservationEnabled = reservationMapped.vendorEnabled = reservationMapped.gpuVaEnabled = true;
+    {
+        Session s(reservationMapped); s.dispatch(hello());
+        const auto adapter = header(s.dispatch(request(Op::OpenAdapter))).handle;
+        const auto device = header(s.dispatch(request(Op::CreateDevice, adapter))).handle;
+        const auto queue = header(s.dispatch(request(Op::CreatePagingQueue, device))).handle;
+        auto allocationPacket = request(Op::CreateVendorAllocation, device, VendorAllocationDesc{0, 0, 0, 4, 0, 0});
+        allocationPacket.insert(allocationPacket.end(), 4, 0);
+        const auto allocation = header(s.dispatch(allocationPacket)).handle;
+        const auto owned = header(s.dispatch(request(Op::ReserveGpuAddress, adapter, GpuReservationDesc{67108864, 0, 0, 65536}))).handle;
+        const auto mapping = request(Op::MapVendorAllocation, allocation, GpuVaDesc{queue, 0, 67108864, 0, 0, 0, 16, 1, 0});
+        require(owned && !header(s.dispatch(mapping)).status);
+        reservationMapped.fail = true;
+        auto failure = s.dispatch(request(Op::FreeGpuReservation, owned, FreeGpuReservationDesc{adapter, 0})); Reply nt{};
+        std::memcpy(&nt, failure.data() + sizeof(Header), sizeof nt);
+        require(!header(failure).status && nt.ntstatus == -123);
+        const auto before = reservationMapped.calls;
+        require(header(s.dispatch(mapping)).status == -16 && reservationMapped.calls == before);
+        reservationMapped.fail = false;
+        require(!header(s.dispatch(request(Op::FreeGpuReservation, owned, FreeGpuReservationDesc{adapter, 0}))).status);
+        // Successful release invalidates the GPU mapping while retaining the
+        // allocation itself. It can then receive a fresh GPU mapping.
+        require(!header(s.dispatch(mapping)).status && reservationMapped.vendorOwners.size() == 1);
+        require(header(s.dispatch(request(Op::FreeGpuReservation, owned, FreeGpuReservationDesc{adapter, 0}))).status == -9);
+    }
+    require(reservationMapped.reservationParents.empty() && reservationMapped.vendorOwners.empty());
     require(validVendorCpuSlots(16) && validVendorCpuSlots(32) && validVendorCpuSlots(64));
     for (const auto slots : {0u, 1u, 8u, 15u, 17u, 31u, 33u, 63u, 65u, UINT32_MAX}) require(!validVendorCpuSlots(slots));
     Fake driver;
@@ -553,7 +702,9 @@ int main() {
         require(header(s.dispatch(create(device))).status == -95 && vendor.calls == before);
         vendor.vendorEnabled = true;
         require(header(s.dispatch(create(adapter))).status == -9);
-        for (const auto input : {VendorAllocationDesc{5, desc.priority, 0, 586, 0, 0}, VendorAllocationDesc{4, 0xa0000000, 0, 586, 0, 0},
+        require(validVendorAllocation(VendorAllocationDesc{4, 0xa0000000, 0, 586, 0, 0}) &&
+                validVendorAllocation(VendorAllocationDesc{4, 0xc8000000, 0, 586, 0, 0}));
+        for (const auto input : {VendorAllocationDesc{5, desc.priority, 0, 586, 0, 0}, VendorAllocationDesc{4, 0xc8000001, 0, 586, 0, 0},
                                  VendorAllocationDesc{4, desc.priority, 1, 586, 0, 0}, VendorAllocationDesc{4, desc.priority, 0, 0, 0, 0},
                                  VendorAllocationDesc{4, desc.priority, 0, MaxVendorPrivateBytes + 1, 0, 0},
                                  VendorAllocationDesc{4, desc.priority, 0, 586, 1, 0}, VendorAllocationDesc{4, desc.priority, 0, 586, 0, 1}})
@@ -662,7 +813,7 @@ int main() {
         gpuVa.fail = true; release(allocation); gpuVa.fail = false;
         require(header(s.dispatch(request(Op::MapVendorAllocation, allocation, input))).status == -16);
         require(header(release(allocation)).status == 0);
-        for (std::size_t n = 0; n < MaxAllocatedBytes / MaxAllocation; ++n) {
+        for (std::size_t n = 0; n < MaxVendorMappedPages / MaxVendorMapPages; ++n) {
             const auto id = create(); auto large = input; large.sizePages = MaxVendorMapPages;
             require(header(s.dispatch(request(Op::MapVendorAllocation, id, large))).status == 0);
         }

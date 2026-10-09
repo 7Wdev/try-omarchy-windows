@@ -18,6 +18,15 @@ def main():
     cases += [(['--stdio', '--sync-eof-test'], 'Synchronization EOF control requires'),
               (['--run-qemu', 'qemu', 'firmware', 'kernel', 'image', 'log', '--driver-syncs',
                 '--sync-eof-test', '--hwqueue-eof-test'], 'Synchronization EOF control requires')]
+    owned = ['--run-qemu', 'qemu', 'firmware', 'kernel', 'image', 'log', '--driver-contexts',
+             '--driver-queries', '--driver-allocations', '--driver-gpuva', '--driver-reservation']
+    cases += [(['--stdio', '--driver-reservation'], 'GPU reservation requires'),
+              (['--stdio', '--reservation-eof-test'], 'Reservation EOF control requires'),
+              (['--stdio', '--driver-contexts', '--driver-queries', '--driver-allocations',
+                '--driver-gpuva', '--driver-reservation'], 'GPU reservation requires'),
+              (owned + ['--reservation-eof-test', '--sync-eof-test'], 'Reservation EOF control requires'),
+              (owned + ['--reservation-eof-test', '--cpu-eof-test'], 'Reservation EOF control requires'),
+              (owned + ['--reservation-eof-test', '--driver-submit'], 'Submission requires')]
     for options, message in cases:
         result = subprocess.run([str(args.bridge.resolve()), *options], capture_output=True, text=True,
                                 timeout=5, creationflags=subprocess.CREATE_NO_WINDOW)

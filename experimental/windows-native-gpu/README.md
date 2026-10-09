@@ -10,15 +10,19 @@ context creation, standalone video-memory allocation, GPU-address mapping,
 residency, direct CPU allocation access, hardware queues and synchronization
 objects through QEMU. Physical testing created ten monitored fences (including
 two [CPU-only fences](../../docs/LIVE-CPU-ONLY-FENCES.md)), eight
-mutexes, three hardware queues and 27 allocations. The
+mutexes, three hardware queues and 38 allocations. The
 [allocation retirement route](../../docs/LIVE-ALLOCATION-RETIREMENT.md) reclaimed
-allocations with two queues alive. The object quota is 32; the separate CPU
+allocations with queues alive. The vendor allocation quota is 64 within 128
+total wire objects; the separate CPU
 aperture defaults to 16 slots and supports bounded
 [32/64-slot configurations](../../docs/LIVE-CPU-APERTURE-CAPACITY.md). The
 expanded physical test directly mapped eight slots beyond the old limit with no
 CPU-slot exhaustion. The [bounded command route](../../docs/LIVE-COMMAND-SUBMISSION.md)
-has executed one live runtime initialization command and verified its progress
-fence in Windows and the guest. General command submission remains unfinished. Direct guest
+has executed live runtime initialization commands and verified their progress
+fences in Windows and the guest. The [GPU address reservation route](../../docs/LIVE-GPU-RESERVATION.md)
+now reserves and releases owned ranges, including the live 3 GiB request. GPU-only
+mappings support up to 4 MiB without changing the 1 MiB CPU aperture stride.
+Documented high and maximum allocation priorities are preserved. General command submission remains unfinished. Direct guest
 fence reads, synchronous allocation destruction and acknowledged unmap passed physical testing. Omarchy
 desktop acceleration remains unimplemented. Read the
 [investigation](../../docs/WINDOWS-NVIDIA-BACKEND.md).

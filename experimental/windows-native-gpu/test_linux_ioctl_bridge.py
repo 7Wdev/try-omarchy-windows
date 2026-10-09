@@ -27,6 +27,7 @@ def send(op, handle, value=0, data=b'', padding=0, hello=False, ntstatus=0):
     caps |= 8192 if mode.startswith('hwqueue-') and mode != 'hwqueue-disabled' else 0
     caps |= 16384 if mode.startswith('sync-') and mode != 'sync-disabled' else 0
     caps |= 32768 if mode.startswith('submit-') and mode != 'submit-disabled' else 0
+    caps |= 131072 if mode.startswith('reservation-') and mode != 'reservation-disabled' else 0
     packet += struct.pack('<IIII',1,caps,4318,11352) if hello else struct.pack('<iIQ',ntstatus,0,value) + data
     sys.stdout.buffer.write(struct.pack('<I',len(packet)) + packet)
     sys.stdout.buffer.flush()
@@ -51,6 +52,32 @@ try:
         elif op == 0x2003: send(op,handle)
         elif op == 0x2004: send(op,2)
         elif op == 0x2005: send(op,handle)
+        elif op == 0x2080:
+            assert handle == 1 and len(packet) == 48
+            base, minimum, maximum, size = struct.unpack_from('<4Q',packet,16)
+            assert base == 0 and minimum == 67108864 and maximum == 1 << 40
+            assert size == (4 << 30 if mode == 'reservation-byte-quota' else 65536)
+            count = operations.count(op)
+            failed = mode in ('reservation-nt-failure','reservation-bad-failure')
+            identity = 0 if failed or mode == 'reservation-bad-id' else count + 1
+            address = minimum + count * (4 << 30)
+            if failed or mode == 'reservation-zero': address = 0
+            if mode == 'reservation-alignment': address += 1
+            if mode == 'reservation-range': address = 1 << 48
+            if mode == 'reservation-minimum': address = minimum - 65536
+            if mode == 'reservation-maximum': address = maximum
+            if mode == 'reservation-bad-failure': address = minimum
+            if count == 2 and mode == 'reservation-duplicate': identity = 2
+            if count == 2 and mode == 'reservation-reply-overlap': address = minimum + (4 << 30)
+            send(op,identity,value=address,data=b'X' if mode == 'reservation-long' else b'',
+                 ntstatus=-1073741811 if failed else 259 if mode == 'reservation-bad-status' else 0)
+        elif op == 0x2081:
+            assert handle >= 2 and packet[16:] == struct.pack('<II',1,0)
+            failed = mode == 'reservation-failed-free' and operations.count(op) == 1
+            send(op,0 if mode == 'reservation-free-id' else handle,
+                 value=1 if mode == 'reservation-free-value' else 0,
+                 data=b'X' if mode == 'reservation-free-long' else b'',
+                 ntstatus=-1073741811 if failed else 259 if mode == 'reservation-free-status' else 0)
         elif op == 0x2070:
             mutex = mode in ('sync-mutex', 'sync-failed-destroy', 'sync-mutex-bad-map') or mode.startswith('sync-destroy-')
             no_gpu = mode.startswith('sync-nogpu-')
@@ -103,7 +130,8 @@ try:
             send(op,3,value=1 if mode == 'paging-bad-value' else 0,data=data)
         elif op == 0x2008: send(op,handle)
         elif op == 0x2050:
-            assert handle == 2 and struct.unpack_from('<6I',packet,16) == (4,0x78100000,0,4,0,0)
+            priority = 0xc8000000 if mode == 'allocation-maximum' else 0x78100000
+            assert handle == 2 and struct.unpack_from('<6I',packet,16) == (4,priority,0,4,0,0)
             assert packet[40:] == bytes([37,38,39,40])
             data = bytes([37 ^ 255,38,39,40])
             if mode == 'allocation-short': data = data[:-1]
@@ -147,7 +175,7 @@ if mode == 'reuse': assert operations == [0x2000], operations
 if mode in ('paging-disabled','paging-invalid'): assert 0x2040 not in operations, operations
 if mode == 'paging-no-hub': assert operations[-2:] == [0x2040,0x2008], operations
 if mode in ('allocation-disabled','allocation-invalid'): assert 0x2050 not in operations, operations
-if mode == 'allocation-normal': assert operations.count(0x2051) == 1, operations
+if mode in ('allocation-normal','allocation-maximum'): assert operations.count(0x2051) == 1, operations
 if mode == 'allocation-failed-destroy': assert operations.count(0x2051) == 2, operations
 if mode.startswith('allocation-destroy-'): assert operations.count(0x2051) == 1, operations
 if mode.startswith('gpuva-'): assert operations == [0x2000], operations
@@ -165,6 +193,12 @@ if mode in ('sync-no-hub','sync-nogpu-no-hub'): assert operations[-2:] == [0x207
 if mode == 'sync-mutex' or mode.startswith('sync-destroy-'): assert operations.count(0x2071) == 1, operations
 if mode == 'sync-failed-destroy': assert operations.count(0x2071) == 2, operations
 if mode.startswith('submit-'): assert 0x2062 not in operations, operations
+if mode in ('reservation-disabled','reservation-invalid'): assert 0x2080 not in operations and 0x2081 not in operations, operations
+if mode in ('reservation-normal','reservation-overlap') or mode.startswith('reservation-free-'): assert operations.count(0x2080) == operations.count(0x2081) == 1, operations
+if mode == 'reservation-failed-free': assert operations.count(0x2081) == 2, operations
+if mode == 'reservation-quota': assert operations.count(0x2080) == 8, operations
+if mode == 'reservation-byte-quota': assert operations.count(0x2080) == 4, operations
+if mode in ('reservation-duplicate','reservation-reply-overlap'): assert operations.count(0x2080) == 2, operations
 print('FAKE_WORKER_EOF=true',file=sys.stderr)
 '''
 
@@ -180,7 +214,7 @@ def main():
         for mode in ('no-worker', 'wrong-version', 'reuse', 'bad-reply', 'closed-worker', 'normal',
                      'paging-disabled', 'paging-invalid', 'paging-bad-sync', 'paging-bad-offset',
                      'paging-bad-reserved', 'paging-bad-value', 'paging-short', 'paging-no-hub',
-                     'allocation-normal', 'allocation-disabled', 'allocation-invalid', 'allocation-nt-failure',
+                     'allocation-normal', 'allocation-maximum', 'allocation-disabled', 'allocation-invalid', 'allocation-nt-failure',
                      'allocation-bad-id', 'allocation-bad-va', 'allocation-short', 'allocation-failed-destroy',
                      'allocation-destroy-bad-id', 'allocation-destroy-bad-status', 'allocation-destroy-bad-value', 'allocation-destroy-long',
                      'gpuva-disabled', 'gpuva-invalid', 'resident-disabled', 'resident-invalid',
@@ -199,7 +233,13 @@ def main():
                      'sync-bad-gpu-range', 'sync-short', 'sync-bad-value', 'sync-bad-status', 'sync-no-hub', 'sync-mutex-bad-map',
                      'sync-nogpu-no-hub', 'sync-nogpu-nonzero-gpu', 'sync-nogpu-bad-offset',
                      'sync-destroy-bad-id', 'sync-destroy-bad-value', 'sync-destroy-long', 'sync-destroy-bad-status',
-                     'submit-disabled', 'submit-invalid', 'submit-unowned', 'submit-ignored-pointer'):
+                     'submit-disabled', 'submit-invalid', 'submit-unowned', 'submit-ignored-pointer',
+                     'reservation-normal', 'reservation-failed-free', 'reservation-disabled', 'reservation-invalid',
+                     'reservation-nt-failure', 'reservation-bad-failure', 'reservation-bad-id', 'reservation-zero',
+                     'reservation-alignment', 'reservation-range', 'reservation-minimum', 'reservation-maximum',
+                     'reservation-bad-status', 'reservation-long', 'reservation-free-id', 'reservation-free-status',
+                     'reservation-free-value', 'reservation-free-long', 'reservation-quota', 'reservation-byte-quota',
+                     'reservation-overlap', 'reservation-duplicate', 'reservation-reply-overlap'):
             environment = {k: v for k, v in os.environ.items() if not k.startswith('WDDM_BRIDGE_') and k != 'LD_PRELOAD'}
             environment['LD_PRELOAD'] = str(args.shim.resolve())
             environment['BRIDGE_FAULT_TEST'] = mode
