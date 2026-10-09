@@ -5,6 +5,7 @@ set -euo pipefail
 repo_root=$(cd "$(dirname "$0")/../.." && pwd)
 output=""
 contract_only=0
+source_only=0
 
 while (($#)); do
   case "$1" in
@@ -16,6 +17,10 @@ while (($#)); do
       contract_only=1
       shift
       ;;
+    --source-only)
+      source_only=1
+      shift
+      ;;
     *)
       echo "Unknown argument: $1" >&2
       exit 2
@@ -24,7 +29,7 @@ while (($#)); do
 done
 
 if ((contract_only == 0)) && [[ -z $output ]]; then
-  echo "Usage: $0 --output DIR [--contract-only]" >&2
+  echo "Usage: $0 --output DIR [--contract-only | --source-only]" >&2
   exit 2
 fi
 
@@ -57,6 +62,15 @@ test "$(git -C "$work" rev-parse HEAD)" = "$source_commit"
 git -C "$work" config user.name "Try Omarchy Release"
 git -C "$work" config user.email "actions@users.noreply.github.com"
 git -C "$work" am "$repo_root"/guest-build/*.patch
+
+# Export the patched builder without building an image or running its suites.
+# The shell canary uses its own fetch, materialize and backport scripts.
+if ((source_only)); then
+  [[ -n $output && ! -e $output ]] || { echo "Source output must not exist" >&2; exit 2; }
+  mkdir -p "$(dirname "$output")"
+  mv -- "$work" "$output"
+  exit 0
+fi
 
 # The guest carries the Try Omarchy importer from migrate/: try-omarchy-export
 # runs it and packs it into every export. It is built here rather than kept in

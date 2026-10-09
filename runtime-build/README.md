@@ -168,3 +168,20 @@ failure backoff, idle gating, route fallback and unsigned PCM ring wrap. Windows
 no-microphone menu behavior and physical hotplug remain to verify.
 An endpoint disappearing between enumeration and open can still enter SDL's
 WASAPI retry; this patch avoids the stable empty-inventory case.
+
+The r23 engineering candidate adds
+`0023-show-guest-cursors-in-sdl-windows.patch`. With an absolute pointer and
+`show-cursor=off`, SDL hides the host cursor until the guest defines a sprite.
+It then uses that sprite and hotspot as the native cursor. Guest hide requests,
+transparent definitions and creation failures keep it hidden. Each console
+retains its own pixels and visibility; window entry selects that console's
+cursor, and leaving VM windows restores the native pointer. `show-cursor=on`
+keeps the diagnostic host arrow override.
+
+Sprites up to virtio's 64x64 limit scale with the displayed guest surface:
+letterboxed surfaces use the smaller window scale, and GL scanouts use both
+stretch factors. This uses shared SDL APIs and does not touch other displays.
+The build runs `test-sdl-cursor.py` against the real cursor, grab, fullscreen,
+window-event and window-destruction functions with mocked SDL. Windows motion,
+click alignment, mixed DPI and physical multi-monitor behavior remain to verify
+with the separate guest cursor fix and a built runtime.

@@ -1,0 +1,10 @@
+# Missing hardware/system services in the private container. QML errors always fail.
+WARN quickshell.service.upower: Could not connect to DBus\. UPower service will not work\.
+WARN quickshell.bluetooth: Could not connect to DBus\. Bluetooth integration is not available\.
+WARN quickshell.network.networkmanager: Could not connect to DBus\. NetworkManager backend will not work\.
+ERROR quickshell.network: Network will not work\. Could not find an available backend\.
+ERROR quickshell.service.pipewire.loop: Failed to connect pipewire context\. Errno: 112
+WARN quickshell.service.polkit.listener: failed to create subject for listener: No session for pid [0-9]+
+WARN quickshell.service.polkit: failed to register listener on path "/org/omarchy/PolkitAgent"
+# The probe uses Sway's layer-shell support, with no Hyprland session.
+WARN: \$HYPRLAND_INSTANCE_SIGNATURE is unset\. Cannot connect to hyprland\.
