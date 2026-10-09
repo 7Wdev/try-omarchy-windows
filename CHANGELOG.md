@@ -2,6 +2,9 @@
 
 ## v0.11.0 - 2026-10-09
 
+- Fix the top bar disappearing and Win+K / Win+Space opening black screens
+  after updating Omarchy (#336).
+
 - When the Omarchy system update can't be downloaded, the tray now says so
   instead of failing silently (#277).
 - Choosing the raw VirtIO audio device in Omarchy's audio menu no longer turns

@@ -359,3 +359,13 @@ the routes exist, then continues the volume handshake. Compatibility revision
 56 delivers the corrected bridge to existing disks, including v0.3.0 through
 v0.9.0 guests and disks already at revision 55. Runtime `4.0.4-7` carries the
 matching package release for fresh installations and subsequent updates.
+
+Patch 0143 backports the [upstream Qt 6.12 palette fix](https://github.com/omacom/omarchy/pull/14553)
+to every affected QML file at the pinned Omarchy commit, retaining prior guest
+backports. Patch and target digests remain pinned in the backport registry.
+Compatibility revision 60 delivers the repair before login, after older QML
+installers, and replaces only reviewed old files. It keeps customized, missing,
+linked and already-fixed files, and preserves older supported shell logic.
+The notification and guest-default payloads also use the qualified palette.
+Runtime `4.0.4-9` carries the corrected shell for fresh images and subsequent
+updates. Rebuild the prepared v0.11.0 guest artifacts before release.

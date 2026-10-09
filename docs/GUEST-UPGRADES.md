@@ -81,6 +81,16 @@ mirror for the Windows device that is currently selected; other guest devices
 are left alone. Fresh images carry the same bridge, which the compatibility
 overlay supplies without a runtime package bump or **Update > Omarchy**.
 
+Compatibility revision 60 repairs the shell palette before login after Qt 6.12
+is installed. It fixes the missing top bar and black Win+K / Win+Space menus on
+existing disks, including revision-59 installations. The repair runs after
+older shell repairs and rewrites only files matching reviewed old digests;
+customized, missing, linked and already-fixed files are kept. Older reviewed
+variants receive only the palette namespace change, keeping their shell logic.
+Fresh images carry the same qualified palette references. Runtime `4.0.4-9`
+packages the fix for subsequent **Update > Omarchy** transactions. The prepared
+v0.11.0 guest artifacts must be rebuilt from this fix before release.
+
 If repository publication fails, inspect:
 
 ```sh
