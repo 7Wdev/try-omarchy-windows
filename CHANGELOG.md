@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.11.0 - 2026-10-09
 
 - When the Omarchy system update can't be downloaded, the tray now says so
   instead of failing silently (#277).
@@ -13,6 +13,8 @@
   Microsoft Pinyin is in Chinese mode (#328).
 - Opening the sound menu no longer freezes Omarchy when Windows has no
   microphone (#332).
+- The launcher is fully translated into Korean, and Simplified Chinese covers
+  the tray messages (#318, #327).
 
 ## v0.10.1 - 2026-10-06
 
