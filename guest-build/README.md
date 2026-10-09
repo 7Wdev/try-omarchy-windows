@@ -10,6 +10,13 @@ scripts/release/build-guest.sh --contract-only
 scripts/release/build-guest.sh --output /path/to/artifacts
 ```
 
+Patch 0144 fixes provenance checks when reviewed backports touch the same file.
+The build still verifies each patch's before and after digests in order.
+Provenance keeps those intermediate digests, records the next backport as
+`supersededBy`, requires a continuous digest chain, and verifies the installed
+file against the last backport touching it. This unblocks the v0.11.0 guest
+build after the Qt 6.12 palette backport in #341.
+
 Patches 0121 and 0122 port the everyday guest fixes from Try Omarchy for Mac:
 screensaver text fits the terminal and tracks its effect PID; low disk space
 messages distinguish the guest disk from the PC and point to **Settings >
