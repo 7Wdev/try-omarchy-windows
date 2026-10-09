@@ -1,4 +1,4 @@
-From 9a00df4b65b348933503df1a06133a64f3aa445b Mon Sep 17 00:00:00 2001
+From 6584d892bee49e88bb40b7a0bdf10dbf89bbd959 Mon Sep 17 00:00:00 2001
 From: Tyler South <tsouth2@gmail.com>
 Date: Fri, 9 Oct 2026 07:07:29 -0400
 Subject: [PATCH] Deliver the guest cursor plane safely through updates
@@ -56,7 +56,7 @@ index f75a47c..5b5e17f 100644
  
  WORKDIR /workspace
 diff --git a/guest/README.md b/guest/README.md
-index 02edab5..c26ba67 100644
+index 02edab5..f0e16f4 100644
 --- a/guest/README.md
 +++ b/guest/README.md
 @@ -46,3 +46,36 @@ The output includes the kernel, initramfs, raw and compressed ext4 image,
@@ -70,7 +70,7 @@ index 02edab5..c26ba67 100644
 +`0.15.1-1`. The upstream source archive, hotspot patch and builder digest are
 +in `supplyChain.aquamarine`. The build uses the locked guest compiler, headers,
 +CMake and hyprwayland-scanner, retains Arch's versioned dependencies and
-+`libaquamarine.so=10-64` provide, and checks that Hyprland loads afterward.
++`libaquamarine.so=14-64` provide, and checks that Hyprland loads afterward.
 +Provenance records source/build pins and package/library digests.
 +
 +The local repository stays after Arch. Runtime `4.0.4-10` has a minimum
@@ -534,7 +534,7 @@ index 8320e8e..ceeca26 100755
      if source_digest.exists():
          payload["normalizedUpstreamTree"] = json.loads(source_digest.read_text())
 diff --git a/guest/spec.json b/guest/spec.json
-index 00539c6..7a58880 100644
+index 00539c6..9629144 100644
 --- a/guest/spec.json
 +++ b/guest/spec.json
 @@ -30,7 +30,7 @@
@@ -559,8 +559,8 @@ index 00539c6..7a58880 100644
 +      "sha256": "2f9de98c0bd1b7b1b09c576e390a2fef436449762fb334163c414f0c300296f2",
 +      "patch": "patches/aquamarine/cursor-hotspot.patch",
 +      "patchSha256": "4b57ebb3ac10ed7a91348b49a7ee6fd26bcbd2436cb4dcdac60a6bc15bce0c27",
-+      "soname": "libaquamarine.so.10",
-+      "provide": "libaquamarine.so=10-64",
++      "soname": "libaquamarine.so.14",
++      "provide": "libaquamarine.so=14-64",
 +      "buildPackages": [
 +        "cmake",
 +        "hyprwayland-scanner"
@@ -571,7 +571,7 @@ index 00539c6..7a58880 100644
    "themes": [
 diff --git a/guest/tests/test_aquamarine_contract.py b/guest/tests/test_aquamarine_contract.py
 new file mode 100644
-index 0000000..5927e90
+index 0000000..f7a8268
 --- /dev/null
 +++ b/guest/tests/test_aquamarine_contract.py
 @@ -0,0 +1,86 @@
@@ -608,7 +608,7 @@ index 0000000..5927e90
 +    def test_source_and_build_inputs_match_transaction(self):
 +        pin = contract.validate(self.spec)
 +        self.assertEqual(pin['packageVersion'], pin['archVersion'] + '.1')
-+        self.assertEqual(pin['provide'], 'libaquamarine.so=10-64')
++        self.assertEqual(pin['provide'], 'libaquamarine.so=14-64')
 +
 +    def test_source_version_drift_is_rejected(self):
 +        self.change('version', '0.16.0')
@@ -630,7 +630,7 @@ index 0000000..5927e90
 +                path.write_bytes(original)
 +
 +    def test_soname_and_unlocked_build_tools_are_rejected(self):
-+        self.change('provide', 'libaquamarine.so=11-64')
++        self.change('provide', 'libaquamarine.so=15-64')
 +        with self.assertRaisesRegex(ValueError, 'SONAME'): contract.validate(self.spec)
 +        shutil.copyfile(GUEST / 'spec.json', self.spec)
 +        lock_path = self.base / 'packages.lock.json'
@@ -663,7 +663,7 @@ index 0000000..5927e90
 +        self.assertIn('cat >>"$root/etc/pacman.conf"', repo)
 diff --git a/guest/tests/test_aquamarine_upgrade.py b/guest/tests/test_aquamarine_upgrade.py
 new file mode 100644
-index 0000000..903359c
+index 0000000..e30acf0
 --- /dev/null
 +++ b/guest/tests/test_aquamarine_upgrade.py
 @@ -0,0 +1,130 @@
@@ -708,9 +708,9 @@ index 0000000..903359c
 +[try-omarchy]
 +Server = file://{self.local}
 +''')
-+        self.stock = self.package(self.remote, 'aquamarine', '0.15.1-1', 10)
-+        self.patched = self.package(self.local, 'aquamarine', '0.15.1-1.1', 10)
-+        self.old_hypr = self.package(self.remote, 'hyprland', '1-1', 10, consumer=True)
++        self.stock = self.package(self.remote, 'aquamarine', '0.15.1-1', 14)
++        self.patched = self.package(self.local, 'aquamarine', '0.15.1-1.1', 14)
++        self.old_hypr = self.package(self.remote, 'hyprland', '1-1', 14, consumer=True)
 +        self.old_runtime = self.package(self.local, 'try-omarchy-runtime', '4.0.4-9')
 +        self.package(self.local, 'try-omarchy-runtime', '4.0.4-10', runtime=True)
 +        self.install(self.stock, self.old_hypr, self.old_runtime)
@@ -766,7 +766,7 @@ index 0000000..903359c
 +            self.command('repo-add', str(repository / f'{repository.name}.db.tar.gz'), *(str(p) for p in packages))
 +        self.pacman('-Syy')
 +
-+    def assert_version(self, expected, abi=10):
++    def assert_version(self, expected, abi=14):
 +        self.assertEqual(self.pacman('-Q', 'aquamarine').strip(), f'aquamarine {expected}')
 +        self.pacman('-Dk')
 +        self.command('env', f'LD_LIBRARY_PATH={self.root}/usr/lib', str(self.root / 'usr/bin/hyprland-fixture'))
@@ -780,23 +780,23 @@ index 0000000..903359c
 +
 +    def test_new_arch_release_replaces_rebuild(self):
 +        self.pacman('-Su'); self.assert_version('0.15.1-1.1')
-+        self.package(self.remote, 'aquamarine', '0.15.1-2', 10)
++        self.package(self.remote, 'aquamarine', '0.15.1-2', 14)
 +        self.repositories(); self.pacman('-Su')
 +        self.assert_version('0.15.1-2')
 +
 +    def test_new_soname_and_hyprland_upgrade_together(self):
 +        self.pacman('-Su'); self.assert_version('0.15.1-1.1')
-+        self.package(self.remote, 'aquamarine', '0.16.0-1', 11)
-+        self.package(self.remote, 'hyprland', '2-1', 11, consumer=True)
++        self.package(self.remote, 'aquamarine', '0.16.0-1', 15)
++        self.package(self.remote, 'hyprland', '2-1', 15, consumer=True)
 +        self.repositories(); self.pacman('-Su')
-+        self.assert_version('0.16.0-1', 11)
-+        self.assertFalse((self.root / 'usr/lib/libaquamarine.so.10').exists())
++        self.assert_version('0.16.0-1', 15)
++        self.assertFalse((self.root / 'usr/lib/libaquamarine.so.14').exists())
 +
 +    def test_old_disk_with_new_arch_skips_obsolete_rebuild(self):
-+        self.package(self.remote, 'aquamarine', '0.16.0-1', 11)
-+        self.package(self.remote, 'hyprland', '2-1', 11, consumer=True)
++        self.package(self.remote, 'aquamarine', '0.16.0-1', 15)
++        self.package(self.remote, 'hyprland', '2-1', 15, consumer=True)
 +        self.repositories(); self.pacman('-Su')
-+        self.assert_version('0.16.0-1', 11)
++        self.assert_version('0.16.0-1', 15)
 diff --git a/guest/tests/test_battery_details.py b/guest/tests/test_battery_details.py
 index 03ae873..1b51e57 100644
 --- a/guest/tests/test_battery_details.py
