@@ -40,7 +40,8 @@ jobs:
           # Use the guest's bootstrap image, then fully upgrade it. No package lock.
           image=$(awk '$1 == "FROM" {print $2; exit}' "$RUNNER_TEMP/guest-source/guest/Containerfile")
           set -o pipefail
-          docker run --rm \
+          # pacman's Landlock download sandbox needs syscalls Docker blocks.
+          docker run --rm --security-opt seccomp=unconfined \
             -v "$GITHUB_WORKSPACE:/repo:ro" \
             -v "$RUNNER_TEMP/guest-source:/guest-source:ro" \
             -v "$GITHUB_WORKSPACE/canary-results:/results" \

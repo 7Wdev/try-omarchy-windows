@@ -21,6 +21,7 @@ cp "$guest/spec.json" /results/build-spec.json
 mkdir -p /tmp/root/etc/skel/.config/nvim
 "$guest/scripts/materialize-omarchy.sh" --root /tmp/root --source /tmp/omarchy-source
 python3 "$guest/scripts/apply-omarchy-backports.py" --root /tmp/root --spec "$guest/spec.json"
+cp -a /tmp/root/usr/bin/. /usr/bin/
 if [[ ${UNFIXED_PALETTE:-false} == true ]]; then
   # The real tree is produced above. This proof reverses only the palette fix,
   # verifying every restored preimage against the guest's backport registry.

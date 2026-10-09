@@ -50,8 +50,13 @@ def main():
 
             deadline = time.monotonic() + 20
             while time.monotonic() < deadline:
-                if ipc('shell', 'ping') == 'ok':
-                    break
+                try:
+                    if ipc('shell', 'ping') == 'ok':
+                        break
+                except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+                    # Quickshell has not created its IPC socket yet. Runtime
+                    # failures still stop the loop through the process check.
+                    pass
                 time.sleep(.2)
             else:
                 raise RuntimeError('Shell IPC did not become ready within 20 seconds')
