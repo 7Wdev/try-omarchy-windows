@@ -10,7 +10,10 @@
 namespace driver_bridge {
 using native_gpu::Header;
 constexpr std::uint32_t Version = 1;
-constexpr std::size_t MaxObjects = 128;
+// The live NVIDIA D3D12 runtime needs a fifth paging queue with 127
+// objects already owned. Keep the aggregate cap separate from the tighter
+// per-kind and byte budgets, including two handles per native queue.
+constexpr std::size_t MaxObjects = 256;
 constexpr std::uint32_t MaxAllocation = 1024 * 1024;
 constexpr std::uint32_t MaxAllocatedBytes = 16 * 1024 * 1024;
 constexpr std::uint32_t MaxChunk = 4064;
@@ -20,7 +23,7 @@ constexpr std::uint32_t QueryCapability = 64;
 constexpr std::uint32_t GuestPagingCapability = 128;
 constexpr std::uint32_t VendorAllocationCapability = 256;
 constexpr std::uint32_t MaxVendorPrivateBytes = 4000;
-constexpr std::size_t MaxVendorAllocations = 64;
+constexpr std::size_t MaxVendorAllocations = 96;
 constexpr std::size_t DefaultVendorCpuSlots = 16;
 constexpr std::size_t MaxVendorCpuSlots = 64;
 inline bool validVendorCpuSlots(std::size_t slots) {
@@ -32,14 +35,17 @@ constexpr std::uint32_t VendorCpuCapability = 2048;
 constexpr std::uint32_t VendorTranslationCapability = 4096;
 constexpr std::uint32_t HwQueueCapability = 8192;
 constexpr std::uint32_t SyncCapability = 16384;
-constexpr std::size_t MaxSyncObjects = 64;
+// Synchronization mutexes consume no fence BAR slots. Live queue startup
+// exceeds 64 independent objects while staying inside the 64-page BAR.
+constexpr std::size_t MaxSyncObjects = 96;
+constexpr std::uint32_t NoSignalMaxValueOnTdrSyncFlag = 64;
 constexpr std::uint32_t NoGpuAccessSyncFlag = 128;
 struct SyncDesc { std::uint32_t type, flags, affinity, reserved; std::uint64_t initial; };
 struct SyncReply { std::uint64_t offset, gpuAddress; };
 static_assert(sizeof(SyncDesc) == 24 && sizeof(SyncReply) == 16, "fixed synchronization layouts");
 inline bool validSync(SyncDesc d) {
     return !d.reserved && ((d.type == 1 && !d.flags && !d.affinity && d.initial <= 1) ||
-           (d.type == 5 && (d.flags == 0 || d.flags == NoGpuAccessSyncFlag) && d.affinity <= 1));
+           (d.type == 5 && (d.flags == 0 || d.flags == NoSignalMaxValueOnTdrSyncFlag || d.flags == NoGpuAccessSyncFlag) && d.affinity <= 1));
 }
 constexpr std::size_t MaxHwQueues = 8;
 struct HwQueueDesc { std::uint32_t flags, privateBytes, reserved, reserved2; };
@@ -118,7 +124,11 @@ inline bool validHwSubmit(HwSubmitDesc d) {
 }
 // GPU-only mappings do not consume the separate 1 MiB CPU aperture slots.
 constexpr std::uint32_t MaxVendorMapPages = 4 * MaxAllocation / 4096;
-constexpr std::uint32_t MaxVendorMappedPages = MaxAllocatedBytes / 4096;
+// A successful device occupies almost all of the old 16 MiB GPU map budget;
+// queue startup then needs another 4 MiB allocation. CPU views keep their
+// independent 16 MiB cap and native reported usage keeps its 64 MiB guard.
+constexpr std::uint32_t MaxVendorGpuMappedBytes = 32 * 1024 * 1024;
+constexpr std::uint32_t MaxVendorMappedPages = MaxVendorGpuMappedBytes / 4096;
 struct GpuVaDesc {
     std::uint32_t queue, reserved;
     std::uint64_t base, minimum, maximum, offsetPages, sizePages, protection, driverProtection;
@@ -154,10 +164,14 @@ struct VendorAllocationDesc {
     std::uint32_t flags, priority, source, privateBytes, reserved, reserved2;
 };
 static_assert(sizeof(VendorAllocationDesc) == 24, "fixed vendor allocation layout");
+constexpr std::uint32_t UninitializedDisplaySource = UINT32_MAX;
 inline bool validVendorAllocation(VendorAllocationDesc d) {
     // Standalone video memory only. No primary, stereo, resource sharing,
     // system-memory pointer or host CPU address crosses this interface.
-    return !d.source && !d.reserved && !d.reserved2 && d.privateBytes && d.privateBytes <= MaxVendorPrivateBytes &&
+    // An unset source is allowed for a non-primary allocation. It does not
+    // select a display source and is normalized to NOTAPPLICABLE on Windows.
+    return (d.source == 0 || d.source == UninitializedDisplaySource) &&
+           !d.reserved && !d.reserved2 && d.privateBytes && d.privateBytes <= MaxVendorPrivateBytes &&
            ((d.flags == 0 && d.priority == 0) ||
             (d.flags == 4 && d.priority >= 0x28000000u && d.priority <= 0xc8000000u));
 }
@@ -193,7 +207,7 @@ enum class Op : std::uint32_t {
     CreateDevice, DestroyDevice, CreatePagingQueue, ReadPagingFence, DestroyPagingQueue,
     CreateAllocation = 0x2010, WriteAllocation, ReadAllocation, MakeResident,
     MapAllocation, QueryResidency, DestroyAllocation, CreateSharedAllocation, CopySharedAllocation,
-    CreateContext = 0x2020, DestroyContext,
+    CreateContext = 0x2020, DestroyContext, SetContextInProcessPriority,
     BeginAdapterQuery = 0x2030, WriteAdapterQuery, RunAdapterQuery, ReadAdapterQuery, EndAdapterQuery,
     CreateGuestPagingQueue = 0x2040,
     CreateVendorAllocation = 0x2050, DestroyVendorAllocations, MapVendorAllocation, MakeVendorResident,
@@ -216,6 +230,7 @@ inline bool validContext(ContextDesc d) {
     return d.node < 64 && d.engine == 1 && (d.flags == 0 || d.flags == 16) &&
            d.clientHint == 12 && d.privateBytes;
 }
+inline bool validContextPriority(std::int32_t priority) { return priority == 0 || priority == 1; }
 struct Range { std::uint32_t offset; std::uint32_t size; };
 static_assert(sizeof(Range) == 8, "fixed transfer layout");
 struct GuestRange { std::uint64_t offset; std::uint32_t size; std::uint32_t reserved; };
@@ -248,6 +263,9 @@ public:
     virtual Result queryAdapter(std::uint32_t adapter, QueryDesc desc, std::vector<std::uint8_t>& data) = 0;
     virtual Result createDevice(std::uint32_t adapter) = 0;
     virtual Result createContext(std::uint32_t device, ContextDesc desc, std::vector<std::uint8_t>& data) = 0;
+    virtual Result setContextInProcessPriority(std::uint32_t, std::int32_t) {
+        return {static_cast<std::int32_t>(0xc00000bbu), 0, 0};
+    }
     virtual Result createPagingQueue(std::uint32_t device) = 0;
     virtual Result createVendorAllocation(std::uint32_t, VendorAllocationDesc, std::vector<std::uint8_t>&) {
         return {static_cast<std::int32_t>(0xc00000bbu), 0, 0};
@@ -355,6 +373,7 @@ class Session {
     }
 public:
     explicit Session(Driver& d) : driver(d) {}
+    std::size_t objectCount() const { return objects.size(); }
     Session(const Session&) = delete;
     Session& operator=(const Session&) = delete;
     // A disconnect releases child objects before their parents. The Windows
@@ -443,6 +462,19 @@ public:
             query.executed = true;
             if (query.data.size() != query.desc.bytes) { queries.erase(entry); return reply(h, -5); }
             return reply(h, 0, h.handle, &query.result);
+        }
+        if (op == Op::SetContextInProcessPriority) {
+            if (!negotiated) return reply(h, -71);
+            if (!(driver.capabilities().flags & ContextCapability)) return reply(h, -95);
+            if (packet.size() != sizeof h + sizeof(std::int32_t)) return reply(h, -22);
+            std::int32_t priority{}; std::memcpy(&priority, packet.data() + sizeof h, sizeof priority);
+            if (!validContextPriority(priority)) return reply(h, -22);
+            const auto entry = objects.find(h.handle);
+            if (entry == objects.end() || entry->second.kind != Kind::Context) return reply(h, -9);
+            if (entry->second.contextFlags != 16) return reply(h, -95);
+            const auto result = driver.setContextInProcessPriority(entry->second.nativeHandle, priority);
+            if (result.ntstatus > 0 || result.nativeHandle || result.value) return reply(h, -5);
+            return reply(h, 0, h.handle, &result);
         }
         if (op == Op::CreateContext || op == Op::DestroyContext) {
             if (!negotiated) return reply(h, -71);

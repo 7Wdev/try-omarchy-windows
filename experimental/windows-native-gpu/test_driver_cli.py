@@ -35,6 +35,10 @@ def main():
     cases += [(['--stdio', '--cpu-span-eof-test'], 'CPU span EOF control requires')]
     cases += [(owned + ['--driver-cpu', '--cpu-span-eof-test', control], 'CPU span EOF control requires')
               for control in ('--reservation-eof-test', '--sync-eof-test', '--hwqueue-eof-test', '--cpu-eof-test', '--cpu-store-test', '--gpu-state-eof-test')]
+    cases += [(['--stdio', '--sync-no-max-eof-test'], 'NoSignalMaxValueOnTdr EOF control requires')]
+    cases += [(owned + ['--driver-syncs', '--sync-no-max-eof-test', control], 'NoSignalMaxValueOnTdr EOF control requires')
+              for control in ('--reservation-eof-test', '--sync-eof-test', '--hwqueue-eof-test', '--cpu-eof-test', '--cpu-store-test', '--gpu-state-eof-test', '--cpu-span-eof-test')]
+    cases += [(owned + ['--driver-syncs', '--sync-no-max-eof-test', '--driver-submit'], 'Submission requires')]
     for options, message in cases:
         result = subprocess.run([str(args.bridge.resolve()), *options], capture_output=True, text=True,
                                 timeout=5, creationflags=subprocess.CREATE_NO_WINDOW)

@@ -16,11 +16,32 @@ int main(int argc, char** argv) {
     if (argc != 2) return 2;
     const auto mode = argv[1];
     const auto fd = open("/dev/dxg", O_RDONLY | O_CLOEXEC);
-    if (!std::strcmp(mode, "no-worker") || !std::strcmp(mode, "wrong-version")) {
+    if (!std::strcmp(mode, "no-worker") || !std::strcmp(mode, "wrong-version") || !std::strcmp(mode, "priority-disabled")) {
         if (fd != -1 || errno != (!std::strcmp(mode, "no-worker") ? EINVAL : EPROTO)) return failed("unexpected open result");
         return 0;
     }
     if (fd < 0) return failed("open");
+    if (!std::strncmp(mode, "priority-", 9)) {
+        D3DKMT_SETCONTEXTINPROCESSSCHEDULINGPRIORITY priority{}; priority.hContext = 99;
+        if (std::strcmp(mode, "priority-disabled") && std::strcmp(mode, "priority-unowned")) {
+            D3DKMT_CREATEDEVICE device{}; device.hAdapter = 1; device.Flags.RequestVSync = 1;
+            if (ioctl(fd, _IOWR('G', 2, D3DKMT_CREATEDEVICE), &device)) return failed("priority device");
+            unsigned char data[]{37, 38, 39, 40};
+            D3DKMT_CREATECONTEXTVIRTUAL context{}; context.hDevice = device.hDevice;
+            context.NodeOrdinal = 0; context.EngineAffinity = 1; context.Flags.Value = 16;
+            context.ClientHint = static_cast<D3DKMT_CLIENTHINT>(12); context.pPrivateDriverData = data; context.PrivateDriverDataSize = sizeof data;
+            if (ioctl(fd, _IOWR('G', 4, D3DKMT_CREATECONTEXTVIRTUAL), &context)) return failed("priority context");
+            priority.hContext = context.hContext;
+        }
+        const bool normal = !std::strcmp(mode, "priority-normal");
+        priority.Priority = !std::strcmp(mode, "priority-invalid") ? 2 : 1;
+        const auto result = ioctl(fd, _IOWR('G', 47, D3DKMT_SETCONTEXTINPROCESSSCHEDULINGPRIORITY), &priority);
+        const auto expected = !std::strcmp(mode, "priority-disabled") ? ENOSYS : !std::strcmp(mode, "priority-unowned") ? EBADF :
+            !std::strcmp(mode, "priority-invalid") ? EINVAL : !std::strcmp(mode, "priority-nt-failure") ? EINVAL : EPROTO;
+        if (normal ? result != 0 : result != -1 || errno != expected) return failed("priority forwarding and reply validation");
+        if (!normal && expected == EPROTO && (open("/dev/dxg", O_RDONLY) != -1 || errno != EIO)) return failed("priority broken transport reused");
+        return 0;
+    }
     if (!std::strncmp(mode, "gpu-state-", 10)) {
         D3DDDI_MAPGPUVIRTUALADDRESS mapping{}; mapping.hPagingQueue = 3; mapping.BaseAddress = 67108864;
         mapping.SizeInPages = 16; mapping.Protection.Value = 5;
@@ -171,8 +192,9 @@ int main(int argc, char** argv) {
         if (mutex) create.Info.SynchronizationMutex.InitialState = 1;
         else { create.Info.MonitoredFence.InitialFenceValue = 42; create.Info.MonitoredFence.EngineAffinity = 1; }
         if (!std::strncmp(mode, "sync-nogpu-", 11)) create.Info.Flags.NoGPUAccess = 1;
+        if (!std::strncmp(mode, "sync-nomax-", 11)) create.Info.Flags.NoSignalMaxValueOnTdr = 1;
         if (!std::strcmp(mode, "sync-invalid")) {
-            for (unsigned n = 0; n < 12; ++n) {
+            for (unsigned n = 0; n < 15; ++n) {
                 auto invalid = create;
                 switch (n) {
                     case 0: invalid.Info.Flags.Value = 1; break;
@@ -186,6 +208,9 @@ int main(int argc, char** argv) {
                     case 8: invalid.Info.Type = D3DDDI_SYNCHRONIZATION_MUTEX; invalid.Info.Flags.NoGPUAccess = 1; break;
                     case 9: invalid.Info.Flags.Value = 129; break;
                     case 10: invalid.Info.Flags.Value = 256; break;
+                    case 11: invalid.Info.Type = D3DDDI_SYNCHRONIZATION_MUTEX; invalid.Info.Flags.NoSignalMaxValueOnTdr = 1; break;
+                    case 12: invalid.Info.Flags.Value = 192; break;
+                    case 13: invalid.Info.Flags.Value = 65; break;
                     default: invalid.Info.SharedHandle = 123; break;
                 }
                 const auto expected = n < 4 || n >= 8 ? EINVAL : n < 6 ? ENOSYS : EBADF;
@@ -210,7 +235,7 @@ int main(int argc, char** argv) {
             }
         } else {
             const auto expected = !std::strcmp(mode, "sync-disabled") ? ENOSYS : !std::strcmp(mode, "sync-nt-failure") ? EINVAL :
-                                  (!std::strcmp(mode, "sync-no-hub") || !std::strcmp(mode, "sync-nogpu-no-hub")) ? EIO : EPROTO;
+                                  (!std::strcmp(mode, "sync-no-hub") || !std::strcmp(mode, "sync-nogpu-no-hub") || !std::strcmp(mode, "sync-nomax-no-hub")) ? EIO : EPROTO;
             if (ioctl(fd, _IOWR('G', 16, D3DKMT_CREATESYNCHRONIZATIONOBJECT2), &create) != -1 || errno != expected || create.hSyncObject || create.Info.SharedHandle ||
                 (!mutex && (create.Info.MonitoredFence.FenceValueCPUVirtualAddress || create.Info.MonitoredFence.FenceValueGPUVirtualAddress)))
                 return failed("sync malformed response");
@@ -402,6 +427,7 @@ int main(int argc, char** argv) {
         D3DKMT_CREATEALLOCATION allocation{}; allocation.hDevice = device.hDevice; allocation.NumAllocations = 1;
         allocation.pAllocationInfo2 = &info;
         if (!std::strcmp(mode, "allocation-maximum")) info.Priority = D3DDDI_ALLOCATIONPRIORITY_MAXIMUM;
+        if (!std::strcmp(mode, "allocation-uninitialized-source")) info.VidPnSourceId = D3DDDI_ID_UNINITIALIZED;
         if (!std::strcmp(mode, "allocation-invalid")) {
             info.pSystemMem = data;
             if (ioctl(fd, _IOWR('G', 6, D3DKMT_CREATEALLOCATION), &allocation) != -1 || errno != EINVAL) return failed("guest CPU pointer accepted");
@@ -409,16 +435,24 @@ int main(int argc, char** argv) {
             if (ioctl(fd, _IOWR('G', 6, D3DKMT_CREATEALLOCATION), &allocation) != -1 || errno != EINVAL) return failed("reserved input accepted");
             info.Reserved[0] = 0; info.Priority = 0xc8000001;
             if (ioctl(fd, _IOWR('G', 6, D3DKMT_CREATEALLOCATION), &allocation) != -1 || errno != EINVAL) return failed("out-of-range priority accepted");
-            info.Priority = 0x78100000; allocation.hResource = 999;
+            info.Priority = 0x78100000; info.VidPnSourceId = 1;
+            if (ioctl(fd, _IOWR('G', 6, D3DKMT_CREATEALLOCATION), &allocation) != -1 || errno != EINVAL) return failed("display source accepted");
+            info.VidPnSourceId = D3DDDI_ID_ANY;
+            if (ioctl(fd, _IOWR('G', 6, D3DKMT_CREATEALLOCATION), &allocation) != -1 || errno != EINVAL) return failed("any display source accepted");
+            info.VidPnSourceId = D3DDDI_ID_UNINITIALIZED; info.Flags.Value = 5;
+            if (ioctl(fd, _IOWR('G', 6, D3DKMT_CREATEALLOCATION), &allocation) != -1 || errno != EINVAL) return failed("primary unset source accepted");
+            info.VidPnSourceId = 0; info.Flags.Value = 4; allocation.hResource = 999;
             if (ioctl(fd, _IOWR('G', 6, D3DKMT_CREATEALLOCATION), &allocation) != -1 || errno != ENOSYS) return failed("resource accepted");
         } else if (!std::strcmp(mode, "allocation-disabled")) {
             if (ioctl(fd, _IOWR('G', 6, D3DKMT_CREATEALLOCATION), &allocation) != -1 || errno != ENOSYS) return failed("disabled allocation accepted");
         } else if (!std::strcmp(mode, "allocation-nt-failure")) {
             if (ioctl(fd, _IOWR('G', 6, D3DKMT_CREATEALLOCATION), &allocation) != -1 || errno != EINVAL ||
                 data[0] != (37 ^ 255) || info.hAllocation) return failed("native failure lost in/out");
-        } else if (!std::strcmp(mode, "allocation-normal") || !std::strcmp(mode, "allocation-maximum") || !std::strcmp(mode, "allocation-failed-destroy") || !std::strncmp(mode, "allocation-destroy-", 19)) {
+        } else if (!std::strcmp(mode, "allocation-normal") || !std::strcmp(mode, "allocation-maximum") || !std::strcmp(mode, "allocation-uninitialized-source") || !std::strcmp(mode, "allocation-failed-destroy") || !std::strncmp(mode, "allocation-destroy-", 19)) {
             if (ioctl(fd, _IOWR('G', 6, D3DKMT_CREATEALLOCATION), &allocation) || info.hAllocation != 3 || info.GpuVirtualAddress ||
                 data[0] != (37 ^ 255) || allocation.hResource || allocation.hGlobalShare) return failed("allocation response");
+            if (!std::strcmp(mode, "allocation-uninitialized-source") && info.VidPnSourceId != D3DDDI_ID_UNINITIALIZED)
+                return failed("guest display source mutated");
             D3DKMT_HANDLE duplicates[]{3, 3};
             D3DKMT_DESTROYALLOCATION2 release{}; release.hDevice = device.hDevice; release.phAllocationList = duplicates;
             release.AllocationCount = 2;

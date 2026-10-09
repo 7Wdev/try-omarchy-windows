@@ -8,6 +8,20 @@ using driver_cpu::Lease;
 static void require(bool good) { if (!good) throw std::runtime_error("CPU aperture regression"); }
 template<class F> static void rejected(F fn) { bool threw = false; try { fn(); } catch (const std::runtime_error&) { threw = true; } require(threw); }
 int main() {
+    using driver_cpu::validNativeAllocationView;
+    require(validNativeAllocationView(0x10000, 4096, 0x10000, 4096));
+    require(validNativeAllocationView(0x10000, 4096, 0x10000, 1966080));
+    require(validNativeAllocationView(0x11000, 16384, 0x10000, 1966080));
+    require(validNativeAllocationView(0x11000, 16384, 0x10000, 20480));
+    require(!validNativeAllocationView(0x11000, 16384, 0x10000, 20479));
+    require(!validNativeAllocationView(0x10000, 4096, 0x11000, 8192));
+    require(!validNativeAllocationView(0x10001, 4096, 0x10000, 8192));
+    require(!validNativeAllocationView(0x10000, 4097, 0x10000, 8192));
+    require(!validNativeAllocationView(0x10000, 0, 0x10000, 8192));
+    require(!validNativeAllocationView(0x10000, 4198400, 0x10000, 4198400));
+    require(!validNativeAllocationView((1ull << 47) - 4096, 8192, (1ull << 47) - 4096, 8192));
+    require(!validNativeAllocationView(0x10000, 4096, 0x10000, UINT64_MAX));
+    require(!validNativeAllocationView(0x10000, 4096, 0, 8192));
     constexpr std::uint32_t stride = 1048576, largeBytes = 272 * 4096;
     using Chunk = std::tuple<std::uint32_t, std::uint64_t, std::uint32_t, std::uint64_t>;
     std::vector<Chunk> mapped;

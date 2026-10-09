@@ -1,42 +1,33 @@
 # Native Windows GPU experiment
 
-Host renderer and partial WDDM allocation bridge for the 7Wdev fork. A QEMU/WHPX
-Linux guest creates Windows GPU allocations, transfers bounded data, makes
-them resident and maps GPU addresses. Shared guest RAM and bounded, fenced GPU
-copies passed physical acceptance. Opt-in virtual context lifecycle support is
-also tested, including locally captured Linux NVIDIA initialization data.
-Live NVIDIA Linux runtime initialization now reaches native paging and graphics
-context creation, standalone video-memory allocation, GPU-address mapping,
-residency, direct CPU allocation access, hardware queues and synchronization
-objects through QEMU. The latest physical testing created 42 monitored fences
-(including 34 [CPU-only fences](../../docs/LIVE-CPU-ONLY-FENCES.md)), eight
-mutexes, three hardware queues and 42 allocations. The
-[allocation retirement route](../../docs/LIVE-ALLOCATION-RETIREMENT.md) reclaimed
-allocations with queues alive. The vendor allocation quota is 64 within 128
-total wire objects; the separate CPU
-aperture defaults to 16 slots and supports bounded
-[32/64-slot configurations](../../docs/LIVE-CPU-APERTURE-CAPACITY.md). The
-expanded physical test directly mapped twelve slots beyond the old limit with no
-CPU-slot exhaustion. The [bounded command route](../../docs/LIVE-COMMAND-SUBMISSION.md)
-has executed live runtime initialization commands and verified their progress
-fences in Windows and the guest. The [GPU address reservation route](../../docs/LIVE-GPU-RESERVATION.md)
-now reserves and releases owned ranges, including the live 3 GiB request. GPU-only
-mappings support up to 4 MiB without changing the 1 MiB CPU aperture stride.
-Documented high and maximum allocation priorities are preserved.
-The [GPU address-state route](../../docs/LIVE-GPU-ADDRESS-STATE.md) also passes
-null-allocation Zero mappings of 4 MiB, 1 GiB and 128 KiB to Windows, verifies
-their paging fences and replaces fully covered allocation mappings after
-command retirement. This address-only state has a separate reservation budget;
-the physical mapping and CPU slot limits still apply. The
-[contiguous CPU view route](../../docs/LIVE-CPU-ALLOCATION-SPANS.md) maps a
-272-page native view across two slots, with direct reads and restored writes
-at both ends. Views are bounded to 4 MiB within the existing 16 MiB CPU-byte
-budget; the synchronization pool supports 64 objects. D3D12 device creation
-still returns `80070057`; copy queue creation has not been reached.
-General command submission remains unfinished. Direct guest fence reads,
-synchronous allocation destruction and acknowledged unmap passed physical testing. Omarchy
-desktop acceleration remains unimplemented. Read the
-[investigation](../../docs/WINDOWS-NVIDIA-BACKEND.md).
+Experimental Windows NVIDIA driver bridge for the 7Wdev fork. The genuine Linux
+NVIDIA runtime in an owned QEMU/WHPX guest now passes
+[full D3D12 device and copy queue initialization](../../docs/LIVE-D3D12-INITIALIZATION.md).
+Both return `00000000`, with normal probe/VM exit and verified native cleanup.
+Two normal RTX 5090 Laptop runs create 67 allocations, 46 direct CPU views, four
+hardware queues, 50 monitored fences and 16 mutexes. Two bounded initialization
+commands retire at fences 5 and 17. This does not establish accelerated Omarchy,
+the requested APIs or the minimum 93% native performance.
+
+The bridge preserves source sentinels, TDR fence flags, native allocation
+subranges and verified in-process context priority. GPU mappings have a separate
+32 MiB cap; CPU views retain their 16 MiB live-byte cap and 4 MiB per-view limit.
+The [CPU aperture](../../docs/LIVE-CPU-APERTURE-CAPACITY.md) defaults to 16 slots
+and supports 32/64 slots. [Contiguous views](../../docs/LIVE-CPU-ALLOCATION-SPANS.md)
+span adjacent slots without a QEMU rebuild. Native pools allow 96 allocations,
+96 independent synchronization objects and 256 aggregate wire objects; the
+read-only fence BAR remains 64 pages. Hardware acceptance includes repeat, owned
+VM exit, old-guest, capacity-rejection and restored CPU write controls.
+
+[Allocation retirement](../../docs/LIVE-ALLOCATION-RETIREMENT.md),
+[bounded command submission](../../docs/LIVE-COMMAND-SUBMISSION.md),
+[GPU reservations](../../docs/LIVE-GPU-RESERVATION.md) and
+[Zero address state](../../docs/LIVE-GPU-ADDRESS-STATE.md) preserve ownership and
+verify native progress. General submission, asynchronous queues, signal/wait,
+eviction, guest kernel/DRM support and presentation remain unfinished. The
+launcher does not select the experiment. Read the
+[investigation](../../docs/WINDOWS-NVIDIA-BACKEND.md) and
+[product acceptance gates](../../docs/PRODUCT-ACCEPTANCE.md).
 
 Requirements: x64 Windows 10/11, NVIDIA GPU with D3D12, Visual Studio C++ Build
 Tools and Windows SDK. The QMP controller uses the pinned MIT nlohmann/json

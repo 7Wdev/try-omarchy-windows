@@ -6,6 +6,20 @@
 #include <stdexcept>
 
 namespace driver_cpu {
+// Lock2 owns the allocation backing store. The requested byte count comes
+// from a successful native GPU mapping of this allocation at offset zero;
+// VirtualQuery may coalesce several backing stores into one committed region.
+// Prove containment of that bounded allocation view without exporting the
+// rest of the region. Memory type/protection are checked by the Windows owner.
+inline bool validNativeAllocationView(std::uint64_t source, std::uint32_t bytes,
+                                      std::uint64_t regionBase, std::uint64_t regionBytes) {
+    constexpr std::uint64_t limit = 1ull << 47;
+    return source && source % 4096 == 0 && bytes && bytes % 4096 == 0 &&
+        bytes <= driver_bridge::MaxVendorCpuMappingBytes && source <= limit - bytes &&
+        regionBase && regionBase % 4096 == 0 && regionBase <= source && regionBase < limit &&
+        regionBytes >= bytes && regionBytes <= limit - regionBase &&
+        source - regionBase <= regionBytes - bytes;
+}
 struct Lease { std::uint32_t slot, bytes; std::uint64_t generation, offset; };
 // One CPU view may span adjacent existing 1 MiB QEMU slots. Each native
 // mapping/unmapping receives its own generation and acknowledgement.

@@ -16,6 +16,7 @@ def get(n):
 def send(op, handle, value=0, data=b'', padding=0, hello=False, ntstatus=0):
     packet = struct.pack('<IIiI',op,handle,0,padding)
     caps = 103 | (128 if mode.startswith('paging-') and mode != 'paging-disabled' else 0)
+    if mode == 'priority-disabled': caps &= ~32
     caps |= 256 if mode.startswith('allocation-') and mode != 'allocation-disabled' else 0
     caps |= 256 if mode.startswith('gpuva-') else 0
     caps |= 512 if mode == 'gpuva-invalid' else 0
@@ -54,6 +55,12 @@ try:
         elif op == 0x2003: send(op,handle)
         elif op == 0x2004: send(op,2)
         elif op == 0x2005: send(op,handle)
+        elif op == 0x2022:
+            assert handle == 3 and packet[16:] == struct.pack('<i',1)
+            send(op,99 if mode == 'priority-bad-id' else handle,
+                 value=1 if mode == 'priority-bad-value' else 0,
+                 data=b'X' if mode == 'priority-long' else b'',
+                 ntstatus=-1073741811 if mode == 'priority-nt-failure' else 259 if mode == 'priority-bad-status' else 0)
         elif op == 0x2080:
             assert handle == 1 and len(packet) == 48
             base, minimum, maximum, size = struct.unpack_from('<4Q',packet,16)
@@ -83,11 +90,12 @@ try:
         elif op == 0x2070:
             mutex = mode in ('sync-mutex', 'sync-failed-destroy', 'sync-mutex-bad-map') or mode.startswith('sync-destroy-')
             no_gpu = mode.startswith('sync-nogpu-')
-            assert handle == 2 and packet[16:] == struct.pack('<IIIIQ',1 if mutex else 5,128 if no_gpu else 0,0 if mutex else 1,0,1 if mutex else 42)
+            no_max = mode.startswith('sync-nomax-')
+            assert handle == 2 and packet[16:] == struct.pack('<IIIIQ',1 if mutex else 5,128 if no_gpu else 64 if no_max else 0,0 if mutex else 1,0,1 if mutex else 42)
             failed = mode in ('sync-nt-failure','sync-bad-failure')
             identity = 0 if failed or mode == 'sync-bad-id' else 3
             offset = 0 if failed or mutex else 1 if mode == 'sync-bad-alignment' else 262144 if mode == 'sync-bad-offset' else 8192
-            gpu = 0 if failed or mutex or mode == 'sync-zero-gpu' else 65537 if mode == 'sync-bad-gpu-alignment' else 1 << 48 if mode == 'sync-bad-gpu-range' else 65536
+            gpu = 0 if failed or mutex or mode in ('sync-zero-gpu','sync-nomax-zero-gpu') else 65537 if mode == 'sync-bad-gpu-alignment' else 1 << 48 if mode == 'sync-bad-gpu-range' else 65536
             if no_gpu: gpu = 65536 if mode == 'sync-nogpu-nonzero-gpu' else 0
             if mode == 'sync-nogpu-bad-offset': offset = 262144
             if mode in ('sync-bad-failure', 'sync-mutex-bad-map'): offset = 8192
@@ -133,7 +141,8 @@ try:
         elif op == 0x2008: send(op,handle)
         elif op == 0x2050:
             priority = 0xc8000000 if mode == 'allocation-maximum' else 0x78100000
-            assert handle == 2 and struct.unpack_from('<6I',packet,16) == (4,priority,0,4,0,0)
+            source = 0xffffffff if mode == 'allocation-uninitialized-source' else 0
+            assert handle == 2 and struct.unpack_from('<6I',packet,16) == (4,priority,source,4,0,0)
             assert packet[40:] == bytes([37,38,39,40])
             data = bytes([37 ^ 255,38,39,40])
             if mode == 'allocation-short': data = data[:-1]
@@ -217,7 +226,7 @@ def main():
         for mode in ('no-worker', 'wrong-version', 'reuse', 'bad-reply', 'closed-worker', 'normal',
                      'paging-disabled', 'paging-invalid', 'paging-bad-sync', 'paging-bad-offset',
                      'paging-bad-reserved', 'paging-bad-value', 'paging-short', 'paging-no-hub',
-                     'allocation-normal', 'allocation-maximum', 'allocation-disabled', 'allocation-invalid', 'allocation-nt-failure',
+                     'allocation-normal', 'allocation-maximum', 'allocation-uninitialized-source', 'allocation-disabled', 'allocation-invalid', 'allocation-nt-failure',
                      'allocation-bad-id', 'allocation-bad-va', 'allocation-short', 'allocation-failed-destroy',
                      'allocation-destroy-bad-id', 'allocation-destroy-bad-status', 'allocation-destroy-bad-value', 'allocation-destroy-long',
                      'gpuva-disabled', 'gpuva-invalid', 'gpu-state-disabled', 'gpu-state-invalid', 'gpu-state-unowned', 'resident-disabled', 'resident-invalid',
@@ -235,6 +244,9 @@ def main():
                      'sync-bad-id', 'sync-bad-alignment', 'sync-bad-offset', 'sync-zero-gpu', 'sync-bad-gpu-alignment',
                      'sync-bad-gpu-range', 'sync-short', 'sync-bad-value', 'sync-bad-status', 'sync-no-hub', 'sync-mutex-bad-map',
                      'sync-nogpu-no-hub', 'sync-nogpu-nonzero-gpu', 'sync-nogpu-bad-offset',
+                     'sync-nomax-no-hub', 'sync-nomax-zero-gpu',
+                     'priority-normal', 'priority-disabled', 'priority-unowned', 'priority-invalid', 'priority-nt-failure',
+                     'priority-bad-id', 'priority-bad-value', 'priority-long', 'priority-bad-status',
                      'sync-destroy-bad-id', 'sync-destroy-bad-value', 'sync-destroy-long', 'sync-destroy-bad-status',
                      'submit-disabled', 'submit-invalid', 'submit-unowned', 'submit-ignored-pointer',
                      'reservation-normal', 'reservation-failed-free', 'reservation-disabled', 'reservation-invalid',

@@ -155,7 +155,7 @@ class Runtime {
     bool stopped = false, failed = false;
     std::filesystem::path logfile;
 public:
-    Runtime(unsigned short driverPort, const qemu_fence::Paths& paths, bool enableCpu = false, bool cpuStoreTest = false, bool cpuEofTest = false, bool hwQueueEofTest = false, std::size_t cpuSlots = driver_bridge::DefaultVendorCpuSlots, bool syncEofTest = false, bool reservationEofTest = false, bool gpuStateEofTest = false, bool cpuSpanEofTest = false)
+    Runtime(unsigned short driverPort, const qemu_fence::Paths& paths, bool enableCpu = false, bool cpuStoreTest = false, bool cpuEofTest = false, bool hwQueueEofTest = false, std::size_t cpuSlots = driver_bridge::DefaultVendorCpuSlots, bool syncEofTest = false, bool reservationEofTest = false, bool gpuStateEofTest = false, bool cpuSpanEofTest = false, bool syncNoMaxEofTest = false)
         : allocationSlots(cpuSlots), allocationAperture(cpuSlots), allocationsEnabled(enableCpu), logfile(std::filesystem::absolute(paths.log)) {
         if (!driver_bridge::validVendorCpuSlots(cpuSlots) || (!enableCpu && cpuSlots != driver_bridge::DefaultVendorCpuSlots))
             throw std::runtime_error("Invalid configured allocation aperture capacity");
@@ -190,6 +190,7 @@ public:
             L"-initrd", std::filesystem::absolute(paths.initramfs).wstring(), L"-append",
             cpuStoreTest ? L"console=ttyS0 rdinit=/init panic=1 wddm_cpu_store_test=1" :
             syncEofTest ? L"console=ttyS0 rdinit=/init panic=1 wddm_sync_eof_test=1" :
+            syncNoMaxEofTest ? L"console=ttyS0 rdinit=/init panic=1 wddm_sync_no_max_eof_test=1" :
             reservationEofTest ? L"console=ttyS0 rdinit=/init panic=1 wddm_reservation_eof_test=1" :
             gpuStateEofTest ? L"console=ttyS0 rdinit=/init panic=1 wddm_gpu_state_eof_test=1" :
             cpuSpanEofTest ? L"console=ttyS0 rdinit=/init panic=1 wddm_cpu_span_eof_test=1" :
@@ -257,6 +258,7 @@ public:
     bool cleanExit() const { return stopped && !failed && !process.forced && process.exit == 0; }
     bool hasStopped() const { return stopped; }
     unsigned liveMappings() const { return mapped; }
+    bool canMapFence() const { return !stopped && generation != UINT64_MAX && mapped < leases.size(); }
     std::size_t allocationSlotLimit() const { return allocationSlots; }
     bool canMapAllocation(std::uint32_t bytes) const { return allocationsEnabled && !stopped && allocationAperture.canMap(bytes); }
     AllocationLease mapAllocation(void* data, std::uint32_t bytes) {

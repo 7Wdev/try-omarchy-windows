@@ -515,6 +515,8 @@ public:
                 }
                 item.hAllocation = alias; item.GpuVirtualAddress = result.result.value;
                 a.hResource = 0; a.hGlobalShare = 0;
+                if (desc.source == UninitializedDisplaySource)
+                    std::fprintf(stderr, "LINUX_BRIDGE standaloneSourceUninitializedAccepted=true primary=false privateDataPreserved=true\n");
                 std::fprintf(stderr, "LINUX_BRIDGE nativeVendorAllocationCreated=true privateBytes=%u\n", desc.privateBytes); return 0;
             }
             case 19: {
@@ -906,11 +908,29 @@ public:
                 }
                 std::fprintf(stderr, "LINUX_BRIDGE nativeSynchronizationCreated=true type=%u flags=%u gpuMapped=%u\n",
                              desc.type, desc.flags, output.gpuAddress ? 1u : 0u);
+                const auto noMaxEofTest = std::getenv("WDDM_BRIDGE_SYNC_NO_MAX_EOF_TEST");
+                if (desc.flags == NoSignalMaxValueOnTdrSyncFlag && noMaxEofTest && std::strcmp(noMaxEofTest, "1") == 0) {
+                    std::fprintf(stderr, "LINUX_BRIDGE syncNoMaxEofTest=true exitingWithNoMaxFenceOwned=true\n"); _exit(1);
+                }
                 const auto eofTest = std::getenv("WDDM_BRIDGE_SYNC_EOF_TEST");
                 if (desc.flags == NoGpuAccessSyncFlag && eofTest && std::strcmp(eofTest, "1") == 0) {
                     std::fprintf(stderr, "LINUX_BRIDGE syncEofTest=true exitingWithNoGpuAccessFenceOwned=true\n");
                     _exit(1);
                 }
+                return 0;
+            }
+            case 47: {
+                const auto& a = args<D3DKMT_SETCONTEXTINPROCESSSCHEDULINGPRIORITY>(requestNumber, pointer);
+                const auto owner = contextOwners.find(a.hContext);
+                std::fprintf(stderr, "LINUX_BRIDGE contextPriorityInput priority=%d ownedContext=%u inProcessOnly=true\n", a.Priority, owner != contextOwners.end() ? 1u : 0u);
+                if (!(caps.flags & ContextCapability)) throw Error(ENOSYS);
+                if (!validContextPriority(a.Priority)) throw Error(EINVAL);
+                if (owner == contextOwners.end()) throw Error(EBADF);
+                if (owner->second.flags != 16) throw Error(ENOSYS);
+                const auto result = call(request(Op::SetContextInProcessPriority, a.hContext, static_cast<std::int32_t>(a.Priority)), 0, true);
+                if (result.header.handle != a.hContext || result.result.value || result.result.ntstatus > 0) { transport.fail(); throw Error(EPROTO); }
+                checkNt(result.result.ntstatus);
+                std::fprintf(stderr, "LINUX_BRIDGE nativeContextPriorityChanged=true priority=%d inProcessOnly=true\n", a.Priority);
                 return 0;
             }
             case 29: {

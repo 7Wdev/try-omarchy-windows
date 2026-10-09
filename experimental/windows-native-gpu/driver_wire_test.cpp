@@ -11,6 +11,12 @@ static Header header(const std::vector<std::uint8_t>& p) {
 struct Fake : Driver {
     int calls = 0; std::uint32_t next = 500; bool fail = false, shortRead = false, badContextReply = false;
     bool contextsEnabled = true;
+    int badContextPriorityReply = 0;
+    Result setContextInProcessPriority(std::uint32_t context, std::int32_t priority) override {
+        require(context > 500 && validContextPriority(priority)); ++calls;
+        return {fail ? -123 : badContextPriorityReply == 1 ? 259 : 0,
+                badContextPriorityReply == 2 ? 501u : 0u, badContextPriorityReply == 3 ? 1ull : 0ull};
+    }
     bool queriesEnabled = true, badQueryReply = false;
     bool guestPagingEnabled = false;
     int badPagingReply = 0;
@@ -825,8 +831,11 @@ int main() {
         vendor.vendorEnabled = true;
         require(header(s.dispatch(create(adapter))).status == -9);
         require(validVendorAllocation(VendorAllocationDesc{4, 0xa0000000, 0, 586, 0, 0}) &&
-                validVendorAllocation(VendorAllocationDesc{4, 0xc8000000, 0, 586, 0, 0}));
+                validVendorAllocation(VendorAllocationDesc{4, 0xc8000000, 0, 586, 0, 0}) &&
+                validVendorAllocation(VendorAllocationDesc{4, desc.priority, UninitializedDisplaySource, 586, 0, 0}));
         for (const auto input : {VendorAllocationDesc{5, desc.priority, 0, 586, 0, 0}, VendorAllocationDesc{4, 0xc8000001, 0, 586, 0, 0},
+                                 VendorAllocationDesc{5, desc.priority, UninitializedDisplaySource, 586, 0, 0},
+                                 VendorAllocationDesc{4, desc.priority, UINT32_MAX - 1, 586, 0, 0},
                                  VendorAllocationDesc{4, desc.priority, 1, 586, 0, 0}, VendorAllocationDesc{4, desc.priority, 0, 0, 0, 0},
                                  VendorAllocationDesc{4, desc.priority, 0, MaxVendorPrivateBytes + 1, 0, 0},
                                  VendorAllocationDesc{4, desc.priority, 0, 586, 1, 0}, VendorAllocationDesc{4, desc.priority, 0, 586, 0, 1}})
@@ -845,7 +854,7 @@ int main() {
         vendor.badVendorReply = 0;
         const auto first = header(s.dispatch(create(device))).handle;
         require(first == 3); // failed allocations never consume successful object IDs
-        const auto second = header(s.dispatch(create(device))).handle;
+        const auto second = header(s.dispatch(create(device, VendorAllocationDesc{4, desc.priority, UninitializedDisplaySource, 586, 0, 0}))).handle;
         const auto other = header(s.dispatch(request(Op::CreateDevice, adapter))).handle;
         before = vendor.calls;
         require(header(s.dispatch(request(Op::ReadAllocation, first, Range{0, 4}))).status == -9);
@@ -1261,8 +1270,17 @@ int main() {
         std::memcpy(&view, out.data() + sizeof(Header) + sizeof body, sizeof view);
         require(cpuFence && view.offset == 8192 && !view.gpuAddress && synchronization.lastSyncDesc.flags == NoGpuAccessSyncFlag);
         require(header(s.dispatch(request(Op::DestroySync, cpuFence))).status == 0);
+        const auto noMaxRequest = request(Op::CreateSync, device, SyncDesc{5, NoSignalMaxValueOnTdrSyncFlag, 0, 0, 42});
+        synchronization.badSyncReply = 6; // A GPU-accessible fence must have a valid GPU address.
+        require(header(s.dispatch(noMaxRequest)).status == -5 && synchronization.syncParents.size() == 1);
+        synchronization.badSyncReply = 0;
+        out = s.dispatch(noMaxRequest); const auto noMaxFence = header(out).handle;
+        std::memcpy(&view, out.data() + sizeof(Header) + sizeof body, sizeof view);
+        require(noMaxFence && view.offset == 8192 && view.gpuAddress == 65536 &&
+                synchronization.lastSyncDesc.flags == NoSignalMaxValueOnTdrSyncFlag && synchronization.lastSyncDesc.initial == 42);
+        require(header(s.dispatch(request(Op::DestroySync, noMaxFence))).status == 0);
         for (std::uint32_t flags = 0; flags < 1024; ++flags) {
-            require(validSync({5, flags, 0, 0, 0}) == (flags == 0 || flags == NoGpuAccessSyncFlag));
+            require(validSync({5, flags, 0, 0, 0}) == (flags == 0 || flags == NoSignalMaxValueOnTdrSyncFlag || flags == NoGpuAccessSyncFlag));
             require(validSync({1, flags, 0, 0, 0}) == (flags == 0));
         }
         for (std::size_t n = 1; n < MaxSyncObjects; ++n)
@@ -1352,6 +1370,42 @@ int main() {
         require(header(s.dispatch(submitPacket(submitQueue, submitNext))).status == -24 && submission.calls == submitBefore);
     }
     require(submission.hwQueueParents.empty() && submission.vendorOwners.empty());
+    Fake priorityDriver;
+    {
+        Session s(priorityDriver);
+        auto priorityPacket = request(Op::SetContextInProcessPriority, 99, std::int32_t{0});
+        require(header(s.dispatch(priorityPacket)).status == -71); s.dispatch(hello());
+        priorityDriver.contextsEnabled = false;
+        require(header(s.dispatch(priorityPacket)).status == -95); priorityDriver.contextsEnabled = true;
+        require(header(s.dispatch(priorityPacket)).status == -9);
+        const auto a = header(s.dispatch(request(Op::OpenAdapter))).handle;
+        const auto d = header(s.dispatch(request(Op::CreateDevice, a))).handle;
+        auto contextPacket = request(Op::CreateContext, d, ContextDesc{0, 1, 16, 12, 4, 0});
+        contextPacket.insert(contextPacket.end(), {1, 2, 3, 4});
+        const auto context = header(s.dispatch(contextPacket)).handle;
+        const auto before = priorityDriver.calls;
+        for (const auto invalid : {INT32_MIN, -1, 2, 7, INT32_MAX})
+            require(header(s.dispatch(request(Op::SetContextInProcessPriority, context, invalid))).status == -22);
+        require(header(s.dispatch(request(Op::SetContextInProcessPriority, d, std::int32_t{0}))).status == -9);
+        require(header(s.dispatch(request(Op::SetContextInProcessPriority, context))).status == -22);
+        priorityPacket = request(Op::SetContextInProcessPriority, context, std::int32_t{0}); priorityPacket.push_back(0);
+        require(header(s.dispatch(priorityPacket)).status == -22 && priorityDriver.calls == before);
+        priorityPacket.pop_back();
+        priorityDriver.fail = true; auto out = s.dispatch(priorityPacket); Reply body{};
+        std::memcpy(&body, out.data() + sizeof(Header), sizeof body);
+        require(header(out).status == 0 && body.ntstatus == -123 && header(out).handle == context);
+        priorityDriver.fail = false;
+        for (int bad = 1; bad <= 3; ++bad) {
+            priorityDriver.badContextPriorityReply = bad;
+            require(header(s.dispatch(priorityPacket)).status == -5);
+        }
+        priorityDriver.badContextPriorityReply = 0;
+        require(header(s.dispatch(priorityPacket)).status == 0);
+        require(header(s.dispatch(request(Op::SetContextInProcessPriority, context, std::int32_t{1}))).status == 0);
+        require(header(s.dispatch(request(Op::DestroyContext, context))).status == 0);
+        const auto afterDestroy = priorityDriver.calls;
+        require(header(s.dispatch(priorityPacket)).status == -9 && priorityDriver.calls == afterDestroy);
+    }
     Fake pagingQuota; pagingQuota.guestPagingEnabled = true;
     {
         Session s(pagingQuota); s.dispatch(hello());
@@ -1359,8 +1413,24 @@ int main() {
         const auto d = header(s.dispatch(request(Op::CreateDevice, a))).handle;
         for (std::size_t n = 0; n < (MaxObjects - 2) / 2; ++n)
             require(header(s.dispatch(request(Op::CreateGuestPagingQueue, d))).handle != 0);
+        require(s.objectCount() == MaxObjects);
         const auto before = pagingQuota.calls;
         require(header(s.dispatch(request(Op::CreateGuestPagingQueue, d))).status == -24 && pagingQuota.calls == before);
+    }
+    // A two-handle queue cannot consume the last singleton slot. Retiring
+    // that singleton opens exactly two slots, without lifting the aggregate cap.
+    {
+        Session s(pagingQuota); s.dispatch(hello());
+        const auto a = header(s.dispatch(request(Op::OpenAdapter))).handle;
+        const auto d = header(s.dispatch(request(Op::CreateDevice, a))).handle;
+        for (std::size_t n = 0; n < (MaxObjects - 4) / 2; ++n)
+            require(header(s.dispatch(request(Op::CreateGuestPagingQueue, d))).handle != 0);
+        const auto spare = header(s.dispatch(request(Op::OpenAdapter))).handle;
+        require(spare && s.objectCount() == MaxObjects - 1);
+        const auto before = pagingQuota.calls;
+        require(header(s.dispatch(request(Op::CreateGuestPagingQueue, d))).status == -24 && pagingQuota.calls == before);
+        require(header(s.dispatch(request(Op::CloseAdapter, spare))).status == 0 && s.objectCount() == MaxObjects - 2);
+        require(header(s.dispatch(request(Op::CreateGuestPagingQueue, d))).handle != 0 && s.objectCount() == MaxObjects);
     }
     Fake malformed; Session s(malformed); s.dispatch(hello());
     auto p = request(Op::OpenAdapter); p.push_back(0);
