@@ -1,4 +1,4 @@
-From 6584d892bee49e88bb40b7a0bdf10dbf89bbd959 Mon Sep 17 00:00:00 2001
+From 91a13daedf45b86390cfb267c3c8c9cef390ac16 Mon Sep 17 00:00:00 2001
 From: Tyler South <tsouth2@gmail.com>
 Date: Fri, 9 Oct 2026 07:07:29 -0400
 Subject: [PATCH] Deliver the guest cursor plane safely through updates
@@ -14,7 +14,7 @@ Subject: [PATCH] Deliver the guest cursor plane safely through updates
  guest/patches/aquamarine/cursor-hotspot.patch |  36 +++++
  guest/scripts/aquamarine-contract.py          |  48 +++++++
  guest/scripts/finalize-rootfs.sh              |   4 +-
- guest/scripts/register-aquamarine.sh          | 108 +++++++++++++++
+ guest/scripts/register-aquamarine.sh          | 111 +++++++++++++++
  guest/scripts/register-local-repository.sh    |  18 ++-
  guest/scripts/register-omarchy-runtime.sh     |  11 +-
  guest/scripts/write-provenance.py             |   6 +
@@ -35,7 +35,7 @@ Subject: [PATCH] Deliver the guest cursor plane safely through updates
  guest/tests/test_windows_volume_sync.py       |   2 +-
  guest/tests/test_write_provenance.py          |  22 +++
  guest/tests/verify.py                         |   7 +-
- 31 files changed, 583 insertions(+), 32 deletions(-)
+ 31 files changed, 586 insertions(+), 32 deletions(-)
  create mode 100644 guest/patches/aquamarine/cursor-hotspot.patch
  create mode 100755 guest/scripts/aquamarine-contract.py
  create mode 100755 guest/scripts/register-aquamarine.sh
@@ -351,10 +351,10 @@ index 05cdcea..046c988 100755
  # Fail the build if DKMS or networking modules were not packaged for this kernel.
 diff --git a/guest/scripts/register-aquamarine.sh b/guest/scripts/register-aquamarine.sh
 new file mode 100755
-index 0000000..59b11a6
+index 0000000..569ce89
 --- /dev/null
 +++ b/guest/scripts/register-aquamarine.sh
-@@ -0,0 +1,108 @@
+@@ -0,0 +1,111 @@
 +#!/bin/bash
 +# Managed same-name rebuild. Arch stays ahead of the local repository so a
 +# newer Arch package always wins, including a new SONAME required by Hyprland.
@@ -403,7 +403,10 @@ index 0000000..59b11a6
 +  chmod 0644 "$temporary"
 +  mv "$temporary" "$source_archive"
 +fi
-+stage=$(mktemp -d "$root/tmp/try-omarchy-aquamarine.XXXXXX")
++# arch-chroot mounts a private /tmp. Stage under /var/tmp so the source and
++# install tree remain visible across its mount setup and teardown.
++install -d -m1777 "$root/var/tmp"
++stage=$(mktemp -d "$root/var/tmp/try-omarchy-aquamarine.XXXXXX")
 +cleanup() { rm -rf "$stage"; }
 +trap cleanup EXIT
 +relative=${stage#"$root"}
@@ -534,7 +537,7 @@ index 8320e8e..ceeca26 100755
      if source_digest.exists():
          payload["normalizedUpstreamTree"] = json.loads(source_digest.read_text())
 diff --git a/guest/spec.json b/guest/spec.json
-index 00539c6..9629144 100644
+index 00539c6..8824906 100644
 --- a/guest/spec.json
 +++ b/guest/spec.json
 @@ -30,7 +30,7 @@
@@ -565,7 +568,7 @@ index 00539c6..9629144 100644
 +        "cmake",
 +        "hyprwayland-scanner"
 +      ],
-+      "builderSha256": "7f11c75ab3c54e7b649cc56e068678ab7a1d597a64f2e31c2352922504a397eb"
++      "builderSha256": "1e3633613be6f092dc8ca20c566eb556925f8a70f1e47fa68e8533d3445c5c33"
      }
    },
    "themes": [
