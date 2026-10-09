@@ -4,6 +4,7 @@ import argparse
 import json
 from pathlib import Path
 import re
+from hyprctl_fixture import QUERIES
 
 ALLOWLIST = Path(__file__).with_name('warnings.allowlist')
 FATAL = re.compile(r'TypeError|ReferenceError|SyntaxError|is not a type|'
@@ -33,6 +34,11 @@ def main():
     failures = errors(log_path.read_text(errors='replace') if log_path.exists() else '', ALLOWLIST.read_text())
     probe_path = args.results / 'probe.json'
     probe = json.loads(probe_path.read_text()) if probe_path.exists() else {}
+    fixture_log = args.results / 'hyprctl-fixture.log'
+    if fixture_log.exists():
+        for query in fixture_log.read_text().splitlines():
+            if tuple(json.loads(query)) not in QUERIES:
+                failures.append('Unsupported headless hyprctl query: ' + query)
     if not probe.get('success'):
         failures.append(probe.get('error', 'Shell probe did not finish; see setup.log'))
         setup_path = args.results / 'setup.log'

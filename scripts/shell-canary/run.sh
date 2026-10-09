@@ -53,7 +53,7 @@ chown -R canary:canary /home/canary /tmp/canary-runtime
 chmod 0777 /results
 chmod 700 /tmp/canary-runtime
 mkdir -p /tmp/canary-bin
-install -m 0755 /repo/scripts/shell-canary/hyprctl-fixture.py /tmp/canary-bin/hyprctl
+install -m 0755 /repo/scripts/shell-canary/hyprctl_fixture.py /tmp/canary-bin/hyprctl
 runuser -u canary -- env HOME=/home/canary XDG_RUNTIME_DIR=/tmp/canary-runtime \
   PATH=/tmp/canary-bin:/usr/bin \
   OMARCHY_PATH=/tmp/root/usr/share/omarchy QT_QPA_PLATFORM=wayland \
