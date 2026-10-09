@@ -8,7 +8,7 @@ and 16 allocations. All objects and mappings were released cleanly. The
 pins the tested sources, binaries and three physical cases.
 
 This implements synchronization object lifetime and direct fence reads.
-Signal/wait operations, GPU command submission, eviction, general allocation
+Signal/wait operations, general GPU command submission, eviction, general allocation
 lifetimes and desktop integration remain unfinished. D3D12 device creation
 still returns `80004005`, and the diagnostic still reaches its 16-allocation
 limit. No accelerated Omarchy desktop or near-native performance is claimed.
@@ -72,9 +72,11 @@ require four monitored fences and eight mutexes, with one allocation/queue.
 Use a fresh report path for every run. The locally packed NVIDIA runtime image
 and private driver bytes must remain local.
 
-The next observed command request is an owned hardware queue, a 4 KiB GPU
+The subsequent [bounded command route](LIVE-COMMAND-SUBMISSION.md) executes the
+initialization command and verifies its retirement. The synchronization-only
+cases recorded here reject submission. Their observed request is an owned hardware queue, a 4 KiB GPU
 command buffer, 1,880 private bytes, no primaries and progress fence value 5.
-It is logged as metadata and rejected as unsupported ioctl 52; the bridge does
-not execute that request yet. GPU signal/wait behavior, fence advancement under
+Those recorded cases log it as metadata and reject it as unsupported ioctl 52.
+GPU signal/wait behavior, fence advancement under
 guest submission, timeout/reset recovery and sustained desktop rendering are
 not verified by these object-lifetime tests.

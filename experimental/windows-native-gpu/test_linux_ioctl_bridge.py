@@ -26,6 +26,7 @@ def send(op, handle, value=0, data=b'', padding=0, hello=False, ntstatus=0):
     caps |= 4096 if mode.startswith('translation-') and mode != 'translation-disabled' else 0
     caps |= 8192 if mode.startswith('hwqueue-') and mode != 'hwqueue-disabled' else 0
     caps |= 16384 if mode.startswith('sync-') and mode != 'sync-disabled' else 0
+    caps |= 32768 if mode.startswith('submit-') and mode != 'submit-disabled' else 0
     packet += struct.pack('<IIII',1,caps,4318,11352) if hello else struct.pack('<iIQ',ntstatus,0,value) + data
     sys.stdout.buffer.write(struct.pack('<I',len(packet)) + packet)
     sys.stdout.buffer.flush()
@@ -155,6 +156,7 @@ if mode in ('sync-disabled','sync-invalid'): assert 0x2070 not in operations and
 if mode == 'sync-no-hub': assert operations[-2:] == [0x2070,0x2071], operations
 if mode == 'sync-mutex' or mode.startswith('sync-destroy-'): assert operations.count(0x2071) == 1, operations
 if mode == 'sync-failed-destroy': assert operations.count(0x2071) == 2, operations
+if mode.startswith('submit-'): assert 0x2062 not in operations, operations
 print('FAKE_WORKER_EOF=true',file=sys.stderr)
 '''
 
@@ -186,7 +188,8 @@ def main():
                      'sync-mutex', 'sync-failed-destroy', 'sync-disabled', 'sync-invalid', 'sync-nt-failure', 'sync-bad-failure',
                      'sync-bad-id', 'sync-bad-alignment', 'sync-bad-offset', 'sync-zero-gpu', 'sync-bad-gpu-alignment',
                      'sync-bad-gpu-range', 'sync-short', 'sync-bad-value', 'sync-bad-status', 'sync-no-hub', 'sync-mutex-bad-map',
-                     'sync-destroy-bad-id', 'sync-destroy-bad-value', 'sync-destroy-long', 'sync-destroy-bad-status'):
+                     'sync-destroy-bad-id', 'sync-destroy-bad-value', 'sync-destroy-long', 'sync-destroy-bad-status',
+                     'submit-disabled', 'submit-invalid', 'submit-unowned', 'submit-ignored-pointer'):
             environment = {k: v for k, v in os.environ.items() if not k.startswith('WDDM_BRIDGE_') and k != 'LD_PRELOAD'}
             environment['LD_PRELOAD'] = str(args.shim.resolve())
             environment['BRIDGE_FAULT_TEST'] = mode

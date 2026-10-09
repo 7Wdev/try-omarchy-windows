@@ -40,6 +40,8 @@ def main():
     parser.add_argument('--driver-syncs', action='store_true')
     parser.add_argument('--minimum-monitored-fences', type=int, default=0)
     parser.add_argument('--minimum-sync-mutexes', type=int, default=0)
+    parser.add_argument('--driver-submit', action='store_true')
+    parser.add_argument('--minimum-submissions', type=int, default=0)
     parser.add_argument('--expected-allocation-limit', type=int, default=0, help='Require the observed diagnostic allocation-count boundary')
     parser.add_argument('--cpu-store-test', action='store_true', help='Explicit first/last-word diagnostic stores, checked and restored by Windows')
     parser.add_argument('--cpu-eof-test', action='store_true', help='Exit the guest probe while it owns the CPU lock; require VM-exit-first native teardown')
@@ -68,6 +70,10 @@ def main():
         parser.error('CPU EOF control requires CPU locks and a separate run from store control')
     if args.hwqueue_eof_test and (not args.driver_hwqueues or args.cpu_eof_test or args.cpu_store_test):
         parser.error('Hardware queue EOF control requires hardware queues and a separate diagnostic run')
+    if args.minimum_submissions < 0 or (args.minimum_submissions and not args.driver_submit) or (
+            args.driver_submit and (not args.driver_hwqueues or not args.driver_syncs or not args.driver_cpu or not args.driver_residency or
+                                    args.cpu_store_test or args.cpu_eof_test or args.hwqueue_eof_test)):
+        parser.error('Submission requires queues, syncs, CPU mappings and residency in a separate diagnostic run')
     if sys.platform != 'win32':
         parser.error('Run on the Windows NVIDIA host')
     for path in (args.qemu, args.kernel, args.initramfs, args.bridge):
@@ -91,6 +97,7 @@ def main():
                              (['--driver-translation'] if args.driver_translation else []) +
                              (['--driver-hwqueues'] if args.driver_hwqueues else []) +
                              (['--driver-syncs'] if args.driver_syncs else []) +
+                             (['--driver-submit'] if args.driver_submit else []) +
                              (['--cpu-store-test'] if args.cpu_store_test else []) + (['--cpu-eof-test'] if args.cpu_eof_test else []) +
                              (['--hwqueue-eof-test'] if args.hwqueue_eof_test else []),
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
@@ -168,7 +175,12 @@ def main():
         allocation_limit_rejections = log.count('LINUX_BRIDGE ioctlFailed nr=6 errno=24')
         map_retirements = [r for r in retirements if r['operation'] == 'gpuva']
         resident_retirements = [r for r in retirements if r['operation'] == 'residency']
-        accepted_stage_marker = ('nativeHwQueueCreated=true' if args.driver_hwqueues else
+        command_retirements = [r for r in retirements if r['operation'] == 'command']
+        submissions = [{'bytes': int(b), 'privateBytes': int(p), 'target': int(t), 'observed': int(o)} for b, p, t, o in
+                       re.findall(r'nativeCommandSubmitted=true bytes=(\d+) privateBytes=(\d+) target=(\d+) observed=(\d+)', log)]
+        submission_preflight = [json.loads(line) for line in errors if line.startswith('{') and 'nativeSubmissionPreflight' in line]
+        accepted_stage_marker = ('nativeCommandSubmitted=true' if args.driver_submit else
+                                 'nativeHwQueueCreated=true' if args.driver_hwqueues else
                                  'nativeVendorCpuLocked=true' if args.driver_cpu else
                                  'nativeVendorResident=true' if args.driver_residency else
                                  'nativeVendorGpuVaMapped=true' if args.driver_gpuva else
@@ -220,6 +232,16 @@ def main():
                         (not guest_eof or not sync_destroyed) and
                         len(sync_destroyed) + cleanup.get('syncObjectsReleasedAfterVmExit', 0) == len(sync_types) and
                         (guest_eof or sorted(sync_destroyed) == sorted(sync_types)))
+        if args.driver_submit:
+            accepted = (accepted and len(submissions) >= args.minimum_submissions and 52 not in unsupported and
+                        cleanup.get('commandSubmissionOptIn') is True and cleanup.get('completedNativeSubmissions') == len(submissions) and
+                        cleanup.get('nativeSubmissionAttempts') == len(submissions) and cleanup.get('failedNativeSubmissions') == 0 and
+                        cleanup.get('nativeSubmissionTimeouts') == 0 and cleanup.get('submittedCommandBytes') == sum(s['bytes'] for s in submissions) and
+                        len(submission_preflight) == len(submissions) and
+                        all(p['initialFence'] < p['targetFence'] and p['targetFence'] == s['target'] for p, s in zip(submission_preflight, submissions)) and
+                        len(command_retirements) == len(submissions) and
+                        all(s['observed'] >= s['target'] and r['observed'] >= r['target'] and s['target'] == r['target']
+                            for s, r in zip(submissions, command_retirements)))
         if args.driver_residency:
             accepted = (accepted and len(residency) >= args.minimum_vendor_residency_requests and 11 not in unsupported and
                         all(r['count'] > 0 and r['status'] in (0, 259) for r in residency) and
@@ -274,6 +296,9 @@ def main():
                   'synchronizationOptIn': args.driver_syncs, 'nativeSynchronizationTypesCreated': sync_types,
                   'nativeSynchronizationTypesDestroyedByGuest': sync_destroyed, 'directMonitoredFences': monitored_fences,
                   'minimumMonitoredFencesRequired': args.minimum_monitored_fences, 'minimumSynchronizationMutexesRequired': args.minimum_sync_mutexes,
+                  'commandSubmissionOptIn': args.driver_submit, 'nativeCommandSubmissions': submissions,
+                  'nativeCommandPreflightChecks': submission_preflight,
+                  'minimumSubmissionsRequired': args.minimum_submissions, 'directCommandRetirementChecks': command_retirements,
                   'vendorGpuVaOptIn': args.driver_gpuva, 'nativeVendorGpuVaMappings': gpuva,
                   'directGuestPagingRetirementChecks': retirements,
                   'minimumVendorGpuVaMappingsRequired': args.minimum_vendor_gpuva_maps,
@@ -297,6 +322,7 @@ def main():
                   'privateRuntimeImageRedistributable': False, 'kernelSha256': sha256(args.kernel),
                   'initramfsSha256': sha256(args.initramfs), 'driverBridgeSha256': sha256(args.bridge), 'qemuSha256': sha256(args.qemu),
                   'guestArbitraryGpuCommandSubmissionImplemented': False,
+                  'boundedNativeCommandSubmissionVerified': bool(args.driver_submit and accepted and submissions),
                   'guestDesktopAcceleratedByThisBackend': False, 'nearNativePerformanceMeasured': False}
         args.report.write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8', newline='\n')
         args.report.with_suffix('.host.log').write_text(''.join(output + errors), encoding='utf-8', newline='\n')

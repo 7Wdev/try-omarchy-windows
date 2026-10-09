@@ -10,8 +10,9 @@ context creation, standalone video-memory allocation, GPU-address mapping,
 residency, direct CPU allocation access, hardware queues and synchronization
 objects through QEMU. Physical testing created eight monitored fences, eight
 mutexes, three hardware queues and 16 allocations before
-the diagnostic allocation-count limit; guest command submission is still
-unsupported. Direct guest
+the diagnostic allocation-count limit. The [bounded command route](../../docs/LIVE-COMMAND-SUBMISSION.md)
+has executed one live runtime initialization command and verified its progress
+fence in Windows and the guest. General command submission remains unfinished. Direct guest
 fence reads, synchronous allocation destruction and acknowledged unmap passed physical testing. Omarchy
 desktop acceleration remains unimplemented. Read the
 [investigation](../../docs/WINDOWS-NVIDIA-BACKEND.md).
@@ -73,8 +74,14 @@ including subregions inside larger reservations. Live runtime writes reached
 eight views. The [live synchronization route](../../docs/LIVE-SYNCHRONIZATION-BRIDGE.md)
 adds `--driver-syncs`, typed monitored-fence/mutex ownership, direct fence reads,
 acknowledged destruction and native cleanup after abrupt guest exit.
-General allocation layouts, synchronization signal/wait operations, command submission,
+The separate `--driver-submit` route validates ownership, residency and a
+retained CPU command mapping before native submission. It synchronously waits
+for retirement as a diagnostic; production queues must preserve asynchronous
+execution and overlap. General allocation layouts, synchronization signal/wait operations,
 scanout and desktop integration remain unfinished.
+The [product acceptance gates](../../docs/PRODUCT-ACCEPTANCE.md) require CUDA,
+OpenGL, Vulkan, video acceleration, a stable interactive Omarchy desktop and at
+least 93% of native performance. No current test proves those gates.
 
 The framing reference is pinned in `sources.json`. No upstream implementation
 is vendored from virtio-nvgpu; these new files use the repository's MIT license.

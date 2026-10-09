@@ -218,6 +218,8 @@ class Bridge {
     unsigned counts[256]{}, completedQueries = 0, privateQueries = 0, contexts = 0;
     std::map<int, std::pair<dev_t, ino_t>> descriptors;
     std::map<std::uint32_t, std::uint32_t> vendorOwners;
+    struct VendorGpuRange { std::uint64_t address, bytes; };
+    std::map<std::uint32_t, VendorGpuRange> vendorGpuRanges;
     std::map<std::uint32_t, std::uint32_t> vendorWireIds, deviceAdapters;
     std::map<std::uint32_t, std::uint32_t> pagingOwners;
     struct Context { std::uint32_t device, flags; };
@@ -532,7 +534,7 @@ public:
                 packet.insert(packet.end(), begin, begin + a.AllocationCount * sizeof(wireIds[0]));
                 const auto result = call(packet);
                 if (result.header.handle != a.hDevice || result.result.value) { transport.fail(); throw Error(EPROTO); }
-                for (unsigned n = 0; n < a.AllocationCount; ++n) { vendorOwners.erase(a.phAllocationList[n]); vendorWireIds.erase(a.phAllocationList[n]); }
+                for (unsigned n = 0; n < a.AllocationCount; ++n) { vendorOwners.erase(a.phAllocationList[n]); vendorWireIds.erase(a.phAllocationList[n]); vendorGpuRanges.erase(a.phAllocationList[n]); }
                 std::fprintf(stderr, "LINUX_BRIDGE nativeVendorAllocationsDestroyed=true count=%u\n", a.AllocationCount); return 0;
             }
             case 11: {
@@ -600,6 +602,7 @@ public:
                     (result.result.ntstatus < 0 && (result.result.value || fence.fence))) { transport.fail(); throw Error(EPROTO); }
                 checkNt(result.result.ntstatus);
                 pagingFences.verifyRetired(a.hPagingQueue, fence.fence, "gpuva");
+                vendorGpuRanges.emplace(a.hAllocation, VendorGpuRange{result.result.value, desc.sizePages * 4096});
                 a.VirtualAddress = result.result.value; a.PagingFenceValue = fence.fence;
                 std::fprintf(stderr, "LINUX_BRIDGE nativeVendorGpuVaMapped=true pages=%llu status=%d fence=%llu\n",
                              static_cast<unsigned long long>(desc.sizePages), result.result.ntstatus, static_cast<unsigned long long>(fence.fence));
@@ -799,11 +802,48 @@ public:
             }
             case 52: {
                 auto& a = args<D3DKMT_SUBMITCOMMANDTOHWQUEUE>(requestNumber, pointer);
-                std::fprintf(stderr, "LINUX_BRIDGE submitInput ownedQueue=%u commandBytes=%u privateBytes=%u primaries=%u hasCommand=%u hasPrivateData=%u fence=%llu\n",
+                unsigned commandOwners = 0, commandCpuLocked = 0;
+                std::uint64_t commandOffset = 0, mappedBytes = 0;
+                const auto queue = hwQueueContexts.find(a.hHwQueue);
+                if (queue != hwQueueContexts.end()) {
+                    const auto device = contextOwners.at(queue->second).device;
+                    for (const auto& range : vendorGpuRanges) {
+                        if (vendorOwners.at(range.first) != device || a.CommandBuffer < range.second.address) continue;
+                        const auto offset = a.CommandBuffer - range.second.address;
+                        if (offset > range.second.bytes || a.CommandLength > range.second.bytes - offset) continue;
+                        ++commandOwners; commandOffset = offset; mappedBytes = range.second.bytes;
+                        if (cpuLocks.count(range.first)) ++commandCpuLocked;
+                    }
+                }
+                std::fprintf(stderr, "LINUX_BRIDGE submitInput ownedQueue=%u commandBytes=%u privateBytes=%u primaries=%u hasCommand=%u hasPrivateData=%u hasPrimariesPointer=%u fence=%llu\n",
                              hwQueueContexts.count(a.hHwQueue) ? 1u : 0u, a.CommandLength, a.PrivateDriverDataSize, a.NumPrimaries,
-                             a.CommandBuffer ? 1u : 0u, a.pPrivateDriverData ? 1u : 0u,
+                             a.CommandBuffer ? 1u : 0u, a.pPrivateDriverData ? 1u : 0u, a.WrittenPrimaries ? 1u : 0u,
                              static_cast<unsigned long long>(a.HwQueueProgressFenceId));
-                std::fprintf(stderr, "LINUX_BRIDGE unsupported nr=52 bytes=%zu\n", sizeof a); throw Error(ENOSYS);
+                std::fprintf(stderr, "LINUX_BRIDGE submitOwnership commandOwners=%u commandCpuLocked=%u commandOffset=%llu mappedBytes=%llu addressAlignment=%llu lengthAlignment=%u\n",
+                             commandOwners, commandCpuLocked, static_cast<unsigned long long>(commandOffset), static_cast<unsigned long long>(mappedBytes),
+                             static_cast<unsigned long long>(a.CommandBuffer % 4096), a.CommandLength % 4096);
+                if (!(caps.flags & HwSubmitCapability)) {
+                    std::fprintf(stderr, "LINUX_BRIDGE unsupported nr=52 bytes=%zu\n", sizeof a); throw Error(ENOSYS);
+                }
+                const HwSubmitDesc desc{a.CommandBuffer, a.HwQueueProgressFenceId, a.CommandLength, a.PrivateDriverDataSize, a.NumPrimaries, 0};
+                // With zero primaries the pointer is ignored, as in dxgkrnl;
+                // it is never read or forwarded to the native process.
+                if (!validHwSubmit(desc) || (desc.privateBytes && !a.pPrivateDriverData)) throw Error(EINVAL);
+                if (queue == hwQueueContexts.end() || commandOwners != 1 || commandCpuLocked != 1) throw Error(EBADF);
+                auto packet = request(Op::SubmitHwQueue, a.hHwQueue, desc);
+                if (desc.privateBytes) {
+                    const auto data = static_cast<const std::uint8_t*>(a.pPrivateDriverData);
+                    packet.insert(packet.end(), data, data + desc.privateBytes);
+                }
+                const auto result = call(packet, 0, true);
+                if (result.header.handle != a.hHwQueue || result.result.ntstatus > 0 ||
+                    (result.result.ntstatus == 0 && (result.result.value < desc.fence || result.result.value == UINT64_MAX)) ||
+                    (result.result.ntstatus < 0 && result.result.value)) { transport.fail(); throw Error(EPROTO); }
+                checkNt(result.result.ntstatus);
+                hwQueueFences.verifyRetired(a.hHwQueue, desc.fence, "command");
+                std::fprintf(stderr, "LINUX_BRIDGE nativeCommandSubmitted=true bytes=%u privateBytes=%u target=%llu observed=%llu\n",
+                             desc.bytes, desc.privateBytes, static_cast<unsigned long long>(desc.fence), static_cast<unsigned long long>(result.result.value));
+                return 0;
             }
             case 27: {
                 auto& a = args<D3DKMT_DESTROYHWQUEUE>(requestNumber, pointer);

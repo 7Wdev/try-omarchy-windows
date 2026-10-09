@@ -20,6 +20,40 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (fd < 0) return failed("open");
+    if (!std::strncmp(mode, "submit-", 7)) {
+        unsigned char data[]{37, 38, 39, 40};
+        D3DKMT_SUBMITCOMMANDTOHWQUEUE submit{}; submit.hHwQueue = 999; submit.CommandBuffer = 65536;
+        submit.CommandLength = 4096; submit.PrivateDriverDataSize = sizeof data; submit.pPrivateDriverData = data;
+        submit.HwQueueProgressFenceId = 5;
+        if (!std::strcmp(mode, "submit-ignored-pointer"))
+            submit.WrittenPrimaries = reinterpret_cast<const D3DKMT_HANDLE*>(1);
+        if (!std::strcmp(mode, "submit-invalid")) {
+            for (unsigned n = 0; n < 12; ++n) {
+                auto invalid = submit;
+                switch (n) {
+                    case 0: invalid.CommandBuffer = 0; break;
+                    case 1: ++invalid.CommandBuffer; break;
+                    case 2: invalid.CommandBuffer = (1ull << 48) - 4096; invalid.CommandLength = 8192; break;
+                    case 3: invalid.CommandLength = 0; break;
+                    case 4: ++invalid.CommandLength; break;
+                    case 5: invalid.CommandLength = 1048576 + 4096; break;
+                    case 6: invalid.HwQueueProgressFenceId = 0; break;
+                    case 7: invalid.HwQueueProgressFenceId = UINT64_MAX; break;
+                    case 8: invalid.PrivateDriverDataSize = 4001; break;
+                    case 9: invalid.NumPrimaries = 1; break;
+                    case 10: invalid.NumPrimaries = 1; invalid.WrittenPrimaries = &submit.hHwQueue; break;
+                    default: invalid.pPrivateDriverData = nullptr; break;
+                }
+                if (ioctl(fd, _IOWR('G', 52, D3DKMT_SUBMITCOMMANDTOHWQUEUE), &invalid) != -1 || errno != EINVAL)
+                    return failed("submit invalid input");
+            }
+        } else {
+            const auto expected = !std::strcmp(mode, "submit-disabled") ? ENOSYS : EBADF;
+            if (ioctl(fd, _IOWR('G', 52, D3DKMT_SUBMITCOMMANDTOHWQUEUE), &submit) != -1 || errno != expected)
+                return failed("submit unowned/disabled input");
+        }
+        close(fd); return 0;
+    }
     if (!std::strncmp(mode, "sync-", 5)) {
         D3DKMT_OPENADAPTERFROMLUID adapter{}; adapter.AdapterLuid.LowPart = 0x57475055;
         if (ioctl(fd, _IOWR('G', 1, D3DKMT_OPENADAPTERFROMLUID), &adapter)) return failed("sync adapter");

@@ -29,6 +29,9 @@ struct Fake : Driver {
     int badSyncReply = 0;
     SyncDesc lastSyncDesc{};
     std::map<std::uint32_t, std::uint32_t> syncParents;
+    bool submitEnabled = false;
+    int badSubmitReply = 0;
+    unsigned submitCalls = 0;
     unsigned cpuLocks = 0, cpuUnlocks = 0;
     int badCpuReply = 0;
     int badResidentReply = 0;
@@ -44,7 +47,8 @@ struct Fake : Driver {
                 (guestPagingEnabled ? GuestPagingCapability : 0u) | (vendorEnabled ? VendorAllocationCapability : 0u) |
                 (gpuVaEnabled ? VendorGpuVaCapability : 0u) | (residencyEnabled ? VendorResidencyCapability : 0u) |
                 (cpuEnabled ? VendorCpuCapability : 0u) | (translationEnabled ? VendorTranslationCapability : 0u) |
-                (hwQueuesEnabled ? HwQueueCapability : 0u) | (syncEnabled ? SyncCapability : 0u), 0x10de, 123};
+                (hwQueuesEnabled ? HwQueueCapability : 0u) | (syncEnabled ? SyncCapability : 0u) |
+                (submitEnabled ? HwSubmitCapability : 0u), 0x10de, 123};
     }
     Result created() { ++calls; return {fail ? -123 : 0, ++next, 0}; }
     Result openAdapter() override { return created(); }
@@ -125,6 +129,13 @@ struct Fake : Driver {
                 badHwQueueReply == 3 ? 0u : badHwQueueReply == 4 ? queue : ++next,
                 badHwQueueReply == 5 ? 1ull : badHwQueueReply == 6 ? FenceApertureBytes : 8192ull,
                 badHwQueueReply == 7 ? 0ull : badHwQueueReply == 8 ? 65537ull : badHwQueueReply == 9 ? MaxGpuAddress : 65536ull};
+    }
+    Result submitHwQueue(std::uint32_t queue, HwSubmitDesc desc, const std::vector<std::uint8_t>& data) override {
+        require(hwQueueParents.count(queue) && validHwSubmit(desc) && data == std::vector<std::uint8_t>{37, 38, 39, 40});
+        ++calls; ++submitCalls;
+        if (fail) return {-123, 0, badSubmitReply == 5 ? 1ull : 0ull};
+        return {badSubmitReply == 1 ? 259 : 0, badSubmitReply == 2 ? 777u : 0u,
+                badSubmitReply == 3 ? desc.fence - 1 : badSubmitReply == 4 ? UINT64_MAX : desc.fence};
     }
     SyncResult createSync(std::uint32_t device, SyncDesc desc) override {
         require(device > 500 && validSync(desc)); ++calls; lastSyncDesc = desc;
@@ -951,6 +962,88 @@ int main() {
         require(header(s.dispatch(create)).status == -24);
     }
     require(synchronization.syncParents.empty());
+    Fake submission; submission.submitEnabled = submission.hwQueuesEnabled = submission.vendorEnabled = submission.gpuVaEnabled =
+                     submission.residencyEnabled = submission.cpuEnabled = true;
+    {
+        Session s(submission); const HwSubmitDesc validSubmit{65536, 5, 4096, 4, 0, 0};
+        require(header(s.dispatch(request(Op::SubmitHwQueue, 3, validSubmit))).status == -71);
+        s.dispatch(hello());
+        const auto submitAdapter = header(s.dispatch(request(Op::OpenAdapter))).handle;
+        const auto submitDevice = header(s.dispatch(request(Op::CreateDevice, submitAdapter))).handle;
+        auto submitContextPacket = request(Op::CreateContext, submitDevice, ContextDesc{0, 1, 16, 12, 4, 0});
+        submitContextPacket.insert(submitContextPacket.end(), {1, 2, 3, 4});
+        const auto submitContext = header(s.dispatch(submitContextPacket)).handle;
+        auto submitQueuePacket = request(Op::CreateHwQueue, submitContext, HwQueueDesc{0, 4, 0, 0});
+        submitQueuePacket.insert(submitQueuePacket.end(), {37, 38, 39, 40});
+        const auto submitQueue = header(s.dispatch(submitQueuePacket)).handle;
+        const auto submitPaging = header(s.dispatch(request(Op::CreatePagingQueue, submitDevice))).handle;
+        auto submitAllocationPacket = request(Op::CreateVendorAllocation, submitDevice, VendorAllocationDesc{0, 0, 0, 1, 0, 0});
+        submitAllocationPacket.push_back(37);
+        const auto submitAllocation = header(s.dispatch(submitAllocationPacket)).handle;
+        auto submitPacket = [&](std::uint32_t queue, HwSubmitDesc desc) {
+            auto p = request(Op::SubmitHwQueue, queue, desc); p.insert(p.end(), {37, 38, 39, 40}); return p;
+        };
+        auto submitBefore = submission.calls;
+        submission.submitEnabled = false;
+        require(header(s.dispatch(submitPacket(submitQueue, validSubmit))).status == -95);
+        submission.submitEnabled = true;
+        require(header(s.dispatch(submitPacket(submitDevice, validSubmit))).status == -9);
+        require(header(s.dispatch(request(Op::SubmitHwQueue, submitQueue))).status == -22);
+        for (unsigned n = 0; n < 11; ++n) {
+            auto invalid = validSubmit;
+            switch (n) {
+                case 0: invalid.address = 0; break;
+                case 1: ++invalid.address; break;
+                case 2: invalid.address = MaxGpuAddress - 4096; invalid.bytes = 8192; break;
+                case 3: invalid.bytes = 0; break;
+                case 4: ++invalid.bytes; break;
+                case 5: invalid.bytes = MaxAllocation + 4096; break;
+                case 6: invalid.fence = 0; break;
+                case 7: invalid.fence = UINT64_MAX; break;
+                case 8: invalid.privateBytes = 4001; break;
+                case 9: invalid.primaries = 1; break;
+                default: invalid.reserved = 1; break;
+            }
+            require(header(s.dispatch(submitPacket(submitQueue, invalid))).status == -22);
+        }
+        require(header(s.dispatch(submitPacket(submitQueue, validSubmit))).status == -16 && submission.calls == submitBefore);
+        const GpuVaDesc submitMapping{submitPaging, 0, 65536, 0, 0, 0, 16, 1, 0};
+        require(header(s.dispatch(request(Op::MapVendorAllocation, submitAllocation, submitMapping))).status == 0);
+        auto submitResidency = request(Op::MakeVendorResident, submitPaging, ResidentDesc{1, 1, 0, 0});
+        const auto submitIdBytes = reinterpret_cast<const std::uint8_t*>(&submitAllocation);
+        submitResidency.insert(submitResidency.end(), submitIdBytes, submitIdBytes + 4);
+        require(header(s.dispatch(submitResidency)).status == 0);
+        submitBefore = submission.calls;
+        require(header(s.dispatch(submitPacket(submitQueue, validSubmit))).status == -16 && submission.calls == submitBefore);
+        require(header(s.dispatch(request(Op::LockVendorAllocation, submitAllocation, VendorCpuDesc{submitDevice, 0}))).status == 0);
+        auto submitOutside = validSubmit; submitOutside.address = 131072;
+        submitBefore = submission.calls;
+        require(header(s.dispatch(submitPacket(submitQueue, submitOutside))).status == -9 && submission.calls == submitBefore);
+        auto submitOverrun = validSubmit; submitOverrun.address += 61440; submitOverrun.bytes = 8192;
+        require(header(s.dispatch(submitPacket(submitQueue, submitOverrun))).status == -9 && submission.calls == submitBefore);
+        submission.fail = true; auto submitOut = s.dispatch(submitPacket(submitQueue, validSubmit)); Reply submitNt{};
+        std::memcpy(&submitNt, submitOut.data() + sizeof(Header), sizeof submitNt);
+        require(header(submitOut).handle == submitQueue && !header(submitOut).status && submitNt.ntstatus == -123 && !submitNt.value);
+        submission.badSubmitReply = 5; require(header(s.dispatch(submitPacket(submitQueue, validSubmit))).status == -5);
+        submission.fail = false;
+        for (int malformedSubmit = 1; malformedSubmit <= 4; ++malformedSubmit) {
+            submission.badSubmitReply = malformedSubmit;
+            require(header(s.dispatch(submitPacket(submitQueue, validSubmit))).status == -5);
+        }
+        submission.badSubmitReply = 0;
+        submitOut = s.dispatch(submitPacket(submitQueue, validSubmit));
+        std::memcpy(&submitNt, submitOut.data() + sizeof(Header), sizeof submitNt);
+        require(!header(submitOut).status && submitNt.ntstatus == 0 && submitNt.value == validSubmit.fence);
+        submitBefore = submission.calls;
+        require(header(s.dispatch(submitPacket(submitQueue, validSubmit))).status == -22 && submission.calls == submitBefore);
+        auto submitNext = validSubmit;
+        while (submission.submitCalls < MaxHwSubmissions) {
+            ++submitNext.fence; require(header(s.dispatch(submitPacket(submitQueue, submitNext))).status == 0);
+        }
+        ++submitNext.fence; submitBefore = submission.calls;
+        require(header(s.dispatch(submitPacket(submitQueue, submitNext))).status == -24 && submission.calls == submitBefore);
+    }
+    require(submission.hwQueueParents.empty() && submission.vendorOwners.empty());
     Fake pagingQuota; pagingQuota.guestPagingEnabled = true;
     {
         Session s(pagingQuota); s.dispatch(hello());

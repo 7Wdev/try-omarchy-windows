@@ -62,6 +62,18 @@ inline bool validResident(ResidentDesc d) {
 struct ResidentReply { std::uint32_t count, reserved; std::uint64_t bytesToTrim; };
 static_assert(sizeof(ResidentReply) == 16, "fixed residency output");
 constexpr std::uint64_t MaxGpuAddress = 1ull << 48;
+constexpr std::uint32_t HwSubmitCapability = 32768;
+constexpr std::uint32_t MaxHwSubmissions = 16;
+struct HwSubmitDesc {
+    std::uint64_t address, fence;
+    std::uint32_t bytes, privateBytes, primaries, reserved;
+};
+static_assert(sizeof(HwSubmitDesc) == 32, "fixed command submission layout");
+inline bool validHwSubmit(HwSubmitDesc d) {
+    return d.address && !(d.address % 4096) && d.address < MaxGpuAddress &&
+           d.bytes && !(d.bytes % 4096) && d.bytes <= MaxAllocation && d.address <= MaxGpuAddress - d.bytes &&
+           d.fence && d.fence != UINT64_MAX && d.privateBytes <= 4000 && !d.primaries && !d.reserved;
+}
 constexpr std::uint32_t MaxVendorMapPages = MaxAllocation / 4096;
 constexpr std::uint32_t MaxVendorMappedPages = MaxAllocatedBytes / 4096;
 struct GpuVaDesc {
@@ -134,7 +146,7 @@ enum class Op : std::uint32_t {
     CreateGuestPagingQueue = 0x2040,
     CreateVendorAllocation = 0x2050, DestroyVendorAllocations, MapVendorAllocation, MakeVendorResident,
     LockVendorAllocation, UnlockVendorAllocation, TranslateVendorAllocation,
-    CreateHwQueue = 0x2060, DestroyHwQueue,
+    CreateHwQueue = 0x2060, DestroyHwQueue, SubmitHwQueue,
     CreateSync = 0x2070, DestroySync
 };
 enum class Kind { Adapter, Device, PagingQueue, Allocation, Context, PagingSync, VendorAllocation, HwQueue, HwQueueSync, Sync };
@@ -215,6 +227,9 @@ public:
     virtual SyncResult createSync(std::uint32_t, SyncDesc) {
         return {{static_cast<std::int32_t>(0xc00000bbu), 0, 0}, {0, 0}};
     }
+    virtual Result submitHwQueue(std::uint32_t, HwSubmitDesc, const std::vector<std::uint8_t>&) {
+        return {static_cast<std::int32_t>(0xc00000bbu), 0, 0};
+    }
     virtual Result readPagingFence(std::uint32_t queue) = 0;
     virtual Result createAllocation(std::uint32_t device, std::uint32_t size) = 0;
     virtual Result createSharedAllocation(std::uint32_t device, GuestRange range) = 0;
@@ -239,6 +254,8 @@ class Session {
         std::uint32_t driverToken = 0;
         std::uint32_t contextFlags = 0;
         std::uint32_t syncType = 0;
+        bool resident = false;
+        std::uint64_t submittedFence = 0;
     };
     Driver& driver;
     std::map<std::uint32_t, Object> objects;
@@ -251,6 +268,7 @@ class Session {
     std::uint32_t allocatedBytes = 0;
     std::uint32_t vendorMappedPages = 0;
     std::uint32_t vendorCpuBytes = 0;
+    std::uint32_t submissionAttempts = 0;
     bool negotiated = false;
     static std::vector<std::uint8_t> reply(Header h, std::int32_t error,
                                          std::uint32_t id = 0, const Result* result = nullptr) {
@@ -464,6 +482,39 @@ public:
                 throw;
             }
         }
+        if (op == Op::SubmitHwQueue) {
+            if (!negotiated) return reply(h, -71);
+            if (!(driver.capabilities().flags & HwSubmitCapability)) return reply(h, -95);
+            const auto queue = objects.find(h.handle);
+            if (queue == objects.end() || queue->second.kind != Kind::HwQueue) return reply(h, -9);
+            if (packet.size() < sizeof h + sizeof(HwSubmitDesc)) return reply(h, -22);
+            HwSubmitDesc desc{}; std::memcpy(&desc, packet.data() + sizeof h, sizeof desc);
+            if (!validHwSubmit(desc) || packet.size() != sizeof h + sizeof desc + desc.privateBytes ||
+                desc.fence <= queue->second.submittedFence) return reply(h, -22);
+            const auto device = objects.at(queue->second.parent).parent;
+            unsigned commandOwners = 0;
+            for (const auto& item : objects) {
+                const auto& allocation = item.second;
+                if (allocation.kind != Kind::VendorAllocation || allocation.parent != device) continue;
+                if (!allocation.resident) return reply(h, -16);
+                if (!allocation.gpuPages || desc.address < allocation.gpuAddress) continue;
+                const auto offset = desc.address - allocation.gpuAddress;
+                if (offset <= allocation.gpuPages * 4096ull && desc.bytes <= allocation.gpuPages * 4096ull - offset) {
+                    if (!allocation.cpuBytes || offset > allocation.cpuBytes || desc.bytes > allocation.cpuBytes - offset) return reply(h, -16);
+                    ++commandOwners;
+                }
+            }
+            if (commandOwners != 1) return reply(h, -9);
+            if (submissionAttempts >= MaxHwSubmissions) return reply(h, -24);
+            ++submissionAttempts;
+            const std::vector<std::uint8_t> data(packet.begin() + sizeof h + sizeof desc, packet.end());
+            const auto native = driver.submitHwQueue(queue->second.nativeHandle, desc, data);
+            if (native.nativeHandle || native.ntstatus > 0 ||
+                (native.ntstatus == 0 && (native.value < desc.fence || native.value == UINT64_MAX)) ||
+                (native.ntstatus < 0 && native.value)) return reply(h, -5);
+            if (native.ntstatus == 0) queue->second.submittedFence = desc.fence;
+            return reply(h, 0, h.handle, &native);
+        }
         if (op == Op::CreateSync || op == Op::DestroySync) {
             if (!negotiated) return reply(h, -71);
             if (!(driver.capabilities().flags & SyncCapability)) return reply(h, -95);
@@ -646,6 +697,8 @@ public:
             if (result.residency.nativeHandle || result.output.reserved || result.output.count > desc.count ||
                 (result.residency.ntstatus >= 0 && result.residency.ntstatus != 0 && result.residency.ntstatus != 0x103))
                 return reply(h, -5);
+            if (result.residency.ntstatus >= 0 && result.output.count == desc.count)
+                for (const auto id : ids) objects.at(id).resident = true;
             auto out = reply(h, 0, h.handle, &result.residency);
             const auto start = out.size(); out.resize(start + sizeof(ResidentReply));
             std::memcpy(out.data() + start, &result.output, sizeof result.output);
