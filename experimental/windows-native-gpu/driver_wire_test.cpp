@@ -508,8 +508,18 @@ int main() {
         require(header(s.dispatch(request(Op::FreeGpuReservation, owned, FreeGpuReservationDesc{adapter, 0}))).status == -9);
     }
     require(reservationMapped.reservationParents.empty() && reservationMapped.vendorOwners.empty());
-    require(validVendorCpuSlots(16) && validVendorCpuSlots(32) && validVendorCpuSlots(64));
-    for (const auto slots : {0u, 1u, 8u, 15u, 17u, 31u, 33u, 63u, 65u, UINT32_MAX}) require(!validVendorCpuSlots(slots));
+    require(validVendorCpuSlots(16) && validVendorCpuSlots(32) && validVendorCpuSlots(64) && validVendorCpuSlots(128));
+    for (const auto slots : {0u, 1u, 8u, 15u, 17u, 31u, 33u, 63u, 65u, 127u, 129u, 256u, UINT32_MAX}) require(!validVendorCpuSlots(slots));
+    require(vendorCpuByteLimit(0) == 16777216 && vendorCpuByteLimit(NoBroadcastSignalHwQueueCapability) == 16777216);
+    require(vendorCpuByteLimit(ExpandedVendorCpuCapability) == 33554432);
+    for (const auto capabilities : {0u,ExpandedVendorCpuCapability}) {
+        const auto budget = vendorCpuByteLimit(capabilities);
+        require(vendorCpuBudgetFits(budget-4096,4096,capabilities));
+        require(!vendorCpuBudgetFits(budget,4096,capabilities));
+        require(!vendorCpuBudgetFits(budget+4096,4096,capabilities));
+        require(!vendorCpuBudgetFits(UINT32_MAX,4096,capabilities));
+        require(!vendorCpuBudgetFits(4096,UINT32_MAX,capabilities));
+    }
     Fake driver;
     {
         Session s(driver);
@@ -1121,6 +1131,65 @@ int main() {
         // EOF retains the vendor allocation for native child-before-parent destruction.
     }
     require(cpu.vendorOwners.empty() && cpu.cpuLocks > 0 && cpu.cpuUnlocks > 0);
+    struct BudgetCpu : Fake {
+        bool expanded = false;
+        std::uint64_t cpuOffset = 0;
+        native_gpu::Capabilities capabilities() const override {
+            auto c = Fake::capabilities();
+            if (expanded) c.flags |= ExpandedVendorCpuCapability;
+            return c;
+        }
+        VendorCpuResult lockVendorAllocation(std::uint32_t allocation, std::uint32_t device) override {
+            require(vendorOwners.at(allocation) == device); ++calls; ++cpuLocks;
+            const auto offset = cpuOffset; cpuOffset += MaxVendorCpuMappingBytes;
+            return {{0,0,offset},{MaxVendorCpuMappingBytes,0,offset / VendorCpuSlotBytes + 1}};
+        }
+    };
+    for (const bool expanded : {false,true}) {
+        BudgetCpu cpuBudget; cpuBudget.vendorEnabled = cpuBudget.gpuVaEnabled = cpuBudget.cpuEnabled = true; cpuBudget.expanded = expanded;
+        {
+            Session s(cpuBudget); s.dispatch(hello());
+            const auto adapter = header(s.dispatch(request(Op::OpenAdapter))).handle;
+            const auto device = header(s.dispatch(request(Op::CreateDevice,adapter))).handle;
+            const auto queue = header(s.dispatch(request(Op::CreatePagingQueue,device))).handle;
+            const auto create = [&](unsigned index) {
+                auto p = request(Op::CreateVendorAllocation,device,VendorAllocationDesc{0,0,0,1,0,0}); p.push_back(1);
+                const auto allocation = header(s.dispatch(p)).handle; require(allocation != 0);
+                const auto base = 67108864ull + index * std::uint64_t(MaxVendorCpuMappingBytes);
+                require(header(s.dispatch(request(Op::MapVendorAllocation,allocation,
+                    GpuVaDesc{queue,0,base,67108864,1ull<<40,0,1024,1,0}))).status == 0);
+                return allocation;
+            };
+            std::vector<std::uint32_t> held;
+            const unsigned count = expanded ? 8u : 4u;
+            for (unsigned n = 0; n < count; ++n) {
+                held.push_back(create(n));
+                require(header(s.dispatch(request(Op::LockVendorAllocation,held.back(),VendorCpuDesc{device,0}))).status == 0);
+            }
+            if (!expanded) {
+                const auto excess = create(count); const auto before = cpuBudget.calls;
+                require(header(s.dispatch(request(Op::LockVendorAllocation,excess,VendorCpuDesc{device,0}))).status == -24 && cpuBudget.calls == before);
+            }
+            // A failed unlock keeps bytes charged. Successful retry and native
+            // destruction make room for a replacement view on the same device.
+            cpuBudget.fail = true;
+            const auto failed = s.dispatch(request(Op::UnlockVendorAllocation,held[0],VendorCpuDesc{device,0}));
+            Reply nt{}; std::memcpy(&nt,failed.data()+sizeof(Header),sizeof nt); require(nt.ntstatus < 0);
+            cpuBudget.fail = false;
+            require(header(s.dispatch(request(Op::UnlockVendorAllocation,held[0],VendorCpuDesc{device,0}))).status == 0);
+            auto destroy = request(Op::DestroyVendorAllocations,device,DestroyVendorDesc{1,0});
+            const auto bytes = reinterpret_cast<const std::uint8_t*>(&held[0]); destroy.insert(destroy.end(),bytes,bytes+4);
+            require(header(s.dispatch(destroy)).status == 0);
+            const auto replacement = create(0);
+            if (expanded) {
+                cpuBudget.expanded = false; const auto before = cpuBudget.calls;
+                require(header(s.dispatch(request(Op::LockVendorAllocation,replacement,VendorCpuDesc{device,0}))).status == -24 && cpuBudget.calls == before);
+                cpuBudget.expanded = true;
+            }
+            require(header(s.dispatch(request(Op::LockVendorAllocation,replacement,VendorCpuDesc{device,0}))).status == 0);
+        }
+        require(cpuBudget.vendorOwners.empty() && cpuBudget.cpuLocks == cpuBudget.cpuUnlocks-1);
+    }
     Fake translation; translation.vendorEnabled = translation.translationEnabled = true;
     {
         Session s(translation);

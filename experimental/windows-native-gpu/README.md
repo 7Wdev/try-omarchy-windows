@@ -28,7 +28,9 @@ The bridge preserves source sentinels, TDR fence flags, native allocation
 subranges and verified in-process context priority. GPU mappings have a separate
 32 MiB cap; CPU views retain their 16 MiB live-byte cap and 4 MiB per-view limit.
 The [CPU aperture](../../docs/LIVE-CPU-APERTURE-CAPACITY.md) defaults to 16 slots
-and supports 32/64 slots. [Contiguous views](../../docs/LIVE-CPU-ALLOCATION-SPANS.md)
+and supports 32/64 slots. The optional 128-slot graphics startup profile
+negotiates a 32 MiB live vendor CPU-view budget; other profiles retain 16 MiB.
+Its rendering acceptance is pending. [Contiguous views](../../docs/LIVE-CPU-ALLOCATION-SPANS.md)
 span adjacent slots without a QEMU rebuild. Native pools allow 96 allocations,
 96 independent synchronization objects and 256 aggregate wire objects; the
 read-only fence BAR remains 64 pages. Hardware acceptance includes repeat, owned

@@ -256,6 +256,7 @@ public:
                 (queriesEnabled ? QueryCapability : 0u) | (runtime ? GuestPagingCapability : 0u) |
                 (allocationsEnabled ? VendorAllocationCapability : 0u) | (gpuVaEnabled ? VendorGpuVaCapability : 0u) |
                 (residencyEnabled ? VendorResidencyCapability : 0u) | (cpuEnabled ? VendorCpuCapability : 0u) |
+                (cpuEnabled && runtime && runtime->allocationSlotLimit() == 128 ? ExpandedVendorCpuCapability : 0u) |
                 (translationEnabled ? VendorTranslationCapability : 0u) | (hwQueuesEnabled ? HwQueueCapability : 0u) |
                 (hwQueuesEnabled ? NoBroadcastSignalHwQueueCapability : 0u) |
                 (syncEnabled ? SyncCapability : 0u) | (submitEnabled ? HwSubmitCapability : 0u) |
@@ -798,7 +799,7 @@ public:
             return {{Invalid, 0, 0}, {0, 0, 0}};
         auto& owned = entry->second;
         const auto bytes = static_cast<std::uint32_t>(owned.pages * 4096);
-        if (!bytes || bytes > MaxVendorCpuMappingBytes || bytes > MaxAllocatedBytes - vendorCpuBytes || !reportedGpuUsageAcceptable())
+        if (!bytes || bytes > MaxVendorCpuMappingBytes || !vendorCpuBudgetFits(vendorCpuBytes, bytes, capabilities().flags) || !reportedGpuUsageAcceptable())
             return {{static_cast<std::int32_t>(0xc0000017u), 0, 0}, {0, 0, 0}};
         // Exhaustion is a native allocation failure that the live UMD can
         // recover from, not a QMP mapping exception after obtaining a lock.
@@ -1274,6 +1275,7 @@ public:
                   << ",\"peakVendorAllocationObjects\":" << peakVendorAllocationObjects
                   << ",\"vendorAllocationObjectLimit\":" << MaxVendorAllocations
                   << ",\"vendorCpuSlotLimit\":" << (runtime ? runtime->allocationSlotLimit() : DefaultVendorCpuSlots)
+                  << ",\"vendorCpuMappedByteLimit\":" << vendorCpuByteLimit(capabilities().flags)
                   << ",\"vendorCpuSlotQuotaRejections\":" << vendorCpuSlotQuotaRejections
                   << ",\"completedVendorAllocations\":" << completedVendorAllocations
                   << ",\"completedVendorResources\":" << completedVendorResources
@@ -1407,8 +1409,8 @@ int main(int argc, char** argv) {
         while (argc > 1) {
             if (argc > 2 && std::string(argv[argc - 2]) == "--driver-cpu-slots") {
                 const auto value = std::string(argv[argc - 1]);
-                if (cpuSlotsConfigured || (value != "16" && value != "32" && value != "64"))
-                    throw std::runtime_error("CPU aperture slots must be specified once as 16, 32 or 64");
+                if (cpuSlotsConfigured || (value != "16" && value != "32" && value != "64" && value != "128"))
+                    throw std::runtime_error("CPU aperture slots must be specified once as 16, 32, 64 or 128");
                 cpuSlots = static_cast<std::size_t>(std::stoul(value)); cpuSlotsConfigured = true;
                 argc -= 2; continue;
             }
@@ -1481,7 +1483,7 @@ int main(int argc, char** argv) {
         const bool ownedRuntime = argc == 7 && std::string(argv[1]) == "--run-qemu";
         if (!ownedRuntime && ((argc != 3 && argc != 7) || std::string(argv[1]) != "--listen")) {
             std::cerr << "Usage: driver-bridge.exe --stdio | --listen port [--guest-section name --guest-ram-bytes count] "
-                "[--driver-contexts] [--driver-queries] [--driver-allocations] [--driver-gpuva] [--driver-residency] [--driver-cpu] [--driver-cpu-slots 16|32|64] [--driver-translation] [--driver-hwqueues] [--driver-syncs] [--driver-submit] [--driver-retirement] [--driver-reservation] [--driver-gpu-state] [--cpu-store-test | --cpu-eof-test | --cpu-span-eof-test | --hwqueue-eof-test | --hwqueue-no-broadcast-eof-test | --sync-eof-test | --sync-no-max-eof-test | --reservation-eof-test | --gpu-state-eof-test]\n"
+                "[--driver-contexts] [--driver-queries] [--driver-allocations] [--driver-gpuva] [--driver-residency] [--driver-cpu] [--driver-cpu-slots 16|32|64|128] [--driver-translation] [--driver-hwqueues] [--driver-syncs] [--driver-submit] [--driver-retirement] [--driver-reservation] [--driver-gpu-state] [--cpu-store-test | --cpu-eof-test | --cpu-span-eof-test | --hwqueue-eof-test | --hwqueue-no-broadcast-eof-test | --sync-eof-test | --sync-no-max-eof-test | --reservation-eof-test | --gpu-state-eof-test]\n"
                 "       driver-bridge.exe --run-qemu qemu firmware kernel initramfs fresh-log --driver-contexts --driver-queries\n"; return 2;
         }
         if (ownedRuntime && (!contexts || !queries)) throw std::runtime_error("Owned QEMU runtime requires explicit query/context opt-ins");

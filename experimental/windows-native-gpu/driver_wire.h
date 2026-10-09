@@ -26,13 +26,24 @@ constexpr std::uint32_t VendorResourceCapability = 524288;
 constexpr std::uint32_t MaxVendorPrivateBytes = 4000;
 constexpr std::size_t MaxVendorAllocations = 96;
 constexpr std::size_t DefaultVendorCpuSlots = 16;
-constexpr std::size_t MaxVendorCpuSlots = 64;
+constexpr std::size_t MaxVendorCpuSlots = 128;
 inline bool validVendorCpuSlots(std::size_t slots) {
     return slots >= DefaultVendorCpuSlots && slots <= MaxVendorCpuSlots && !(slots & (slots - 1));
 }
 constexpr std::uint32_t VendorGpuVaCapability = 512;
 constexpr std::uint32_t VendorResidencyCapability = 1024;
 constexpr std::uint32_t VendorCpuCapability = 2048;
+// Only the explicitly selected 128-slot native profile advertises this budget.
+// Preserve standard allocation and 16/32/64-slot vendor CPU budgets.
+constexpr std::uint32_t ExpandedVendorCpuCapability = 4194304;
+constexpr std::uint32_t ExpandedVendorCpuBytes = 32 * 1024 * 1024;
+inline std::uint32_t vendorCpuByteLimit(std::uint32_t capabilities) {
+    return (capabilities & ExpandedVendorCpuCapability) ? ExpandedVendorCpuBytes : MaxAllocatedBytes;
+}
+inline bool vendorCpuBudgetFits(std::uint32_t used, std::uint32_t bytes, std::uint32_t capabilities) {
+    const auto limit = vendorCpuByteLimit(capabilities);
+    return used <= limit && bytes <= limit - used;
+}
 constexpr std::uint32_t VendorTranslationCapability = 4096;
 constexpr std::uint32_t HwQueueCapability = 8192;
 constexpr std::uint32_t SyncCapability = 16384;
@@ -843,7 +854,7 @@ public:
             if (object.cpuBytes) return reply(h, -16);
             if (!object.gpuPages || object.gpuOffsetPages) return reply(h, -95);
             const auto bytes = object.gpuPages * 4096u;
-            if (bytes > MaxAllocatedBytes - vendorCpuBytes) return reply(h, -24);
+            if (!vendorCpuBudgetFits(vendorCpuBytes, bytes, driver.capabilities().flags)) return reply(h, -24);
             const auto native = driver.lockVendorAllocation(object.nativeHandle, device->second.nativeHandle);
             if (native.lock.nativeHandle || (native.lock.ntstatus >= 0 && (native.lock.ntstatus != 0 ||
                 !validVendorCpuReply(native.lock.value, native.output) || native.output.bytes != bytes)) ||

@@ -12,7 +12,7 @@ def main():
     if sys.platform != 'win32' or not args.bridge.is_file():
         parser.error('Run on Windows with the built bridge')
     cases = [(['--driver-cpu-slots', value], 'CPU aperture slots must be specified once')
-             for value in ('0', '8', '17', '33', '65', '-1', '4294967296', '32x')]
+             for value in ('0', '8', '17', '33', '65', '127', '129', '256', '-1', '4294967296', '32x')]
     cases += [(['--driver-cpu-slots', '16', '--driver-cpu-slots', '32'], 'specified once'),
               (['--stdio', '--driver-cpu-slots', '32'], 'capacity requires')]
     cases += [(['--stdio', '--sync-eof-test'], 'Synchronization EOF control requires'),

@@ -158,7 +158,7 @@ def main():
     parser.add_argument('--driver-residency', action='store_true')
     parser.add_argument('--minimum-vendor-residency-requests', type=int, default=0)
     parser.add_argument('--driver-cpu', action='store_true')
-    parser.add_argument('--driver-cpu-slots', type=int, choices=(16, 32, 64), default=16)
+    parser.add_argument('--driver-cpu-slots', type=int, choices=(16, 32, 64, 128), default=16)
     parser.add_argument('--minimum-expanded-cpu-mappings', type=int, default=0)
     parser.add_argument('--expected-cpu-slot-quota-rejections', type=int)
     parser.add_argument('--minimum-vendor-cpu-locks', type=int, default=0)
@@ -227,7 +227,7 @@ def main():
     if args.minimum_spanning_cpu_mappings < 0 or (args.minimum_spanning_cpu_mappings and not args.driver_cpu):
         parser.error('Spanning CPU mapping acceptance requires CPU locks')
     if args.minimum_expanded_cpu_mappings < 0 or (args.driver_cpu_slots != 16 and not args.driver_cpu) or (args.minimum_expanded_cpu_mappings and args.driver_cpu_slots == 16):
-        parser.error('Expanded CPU mappings require explicit CPU locks with 32 or 64 aperture slots')
+        parser.error('Expanded CPU mappings require explicit CPU locks with 32, 64 or 128 aperture slots')
     if args.expected_cpu_slot_quota_rejections is not None and (args.expected_cpu_slot_quota_rejections < 0 or not args.driver_cpu):
         parser.error('CPU-slot quota acceptance requires explicit CPU locks')
     if args.cpu_store_test and not args.driver_cpu:
@@ -533,6 +533,7 @@ def main():
                             r['regionBaseOffsetBytes'] <= r['regionBytes'] - r['expectedBytes'] for r in cpu_regions) and
                         cpu_layouts == [{'slots': args.driver_cpu_slots, 'stride': 1048576}] and
                         cleanup.get('vendorCpuSlotLimit') == control.get('allocationApertureSlots') == args.driver_cpu_slots and
+                        cleanup.get('vendorCpuMappedByteLimit', 16777216) == (33554432 if args.driver_cpu_slots == 128 else 16777216) and
                         len(expanded_cpu) >= args.minimum_expanded_cpu_mappings and
                         cpu_unlocks + cpu_released_after_exit == len(cpu) and cpu_unmaps == cpu_unlocks and
                         (not early_guest_eof or cpu_unlocks == 0) and
