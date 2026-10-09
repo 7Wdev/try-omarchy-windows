@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"testing"
 	"time"
@@ -53,5 +55,16 @@ func TestUpdateRetryCancellation(t *testing.T) {
 	err = retryUpdateStaging(ctx, func() error { t.Fatal("cancelled retry started"); return nil }, func(error) {}, sleepWithContext)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatal(err)
+	}
+}
+
+func TestUpdateSizeHTTPFailureClassification(t *testing.T) {
+	for _, status := range []int{404, 408, 429, 503} {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(status) }))
+		_, err := updateDownloadSize(context.Background(), server.Client(), server.URL)
+		server.Close()
+		if err == nil || updateStagingNotice(err) != (status != 404) {
+			t.Fatalf("status=%d err=%v", status, err)
+		}
 	}
 }

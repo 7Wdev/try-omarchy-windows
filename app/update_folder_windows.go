@@ -13,7 +13,7 @@ func installUpdateFromFolder(cfg trayLaunchConfig, owner uintptr) {
 	if !updateFolderOpen.CompareAndSwap(false, true) {
 		return
 	}
-	snapshot := *cfg
+	snapshot := cfg
 	go func() {
 		defer updateFolderOpen.Store(false)
 		pins := pinnedPayloadUpdate{defaultReleaseURL, defaultSumsSHA256, defaultReleaseURL, defaultSumsSHA256}

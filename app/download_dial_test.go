@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -98,5 +101,37 @@ func TestDownloadDialHappyEyeballs(t *testing.T) {
 	case <-cleaned:
 	case <-time.After(time.Second):
 		t.Fatal("losing dial not cancelled")
+	}
+}
+
+func TestDownloadDialUsesProxyWithoutResolvingTarget(t *testing.T) {
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Host != "unresolvable.test" {
+			t.Errorf("proxy target=%s", r.URL)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer proxy.Close()
+	endpoint, _ := url.Parse(proxy.URL)
+	endpoint.Host = net.JoinHostPort("proxy.test", endpoint.Port())
+	d := newDownloadDialer()
+	d.lookup = func(ctx context.Context, host string) ([]net.IPAddr, error) {
+		if host != "proxy.test" {
+			t.Errorf("resolved target instead of proxy: %s", host)
+		}
+		return []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}, nil
+	}
+	client := newDownloadClient()
+	defer client.CloseIdleConnections()
+	transport := client.Transport.(*http.Transport)
+	transport.Proxy = http.ProxyURL(endpoint)
+	transport.DialContext = d.DialContext
+	resp, err := client.Get("http://unresolvable.test/payload")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatal(resp.StatusCode)
 	}
 }
