@@ -132,7 +132,24 @@ func validateInstalledDiskBacking(cfg *config) error {
 	if !ok {
 		return fmt.Errorf("original portable factory image is missing or damaged; restore the matching installation")
 	}
+	// Without this, a copied installation would hash the whole image on every launch.
+	if receiptSHA, found := installReceiptArtifactSHA256(cfg.guestDir, "rootfs.ext4"); found &&
+		normalizedSHA256(receiptSHA) == normalizedSHA256(disk.BackingSHA256) &&
+		sameFile(disk.Backing, filepath.Join(cfg.guestDir, "rootfs.ext4")) {
+		if err := refreshInstallReceiptTimes(cfg.guestDir, []string{"rootfs.ext4"}); err != nil {
+			logf("portable factory receipt not refreshed: %v", err)
+		}
+	}
 	return nil
+}
+
+func sameFile(a, b string) bool {
+	ai, err := os.Stat(a)
+	if err != nil {
+		return false
+	}
+	bi, err := os.Stat(b)
+	return err == nil && os.SameFile(ai, bi)
 }
 
 func ensureGuestFiles(cfg *config, release, sumsSHA256 string) error {

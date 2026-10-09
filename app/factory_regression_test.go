@@ -168,6 +168,10 @@ func TestPortableBackingReceiptFastPath(t *testing.T) {
 	if err := validateInstalledDiskBacking(cfg); err != nil {
 		t.Fatal("valid backing rejected after timestamp change:", err)
 	}
+	release, digest, _ := installReceiptIdentity(cfg.guestDir)
+	if ok, err := installReceiptMatches(cfg.guestDir, release, digest, []string{"rootfs.ext4"}); err != nil || !ok {
+		t.Fatal("verified backing did not restore the receipt fast path:", ok, err)
+	}
 }
 
 func TestFactoryUnavailableErrorsKeepLocalCause(t *testing.T) {
