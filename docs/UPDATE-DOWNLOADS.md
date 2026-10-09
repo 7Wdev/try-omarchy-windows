@@ -22,4 +22,5 @@ newer release is a follow-up; automatic updates still use the signed feed.
 
 Downloads use the Windows system resolver and existing proxy settings. They
 allow each DNS lookup 30 seconds and one retry before the separate 10-second TCP
-connection budget. No DNS settings are changed and no public DNS service is used.
+connection budget. The launcher does not change DNS settings or add a fallback
+DNS service.
