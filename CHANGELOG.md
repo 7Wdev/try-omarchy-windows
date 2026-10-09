@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Lay the groundwork for smoother guest cursors with the matching host update (#321).
+
 - System updates keep trying while Omarchy is running when the connection fails.
 - Update downloads give slow Windows name resolution more time.
 - Install the current launcher's system update from browser-downloaded release

@@ -91,6 +91,28 @@ Fresh images carry the same qualified palette references. Runtime `4.0.4-9`
 packages the fix for subsequent **Update > Omarchy** transactions. The prepared
 v0.11.0 guest artifacts must be rebuilt from this fix before release.
 
+Compatibility revision 61 delivers the QEMU CPU cursor-buffer profile before
+login. Catch-up refreshes only an unchanged default monitor configuration and
+keeps user edits and symlinks. It also offers the patched aquamarine archive in
+the authenticated local repository. The next **Update > Omarchy** installs
+runtime `4.0.4-10` and its minimum `aquamarine>=0.15.1-1.1` dependency; no package
+transaction runs during boot publication.
+
+The managed rebuild keeps Arch's package name, dependencies and SONAME provide.
+The local repository is after Arch. An unchanged Arch `0.15.1-1` keeps the
+installed patched `0.15.1-1.1`. A newer Arch release or version replaces it in
+the ordinary update transaction, including a new SONAME required by Hyprland.
+No version hold or custom provider blocks the upgrade. Until we re-pin the new
+source, the cursor can return to being drawn within desktop frames. The host
+cursor presentation fix is separate from this guest groundwork.
+
+To re-pin, refresh the guest transaction lock, review the hotspot patch on the
+new upstream source, and update `supplyChain.aquamarine` source, patch and
+builder digests, Arch version, SONAME and provide. Use the new Arch version plus
+`.1` as the local package version, raise the runtime package release and compat
+revision, and repeat contract, real pacman transaction and image build/boot
+checks. The build fails if source, build-tool pins, metadata or SONAME drift.
+
 If repository publication fails, inspect:
 
 ```sh

@@ -376,3 +376,17 @@ linked and already-fixed files, and preserves older supported shell logic.
 The notification and guest-default payloads also use the qualified palette.
 Runtime `4.0.4-9` carries the corrected shell for fresh images and subsequent
 updates. Rebuild the prepared v0.11.0 guest artifacts before release.
+
+Patch 0145 lays the guest groundwork for hardware cursor delivery. It builds
+checksummed aquamarine 0.15.1 with the cursor-hotspot capability/property patch
+as the managed Arch package `aquamarine 0.15.1-1.1`, retaining its SONAME provide
+and dependency metadata. Runtime `4.0.4-10` requests that minimum version from
+the authenticated local repository on existing disks. Arch stays ahead of the
+local repository: unchanged Arch packages keep the patch, and newer Arch builds
+replace it normally so aquamarine/Hyprland upgrades remain possible. Re-pin the
+new source, patch, build inputs and SONAME, then raise runtime/compat revisions
+after a bump; see [guest upgrades](../docs/GUEST-UPGRADES.md).
+Compatibility revision 61 delivers the QEMU CPU cursor-buffer profile while
+preserving user configurations. The matching host cursor work and Windows SDL
+acceptance remain separate. Real pacman transaction tests cover preservation,
+Arch release/version bumps and a coordinated Hyprland SONAME change.

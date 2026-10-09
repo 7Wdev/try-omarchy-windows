@@ -1,0 +1,1004 @@
+From 5785b9e7801fa871b8887610845bdc9384a4a2c2 Mon Sep 17 00:00:00 2001
+From: Tyler South <tsouth2@gmail.com>
+Date: Fri, 9 Oct 2026 07:07:29 -0400
+Subject: [PATCH] Deliver the guest cursor plane safely through updates
+
+---
+ guest/Containerfile                           |   2 +-
+ guest/README.md                               |  33 +++++
+ guest/build.sh                                |   5 +
+ .../hypr-monitors-qemu.append.lua             |   7 +-
+ guest/packages.lock.json                      |   9 +-
+ guest/packages.txt                            |   4 +
+ guest/patches/aquamarine/cursor-hotspot.patch |  36 +++++
+ guest/scripts/aquamarine-contract.py          |  48 +++++++
+ guest/scripts/finalize-rootfs.sh              |   4 +-
+ guest/scripts/register-aquamarine.sh          | 108 +++++++++++++++
+ guest/scripts/register-local-repository.sh    |  18 ++-
+ guest/scripts/register-omarchy-runtime.sh     |  11 +-
+ guest/scripts/write-provenance.py             |   6 +
+ guest/spec.json                               |  18 ++-
+ guest/tests/test_aquamarine_contract.py       |  86 ++++++++++++
+ guest/tests/test_aquamarine_upgrade.py        | 130 ++++++++++++++++++
+ guest/tests/test_battery_details.py           |   2 +-
+ guest/tests/test_clipboard_pull.py            |   2 +-
+ guest/tests/test_compositor_health.py         |   2 +-
+ guest/tests/test_guest_qol.py                 |   2 +-
+ guest/tests/test_live_update.py               |   2 +-
+ guest/tests/test_native_nightlight.py         |   2 +-
+ guest/tests/test_notification_privacy.py      |   4 +-
+ guest/tests/test_overlay_scripts.py           |  13 ++
+ guest/tests/test_qt612_palette.py             |   8 +-
+ guest/tests/test_runtime_package.py           |  11 ++
+ guest/tests/test_snapper_guest.py             |   4 +-
+ guest/tests/test_windows_volume_sync.py       |   2 +-
+ guest/tests/test_write_provenance.py          |  22 +++
+ guest/tests/verify.py                         |   2 +-
+ 30 files changed, 574 insertions(+), 29 deletions(-)
+ create mode 100644 guest/patches/aquamarine/cursor-hotspot.patch
+ create mode 100755 guest/scripts/aquamarine-contract.py
+ create mode 100755 guest/scripts/register-aquamarine.sh
+ create mode 100644 guest/tests/test_aquamarine_contract.py
+ create mode 100644 guest/tests/test_aquamarine_upgrade.py
+
+diff --git a/guest/Containerfile b/guest/Containerfile
+index f75a47c..5b5e17f 100644
+--- a/guest/Containerfile
++++ b/guest/Containerfile
+@@ -15,7 +15,7 @@ RUN pacman-key --init && pacman-key --populate archlinux && \
+     pacman-key --lsign-key 40DFB630FF42BCFFB047046CF0134EE680CAC571 && \
+     rm /tmp/omarchy-pkgs.asc && \
+     pacman -Syu --noconfirm && \
+-    pacman -S --needed --noconfirm arch-install-scripts e2fsprogs git python zstd && \
++    pacman -S --needed --noconfirm arch-install-scripts e2fsprogs gcc git python zstd && \
+     pacman -Scc --noconfirm
+ 
+ WORKDIR /workspace
+diff --git a/guest/README.md b/guest/README.md
+index 02edab5..c26ba67 100644
+--- a/guest/README.md
++++ b/guest/README.md
+@@ -46,3 +46,36 @@ The output includes the kernel, initramfs, raw and compressed ext4 image,
+ provenance, package inventory, licenses, manifest, and SHA-256 sums. Generated
+ output belongs under the repository's ignored `dist/` directory and must not be
+ committed.
++
++## QEMU cursor package
++
++Aquamarine is a managed same-name rebuild, `0.15.1-1.1`, of Arch's locked
++`0.15.1-1`. The upstream source archive, hotspot patch and builder digest are
++in `supplyChain.aquamarine`. The build uses the locked guest compiler, headers,
++CMake and hyprwayland-scanner, retains Arch's versioned dependencies and
++`libaquamarine.so=10-64` provide, and checks that Hyprland loads afterward.
++Provenance records source/build pins and package/library digests.
++
++The local repository stays after Arch. Runtime `4.0.4-10` has a minimum
++`aquamarine>=0.15.1-1.1` dependency, so the first Update > Omarchy on an old disk
++selects the local rebuild if Arch has not moved. Further normal updates keep
++it while Arch is unchanged. A newer Arch package release or source version
++wins normally, including a coordinated Hyprland/SONAME update; there is no
++IgnorePkg, exact-version hold, custom provider or pre-transaction replacement.
++The patch can disappear after that bump, restoring the previous in-frame cursor
++behavior while allowing the desktop upgrade. The real libalpm fixture tests
++cover these transactions and run a linked consumer after each upgrade.
++
++To re-pin after an Arch bump, refresh the package lock, adapt and review the
++hotspot patch against the new source, update its source/patch/builder digests,
++SONAME/provide and `archVersion`, and set `packageVersion` to the new Arch
++version plus `.1`. Raise the runtime package release and compatibility revision
++so existing disks receive the newer authenticated offer. Run the guest contract,
++real transaction tests and complete image build/boot before shipping.
++
++Compatibility revision 61 delivers `cursor:use_cpu_buffer=1` inside the QEMU
++profile only, preserving customized or linked monitor configs through existing
++catch-up rules. This keeps virgl sprites upright and leaves `invisible=false`.
++The matching QEMU host cursor work is separate; this guest change is groundwork,
++not Windows SDL acceptance. Share this patch and profile with the Linux port;
++its SDL presentation still needs its own validation.
+diff --git a/guest/build.sh b/guest/build.sh
+index 1196d82..6cdd032 100755
+--- a/guest/build.sh
++++ b/guest/build.sh
+@@ -78,6 +78,9 @@ for command in pacstrap arch-chroot curl git gzip python3 mke2fs repo-add sha256
+   command -v "$command" >/dev/null || fail "$command is required; use the supplied Arch builder container"
+ done
+ 
++# Real libalpm resilience tests require Arch/root and run before staging.
++REQUIRE_ALPM_TESTS=1 python3 -m unittest discover -s "$guest_dir/tests" -p 'test_aquamarine_upgrade.py'
++
+ output=$(mkdir -p "$output" && cd "$output" && pwd)
+ work=$(mkdir -p "$work" && cd "$work" && pwd)
+ if [[ -z $source_dir ]]; then
+@@ -239,6 +242,8 @@ arch-chroot "$root" /usr/bin/omarchy-apply-lock
+ install -m 0644 "$root/etc/pam.d/omarchy-lock-password" \
+   "$root/usr/share/try-omarchy/omarchy-lock-password"
+ printf '%s\n' etc/pam.d/omarchy-lock-password >>"$root/usr/share/try-omarchy/runtime-config-files"
++"$guest_dir/scripts/register-aquamarine.sh" \
++  --root "$root" --work "$work" --spec "$spec" --pacman-config "$pacman_config"
+ "$guest_dir/scripts/register-omarchy-runtime.sh" \
+   --root "$root" \
+   --work "$work" \
+diff --git a/guest/factory-overlay/usr/share/try-omarchy/skel-fragments/hypr-monitors-qemu.append.lua b/guest/factory-overlay/usr/share/try-omarchy/skel-fragments/hypr-monitors-qemu.append.lua
+index 0727813..329129e 100644
+--- a/guest/factory-overlay/usr/share/try-omarchy/skel-fragments/hypr-monitors-qemu.append.lua
++++ b/guest/factory-overlay/usr/share/try-omarchy/skel-fragments/hypr-monitors-qemu.append.lua
+@@ -2,8 +2,8 @@
+ -- BEGIN OMARCHY QEMU PROFILE
+ -- QEMU publishes the live window's size and host refresh rate through Virtio
+ -- GPU EDID. Quattro's preceding automatic monitor rule stays authoritative;
+--- keep the guest cursor visible because SDL displays the guest scanout
+--- directly (hiding it was a VNC-host assumption).
++-- keep normal guest cursor visibility. The matching host runtime can display
++-- guest-defined sprites independently from desktop frames.
+ local function omarchy_kernel_option_enabled(expected_option)
+   if type(io) ~= "table" or type(io.open) ~= "function" then
+     return false
+@@ -90,7 +90,8 @@ local function omarchy_clean_scale(mode, requested)
+ end
+ 
+ if omarchy_kernel_option_enabled("omarchy.qemu=1") then
+-  hl.config({ cursor = { invisible = false } })
++  -- Virgl cursor GPU buffers arrive inverted; use a small CPU cursor buffer.
++  hl.config({ cursor = { invisible = false, use_cpu_buffer = 1 } })
+   local synced_mode, synced_scale = omarchy_synced_display_mode()
+   if synced_mode then
+     -- A number the user set in this file is explicit intent and outranks
+diff --git a/guest/packages.lock.json b/guest/packages.lock.json
+index 0b083cc..8b1c73e 100644
+--- a/guest/packages.lock.json
++++ b/guest/packages.lock.json
+@@ -39,9 +39,11 @@
+     "cairo": "1.18.6-1",
+     "chromium": "153.0.8010.52-1",
+     "clang": "23.1.1-1",
++    "cmake": "4.4.4-1",
+     "compiler-rt": "23.1.1-1",
+     "coreutils": "9.12-2",
+     "cpio": "2.15-3",
++    "cppdap": "1.58.0-3",
+     "cpptrace": "1.0.4-2",
+     "cryptsetup": "2.8.8-1",
+     "curl": "8.22.0-1",
+@@ -172,6 +174,7 @@
+     "hyprsunset": "0.4.0-3",
+     "hyprtoolkit": "0.6.0-1",
+     "hyprutils": "0.14.2-1",
++    "hyprwayland-scanner": "0.4.6-1",
+     "hyprwire": "0.3.1-3",
+     "iana-etc": "20260617-1",
+     "icu": "78.3-1",
+@@ -192,6 +195,7 @@
+     "jq": "1.8.2-1",
+     "json-c": "0.19-1",
+     "json-glib": "1.10.8-1",
++    "jsoncpp": "1.9.8-1",
+     "kbd": "2.10.0-1",
+     "keyutils": "1.6.3-4",
+     "kmod": "34.2-1",
+@@ -541,6 +545,7 @@
+     "rav1e": "0.8.1-3",
+     "re2": "2:2025.11.05-6",
+     "readline": "8.3.6-1",
++    "rhash": "1.4.6-1",
+     "ripgrep": "15.2.0-1",
+     "rubberband": "4.0.0-2",
+     "sbc": "2.2-1",
+@@ -583,7 +588,7 @@
+     "texinfo": "7.3-1",
+     "tinysparql": "3.12.0-1",
+     "tinyxml2": "11.0.0-2",
+-    "tmux": "3.7_c-1",
++    "tmux": "3.8-1",
+     "tomlplusplus": "3.4.0-2",
+     "totem-pl-parser": "3.26.7-1",
+     "tpm2-tss": "4.2.0-2",
+@@ -672,6 +677,6 @@
+     "zram-generator": "1.2.1-1",
+     "zstd": "1.5.7-3"
+   },
+-  "requestedFileSha256": "268abc15c8e8eada07a632fbc034b7522c8790f820e8d0b14324a392ad001cc0",
++  "requestedFileSha256": "1db3ae20694fffa1ccf73a493a60dfac62076f73fc3db1c3b8940632d527221c",
+   "schemaVersion": 1
+ }
+diff --git a/guest/packages.txt b/guest/packages.txt
+index 8b9df7f..2424088 100644
+--- a/guest/packages.txt
++++ b/guest/packages.txt
+@@ -110,3 +110,7 @@ zbar
+ zoxide
+ zram-generator
+ zstd
++
++# Locked build tools for the managed aquamarine rebuild
++cmake
++hyprwayland-scanner
+diff --git a/guest/patches/aquamarine/cursor-hotspot.patch b/guest/patches/aquamarine/cursor-hotspot.patch
+new file mode 100644
+index 0000000..195fa13
+--- /dev/null
++++ b/guest/patches/aquamarine/cursor-hotspot.patch
+@@ -0,0 +1,36 @@
++diff --git a/src/backend/drm/DRM.cpp b/src/backend/drm/DRM.cpp
++index 431247b..4aab5ea 100644
++--- a/src/backend/drm/DRM.cpp
+++++ b/src/backend/drm/DRM.cpp
++@@ -757,6 +757,10 @@ bool Aquamarine::CDRMBackend::checkFeatures() {
++         impl                         = makeShared<CDRMAtomicImpl>(self.lock());
++         drmProps.supportsAsyncCommit = drmGetCap(gpu->fd, DRM_CAP_ATOMIC_ASYNC_PAGE_FLIP, &cap) == 0 && cap == 1;
++         atomic                       = true;
+++        // Virtual DRM drivers hide atomic cursor planes without hotspot support.
+++        // This is optional: EOPNOTSUPP on other drivers keeps atomic mode.
+++        const int hotspotCap = drmSetClientCap(gpu->fd, DRM_CLIENT_CAP_CURSOR_PLANE_HOTSPOT, 1);
+++        backend->log(AQ_LOG_DEBUG, std::format("drm: cursor hotspot capability result {}", hotspotCap));
++         if (!initCommitThread())
++             backend->log(AQ_LOG_WARNING, "drm: Failed to create the asynchronous commit worker");
++     }
++diff --git a/src/backend/drm/impl/Atomic.cpp b/src/backend/drm/impl/Atomic.cpp
++index e47781b..25971c3 100644
++--- a/src/backend/drm/impl/Atomic.cpp
+++++ b/src/backend/drm/impl/Atomic.cpp
++@@ -360,8 +360,14 @@ void Aquamarine::CDRMAtomicRequest::addConnectorCursor(Hyprutils::Memory::CShare
++             if (data.committed & COutputState::AQ_OUTPUT_STATE_CURSOR_SHAPE) {
++                 if (!data.cursorVisible)
++                     planeProps(connector->crtc->cursor, nullptr, 0, {});
++-                else
++-                    planeProps(connector->crtc->cursor, data.cursorFB, connector->crtc->id, data.cursorPos - data.cursorHotspot);
+++                else {
+++                    auto cursor = connector->crtc->cursor;
+++                    if (cursor->props.values.hotspot_x && cursor->props.values.hotspot_y) {
+++                        add(cursor->id, cursor->props.values.hotspot_x, data.cursorHotspot.x);
+++                        add(cursor->id, cursor->props.values.hotspot_y, data.cursorHotspot.y);
+++                    }
+++                    planeProps(cursor, data.cursorFB, connector->crtc->id, data.cursorPos - data.cursorHotspot);
+++                }
++             } else if (data.cursorVisible)
++                 planePropsPos(connector->crtc->cursor, data.cursorPos - data.cursorHotspot);
++         }
+diff --git a/guest/scripts/aquamarine-contract.py b/guest/scripts/aquamarine-contract.py
+new file mode 100755
+index 0000000..d5daed2
+--- /dev/null
++++ b/guest/scripts/aquamarine-contract.py
+@@ -0,0 +1,48 @@
++#!/usr/bin/env python3
++"""Validate the managed rebuild against the reviewed Arch transaction."""
++import hashlib
++import json
++import re
++import sys
++from pathlib import Path
++
++
++def validate(spec_path):
++    spec_path = Path(spec_path)
++    spec = json.loads(spec_path.read_text())
++    component = spec['supplyChain']['aquamarine']
++    lock = json.loads((spec_path.parent / spec['inputs']['packageLock']).read_text())['packages']
++    version, arch_version = component['version'], component['archVersion']
++    if not re.fullmatch(r'[0-9]+(?:\.[0-9]+)*', version):
++        raise ValueError('invalid aquamarine source version')
++    if lock.get('aquamarine') != arch_version or not arch_version.startswith(version + '-'):
++        raise ValueError('aquamarine source pin differs from package lock')
++    if component['packageVersion'] != arch_version + '.1':
++        raise ValueError('aquamarine rebuild must use the Arch release plus .1')
++    if component['url'] != f'https://github.com/hyprwm/aquamarine/archive/v{version}/aquamarine-{version}.tar.gz':
++        raise ValueError('aquamarine source URL differs from pin')
++    for key in ('sha256', 'patchSha256', 'builderSha256'):
++        if not re.fullmatch('[0-9a-f]{64}', component[key]):
++            raise ValueError(f'invalid aquamarine {key}')
++    for relative, key in ((component['patch'], 'patchSha256'), ('scripts/register-aquamarine.sh', 'builderSha256')):
++        path = Path(relative)
++        if path.is_absolute() or '..' in path.parts:
++            raise ValueError('unsafe aquamarine input path')
++        if hashlib.sha256((spec_path.parent / path).read_bytes()).hexdigest() != component[key]:
++            raise ValueError(f'aquamarine {key} mismatch')
++    if not re.fullmatch(r'libaquamarine\.so\.[0-9]+', component['soname']):
++        raise ValueError('invalid aquamarine SONAME')
++    if component['provide'] != 'libaquamarine.so=' + component['soname'].rsplit('.', 1)[1] + '-64':
++        raise ValueError('aquamarine SONAME provide differs from pin')
++    if component['buildPackages'] != ['cmake', 'hyprwayland-scanner'] or any(name not in lock for name in component['buildPackages']):
++        raise ValueError('aquamarine build tools are not transaction locked')
++    return component
++
++
++if __name__ == '__main__':
++    try:
++        component = validate(sys.argv[1])
++        for key in ('version', 'archVersion', 'packageVersion', 'url', 'sha256', 'patch', 'soname', 'provide'):
++            print(component[key])
++    except (KeyError, ValueError, OSError) as error:
++        raise SystemExit(str(error))
+diff --git a/guest/scripts/finalize-rootfs.sh b/guest/scripts/finalize-rootfs.sh
+index 05cdcea..046c988 100755
+--- a/guest/scripts/finalize-rootfs.sh
++++ b/guest/scripts/finalize-rootfs.sh
+@@ -247,8 +247,8 @@ tar -C / -cf /usr/share/try-omarchy/compat-overlay.tar "${compat_paths[@]}"
+ # Revision 57 skips Snapper setup on the ext4 guest.
+ # Revision 58 receives large clipboard frames without suffix-pattern stalls.
+ # Revision 59 restores the Windows audio default when the QEMU transport is picked.
+-# Revision 60 qualifies the shell palette for Qt 6.12 before login.
+-compat_revision=60
++# Revision 61 delivers the QEMU CPU cursor profile and patched package offer.
++compat_revision=61
+ printf '%s:%s\n' "$compat_revision" "$kernel_release" >/usr/share/try-omarchy/compat-version
+ 
+ # Fail the build if DKMS or networking modules were not packaged for this kernel.
+diff --git a/guest/scripts/register-aquamarine.sh b/guest/scripts/register-aquamarine.sh
+new file mode 100755
+index 0000000..59b11a6
+--- /dev/null
++++ b/guest/scripts/register-aquamarine.sh
+@@ -0,0 +1,108 @@
++#!/bin/bash
++# Managed same-name rebuild. Arch stays ahead of the local repository so a
++# newer Arch package always wins, including a new SONAME required by Hyprland.
++set -euo pipefail
++fail() { echo "register-aquamarine: $*" >&2; exit 1; }
++root= work= spec= pacman_config=
++while (($#)); do
++  case "$1" in
++    --root) root=${2:-}; shift 2 ;;
++    --work) work=${2:-}; shift 2 ;;
++    --spec) spec=${2:-}; shift 2 ;;
++    --pacman-config) pacman_config=${2:-}; shift 2 ;;
++    *) fail "unknown option: $1" ;;
++  esac
++done
++[[ $root == /* && -d $root ]] || fail 'unsafe staged root'
++case "$root" in /|/bin|/boot|/etc|/home|/opt|/root|/usr|/var) fail 'unsafe staged root' ;; esac
++[[ $work == /* && -d $work && -f $spec && -f $pacman_config ]] || fail 'missing build inputs'
++guest_dir=$(cd "$(dirname "$spec")" && pwd)
++metadata_text=$(python3 "$guest_dir/scripts/aquamarine-contract.py" "$spec") || fail 'invalid rebuild contract'
++mapfile -t metadata <<<"$metadata_text"
++(( ${#metadata[@]} == 8 )) || fail 'incomplete rebuild contract'
++version=${metadata[0]} arch_version=${metadata[1]} package_version=${metadata[2]}
++url=${metadata[3]} source_sha=${metadata[4]} patch_file=${metadata[5]}
++soname=${metadata[6]} provide=${metadata[7]}
++epoch=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["image"]["sourceDateEpoch"])' "$spec")
++[[ $epoch =~ ^[0-9]+$ ]] || fail 'invalid source date epoch'
++for command in arch-chroot curl install pacman python3 readelf sha256sum tar zstd; do
++  command -v "$command" >/dev/null || fail "$command is required"
++done
++[[ $(arch-chroot "$root" pacman -Q aquamarine) == "aquamarine $arch_version" ]] || fail 'installed Arch version differs from pin'
++# Reuse signed, transaction-verified Arch metadata, including versioned SONAME
++# dependencies. Do not guess dependencies or provide a loose shared object.
++original="$work/pacman-cache/aquamarine-$arch_version-x86_64.pkg.tar.zst"
++[[ -f $original && ! -L $original ]] || fail 'verified Arch package cache archive missing'
++cache="$work/download-cache"
++install -d -m0755 "$cache"
++source_archive="$cache/aquamarine-$version.tar.gz"
++[[ ! -L $source_archive ]] || fail 'symlinked source cache'
++verify_source() { printf '%s  %s\n' "$source_sha" "$1" | sha256sum -c - >/dev/null; }
++if [[ ! -f $source_archive ]] || ! verify_source "$source_archive"; then
++  temporary=$(mktemp "$cache/.aquamarine.XXXXXX")
++  if ! curl --fail --location --proto '=https' --tlsv1.2 --silent --show-error "$url" -o "$temporary" || ! verify_source "$temporary"; then
++    rm -f "$temporary"; fail 'source download or digest check failed'
++  fi
++  chmod 0644 "$temporary"
++  mv "$temporary" "$source_archive"
++fi
++stage=$(mktemp -d "$root/tmp/try-omarchy-aquamarine.XXXXXX")
++cleanup() { rm -rf "$stage"; }
++trap cleanup EXIT
++relative=${stage#"$root"}
++tar -xzf "$source_archive" --no-same-owner -C "$stage"
++install -m0644 "$guest_dir/$patch_file" "$stage/cursor-hotspot.patch"
++# Compile against the same locked headers/libraries Hyprland uses. Build tools
++# are in the transaction lock too. No host-library or rolling builder leakage.
++arch-chroot "$root" /bin/bash -s -- "$relative" "$version" "$epoch" <<'BUILD'
++set -euo pipefail
++export SOURCE_DATE_EPOCH=$3
++cd "$1/aquamarine-$2"
++patch -p1 --fuzz=0 < ../cursor-hotspot.patch
++cmake -B build -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Release \
++  -DCMAKE_CXX_FLAGS="-ffile-prefix-map=$1/aquamarine-$2=/usr/src/aquamarine"
++cmake --build build --parallel 2
++DESTDIR="$1/package" cmake --install build
++install -Dm0644 LICENSE "$1/package/usr/share/licenses/aquamarine/LICENSE"
++BUILD
++[[ -f $stage/package/usr/lib/$soname ]] || fail 'built library SONAME path differs from pin'
++readelf -d "$stage/package/usr/lib/$soname" | grep -F "Library soname: [$soname]" >/dev/null || fail 'built library SONAME differs from pin'
++tar --zstd -xOf "$original" .PKGINFO > "$stage/original.PKGINFO"
++python3 - "$stage" "$arch_version" "$package_version" "$epoch" "$provide" <<'INFO'
++import pathlib, sys
++stage = pathlib.Path(sys.argv[1])
++lines = (stage / 'original.PKGINFO').read_text().splitlines()
++if f'pkgver = {sys.argv[2]}' not in lines or 'pkgname = aquamarine' not in lines or f'provides = {sys.argv[5]}' not in lines:
++    raise SystemExit('Arch metadata identity or SONAME provide differs from pin')
++replaced = {'pkgver', 'builddate', 'packager', 'size'}
++lines = [line for line in lines if line.split(' = ', 1)[0] not in replaced and not line.startswith('#')]
++size = sum(p.lstat().st_size for p in (stage / 'package/usr').rglob('*') if not p.is_dir())
++lines += [f'pkgver = {sys.argv[3]}', f'builddate = {sys.argv[4]}', 'packager = Try Omarchy reproducible guest builder', f'size = {size}']
++(stage / 'package/.PKGINFO').write_text('\n'.join(lines) + '\n')
++INFO
++archive="$stage/aquamarine-$package_version-x86_64.pkg.tar.zst"
++tar --sort=name --mtime="@$epoch" --owner=0 --group=0 --numeric-owner --format=gnu \
++  -C "$stage/package" -cf - .PKGINFO usr | zstd --force --quiet -12 --threads=1 -o "$archive"
++pacman --noconfirm --config "$pacman_config" --root "$root" --dbpath "$root/var/lib/pacman" \
++  --logfile "$root/var/log/pacman.log" -U "$archive"
++[[ $(arch-chroot "$root" pacman -Q aquamarine) == "aquamarine $package_version" ]] || fail 'rebuild registration failed'
++arch-chroot "$root" pacman -Dk >/dev/null
++arch-chroot "$root" pacman -Qk aquamarine >/dev/null
++arch-chroot "$root" /usr/bin/Hyprland --version >/dev/null
++install -Dm0644 "$archive" "$root/usr/share/try-omarchy/repo/$(basename "$archive")"
++python3 - "$root" "$spec" "$archive" "$original" <<'PROVENANCE'
++import hashlib, json, pathlib, sys
++root, spec_path, archive, original = map(pathlib.Path, sys.argv[1:])
++component = json.loads(spec_path.read_text())['supplyChain']['aquamarine']
++path = root / 'usr/share/try-omarchy/provenance.json'
++payload = json.loads(path.read_text())
++payload['aquamarine'].update({
++    'installedLibrarySha256': hashlib.sha256((root / 'usr/lib' / component['soname']).read_bytes()).hexdigest(),
++    'packageSha256': hashlib.sha256(archive.read_bytes()).hexdigest(),
++    'archPackageSha256': hashlib.sha256(original.read_bytes()).hexdigest(),
++    'buildPackageVersions': {name: json.loads((spec_path.parent / 'packages.lock.json').read_text())['packages'][name]
++                             for name in component['buildPackages']},
++})
++path.write_text(json.dumps(payload, indent=2, sort_keys=True) + '\n')
++PROVENANCE
++echo "Registered aquamarine $package_version with $provide"
+diff --git a/guest/scripts/register-local-repository.sh b/guest/scripts/register-local-repository.sh
+index 37d8521..d716ef6 100755
+--- a/guest/scripts/register-local-repository.sh
++++ b/guest/scripts/register-local-repository.sh
+@@ -67,11 +67,23 @@ repo_dir="$root/usr/share/try-omarchy/repo"
+ shopt -s nullglob
+ archives=("$repo_dir"/*.pkg.tar.zst)
+ shopt -u nullglob
+-expected_archive_count=2
++expected_names_text=$(python3 - "$spec" <<'PY_NAMES'
++import json, sys
++spec = json.load(open(sys.argv[1]))
++print("try-omarchy-runtime")
++print("try-omarchy-mise")
++if "aquamarine" in spec.get("supplyChain", {}):
++    print("aquamarine")
++PY_NAMES
++)
++mapfile -t expected_names <<<"$expected_names_text"
++expected_archive_count=${#expected_names[@]}
+ (( ${#archives[@]} == expected_archive_count )) ||
+   fail "local repository expected $expected_archive_count package archive(s), found ${#archives[@]}"
+-[[ ${archives[*]} == *'/try-omarchy-runtime-'* ]] || fail "local repository is missing the Omarchy runtime"
+-[[ ${archives[*]} == *'/try-omarchy-mise-'* ]] || fail "factory repository is missing pinned mise"
++for name in "${expected_names[@]}"; do
++  matches=("$repo_dir/$name-"*.pkg.tar.zst)
++  (( ${#matches[@]} == 1 )) && [[ -f ${matches[0]} ]] || fail "local repository needs exactly one $name archive"
++done
+ 
+ temporary=$(mktemp -d "$root/usr/share/try-omarchy/.repo-db.XXXXXX")
+ cleanup() {
+diff --git a/guest/scripts/register-omarchy-runtime.sh b/guest/scripts/register-omarchy-runtime.sh
+index 542e95b..cbeb2c6 100755
+--- a/guest/scripts/register-omarchy-runtime.sh
++++ b/guest/scripts/register-omarchy-runtime.sh
+@@ -167,7 +167,16 @@ import json
+ import re
+ import sys
+ 
+-for name in json.load(open(sys.argv[1]))["upstream"].get("integrationDepends", []):
++spec = json.load(open(sys.argv[1]))
++component = spec.get("supplyChain", {}).get("aquamarine")
++if component:
++    # A minimum, never an equality or a custom provider, lets newer Arch
++    # aquamarine and its matching Hyprland upgrade in the same transaction.
++    version = component["packageVersion"]
++    if not re.fullmatch(r"[0-9]+(?:[.][0-9]+)*-[0-9]+[.]1", version):
++        raise SystemExit("unsafe aquamarine minimum version")
++    print(f"depend = aquamarine>={version}")
++for name in spec["upstream"].get("integrationDepends", []):
+     if not re.fullmatch(r"[a-z0-9@._+-]+", name):
+         raise SystemExit(f"unsafe dependency name: {name}")
+     print(f"depend = {name}")
+diff --git a/guest/scripts/write-provenance.py b/guest/scripts/write-provenance.py
+index 8320e8e..ceeca26 100755
+--- a/guest/scripts/write-provenance.py
++++ b/guest/scripts/write-provenance.py
+@@ -123,6 +123,12 @@ def main() -> None:
+         "backports": backports,
+         "sha256Trees": trees,
+     }
++    if 'aquamarine' in spec.get('supplyChain', {}):
++        import importlib.util
++        contract_spec = importlib.util.spec_from_file_location('aquamarine_contract', args.spec.parent / 'scripts/aquamarine-contract.py')
++        contract = importlib.util.module_from_spec(contract_spec)
++        contract_spec.loader.exec_module(contract)
++        payload['aquamarine'] = contract.validate(args.spec)
+     source_digest = args.root / "usr/share/try-omarchy/upstream-tree.json"
+     if source_digest.exists():
+         payload["normalizedUpstreamTree"] = json.loads(source_digest.read_text())
+diff --git a/guest/spec.json b/guest/spec.json
+index 00539c6..7a58880 100644
+--- a/guest/spec.json
++++ b/guest/spec.json
+@@ -30,7 +30,7 @@
+     "versionFile": "4.0.0.alpha",
+     "channel": "quattro",
+     "license": "MIT",
+-    "packageRelease": 9,
++    "packageRelease": 10,
+     "integrationDepends": [
+       "fcitx5",
+       "fcitx5-chewing",
+@@ -64,6 +64,22 @@
+       "binarySha256": "3d825b8341925abb398fba6fd8dcd7d6e92ade6820d892da62992e0765638e66",
+       "reportedVersion": "2026.8.11 linux-x64 (2026-08-23)",
+       "license": "MIT"
++    },
++    "aquamarine": {
++      "version": "0.15.1",
++      "archVersion": "0.15.1-1",
++      "packageVersion": "0.15.1-1.1",
++      "url": "https://github.com/hyprwm/aquamarine/archive/v0.15.1/aquamarine-0.15.1.tar.gz",
++      "sha256": "2f9de98c0bd1b7b1b09c576e390a2fef436449762fb334163c414f0c300296f2",
++      "patch": "patches/aquamarine/cursor-hotspot.patch",
++      "patchSha256": "4b57ebb3ac10ed7a91348b49a7ee6fd26bcbd2436cb4dcdac60a6bc15bce0c27",
++      "soname": "libaquamarine.so.10",
++      "provide": "libaquamarine.so=10-64",
++      "buildPackages": [
++        "cmake",
++        "hyprwayland-scanner"
++      ],
++      "builderSha256": "7f11c75ab3c54e7b649cc56e068678ab7a1d597a64f2e31c2352922504a397eb"
+     }
+   },
+   "themes": [
+diff --git a/guest/tests/test_aquamarine_contract.py b/guest/tests/test_aquamarine_contract.py
+new file mode 100644
+index 0000000..5927e90
+--- /dev/null
++++ b/guest/tests/test_aquamarine_contract.py
+@@ -0,0 +1,86 @@
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++import shutil
++import tempfile
++import unittest
++
++GUEST = Path(__file__).resolve().parents[1]
++module_spec = importlib.util.spec_from_file_location('aquamarine_contract', GUEST / 'scripts/aquamarine-contract.py')
++contract = importlib.util.module_from_spec(module_spec)
++module_spec.loader.exec_module(contract)
++
++
++class AquamarineContractTests(unittest.TestCase):
++    def setUp(self):
++        self.temp = tempfile.TemporaryDirectory()
++        self.addCleanup(self.temp.cleanup)
++        self.base = Path(self.temp.name)
++        for name in ('spec.json', 'packages.lock.json', 'scripts/register-aquamarine.sh', 'patches/aquamarine/cursor-hotspot.patch'):
++            target = self.base / name
++            target.parent.mkdir(parents=True, exist_ok=True)
++            shutil.copyfile(GUEST / name, target)
++        self.spec = self.base / 'spec.json'
++
++    def change(self, key, value):
++        payload = json.loads(self.spec.read_text())
++        payload['supplyChain']['aquamarine'][key] = value
++        self.spec.write_text(json.dumps(payload))
++
++    def test_source_and_build_inputs_match_transaction(self):
++        pin = contract.validate(self.spec)
++        self.assertEqual(pin['packageVersion'], pin['archVersion'] + '.1')
++        self.assertEqual(pin['provide'], 'libaquamarine.so=10-64')
++
++    def test_source_version_drift_is_rejected(self):
++        self.change('version', '0.16.0')
++        with self.assertRaisesRegex(ValueError, 'package lock'): contract.validate(self.spec)
++
++    def test_archive_url_and_package_release_drift_are_rejected(self):
++        for key, value in [('url', 'https://example.test/source.tar.gz'), ('packageVersion', '0.15.1-2')]:
++            with self.subTest(key=key):
++                shutil.copyfile(GUEST / 'spec.json', self.spec)
++                self.change(key, value)
++                with self.assertRaises(ValueError): contract.validate(self.spec)
++
++    def test_unreviewed_patch_or_build_flags_are_rejected(self):
++        for name in ('patches/aquamarine/cursor-hotspot.patch', 'scripts/register-aquamarine.sh'):
++            with self.subTest(name=name):
++                path = self.base / name
++                original = path.read_bytes(); path.write_bytes(original + b'changed\n')
++                with self.assertRaisesRegex(ValueError, 'mismatch'): contract.validate(self.spec)
++                path.write_bytes(original)
++
++    def test_soname_and_unlocked_build_tools_are_rejected(self):
++        self.change('provide', 'libaquamarine.so=11-64')
++        with self.assertRaisesRegex(ValueError, 'SONAME'): contract.validate(self.spec)
++        shutil.copyfile(GUEST / 'spec.json', self.spec)
++        lock_path = self.base / 'packages.lock.json'
++        lock = json.loads(lock_path.read_text()); del lock['packages']['hyprwayland-scanner']
++        lock_path.write_text(json.dumps(lock))
++        with self.assertRaisesRegex(ValueError, 'build tools'): contract.validate(self.spec)
++
++    def test_cap_failure_is_optional_and_properties_are_guarded(self):
++        patch = (GUEST / 'patches/aquamarine/cursor-hotspot.patch').read_text()
++        self.assertIn('DRM_CLIENT_CAP_CURSOR_PLANE_HOTSPOT', patch)
++        self.assertIn('EOPNOTSUPP', patch)
++        self.assertNotIn('+        return false', patch)
++        self.assertIn('if (cursor->props.values.hotspot_x && cursor->props.values.hotspot_y)', patch)
++        self.assertIn('data.cursorHotspot.x', patch)
++        self.assertIn('data.cursorHotspot.y', patch)
++
++    def test_delivery_registers_package_before_runtime_and_authenticates_offer(self):
++        build = (GUEST / 'build.sh').read_text()
++        self.assertLess(build.index('scripts/register-aquamarine.sh'), build.index('scripts/register-omarchy-runtime.sh'))
++        runtime = (GUEST / 'scripts/register-omarchy-runtime.sh').read_text()
++        self.assertIn('depend = aquamarine>={version}', runtime)
++        finalizer = (GUEST / 'scripts/finalize-rootfs.sh').read_text()
++        self.assertIn('compat_revision=61', finalizer)
++        self.assertIn('cp /usr/share/try-omarchy/repo/*.pkg.tar.zst', finalizer)
++        self.assertIn('usr/share/try-omarchy/skel-fragments/hypr-monitors-qemu.append.lua', finalizer)
++        repo = (GUEST / 'scripts/register-local-repository.sh').read_text()
++        self.assertIn('expected_archive_count=${#expected_names[@]}', repo)
++        self.assertIn('print("aquamarine")', repo)
++        # The local stanza is appended, never inserted before signed Arch repos.
++        self.assertIn('cat >>"$root/etc/pacman.conf"', repo)
+diff --git a/guest/tests/test_aquamarine_upgrade.py b/guest/tests/test_aquamarine_upgrade.py
+new file mode 100644
+index 0000000..903359c
+--- /dev/null
++++ b/guest/tests/test_aquamarine_upgrade.py
+@@ -0,0 +1,130 @@
++"""Real libalpm transactions with small repository and ABI fixtures.
++
++Run on Arch builders too; other contract hosts skip only this integration tier.
++"""
++import os
++from pathlib import Path
++import shutil
++import subprocess
++import tarfile
++import tempfile
++import unittest
++
++
++if os.environ.get('REQUIRE_ALPM_TESTS') == '1' and not (os.geteuid() == 0 and all(shutil.which(x) for x in ('pacman', 'repo-add', 'cc'))):
++    raise RuntimeError('required Arch transaction tools unavailable')
++
++
++@unittest.skipUnless(os.geteuid() == 0 and all(shutil.which(x) for x in ('pacman', 'repo-add', 'cc')), 'requires an Arch builder as root')
++class AquamarineUpgradeTests(unittest.TestCase):
++    def setUp(self):
++        self.temp = tempfile.TemporaryDirectory()
++        self.addCleanup(self.temp.cleanup)
++        self.base = Path(self.temp.name)
++        self.root = self.base / 'root'
++        for name in ('var/lib/pacman/local', 'var/lib/pacman/sync', 'var/cache/pacman/pkg', 'var/log', 'tmp'):
++            (self.root / name).mkdir(parents=True, exist_ok=True)
++        self.remote = self.base / 'arch'
++        self.local = self.base / 'try-omarchy'
++        self.remote.mkdir(); self.local.mkdir()
++        self.config = self.base / 'pacman.conf'
++        self.config.write_text(f'''[options]
++Architecture = x86_64
++CacheDir = {self.root}/var/cache/pacman/pkg
++SigLevel = Never
++LocalFileSigLevel = Never
++DisableSandbox
++[arch]
++Server = file://{self.remote}
++[try-omarchy]
++Server = file://{self.local}
++''')
++        self.stock = self.package(self.remote, 'aquamarine', '0.15.1-1', 10)
++        self.patched = self.package(self.local, 'aquamarine', '0.15.1-1.1', 10)
++        self.old_hypr = self.package(self.remote, 'hyprland', '1-1', 10, consumer=True)
++        self.old_runtime = self.package(self.local, 'try-omarchy-runtime', '4.0.4-9')
++        self.package(self.local, 'try-omarchy-runtime', '4.0.4-10', runtime=True)
++        self.install(self.stock, self.old_hypr, self.old_runtime)
++        self.repositories()
++
++    def command(self, *args):
++        result = subprocess.run(args, text=True, capture_output=True)
++        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
++        return result.stdout
++
++    def pacman(self, *args):
++        return self.command('pacman', '--noconfirm', '--config', str(self.config), '--root', str(self.root),
++                            '--dbpath', str(self.root / 'var/lib/pacman'), '--logfile', str(self.root / 'var/log/pacman.log'), *args)
++
++    def install(self, *packages):
++        self.pacman('-U', '--noscriptlet', *(str(p) for p in packages))
++
++    def package(self, repository, name, version, abi=None, consumer=False, runtime=False):
++        stage = self.base / f'{name}-{version}'
++        stage.mkdir()
++        info = [f'pkgname = {name}', f'pkgver = {version}', 'pkgdesc = transaction fixture', 'arch = x86_64', 'size = 1']
++        if consumer:
++            info.append(f'depend = libaquamarine.so={abi}-64')
++            c = stage / 'consumer.c'
++            c.write_text('extern int aq(void); int main(void) { return aq() != 42; }\n')
++            lib = self.base / f'libaquamarine.so.{abi}'
++            self.library(lib, abi)
++            binary = stage / 'usr/bin/hyprland-fixture'; binary.parent.mkdir(parents=True)
++            self.command('cc', str(c), str(lib), '-o', str(binary))
++            c.unlink()
++        elif abi:
++            info.append(f'provides = libaquamarine.so={abi}-64')
++            lib = stage / f'usr/lib/libaquamarine.so.{abi}'; lib.parent.mkdir(parents=True)
++            self.library(lib, abi)
++        if runtime:
++            info.append('depend = aquamarine>=0.15.1-1.1')
++        (stage / '.PKGINFO').write_text('\n'.join(info) + '\n')
++        archive = repository / f'{name}-{version}-x86_64.pkg.tar.gz'
++        with tarfile.open(archive, 'w:gz') as tar:
++            tar.add(stage / '.PKGINFO', arcname='.PKGINFO')
++            if (stage / 'usr').exists(): tar.add(stage / 'usr', arcname='usr')
++        return archive
++
++    def library(self, path, abi):
++        c = self.base / 'library.c'; c.write_text('int aq(void) { return 42; }\n')
++        self.command('cc', '-shared', '-fPIC', f'-Wl,-soname,libaquamarine.so.{abi}', str(c), '-o', str(path))
++
++    def repositories(self):
++        for repository in (self.remote, self.local):
++            # Include only the newest runtime in the offered database.
++            packages = sorted(repository.glob('*.pkg.tar.gz'))
++            packages = [p for p in packages if '-runtime-4.0.4-9-' not in p.name]
++            self.command('repo-add', str(repository / f'{repository.name}.db.tar.gz'), *(str(p) for p in packages))
++        self.pacman('-Syy')
++
++    def assert_version(self, expected, abi=10):
++        self.assertEqual(self.pacman('-Q', 'aquamarine').strip(), f'aquamarine {expected}')
++        self.pacman('-Dk')
++        self.command('env', f'LD_LIBRARY_PATH={self.root}/usr/lib', str(self.root / 'usr/bin/hyprland-fixture'))
++        self.assertTrue((self.root / f'usr/lib/libaquamarine.so.{abi}').exists())
++
++    def test_existing_disk_installs_rebuild_and_unchanged_arch_keeps_it(self):
++        self.pacman('-Su')
++        self.assert_version('0.15.1-1.1')
++        self.pacman('-Su')
++        self.assert_version('0.15.1-1.1')
++
++    def test_new_arch_release_replaces_rebuild(self):
++        self.pacman('-Su'); self.assert_version('0.15.1-1.1')
++        self.package(self.remote, 'aquamarine', '0.15.1-2', 10)
++        self.repositories(); self.pacman('-Su')
++        self.assert_version('0.15.1-2')
++
++    def test_new_soname_and_hyprland_upgrade_together(self):
++        self.pacman('-Su'); self.assert_version('0.15.1-1.1')
++        self.package(self.remote, 'aquamarine', '0.16.0-1', 11)
++        self.package(self.remote, 'hyprland', '2-1', 11, consumer=True)
++        self.repositories(); self.pacman('-Su')
++        self.assert_version('0.16.0-1', 11)
++        self.assertFalse((self.root / 'usr/lib/libaquamarine.so.10').exists())
++
++    def test_old_disk_with_new_arch_skips_obsolete_rebuild(self):
++        self.package(self.remote, 'aquamarine', '0.16.0-1', 11)
++        self.package(self.remote, 'hyprland', '2-1', 11, consumer=True)
++        self.repositories(); self.pacman('-Su')
++        self.assert_version('0.16.0-1', 11)
+diff --git a/guest/tests/test_battery_details.py b/guest/tests/test_battery_details.py
+index 03ae873..1b51e57 100644
+--- a/guest/tests/test_battery_details.py
++++ b/guest/tests/test_battery_details.py
+@@ -204,7 +204,7 @@ class BatteryDetailsFlowTests(unittest.TestCase):
+     def test_compatibility_delivery_and_dkms_version(self):
+         overlay = GUEST / "factory-overlay"
+         finalize = (GUEST / "scripts/finalize-rootfs.sh").read_text()
+-        self.assertIn("compat_revision=60", finalize)
++        self.assertIn("compat_revision=61", finalize)
+         self.assertIn("usr/src/try-omarchy-battery-1.1.0", finalize)
+         self.assertIn("usr/local/lib/try-omarchy/update-battery-dkms", finalize)
+         self.assertIn('PACKAGE_VERSION="1.1.0"', (MODULE_SOURCE.parent / "dkms.conf").read_text())
+diff --git a/guest/tests/test_clipboard_pull.py b/guest/tests/test_clipboard_pull.py
+index d4075c1..fdf2c44 100644
+--- a/guest/tests/test_clipboard_pull.py
++++ b/guest/tests/test_clipboard_pull.py
+@@ -71,4 +71,4 @@ class ClipboardPullTests(unittest.TestCase):
+         finalizer = (GUEST / 'scripts/finalize-rootfs.sh').read_text()
+         paths = finalizer.split('compat_paths=(', 1)[1].split(')', 1)[0]
+         self.assertIn('usr/local/bin/clipboard-bridge', paths)
+-        self.assertIn('compat_revision=60', finalizer)
++        self.assertIn('compat_revision=61', finalizer)
+diff --git a/guest/tests/test_compositor_health.py b/guest/tests/test_compositor_health.py
+index 83380f8..642a3c4 100644
+--- a/guest/tests/test_compositor_health.py
++++ b/guest/tests/test_compositor_health.py
+@@ -34,7 +34,7 @@ class CompositorHealthTests(unittest.TestCase):
+ 
+     def test_existing_disks_receive_health_files(self):
+         finalizer = (GUEST / 'scripts/finalize-rootfs.sh').read_text()
+-        self.assertIn('compat_revision=60', finalizer)
++        self.assertIn('compat_revision=61', finalizer)
+         for name in ['agent', 'compositor-health']:
+             self.assertIn('  usr/local/lib/try-omarchy/' + name, finalizer)
+         self.assertTrue(HELPER.stat().st_mode & 0o111)
+diff --git a/guest/tests/test_guest_qol.py b/guest/tests/test_guest_qol.py
+index 3928f7d..f14e729 100644
+--- a/guest/tests/test_guest_qol.py
++++ b/guest/tests/test_guest_qol.py
+@@ -221,7 +221,7 @@ class GuestQolTests(unittest.TestCase):
+     def test_compatibility_delivers_guarded_payload_once_per_revision(self):
+         finalize = (GUEST / "scripts/finalize-rootfs.sh").read_text()
+         paths = finalize.split("compat_paths=(", 1)[1].split(")", 1)[0]
+-        self.assertIn("compat_revision=60", finalize)
++        self.assertIn("compat_revision=61", finalize)
+         for path in ("usr/local/bin/omarchy-native-screensaver-text", "usr/local/lib/try-omarchy/install-guest-qol", "usr/share/try-omarchy/guest-qol", "usr/local/bin/omarchy-windows-audio-bridge"):
+             self.assertIn(path, paths)
+         self.assertNotIn("etc/fonts/conf.d/30-try-omarchy.conf", paths)
+diff --git a/guest/tests/test_live_update.py b/guest/tests/test_live_update.py
+index 7e07194..15a39ba 100644
+--- a/guest/tests/test_live_update.py
++++ b/guest/tests/test_live_update.py
+@@ -176,7 +176,7 @@ class LiveUpdateTests(unittest.TestCase):
+ 
+     def test_delivery_and_best_effort_hook(self):
+         finalizer = (GUEST / 'scripts/finalize-rootfs.sh').read_text()
+-        self.assertIn('compat_revision=60', finalizer)
++        self.assertIn('compat_revision=61', finalizer)
+         for path in ['usr/local/lib/try-omarchy/live-update', 'etc/pacman.d/hooks/00-try-omarchy-live-update.hook', 'etc/pacman.d/hooks/zz-try-omarchy-live-update.hook']:
+             self.assertIn(path, finalizer)
+         pre = (GUEST / 'factory-overlay/etc/pacman.d/hooks/00-try-omarchy-live-update.hook').read_text()
+diff --git a/guest/tests/test_native_nightlight.py b/guest/tests/test_native_nightlight.py
+index a8a2b93..6ea0ac9 100644
+--- a/guest/tests/test_native_nightlight.py
++++ b/guest/tests/test_native_nightlight.py
+@@ -214,5 +214,5 @@ class PersistentNightlightTests(unittest.TestCase):
+         catch_up = (self.overlay / 'usr/local/lib/try-omarchy/catch-up').read_text()
+         for path in ['usr/local/bin/omarchy-native-nightlight', 'usr/local/share/try-omarchy/nightlight.frag', 'usr/local/lib/try-omarchy/install-nightlight', 'usr/share/try-omarchy/nightlight']:
+             self.assertIn(path, finalizer)
+-        self.assertIn('compat_revision=60', finalizer)
++        self.assertIn('compat_revision=61', finalizer)
+         self.assertIn('previous_revision < 55', catch_up)
+diff --git a/guest/tests/test_notification_privacy.py b/guest/tests/test_notification_privacy.py
+index 2dd2b7a..774317e 100644
+--- a/guest/tests/test_notification_privacy.py
++++ b/guest/tests/test_notification_privacy.py
+@@ -116,8 +116,8 @@ for (const state of [null, {screensaverStateKnown:false}, {screensaverStateKnown
+     def test_compatibility_overlay_and_catch_up_revision(self):
+         finalizer = (GUEST / 'scripts/finalize-rootfs.sh').read_text()
+         catch_up = (GUEST / 'factory-overlay/usr/local/lib/try-omarchy/catch-up').read_text()
+-        self.assertIn('compat_revision=60', finalizer)
++        self.assertIn('compat_revision=61', finalizer)
+         self.assertIn('usr/share/try-omarchy/notifications', finalizer)
+         self.assertIn('usr/local/lib/try-omarchy/install-notifications', finalizer)
+         self.assertIn('previous_revision < 52', catch_up)
+-        self.assertEqual(json.loads((GUEST / 'spec.json').read_text())['upstream']['packageRelease'], 9)
++        self.assertEqual(json.loads((GUEST / 'spec.json').read_text())['upstream']['packageRelease'], 10)
+diff --git a/guest/tests/test_overlay_scripts.py b/guest/tests/test_overlay_scripts.py
+index 3ff1ca9..b4afb4e 100644
+--- a/guest/tests/test_overlay_scripts.py
++++ b/guest/tests/test_overlay_scripts.py
+@@ -589,6 +589,19 @@ class CatchUpTests(OverlayCase):
+         self.run_catch_up()
+         self.assertEqual(monitors.read_text(), "user edits\n")
+ 
++    def test_revision_61_repairs_the_managed_cursor_profile_and_preserves_user_config(self) -> None:
++        monitors = self.user / ".config/hypr/monitors.lua"
++        monitors.write_text(self.default.read_text() + self.old_fragment)
++        self.state.mkdir()
++        (self.state / "catch-up-revision").write_text("60\n")
++        self.version.write_text("61:7.2.3-arch1\n")
++        self.assertEqual(self.run_catch_up().returncode, 0)
++        self.assertIn("use_cpu_buffer = 1", monitors.read_text())
++        self.assertEqual((self.state / "catch-up-revision").read_text(), "61\n")
++        monitors.write_text("-- user cursor config\n")
++        self.assertEqual(self.run_catch_up().returncode, 0)
++        self.assertEqual(monitors.read_text(), "-- user cursor config\n")
++
+     def test_quick_start_disk_gets_key_only_ssh_once(self) -> None:
+         dropin = self.root / "sshd_config.d/90-try-omarchy-quick-start.conf"
+         self.state.mkdir(parents=True)
+diff --git a/guest/tests/test_qt612_palette.py b/guest/tests/test_qt612_palette.py
+index c9ddfa2..79e5de2 100644
+--- a/guest/tests/test_qt612_palette.py
++++ b/guest/tests/test_qt612_palette.py
+@@ -166,10 +166,10 @@ class Qt612PaletteTests(unittest.TestCase):
+     def test_compatibility_delivery_runs_after_older_repairs_and_before_login(self):
+         finalizer = (GUEST / 'scripts/finalize-rootfs.sh').read_text()
+         paths = finalizer.split('compat_paths=(', 1)[1].split(')', 1)[0]
+-        self.assertIn('compat_revision=60', finalizer)
++        self.assertIn('compat_revision=61', finalizer)
+         self.assertIn('usr/local/lib/try-omarchy/install-qt612-palette', paths)
+         self.assertIn('usr/share/try-omarchy/qt612-palette', paths)
+-        self.assertEqual(self.build_spec['upstream']['packageRelease'], 9)
++        self.assertEqual(self.build_spec['upstream']['packageRelease'], 10)
+         service = (OVERLAY / 'etc/systemd/system/try-omarchy-catch-up.service').read_text()
+         self.assertIn('Before=display-manager.service', service)
+         catch_up = OVERLAY / 'usr/local/lib/try-omarchy/catch-up'
+@@ -177,7 +177,7 @@ class Qt612PaletteTests(unittest.TestCase):
+         self.assertLess(text.index('"$notifications_installer"'), text.index('"$palette_installer"'))
+         self.assertLess(text.index('"$qol_installer"'), text.index('"$palette_installer"'))
+         self.assertLess(text.index('"$nightlight_installer"'), text.index('"$palette_installer"'))
+-        version = self.root / 'compat-version'; version.write_text('60:test\n')
++        version = self.root / 'compat-version'; version.write_text('61:test\n')
+         state = self.root / 'state'; state.mkdir()
+         calls = self.root / 'calls'
+         fake = self.root / 'installer'; fake.write_text('#!/bin/bash\necho palette >>"' + str(calls) + '"\n')
+@@ -193,4 +193,4 @@ class Qt612PaletteTests(unittest.TestCase):
+             for _ in range(2):
+                 subprocess.run(['bash', str(catch_up)], env=env, check=True, capture_output=True, timeout=10)
+             self.assertEqual(calls.read_text(), 'palette\n', previous)
+-            self.assertEqual((state / 'catch-up-revision').read_text(), '60\n')
++            self.assertEqual((state / 'catch-up-revision').read_text(), '61\n')
+diff --git a/guest/tests/test_runtime_package.py b/guest/tests/test_runtime_package.py
+index 528ad1e..6516413 100644
+--- a/guest/tests/test_runtime_package.py
++++ b/guest/tests/test_runtime_package.py
+@@ -103,3 +103,14 @@ exit 0''')
+         self.assertNotEqual(result.returncode, 0)
+         self.assertIn('package database has inconsistent ownership', result.stderr)
+         self.assertFalse((self.root / 'usr/share/try-omarchy/repo').exists())
++
++    def test_aquamarine_dependency_has_a_minimum_and_no_version_hold(self):
++        spec = json.loads(self.spec.read_text())
++        spec['supplyChain'] = {'aquamarine': {'packageVersion': '0.15.1-1.1'}}
++        self.spec.write_text(json.dumps(spec))
++        result = self.run_builder()
++        self.assertEqual(result.returncode, 0, result.stderr)
++        with tarfile.open(self.capture) as archive:
++            metadata = archive.extractfile('.PKGINFO').read().decode()
++        self.assertIn('depend = aquamarine>=0.15.1-1.1\n', metadata)
++        self.assertNotIn('conflict = aquamarine', metadata)
+diff --git a/guest/tests/test_snapper_guest.py b/guest/tests/test_snapper_guest.py
+index deafb86..22d0ca8 100644
+--- a/guest/tests/test_snapper_guest.py
++++ b/guest/tests/test_snapper_guest.py
+@@ -44,5 +44,5 @@ class GuestSnapperTests(unittest.TestCase):
+         finalizer = (GUEST / 'scripts/finalize-rootfs.sh').read_text()
+         paths = finalizer.split('compat_paths=(', 1)[1].split(')', 1)[0]
+         self.assertIn(TARGET, paths)
+-        self.assertIn('compat_revision=60', finalizer)
+-        self.assertEqual(json.loads((GUEST / 'spec.json').read_text())['upstream']['packageRelease'], 9)
++        self.assertIn('compat_revision=61', finalizer)
++        self.assertEqual(json.loads((GUEST / 'spec.json').read_text())['upstream']['packageRelease'], 10)
+diff --git a/guest/tests/test_windows_volume_sync.py b/guest/tests/test_windows_volume_sync.py
+index cc9e931..d2c3327 100644
+--- a/guest/tests/test_windows_volume_sync.py
++++ b/guest/tests/test_windows_volume_sync.py
+@@ -285,7 +285,7 @@ class VolumeSyncTests(unittest.TestCase):
+ 
+     def test_revision_delivers_bridge_to_existing_disks(self):
+         finalize = (Path(__file__).resolve().parents[1] / "scripts/finalize-rootfs.sh").read_text()
+-        self.assertIn("compat_revision=60", finalize)
++        self.assertIn("compat_revision=61", finalize)
+         self.assertIn("usr/local/bin/omarchy-windows-audio-bridge", finalize)
+ 
+ 
+diff --git a/guest/tests/test_write_provenance.py b/guest/tests/test_write_provenance.py
+index 5c4523c..04f54ba 100644
+--- a/guest/tests/test_write_provenance.py
++++ b/guest/tests/test_write_provenance.py
+@@ -231,3 +231,25 @@ class WriteProvenanceTests(unittest.TestCase):
+ 
+ if __name__ == "__main__":
+     unittest.main()
++
++    def test_aquamarine_provenance_retains_source_patch_and_build_pins(self):
++        import shutil
++        with tempfile.TemporaryDirectory() as temporary:
++            root, spec, target, output = self.fixture(temporary)
++            payload = json.loads(spec.read_text())
++            real = json.loads((GUEST / 'spec.json').read_text())
++            payload['supplyChain'] = {'aquamarine': real['supplyChain']['aquamarine']}
++            payload['inputs'] = real['inputs']
++            spec.write_text(json.dumps(payload))
++            for name in ('scripts/aquamarine-contract.py', 'scripts/register-aquamarine.sh',
++                         'patches/aquamarine/cursor-hotspot.patch', 'packages.lock.json'):
++                path = spec.parent / name
++                path.parent.mkdir(parents=True, exist_ok=True)
++                shutil.copyfile(GUEST / name, path)
++            result = self.run_writer(root, spec, output)
++            self.assertEqual(result.returncode, 0, result.stderr)
++            self.assertEqual(json.loads(output.read_text())['aquamarine'], payload['supplyChain']['aquamarine'])
++            (spec.parent / 'patches/aquamarine/cursor-hotspot.patch').write_text('changed')
++            result = self.run_writer(root, spec, output)
++            self.assertNotEqual(result.returncode, 0)
++            self.assertIn('patchSha256 mismatch', result.stderr)
+diff --git a/guest/tests/verify.py b/guest/tests/verify.py
+index c703b65..3bbfed3 100755
+--- a/guest/tests/verify.py
++++ b/guest/tests/verify.py
+@@ -324,7 +324,7 @@ def main() -> None:
+         "system services run without watchdogs, which fire after Windows sleeps",
+     )
+     check(
+-        "compat_revision=60" in finalize_rootfs
++        "compat_revision=61" in finalize_rootfs
+         and "usr/local/bin/mpv" in compat_paths
+         and "usr/share/dkms/modules_to_force_install/try-omarchy" in compat_paths
+         and "usr/local/lib/try-omarchy/try-omarchy-import.pyz" in compat_paths
