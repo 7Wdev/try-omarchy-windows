@@ -2,8 +2,10 @@
 // Independent, deliberately small WDDM experiment, not the /dev/dxg or RM ABI.
 #pragma once
 #include "wire.h"
+#include "gpu_state_ranges.h"
 #include <algorithm>
 #include <map>
+#include <stdexcept>
 
 namespace driver_bridge {
 using native_gpu::Header;
@@ -76,6 +78,7 @@ inline bool validSyncGpuAddress(SyncDesc desc, std::uint64_t address) {
 constexpr std::uint32_t HwSubmitCapability = 32768;
 constexpr std::uint32_t VendorRetirementCapability = 65536;
 constexpr std::uint32_t GpuReservationCapability = 131072;
+constexpr std::uint32_t GpuStateCapability = 262144;
 constexpr std::size_t MaxGpuReservations = 8;
 constexpr std::uint64_t MaxGpuReservationBytes = 4ull * 1024 * 1024 * 1024;
 constexpr std::uint64_t MaxGpuReservedBytes = 4 * MaxGpuReservationBytes;
@@ -135,6 +138,15 @@ inline bool validGpuVaOutput(GpuVaDesc d, std::uint64_t address) {
     if (d.base) return address == d.base;
     return address >= d.minimum && (!d.maximum || address + d.sizePages * 4096 <= d.maximum);
 }
+inline bool validGpuState(GpuVaDesc d) {
+    const auto state = d.protection & 12;
+    return d.queue && !d.reserved && d.base && !d.offsetPages && !d.driverProtection &&
+           !(d.protection & ~15ull) && (state == 4 || state == 8) &&
+           d.sizePages && d.sizePages <= MaxGpuReservationBytes / 4096 &&
+           !(d.base % 4096) && !(d.minimum % 4096) && !(d.maximum % 4096) &&
+           d.base < MaxGpuAddress && d.minimum < MaxGpuAddress && d.maximum <= MaxGpuAddress &&
+           d.base <= MaxGpuAddress - d.sizePages * 4096;
+}
 struct GpuVaReply { std::uint64_t fence; };
 static_assert(sizeof(GpuVaReply) == 8, "fixed GPU-address fence reply");
 struct VendorAllocationDesc {
@@ -187,7 +199,7 @@ enum class Op : std::uint32_t {
     LockVendorAllocation, UnlockVendorAllocation, TranslateVendorAllocation,
     CreateHwQueue = 0x2060, DestroyHwQueue, SubmitHwQueue,
     CreateSync = 0x2070, DestroySync,
-    ReserveGpuAddress = 0x2080, FreeGpuReservation
+    ReserveGpuAddress = 0x2080, FreeGpuReservation, MapGpuState
 };
 enum class Kind { Adapter, Device, PagingQueue, Allocation, Context, PagingSync, VendorAllocation, HwQueue, HwQueueSync, Sync, GpuReservation };
 struct ContextDesc {
@@ -273,6 +285,9 @@ public:
     virtual Result reserveGpuAddress(std::uint32_t, GpuReservationDesc) {
         return {static_cast<std::int32_t>(0xc00000bbu), 0, 0};
     }
+    virtual GpuVaResult mapGpuState(std::uint32_t, std::uint32_t, GpuVaDesc) {
+        return {{static_cast<std::int32_t>(0xc00000bbu), 0, 0}, 0};
+    }
     virtual Result readPagingFence(std::uint32_t queue) = 0;
     virtual Result createAllocation(std::uint32_t device, std::uint32_t size) = 0;
     virtual Result createSharedAllocation(std::uint32_t device, GuestRange range) = 0;
@@ -314,6 +329,7 @@ class Session {
     std::uint32_t vendorCpuBytes = 0;
     std::uint32_t submissionAttempts = 0;
     std::uint64_t gpuReservedBytes = 0;
+    GpuStateRanges gpuStates;
     bool negotiated = false;
     static std::vector<std::uint8_t> reply(Header h, std::int32_t error,
                                          std::uint32_t id = 0, const Result* result = nullptr) {
@@ -724,6 +740,42 @@ public:
             const auto start = out.size(); out.resize(start + sizeof(VendorCpuReply));
             std::memcpy(out.data() + start, &native.output, sizeof native.output); return out;
         }
+        if (op == Op::MapGpuState) {
+            if (!negotiated) return reply(h, -71);
+            if (!(driver.capabilities().flags & GpuStateCapability)) return reply(h, -95);
+            if (packet.size() != sizeof h + sizeof(GpuVaDesc)) return reply(h, -22);
+            GpuVaDesc desc{}; std::memcpy(&desc, packet.data() + sizeof h, sizeof desc);
+            if (!validGpuState(desc)) return reply(h, -22);
+            const auto reservation = objects.find(h.handle), queue = objects.find(desc.queue);
+            if (reservation == objects.end() || reservation->second.kind != Kind::GpuReservation ||
+                queue == objects.end() || queue->second.kind != Kind::PagingQueue ||
+                objects.at(queue->second.parent).parent != reservation->second.parent) return reply(h, -9);
+            if (!gpuRangeContains(reservation->second.gpuAddress, reservation->second.reservedGpuBytes, desc.base, desc.sizePages * 4096)) return reply(h, -9);
+            for (const auto& item : objects) {
+                const auto& mapped = item.second;
+                if (mapped.kind == Kind::Allocation && gpuRangesOverlap(desc.base, desc.sizePages * 4096, mapped.gpuAddress, mapped.size)) return reply(h, -16);
+                if (mapped.kind == Kind::VendorAllocation && gpuRangesOverlap(desc.base, desc.sizePages * 4096, mapped.gpuAddress, mapped.gpuPages * 4096ull) &&
+                    (mapped.parent != queue->second.parent || !gpuRangeContains(desc.base, desc.sizePages * 4096, mapped.gpuAddress, mapped.gpuPages * 4096ull))) return reply(h, -16);
+            }
+            GpuStateRanges::Plan plan;
+            if (!gpuStates.prepare(h.handle, desc.base, desc.sizePages * 4096, desc.protection, plan)) return reply(h, -24);
+            const auto result = driver.mapGpuState(reservation->second.nativeHandle, queue->second.nativeHandle, desc);
+            if (result.map.nativeHandle || (result.map.ntstatus >= 0 &&
+                ((result.map.ntstatus != 0 && result.map.ntstatus != 259) || result.map.value != desc.base)) ||
+                (result.map.ntstatus < 0 && (result.map.value || result.fence))) return reply(h, -5);
+            if (result.map.ntstatus >= 0) {
+                for (auto& item : objects) {
+                    auto& mapped = item.second;
+                    if (mapped.kind == Kind::VendorAllocation && gpuRangesOverlap(desc.base, desc.sizePages * 4096, mapped.gpuAddress, mapped.gpuPages * 4096ull)) {
+                        vendorMappedPages -= mapped.gpuPages; mapped.gpuPages = 0; mapped.gpuAddress = 0; mapped.gpuOffsetPages = 0;
+                    }
+                }
+                gpuStates.commit(plan);
+            }
+            auto out = reply(h, 0, h.handle, &result.map);
+            const auto start = out.size(); out.resize(start + sizeof(GpuVaReply));
+            const GpuVaReply fence{result.fence}; std::memcpy(out.data() + start, &fence, sizeof fence); return out;
+        }
         if (op == Op::ReserveGpuAddress || op == Op::FreeGpuReservation) {
             if (!negotiated) return reply(h, -71);
             if (!(driver.capabilities().flags & GpuReservationCapability)) return reply(h, -95);
@@ -753,7 +805,7 @@ public:
                             vendorMappedPages -= mapped.gpuPages; mapped.gpuPages = 0; mapped.gpuAddress = 0; mapped.gpuOffsetPages = 0;
                         }
                     }
-                    gpuReservedBytes -= entry->second.reservedGpuBytes; objects.erase(entry);
+                    gpuStates.release(h.handle); gpuReservedBytes -= entry->second.reservedGpuBytes; objects.erase(entry);
                 }
                 return reply(h, 0, h.handle, &result);
             }
@@ -838,6 +890,8 @@ public:
                     desc.base < mapped.gpuAddress + mapped.gpuPages * 4096ull &&
                     mapped.gpuAddress < desc.base + desc.sizePages * 4096) return reply(h, -16);
             }
+            GpuStateRanges::Plan plan;
+            if (desc.base && !gpuStates.prepareRemove(desc.base, desc.sizePages * 4096, plan)) return reply(h, -24);
             const auto result = driver.mapVendorAllocation(object.nativeHandle, queue->second.nativeHandle, desc);
             if (result.map.nativeHandle || (result.map.ntstatus >= 0 &&
                 (result.map.ntstatus != 0 && result.map.ntstatus != 0x103)) ||
@@ -847,6 +901,9 @@ public:
                 object.gpuPages = static_cast<std::uint32_t>(desc.sizePages); object.gpuAddress = result.map.value;
                 object.gpuOffsetPages = desc.offsetPages;
                 vendorMappedPages += object.gpuPages;
+                if (!desc.base && !gpuStates.prepareRemove(result.map.value, desc.sizePages * 4096, plan))
+                    throw std::runtime_error("GPU state tracking quota after allocation mapping");
+                gpuStates.commit(plan);
             }
             auto out = reply(h, 0, h.handle, &result.map);
             const auto start = out.size(); out.resize(start + sizeof(GpuVaReply));

@@ -21,6 +21,40 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (fd < 0) return failed("open");
+    if (!std::strncmp(mode, "gpu-state-", 10)) {
+        D3DDDI_MAPGPUVIRTUALADDRESS mapping{}; mapping.hPagingQueue = 3; mapping.BaseAddress = 67108864;
+        mapping.SizeInPages = 16; mapping.Protection.Value = 5;
+        if (!std::strcmp(mode, "gpu-state-invalid")) {
+            for (unsigned n = 0; n < 13; ++n) {
+                auto bad = mapping;
+                switch (n) {
+                    case 0: bad.hAllocation = 1; break;
+                    case 1: bad.BaseAddress = 0; break;
+                    case 2: bad.BaseAddress++; break;
+                    case 3: bad.OffsetInPages = 1; break;
+                    case 4: bad.Protection.Value = 12; break;
+                    case 5: bad.Protection.Value = 20; break;
+                    case 6: bad.SizeInPages = 0; break;
+                    case 7: bad.SizeInPages = driver_bridge::MaxGpuReservationBytes / 4096 + 1; break;
+                    case 8: bad.BaseAddress = driver_bridge::MaxGpuAddress - 4096; break;
+                    case 9: bad.Reserved0 = 1; break;
+                    case 10: bad.Reserved1 = 1; break;
+                    case 11: bad.DriverProtection = 1; break;
+                    case 12: bad.hPagingQueue = 0; break;
+                }
+                if (ioctl(fd, _IOWR('G', 12, D3DDDI_MAPGPUVIRTUALADDRESS), &bad) != -1 || errno != EINVAL)
+                    return failed("invalid GPU state mapping forwarded");
+            }
+        } else {
+            const auto expected = !std::strcmp(mode, "gpu-state-disabled") ? ENOSYS : EBADF;
+            for (const auto protection : {4ull, 5ull, 8ull, 11ull}) {
+                mapping.Protection.Value = protection;
+                if (ioctl(fd, _IOWR('G', 12, D3DDDI_MAPGPUVIRTUALADDRESS), &mapping) != -1 || errno != expected)
+                    return failed("GPU state opt-in or ownership rejection");
+            }
+        }
+        close(fd); return 0;
+    }
     if (!std::strncmp(mode, "reservation-", 12)) {
         D3DKMT_OPENADAPTERFROMLUID adapter{}; adapter.AdapterLuid.LowPart = 0x57475055;
         if (ioctl(fd, _IOWR('G', 1, D3DKMT_OPENADAPTERFROMLUID), &adapter)) return failed("reservation adapter");

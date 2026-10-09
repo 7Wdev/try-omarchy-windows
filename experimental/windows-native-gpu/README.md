@@ -10,20 +10,26 @@ context creation, standalone video-memory allocation, GPU-address mapping,
 residency, direct CPU allocation access, hardware queues and synchronization
 objects through QEMU. Physical testing created ten monitored fences (including
 two [CPU-only fences](../../docs/LIVE-CPU-ONLY-FENCES.md)), eight
-mutexes, three hardware queues and 38 allocations. The
+mutexes, three hardware queues and 40 allocations. The
 [allocation retirement route](../../docs/LIVE-ALLOCATION-RETIREMENT.md) reclaimed
 allocations with queues alive. The vendor allocation quota is 64 within 128
 total wire objects; the separate CPU
 aperture defaults to 16 slots and supports bounded
 [32/64-slot configurations](../../docs/LIVE-CPU-APERTURE-CAPACITY.md). The
-expanded physical test directly mapped eight slots beyond the old limit with no
+expanded physical test directly mapped twelve slots beyond the old limit with no
 CPU-slot exhaustion. The [bounded command route](../../docs/LIVE-COMMAND-SUBMISSION.md)
 has executed live runtime initialization commands and verified their progress
 fences in Windows and the guest. The [GPU address reservation route](../../docs/LIVE-GPU-RESERVATION.md)
 now reserves and releases owned ranges, including the live 3 GiB request. GPU-only
 mappings support up to 4 MiB without changing the 1 MiB CPU aperture stride.
-Documented high and maximum allocation priorities are preserved. General command submission remains unfinished. Direct guest
-fence reads, synchronous allocation destruction and acknowledged unmap passed physical testing. Omarchy
+Documented high and maximum allocation priorities are preserved.
+The [GPU address-state route](../../docs/LIVE-GPU-ADDRESS-STATE.md) also passes
+null-allocation Zero mappings of 4 MiB, 1 GiB and 128 KiB to Windows, verifies
+their paging fences and replaces fully covered allocation mappings after
+command retirement. This address-only state has a separate reservation budget;
+the physical mapping and CPU slot limits still apply.
+General command submission remains unfinished. Direct guest fence reads,
+synchronous allocation destruction and acknowledged unmap passed physical testing. Omarchy
 desktop acceleration remains unimplemented. Read the
 [investigation](../../docs/WINDOWS-NVIDIA-BACKEND.md).
 

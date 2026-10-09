@@ -28,6 +28,8 @@ def send(op, handle, value=0, data=b'', padding=0, hello=False, ntstatus=0):
     caps |= 16384 if mode.startswith('sync-') and mode != 'sync-disabled' else 0
     caps |= 32768 if mode.startswith('submit-') and mode != 'submit-disabled' else 0
     caps |= 131072 if mode.startswith('reservation-') and mode != 'reservation-disabled' else 0
+    caps |= 512 if mode.startswith('gpu-state-') else 0
+    caps |= 262144 if mode.startswith('gpu-state-') and mode != 'gpu-state-disabled' else 0
     packet += struct.pack('<IIII',1,caps,4318,11352) if hello else struct.pack('<iIQ',ntstatus,0,value) + data
     sys.stdout.buffer.write(struct.pack('<I',len(packet)) + packet)
     sys.stdout.buffer.flush()
@@ -179,6 +181,7 @@ if mode in ('allocation-normal','allocation-maximum'): assert operations.count(0
 if mode == 'allocation-failed-destroy': assert operations.count(0x2051) == 2, operations
 if mode.startswith('allocation-destroy-'): assert operations.count(0x2051) == 1, operations
 if mode.startswith('gpuva-'): assert operations == [0x2000], operations
+if mode.startswith('gpu-state-'): assert operations == [0x2000], operations
 if mode.startswith('resident-'): assert operations == [0x2000], operations
 if mode in ('cpu-disabled','cpu-invalid'): assert 0x2054 not in operations, operations
 if mode.startswith('cpu-'): assert 0x2055 not in operations, operations
@@ -217,7 +220,7 @@ def main():
                      'allocation-normal', 'allocation-maximum', 'allocation-disabled', 'allocation-invalid', 'allocation-nt-failure',
                      'allocation-bad-id', 'allocation-bad-va', 'allocation-short', 'allocation-failed-destroy',
                      'allocation-destroy-bad-id', 'allocation-destroy-bad-status', 'allocation-destroy-bad-value', 'allocation-destroy-long',
-                     'gpuva-disabled', 'gpuva-invalid', 'resident-disabled', 'resident-invalid',
+                     'gpuva-disabled', 'gpuva-invalid', 'gpu-state-disabled', 'gpu-state-invalid', 'gpu-state-unowned', 'resident-disabled', 'resident-invalid',
                      'cpu-disabled', 'cpu-invalid', 'cpu-nt-failure', 'cpu-bad-failure', 'cpu-bad-id',
                      'cpu-bad-bytes', 'cpu-bad-alignment', 'cpu-bad-reserved', 'cpu-bad-generation',
                      'cpu-bad-offset', 'cpu-bad-slot', 'cpu-short', 'cpu-bad-status', 'cpu-no-hub',

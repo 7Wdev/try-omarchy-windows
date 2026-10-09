@@ -225,6 +225,7 @@ class Bridge {
     struct GpuReservation { std::uint32_t adapter; std::uint64_t address, bytes; };
     std::map<std::uint32_t, GpuReservation> gpuReservations;
     std::uint64_t gpuReservedBytes = 0;
+    GpuStateRanges gpuStates;
     std::map<std::uint32_t, std::uint32_t> pagingOwners;
     struct Context { std::uint32_t device, flags; };
     std::map<std::uint32_t, Context> contextOwners;
@@ -650,12 +651,14 @@ public:
                 for (auto mapped = vendorGpuRanges.begin(); mapped != vendorGpuRanges.end();)
                     if (gpuRangesOverlap(range->second.address, range->second.bytes, mapped->second.address, mapped->second.bytes)) mapped = vendorGpuRanges.erase(mapped);
                     else ++mapped;
-                gpuReservedBytes -= range->second.bytes; gpuReservations.erase(range);
+                gpuStates.release(range->first); gpuReservedBytes -= range->second.bytes; gpuReservations.erase(range);
                 std::fprintf(stderr, "LINUX_BRIDGE nativeGpuReservationFreed=true bytes=%llu\n", static_cast<unsigned long long>(a.Size));
                 return 0;
             }
             case 12: {
                 auto& a = args<D3DDDI_MAPGPUVIRTUALADDRESS>(requestNumber, pointer);
+                std::fprintf(stderr, "LINUX_BRIDGE gpuVaAllocationInput allocationIsNull=%u ownedAllocation=%u\n",
+                    a.hAllocation ? 0u : 1u, vendorOwners.count(a.hAllocation) ? 1u : 0u);
                 std::fprintf(stderr, "LINUX_BRIDGE gpuVaInput base=%llu minimum=%llu maximum=%llu offsetPages=%llu sizePages=%llu protection=%llu driverProtection=%llu reserved0=%u reserved1=%llu\n",
                     static_cast<unsigned long long>(a.BaseAddress), static_cast<unsigned long long>(a.MinimumAddress),
                     static_cast<unsigned long long>(a.MaximumAddress), static_cast<unsigned long long>(a.OffsetInPages),
@@ -666,10 +669,48 @@ public:
                 }
                 const GpuVaDesc desc{a.hPagingQueue, a.Reserved0, a.BaseAddress, a.MinimumAddress, a.MaximumAddress,
                                      a.OffsetInPages, a.SizeInPages, a.Protection.Value, a.DriverProtection};
+                if (a.Protection.Value & 12) {
+                    if (!(caps.flags & GpuStateCapability)) {
+                        std::fprintf(stderr, "LINUX_BRIDGE unsupported nr=12 bytes=%zu\n", sizeof a); throw Error(ENOSYS);
+                    }
+                    if (a.hAllocation || a.Reserved1 || !validGpuState(desc)) throw Error(EINVAL);
+                    const auto queue = pagingOwners.find(a.hPagingQueue);
+                    if (queue == pagingOwners.end() || !deviceAdapters.count(queue->second)) throw Error(EBADF);
+                    const auto adapter = deviceAdapters.at(queue->second);
+                    const auto range = std::find_if(gpuReservations.begin(), gpuReservations.end(), [&](const auto& item) {
+                        return item.second.adapter == adapter && gpuRangeContains(item.second.address, item.second.bytes, desc.base, desc.sizePages * 4096);
+                    });
+                    if (range == gpuReservations.end()) throw Error(EBADF);
+                    for (const auto& mapped : vendorGpuRanges)
+                        if (gpuRangesOverlap(desc.base, desc.sizePages * 4096, mapped.second.address, mapped.second.bytes) &&
+                            (vendorOwners.at(mapped.first) != queue->second || !gpuRangeContains(desc.base, desc.sizePages * 4096, mapped.second.address, mapped.second.bytes))) throw Error(EBUSY);
+                    GpuStateRanges::Plan plan;
+                    if (!gpuStates.prepare(range->first, desc.base, desc.sizePages * 4096, desc.protection, plan)) throw Error(EMFILE);
+                    const auto result = call(request(Op::MapGpuState, range->first, desc), sizeof(GpuVaReply), true);
+                    GpuVaReply fence{}; std::memcpy(&fence, result.data.data(), sizeof fence);
+                    if (result.header.handle != range->first || (result.result.ntstatus >= 0 &&
+                        ((result.result.ntstatus != 0 && result.result.ntstatus != 259) || result.result.value != desc.base)) ||
+                        (result.result.ntstatus < 0 && (result.result.value || fence.fence))) { transport.fail(); throw Error(EPROTO); }
+                    checkNt(result.result.ntstatus); pagingFences.verifyRetired(a.hPagingQueue, fence.fence, "gpu-state");
+                    for (auto mapped = vendorGpuRanges.begin(); mapped != vendorGpuRanges.end();)
+                        if (gpuRangesOverlap(desc.base, desc.sizePages * 4096, mapped->second.address, mapped->second.bytes)) mapped = vendorGpuRanges.erase(mapped);
+                        else ++mapped;
+                    gpuStates.commit(plan); a.VirtualAddress = result.result.value; a.PagingFenceValue = fence.fence;
+                    std::fprintf(stderr, "LINUX_BRIDGE nativeGpuStateMapped=true pages=%llu protection=%llu status=%d fence=%llu allocationIsNull=true\n",
+                        static_cast<unsigned long long>(desc.sizePages), static_cast<unsigned long long>(desc.protection), result.result.ntstatus,
+                        static_cast<unsigned long long>(fence.fence));
+                    const auto eofTest = std::getenv("WDDM_BRIDGE_GPU_STATE_EOF_TEST");
+                    if (eofTest && !std::strcmp(eofTest, "1")) {
+                        std::fprintf(stderr, "LINUX_BRIDGE gpuStateEofTest=true exitingWithGpuStateOwned=true\n"); _exit(1);
+                    }
+                    return result.result.ntstatus;
+                }
                 if (a.Reserved1 || !validGpuVa(desc)) throw Error(EINVAL);
                 const auto allocation = vendorOwners.find(a.hAllocation), queue = pagingOwners.find(a.hPagingQueue);
                 if (allocation == vendorOwners.end() || queue == pagingOwners.end() || allocation->second != queue->second) throw Error(EBADF);
                 const auto wire = wireAllocation(a.hAllocation);
+                GpuStateRanges::Plan statePlan;
+                if (desc.base && !gpuStates.prepareRemove(desc.base, desc.sizePages * 4096, statePlan)) throw Error(EMFILE);
                 const auto result = call(request(Op::MapVendorAllocation, wire, desc), sizeof(GpuVaReply), true);
                 GpuVaReply fence{}; std::memcpy(&fence, result.data.data(), sizeof fence);
                 if (result.header.handle != wire ||
@@ -677,6 +718,8 @@ public:
                     (result.result.ntstatus < 0 && (result.result.value || fence.fence))) { transport.fail(); throw Error(EPROTO); }
                 checkNt(result.result.ntstatus);
                 pagingFences.verifyRetired(a.hPagingQueue, fence.fence, "gpuva");
+                if (!desc.base && !gpuStates.prepareRemove(result.result.value, desc.sizePages * 4096, statePlan)) { transport.fail(); throw Error(EIO); }
+                gpuStates.commit(statePlan);
                 vendorGpuRanges.emplace(a.hAllocation, VendorGpuRange{result.result.value, desc.sizePages * 4096});
                 a.VirtualAddress = result.result.value; a.PagingFenceValue = fence.fence;
                 std::fprintf(stderr, "LINUX_BRIDGE nativeVendorGpuVaMapped=true pages=%llu status=%d fence=%llu\n",

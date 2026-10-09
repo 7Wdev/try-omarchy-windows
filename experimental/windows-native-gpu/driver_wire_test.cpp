@@ -26,6 +26,9 @@ struct Fake : Driver {
     bool hwQueuesEnabled = false;
     bool retirementEnabled = false;
     bool reservationEnabled = false;
+    bool gpuStateEnabled = false;
+    int badGpuStateReply = 0;
+    GpuVaDesc lastGpuStateDesc{};
     int badReservationReply = 0, badReservationDestroyReply = 0;
     std::map<std::uint32_t, std::uint32_t> reservationParents;
     int badHwQueueReply = 0;
@@ -54,7 +57,14 @@ struct Fake : Driver {
                 (cpuEnabled ? VendorCpuCapability : 0u) | (translationEnabled ? VendorTranslationCapability : 0u) |
                 (hwQueuesEnabled ? HwQueueCapability : 0u) | (syncEnabled ? SyncCapability : 0u) |
                 (submitEnabled ? HwSubmitCapability : 0u) | (retirementEnabled ? VendorRetirementCapability : 0u) |
-                (reservationEnabled ? GpuReservationCapability : 0u), 0x10de, 123};
+                (reservationEnabled ? GpuReservationCapability : 0u) | (gpuStateEnabled ? GpuStateCapability : 0u), 0x10de, 123};
+    }
+    GpuVaResult mapGpuState(std::uint32_t reservation, std::uint32_t queue, GpuVaDesc desc) override {
+        require(reservationParents.count(reservation) && queue > 500 && validGpuState(desc)); ++calls;
+        lastGpuStateDesc = desc;
+        if (fail) return {{-123, 0, badGpuStateReply == 5 ? desc.base : 0}, badGpuStateReply == 6 ? 42ull : 0ull};
+        return {{badGpuStateReply == 1 ? 1 : 259, badGpuStateReply == 2 ? 777u : 0u,
+                 badGpuStateReply == 3 ? 0ull : badGpuStateReply == 4 ? desc.base + 4096 : desc.base}, 7019};
     }
     Result created() { ++calls; return {fail ? -123 : 0, ++next, 0}; }
     Result reserveGpuAddress(std::uint32_t adapter, GpuReservationDesc desc) override {
@@ -225,6 +235,118 @@ struct Fake : Driver {
     }
 };
 int main() {
+    {
+        GpuStateRanges ranges; GpuStateRanges::Plan plan;
+        const auto page = 4096ull, base = 67108864ull;
+        require(ranges.prepare(1, base, 4 * page, 5, plan)); ranges.commit(plan);
+        require(ranges.prepare(1, base + page, 2 * page, 8, plan)); ranges.commit(plan);
+        require(ranges.size() == 3 && ranges.bytes() == 4 * page);
+        require(!ranges.prepare(2, base + page, page, 5, plan) && ranges.size() == 3);
+        require(ranges.prepare(1, base + page, 2 * page, 5, plan)); ranges.commit(plan);
+        require(ranges.size() == 1 && ranges.bytes() == 4 * page);
+        require(ranges.prepareRemove(base + page, 2 * page, plan)); ranges.commit(plan);
+        require(ranges.size() == 2 && ranges.bytes() == 2 * page);
+        ranges.release(2); require(ranges.size() == 2); ranges.release(1); require(ranges.empty());
+        require(ranges.prepare(1, base, GpuStateRanges::ByteLimit, 4, plan)); ranges.commit(plan);
+        require(!ranges.prepare(1, base + GpuStateRanges::ByteLimit, page, 4, plan));
+        require(ranges.size() == 1 && ranges.bytes() == GpuStateRanges::ByteLimit);
+        ranges.release(1);
+        for (std::size_t i = 0; i < GpuStateRanges::Limit; ++i) {
+            require(ranges.prepare(1, base + 2 * i * page, page, 4, plan)); ranges.commit(plan);
+        }
+        require(!ranges.prepare(1, base + 2 * GpuStateRanges::Limit * page, page, 4, plan));
+        require(ranges.size() == GpuStateRanges::Limit && ranges.bytes() == GpuStateRanges::Limit * page);
+        ranges.release(1); require(ranges.empty());
+    }
+    Fake state; state.reservationEnabled = state.vendorEnabled = state.gpuVaEnabled = true;
+    {
+        Session s(state);
+        GpuVaDesc desc{3, 0, 67108864, 0, 0, 0, 16, 5, 0};
+        require(header(s.dispatch(request(Op::MapGpuState, 4, desc))).status == -71);
+        s.dispatch(hello());
+        const auto adapter = header(s.dispatch(request(Op::OpenAdapter))).handle;
+        const auto device = header(s.dispatch(request(Op::CreateDevice, adapter))).handle;
+        const auto queue = header(s.dispatch(request(Op::CreatePagingQueue, device))).handle;
+        desc.queue = queue;
+        const auto owned = header(s.dispatch(request(Op::ReserveGpuAddress, adapter, GpuReservationDesc{desc.base, 0, 0, 65536}))).handle;
+        auto before = state.calls;
+        require(header(s.dispatch(request(Op::MapGpuState, owned, desc))).status == -95 && state.calls == before);
+        state.gpuStateEnabled = true;
+        for (unsigned n = 0; n < 17; ++n) {
+            auto bad = desc;
+            switch (n) {
+                case 0: bad.base = 0; break;
+                case 1: bad.base++; break;
+                case 2: bad.offsetPages = 1; break;
+                case 3: bad.protection = 12; break;
+                case 4: bad.protection = 16; break;
+                case 5: bad.protection = 1; break;
+                case 6: bad.protection = UINT64_MAX; break;
+                case 7: bad.sizePages = 0; break;
+                case 8: bad.sizePages = MaxGpuReservationBytes / 4096 + 1; break;
+                case 9: bad.base = MaxGpuAddress - 4096; break;
+                case 10: bad.reserved = 1; break;
+                case 11: bad.driverProtection = 1; break;
+                case 12: bad.minimum = 1; break;
+                case 13: bad.maximum = MaxGpuAddress + 4096; break;
+                case 14: bad.minimum = MaxGpuAddress; break;
+                case 15: bad.maximum = 1; break;
+                case 16: bad.queue = 0; break;
+            }
+            require(header(s.dispatch(request(Op::MapGpuState, owned, bad))).status == -22 && state.calls == before);
+        }
+        auto shortPacket = request(Op::MapGpuState, owned, desc); shortPacket.pop_back();
+        require(header(s.dispatch(shortPacket)).status == -22);
+        auto foreign = desc; foreign.base += 65536;
+        require(header(s.dispatch(request(Op::MapGpuState, owned, foreign))).status == -9);
+        require(header(s.dispatch(request(Op::MapGpuState, device, desc))).status == -9);
+        require(header(s.dispatch(request(Op::MapGpuState, 501, desc))).status == -9);
+        const auto other = header(s.dispatch(request(Op::OpenAdapter))).handle;
+        const auto otherDevice = header(s.dispatch(request(Op::CreateDevice, other))).handle;
+        foreign = desc; foreign.queue = header(s.dispatch(request(Op::CreatePagingQueue, otherDevice))).handle;
+        before = state.calls;
+        require(header(s.dispatch(request(Op::MapGpuState, owned, foreign))).status == -9 && state.calls == before);
+        for (int n = 1; n <= 4; ++n) {
+            state.badGpuStateReply = n;
+            require(header(s.dispatch(request(Op::MapGpuState, owned, desc))).status == -5);
+        }
+        state.fail = true;
+        for (int n = 5; n <= 6; ++n) {
+            state.badGpuStateReply = n;
+            require(header(s.dispatch(request(Op::MapGpuState, owned, desc))).status == -5);
+        }
+        state.badGpuStateReply = 0;
+        auto packet = s.dispatch(request(Op::MapGpuState, owned, desc)); Reply nt{}; GpuVaReply fence{};
+        std::memcpy(&nt, packet.data() + sizeof(Header), sizeof nt);
+        require(!header(packet).status && nt.ntstatus == -123 && !nt.value);
+        state.fail = false;
+        for (const auto protection : {4ull, 5ull, 6ull, 7ull, 8ull, 9ull, 10ull, 11ull}) {
+            desc.protection = protection; packet = s.dispatch(request(Op::MapGpuState, owned, desc));
+            std::memcpy(&nt, packet.data() + sizeof(Header), sizeof nt);
+            std::memcpy(&fence, packet.data() + sizeof(Header) + sizeof(Reply), sizeof fence);
+            require(!header(packet).status && header(packet).handle == owned && nt.ntstatus == 259 && nt.value == desc.base && fence.fence == 7019);
+        }
+        auto allocationPacket = request(Op::CreateVendorAllocation, device, VendorAllocationDesc{0, 0, 0, 4, 0, 0});
+        allocationPacket.insert(allocationPacket.end(), 4, 0);
+        const auto allocation = header(s.dispatch(allocationPacket)).handle;
+        auto allocationDesc = desc; allocationDesc.protection = 1;
+        require(!header(s.dispatch(request(Op::MapVendorAllocation, allocation, allocationDesc))).status);
+        before = state.calls;
+        auto partial = desc; partial.sizePages = 8;
+        require(header(s.dispatch(request(Op::MapGpuState, owned, partial))).status == -16 && state.calls == before);
+        state.fail = true;
+        packet = s.dispatch(request(Op::MapGpuState, owned, desc)); std::memcpy(&nt, packet.data() + sizeof(Header), sizeof nt);
+        require(!header(packet).status && nt.ntstatus == -123);
+        require(header(s.dispatch(request(Op::MapVendorAllocation, allocation, allocationDesc))).status == -16);
+        state.fail = false;
+        require(!header(s.dispatch(request(Op::MapGpuState, owned, desc))).status);
+        // Allocation and its CPU/residency ownership survive the page-table
+        // replacement. A fresh mapping can replace those state pages again.
+        require(!header(s.dispatch(request(Op::MapVendorAllocation, allocation, allocationDesc))).status && state.vendorOwners.size() == 1);
+        require(!header(s.dispatch(request(Op::FreeGpuReservation, owned, FreeGpuReservationDesc{adapter, 0}))).status);
+        require(header(s.dispatch(request(Op::MapGpuState, owned, desc))).status == -9);
+    }
+    require(state.reservationParents.empty() && state.vendorOwners.empty());
     const GpuReservationDesc reservationInput{0, 67108864, 1ull << 40, 65536};
     Fake reservation;
     {

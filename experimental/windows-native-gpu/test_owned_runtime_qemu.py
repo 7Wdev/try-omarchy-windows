@@ -46,6 +46,8 @@ def main():
     parser.add_argument('--minimum-no-gpu-access-fences', type=int, default=0)
     parser.add_argument('--driver-reservation', action='store_true')
     parser.add_argument('--minimum-gpu-reservations', type=int, default=0)
+    parser.add_argument('--driver-gpu-state', action='store_true')
+    parser.add_argument('--minimum-gpu-state-maps', type=int, default=0)
     parser.add_argument('--driver-submit', action='store_true')
     parser.add_argument('--minimum-submissions', type=int, default=0)
     parser.add_argument('--driver-retirement', action='store_true')
@@ -56,8 +58,13 @@ def main():
     parser.add_argument('--hwqueue-eof-test', action='store_true', help='Exit the guest probe with its first hardware queue still owned')
     parser.add_argument('--sync-eof-test', action='store_true', help='Exit the guest probe with its first NoGPUAccess fence still owned')
     parser.add_argument('--reservation-eof-test', action='store_true', help='Exit the guest probe with its first GPU address reservation still owned')
+    parser.add_argument('--gpu-state-eof-test', action='store_true', help='Exit the guest after its first retired GPU Zero/NoAccess mapping')
     args = parser.parse_args()
-    guest_eof = args.cpu_eof_test or args.hwqueue_eof_test or args.sync_eof_test or args.reservation_eof_test
+    guest_eof = args.cpu_eof_test or args.hwqueue_eof_test or args.sync_eof_test or args.reservation_eof_test or args.gpu_state_eof_test
+    if args.minimum_gpu_state_maps < 0 or (args.driver_gpu_state and not args.driver_reservation) or (args.minimum_gpu_state_maps and not args.driver_gpu_state):
+        parser.error('GPU address-state acceptance requires reservations and the explicit state opt-in')
+    if args.gpu_state_eof_test and (not args.driver_gpu_state or args.cpu_store_test or args.cpu_eof_test or args.hwqueue_eof_test or args.sync_eof_test or args.reservation_eof_test):
+        parser.error('GPU state EOF control requires state mappings and a separate diagnostic run')
     if args.minimum_gpu_reservations < 0 or (args.driver_reservation and not args.driver_gpuva) or (args.minimum_gpu_reservations and not args.driver_reservation):
         parser.error('GPU reservation acceptance requires GPU-address and reservation opt-ins')
     if args.reservation_eof_test and (not args.driver_reservation or args.cpu_eof_test or args.hwqueue_eof_test or args.sync_eof_test or args.cpu_store_test):
@@ -122,12 +129,14 @@ def main():
                              (['--driver-hwqueues'] if args.driver_hwqueues else []) +
                              (['--driver-syncs'] if args.driver_syncs else []) +
                              (['--driver-reservation'] if args.driver_reservation else []) +
+                             (['--driver-gpu-state'] if args.driver_gpu_state else []) +
                              (['--driver-submit'] if args.driver_submit else []) +
                              (['--driver-retirement'] if args.driver_retirement else []) +
                              (['--cpu-store-test'] if args.cpu_store_test else []) + (['--cpu-eof-test'] if args.cpu_eof_test else []) +
                              (['--hwqueue-eof-test'] if args.hwqueue_eof_test else []) +
                              (['--sync-eof-test'] if args.sync_eof_test else []) +
-                             (['--reservation-eof-test'] if args.reservation_eof_test else []),
+                             (['--reservation-eof-test'] if args.reservation_eof_test else []) +
+                             (['--gpu-state-eof-test'] if args.gpu_state_eof_test else []),
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                              creationflags=subprocess.CREATE_NO_WINDOW)
     output, errors, observer_errors = [], [], []
@@ -194,8 +203,10 @@ def main():
         total_fence_mappings = len(fences) + len(hwqueue_fences) + len(monitored_fences)
         gpuva = [{'pages': int(p), 'status': int(s), 'fence': int(f)} for p, s, f in
                  re.findall(r'nativeVendorGpuVaMapped=true pages=(\d+) status=(\d+) fence=(\d+)', log)]
+        gpu_states = [{'pages': int(p), 'protection': int(t), 'status': int(s), 'fence': int(f)} for p, t, s, f in
+                      re.findall(r'nativeGpuStateMapped=true pages=(\d+) protection=(\d+) status=(\d+) fence=(\d+) allocationIsNull=true', log)]
         retirements = [{'target': int(t), 'observed': int(o), 'operation': op or 'gpuva'} for t, o, op in
-                       re.findall(r'pagingFenceRetired=true direct=true loads=10000 target=(\d+) observed=(\d+)(?: operation=(\w+))?', log)]
+                       re.findall(r'pagingFenceRetired=true direct=true loads=10000 target=(\d+) observed=(\d+)(?: operation=([\w-]+))?', log)]
         residency = [{'count': int(c), 'status': int(s), 'fence': int(f), 'bytesToTrim': int(b)} for c, s, f, b in
                      re.findall(r'nativeVendorResident=true count=(\d+) status=(\d+) fence=(\d+) bytesToTrim=(\d+)', log)]
         cpu = [{'bytes': int(b), 'offset': int(o), 'generation': int(g)} for b, o, g in
@@ -210,6 +221,7 @@ def main():
             r'nativeVendorAllocationsDestroyed=true count=(\d+) hardwareQueuesAlive=(\d+)', log)]
         retirements_with_queues = sum(batch['count'] for batch in retirement_batches if batch['queues'])
         map_retirements = [r for r in retirements if r['operation'] == 'gpuva']
+        state_retirements = [r for r in retirements if r['operation'] == 'gpu-state']
         resident_retirements = [r for r in retirements if r['operation'] == 'residency']
         command_retirements = [r for r in retirements if r['operation'] == 'command']
         submissions = [{'bytes': int(b), 'privateBytes': int(p), 'target': int(t), 'observed': int(o)} for b, p, t, o in
@@ -217,7 +229,8 @@ def main():
         submission_preflight = [json.loads(line) for line in errors if line.startswith('{') and 'nativeSubmissionPreflight' in line]
         reservations = [int(n) for n in re.findall(r'nativeGpuReserved=true bytes=(\d+)', log)]
         reservations_freed = [int(n) for n in re.findall(r'nativeGpuReservationFreed=true bytes=(\d+)', log)]
-        accepted_stage_marker = ('nativeGpuReserved=true' if args.driver_reservation else
+        accepted_stage_marker = ('nativeGpuStateMapped=true' if args.driver_gpu_state else
+                                 'nativeGpuReserved=true' if args.driver_reservation else
                                  'nativeCommandSubmitted=true' if args.driver_submit else
                                  'nativeHwQueueCreated=true' if args.driver_hwqueues else
                                  'nativeVendorCpuLocked=true' if args.driver_cpu else
@@ -257,7 +270,7 @@ def main():
                         cleanup.get('peakVendorAllocationObjects') == args.expected_allocation_limit and
                         cleanup.get('vendorAllocationObjectLimit') == args.expected_allocation_limit)
         if args.driver_gpuva:
-            accepted = (accepted and len(gpuva) >= args.minimum_vendor_gpuva_maps and 12 not in unsupported and
+            accepted = (accepted and len(gpuva) >= args.minimum_vendor_gpuva_maps and (12 not in unsupported or (not args.driver_gpu_state and args.expected_unimplemented_ioctl == 12)) and
                         cleanup.get('completedVendorGpuVaMaps') == len(gpuva) and cleanup.get('failedVendorGpuVaMaps') == 0 and
                         cleanup.get('completedVendorGpuVaWaits') == len(gpuva) and cleanup.get('liveVendorMappedPages') == 0 and
                         len(map_retirements) == len(gpuva) and
@@ -267,7 +280,7 @@ def main():
                         cleanup.get('completedAllocationTranslations') == translations and
                         cleanup.get('failedAllocationTranslations') == 0 and cleanup.get('liveAllocationTranslations') == 0)
         if args.driver_hwqueues:
-            accepted = (accepted and hwqueues >= args.minimum_hwqueues and hwqueues == len(hwqueue_fences) and hwqueue_unmaps == (0 if args.hwqueue_eof_test or args.sync_eof_test or args.reservation_eof_test else hwqueues) and
+            accepted = (accepted and hwqueues >= args.minimum_hwqueues and hwqueues == len(hwqueue_fences) and hwqueue_unmaps == (0 if args.hwqueue_eof_test or args.sync_eof_test or args.reservation_eof_test or args.gpu_state_eof_test else hwqueues) and
                         cleanup.get('completedHwQueues') == hwqueues and cleanup.get('destroyedHwQueues') == hwqueues and
                         cleanup.get('failedHwQueues') == 0 and cleanup.get('liveHwQueues') == 0 and 24 not in unsupported and 27 not in unsupported)
         if args.driver_syncs:
@@ -301,6 +314,15 @@ def main():
                         (not guest_eof or not reservations_freed))
         else:
             accepted = (accepted and not reservations and cleanup.get('completedGpuReservations') == 0 and cleanup.get('liveGpuReservations') == 0)
+        accepted = (accepted and cleanup.get('liveGpuStateRanges') == 0 and cleanup.get('liveGpuStateBytes') == 0 and cleanup.get('failedGpuStateMaps') == 0)
+        if args.driver_gpu_state:
+            accepted = (accepted and len(gpu_states) >= args.minimum_gpu_state_maps and cleanup.get('gpuStateMappingOptIn') is True and
+                        cleanup.get('completedGpuStateMaps') == cleanup.get('completedGpuStateWaits') == len(gpu_states) and
+                        len(state_retirements) == len(gpu_states) and
+                        all(s['status'] in (0, 259) and (s['protection'] & 12) in (4, 8) and r['target'] == s['fence'] and r['observed'] >= s['fence']
+                            for s, r in zip(gpu_states, state_retirements)))
+        else:
+            accepted = (accepted and not gpu_states and not state_retirements and cleanup.get('gpuStateMappingOptIn') is False and cleanup.get('completedGpuStateMaps') == 0)
         if args.driver_residency:
             accepted = (accepted and len(residency) >= args.minimum_vendor_residency_requests and 11 not in unsupported and
                         all(r['count'] > 0 and r['status'] in (0, 259) for r in residency) and
@@ -339,13 +361,19 @@ def main():
             accepted = (accepted and len(reservations) == 1 and 'reservationEofTest=true exitingWithGpuReservationOwned=true' in log and
                         cleanup.get('gpuReservationsReleasedAfterVmExit') == 1 and cleanup.get('syncObjectsReleasedAfterVmExit') == len(sync_types) and
                         cleanup.get('hwQueuesReleasedAfterVmExit') == hwqueues and cleanup.get('cpuLocksReleasedAfterVmExit') == len(cpu) and result is None)
+        if args.gpu_state_eof_test:
+            accepted = (accepted and len(gpu_states) == 1 and 'gpuStateEofTest=true exitingWithGpuStateOwned=true' in log and
+                        cleanup.get('gpuReservationsReleasedAfterVmExit') == len(reservations) and cleanup.get('syncObjectsReleasedAfterVmExit') == len(sync_types) and
+                        cleanup.get('hwQueuesReleasedAfterVmExit') == hwqueues and cleanup.get('cpuLocksReleasedAfterVmExit') == len(cpu) and result is None)
         if args.cpu_store_test:
             accepted = (accepted and len(cpu) > 0 and cleanup.get('cpuStoreTestRequested') is True and
                         cleanup.get('completedCpuStoreTests') == len(cpu) and cleanup.get('failedCpuStoreTests') == 0 and
                         log.count('allocationCpuStoreTest=true firstLastReadback=true') == len(cpu) and
                         log.count('allocationCpuReferenceTest=true sameGuestPointer=true intermediateUnlockRetained=true') == len(cpu))
         report = {'schema': 1, 'diagnosticAccepted': bool(accepted), 'runtimeInitializationComplete': False,
-                  'stage': 'owned VM exit before GPU reservation cleanup' if args.reservation_eof_test else
+                  'stage': 'owned VM exit with a retired GPU address-state mapping' if args.gpu_state_eof_test else
+                           'live NVIDIA runtime with Windows GPU address-state mappings' if args.driver_gpu_state else
+                           'owned VM exit before GPU reservation cleanup' if args.reservation_eof_test else
                            'live NVIDIA runtime with Windows GPU address reservation' if args.driver_reservation else
                            'owned VM exit before NoGPUAccess fence cleanup' if args.sync_eof_test else
                            'owned VM exit before native hardware queue and CPU lock cleanup' if args.hwqueue_eof_test else
@@ -379,6 +407,8 @@ def main():
                   'minimumNoGpuAccessFencesRequired': args.minimum_no_gpu_access_fences,
                   'gpuReservationOptIn': args.driver_reservation, 'nativeGpuReservationSizes': reservations,
                   'guestGpuReservationReleaseSizes': reservations_freed, 'minimumGpuReservationsRequired': args.minimum_gpu_reservations,
+                  'gpuStateMappingOptIn': args.driver_gpu_state, 'nativeGpuStateMappings': gpu_states,
+                  'minimumGpuStateMapsRequired': args.minimum_gpu_state_maps,
                   'nativeSynchronizationTypesDestroyedByGuest': sync_destroyed, 'directMonitoredFences': monitored_fences,
                   'minimumMonitoredFencesRequired': args.minimum_monitored_fences, 'minimumSynchronizationMutexesRequired': args.minimum_sync_mutexes,
                   'commandSubmissionOptIn': args.driver_submit, 'nativeCommandSubmissions': submissions,
@@ -403,6 +433,7 @@ def main():
                   'diagnosticHardwareQueueEofRequested': args.hwqueue_eof_test,
                   'diagnosticSynchronizationEofRequested': args.sync_eof_test,
                   'diagnosticReservationEofRequested': args.reservation_eof_test,
+                  'diagnosticGpuStateEofRequested': args.gpu_state_eof_test,
                   'nativeCpuRegionChecks': [json.loads(line) for line in errors if line.startswith('{') and 'vendorCpuRegionCandidate' in line],
                   'directGuestFenceLoads': (total_fence_mappings + len(retirements)) * 10000,
                   'expectedInitializationBoundary': None if guest_eof else args.expected_unimplemented_ioctl,

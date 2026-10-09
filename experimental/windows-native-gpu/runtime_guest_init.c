@@ -37,6 +37,10 @@ int main(void) {
     const size_t reservation_eof_bytes = sizeof(" wddm_reservation_eof_test=1") - 1;
     const int reservation_eof_test = reservation_eof_option && (reservation_eof_option[reservation_eof_bytes] == 0 ||
         reservation_eof_option[reservation_eof_bytes] == ' ' || reservation_eof_option[reservation_eof_bytes] == '\n');
+    const char* gpu_state_eof_option = strstr(command, " wddm_gpu_state_eof_test=1");
+    const size_t gpu_state_eof_bytes = sizeof(" wddm_gpu_state_eof_test=1") - 1;
+    const int gpu_state_eof_test = gpu_state_eof_option && (gpu_state_eof_option[gpu_state_eof_bytes] == 0 ||
+        gpu_state_eof_option[gpu_state_eof_bytes] == ' ' || gpu_state_eof_option[gpu_state_eof_bytes] == '\n');
     const char* hwqueue_eof_option = strstr(command, " wddm_hwqueue_eof_test=1");
     const size_t hwqueue_eof_bytes = sizeof(" wddm_hwqueue_eof_test=1") - 1;
     const int hwqueue_eof_test = hwqueue_eof_option && (hwqueue_eof_option[hwqueue_eof_bytes] == 0 ||
@@ -58,6 +62,7 @@ int main(void) {
             if (cpu_eof_test) setenv("WDDM_BRIDGE_CPU_EOF_TEST", "1", 1);
             if (sync_eof_test) setenv("WDDM_BRIDGE_SYNC_EOF_TEST", "1", 1);
             if (reservation_eof_test) setenv("WDDM_BRIDGE_RESERVATION_EOF_TEST", "1", 1);
+            if (gpu_state_eof_test) setenv("WDDM_BRIDGE_GPU_STATE_EOF_TEST", "1", 1);
             if (hwqueue_eof_test) setenv("WDDM_BRIDGE_HWQUEUE_EOF_TEST", "1", 1);
             setenv("WDDM_BRIDGE_LINUX_UMD_NAME", module, 1);
             setenv("LD_PRELOAD", "/linux-ioctl-bridge.so", 1);

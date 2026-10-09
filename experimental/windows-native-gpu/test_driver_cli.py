@@ -27,6 +27,11 @@ def main():
               (owned + ['--reservation-eof-test', '--sync-eof-test'], 'Reservation EOF control requires'),
               (owned + ['--reservation-eof-test', '--cpu-eof-test'], 'Reservation EOF control requires'),
               (owned + ['--reservation-eof-test', '--driver-submit'], 'Submission requires')]
+    cases += [(['--stdio', '--driver-gpu-state'], 'GPU state mappings require'),
+              (['--stdio', '--gpu-state-eof-test'], 'GPU state EOF control requires'),
+              (owned + ['--gpu-state-eof-test'], 'GPU state EOF control requires')]
+    cases += [(owned + ['--driver-gpu-state', '--gpu-state-eof-test', control], 'GPU state EOF control requires')
+              for control in ('--reservation-eof-test', '--sync-eof-test', '--hwqueue-eof-test', '--cpu-eof-test', '--cpu-store-test')]
     for options, message in cases:
         result = subprocess.run([str(args.bridge.resolve()), *options], capture_output=True, text=True,
                                 timeout=5, creationflags=subprocess.CREATE_NO_WINDOW)
