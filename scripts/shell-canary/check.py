@@ -16,6 +16,7 @@ WARNING = re.compile(r'\b(?:WARN|ERROR|FATAL)\b|warning:|qml:.*(?:error|undefine
 
 
 def errors(log, allowlist):
+    log = re.sub(r'\x1b\[[0-9;]*m', '', log)
     patterns = [re.compile(line) for line in allowlist.splitlines()
                 if line.strip() and not line.startswith('#')]
     return [line for line in log.splitlines() if FATAL.search(line) or

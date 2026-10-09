@@ -29,6 +29,8 @@ class LogChecks(unittest.TestCase):
     def test_only_known_warnings_pass(self):
         known = ' WARN quickshell.service.upower: Could not connect to DBus. UPower service will not work.'
         self.assertEqual(check.errors(known, check.ALLOWLIST.read_text()), [])
+        colored = known.replace('WARN', '\x1b[33mWARN\x1b[97m').replace(': Could', '\x1b[0m: Could')
+        self.assertEqual(check.errors(colored, check.ALLOWLIST.read_text()), [])
         unknown = ' WARN qml: new warning'
         self.assertEqual(check.errors(unknown, check.ALLOWLIST.read_text()), [unknown])
 

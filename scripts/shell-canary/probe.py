@@ -69,7 +69,7 @@ def main():
             if ipc('shell', 'summon', 'omarchy.menu', '{"menu":"root"}') != 'ok':
                 raise RuntimeError('Omarchy menu component did not open')
             time.sleep(5)
-            if ipc('omarchy.menu', 'ping') != 'ok':
+            if ipc('shell', 'call', 'omarchy.menu', 'ping', '') != 'ok':
                 raise RuntimeError('Omarchy menu is not responding')
             evidence['stages'].append('Omarchy menu')
             ipc('shell', 'hide', 'omarchy.menu')
@@ -82,7 +82,7 @@ def main():
             if ipc('shell', 'summon', 'omarchy.menu', json.dumps(payload)) != 'ok':
                 raise RuntimeError('Keybindings menu component did not open')
             time.sleep(5)
-            if ipc('omarchy.menu', 'ping') != 'ok':
+            if ipc('shell', 'call', 'omarchy.menu', 'ping', '') != 'ok':
                 raise RuntimeError('Keybindings menu is not responding')
             evidence['stages'].append('Keybindings select menu (sample rows)')
             time.sleep(10)

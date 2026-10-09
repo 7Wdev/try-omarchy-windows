@@ -13,7 +13,7 @@ pacman-key --lsign-key 40DFB630FF42BCFFB047046CF0134EE680CAC571
 # the container boundary stay enabled; this does not alter the guest config.
 pacman --disable-sandbox -Syu --noconfirm
 pacman --disable-sandbox -S --needed --noconfirm quickshell qt6-base qt6-declarative qt6-wayland \
-  qt6-svg qt6-multimedia sway dbus mesa git python jq fontconfig \
+  qt6-svg qt6-multimedia sway hyprland inotify-tools dbus mesa git python jq fontconfig \
   ttf-jetbrains-mono-nerd pipewire wireplumber
 pacman -Q > /results/packages.txt
 cp /etc/pacman.conf /results/pacman.conf
@@ -45,6 +45,9 @@ useradd --create-home canary
 cp -a /tmp/root/etc/skel/. /home/canary/
 mkdir -p /home/canary/.local/state/omarchy/current /tmp/canary-runtime
 ln -s /tmp/root/usr/share/omarchy/themes/tokyo-night /home/canary/.local/state/omarchy/current/theme
+background=$(find /tmp/root/usr/share/omarchy/themes/tokyo-night/backgrounds -type f -print -quit)
+test -n "$background"
+ln -s "$background" /home/canary/.local/state/omarchy/current/background
 chown -R canary:canary /home/canary /tmp/canary-runtime
 # The unprivileged probe and host runner both write diagnostic files here.
 chmod 0777 /results

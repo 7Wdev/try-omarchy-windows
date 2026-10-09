@@ -6,5 +6,5 @@ ERROR quickshell.network: Network will not work\. Could not find an available ba
 ERROR quickshell.service.pipewire.loop: Failed to connect pipewire context\. Errno: 112
 WARN quickshell.service.polkit.listener: failed to create subject for listener: No session for pid [0-9]+
 WARN quickshell.service.polkit: failed to register listener on path "/org/omarchy/PolkitAgent"
-# Shell registers both its forwarding IPC and each plugin's IPC target.
-WARN scene: QML IpcHandler at .*: Handler was registered but will not be used because another handler is registered for target omarchy\.[a-z.-]+
+# The probe uses Sway's layer-shell support, with no Hyprland session.
+WARN: \$HYPRLAND_INSTANCE_SIGNATURE is unset\. Cannot connect to hyprland\.
