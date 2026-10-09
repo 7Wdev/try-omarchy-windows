@@ -1,4 +1,4 @@
-From 7f92819925b75edcc2157ea1c2de1f5c3c2e9d0e Mon Sep 17 00:00:00 2001
+From 9a00df4b65b348933503df1a06133a64f3aa445b Mon Sep 17 00:00:00 2001
 From: Tyler South <tsouth2@gmail.com>
 Date: Fri, 9 Oct 2026 07:07:29 -0400
 Subject: [PATCH] Deliver the guest cursor plane safely through updates
@@ -8,6 +8,7 @@ Subject: [PATCH] Deliver the guest cursor plane safely through updates
  guest/README.md                               |  33 +++++
  guest/build.sh                                |   5 +
  .../hypr-monitors-qemu.append.lua             |   7 +-
+ guest/fragments/hypr-monitors-qemu.append.lua |   7 +-
  guest/packages.lock.json                      |   9 +-
  guest/packages.txt                            |   4 +
  guest/patches/aquamarine/cursor-hotspot.patch |  36 +++++
@@ -33,8 +34,8 @@ Subject: [PATCH] Deliver the guest cursor plane safely through updates
  guest/tests/test_snapper_guest.py             |   4 +-
  guest/tests/test_windows_volume_sync.py       |   2 +-
  guest/tests/test_write_provenance.py          |  22 +++
- guest/tests/verify.py                         |   2 +-
- 30 files changed, 574 insertions(+), 29 deletions(-)
+ guest/tests/verify.py                         |   7 +-
+ 31 files changed, 583 insertions(+), 32 deletions(-)
  create mode 100644 guest/patches/aquamarine/cursor-hotspot.patch
  create mode 100755 guest/scripts/aquamarine-contract.py
  create mode 100755 guest/scripts/register-aquamarine.sh
@@ -122,6 +123,31 @@ diff --git a/guest/factory-overlay/usr/share/try-omarchy/skel-fragments/hypr-mon
 index 0727813..329129e 100644
 --- a/guest/factory-overlay/usr/share/try-omarchy/skel-fragments/hypr-monitors-qemu.append.lua
 +++ b/guest/factory-overlay/usr/share/try-omarchy/skel-fragments/hypr-monitors-qemu.append.lua
+@@ -2,8 +2,8 @@
+ -- BEGIN OMARCHY QEMU PROFILE
+ -- QEMU publishes the live window's size and host refresh rate through Virtio
+ -- GPU EDID. Quattro's preceding automatic monitor rule stays authoritative;
+--- keep the guest cursor visible because SDL displays the guest scanout
+--- directly (hiding it was a VNC-host assumption).
++-- keep normal guest cursor visibility. The matching host runtime can display
++-- guest-defined sprites independently from desktop frames.
+ local function omarchy_kernel_option_enabled(expected_option)
+   if type(io) ~= "table" or type(io.open) ~= "function" then
+     return false
+@@ -90,7 +90,8 @@ local function omarchy_clean_scale(mode, requested)
+ end
+ 
+ if omarchy_kernel_option_enabled("omarchy.qemu=1") then
+-  hl.config({ cursor = { invisible = false } })
++  -- Virgl cursor GPU buffers arrive inverted; use a small CPU cursor buffer.
++  hl.config({ cursor = { invisible = false, use_cpu_buffer = 1 } })
+   local synced_mode, synced_scale = omarchy_synced_display_mode()
+   if synced_mode then
+     -- A number the user set in this file is explicit intent and outranks
+diff --git a/guest/fragments/hypr-monitors-qemu.append.lua b/guest/fragments/hypr-monitors-qemu.append.lua
+index 0727813..329129e 100644
+--- a/guest/fragments/hypr-monitors-qemu.append.lua
++++ b/guest/fragments/hypr-monitors-qemu.append.lua
 @@ -2,8 +2,8 @@
  -- BEGIN OMARCHY QEMU PROFILE
  -- QEMU publishes the live window's size and host refresh rate through Virtio
@@ -993,7 +1019,7 @@ index 5c4523c..9372f3d 100644
  if __name__ == "__main__":
      unittest.main()
 diff --git a/guest/tests/verify.py b/guest/tests/verify.py
-index c703b65..3bbfed3 100755
+index c703b65..780df10 100755
 --- a/guest/tests/verify.py
 +++ b/guest/tests/verify.py
 @@ -324,7 +324,7 @@ def main() -> None:
@@ -1005,3 +1031,15 @@ index c703b65..3bbfed3 100755
          and "usr/local/bin/mpv" in compat_paths
          and "usr/share/dkms/modules_to_force_install/try-omarchy" in compat_paths
          and "usr/local/lib/try-omarchy/try-omarchy-import.pyz" in compat_paths
+@@ -502,6 +502,11 @@ def main() -> None:
+         read(GUEST / "factory-overlay/usr/share/try-omarchy/skel-fragments/hypr-monitors-qemu.append.lua") == monitor_fragment,
+         "the compat overlay carries the current QEMU profile fragment",
+     )
++    check(
++        'if omarchy_kernel_option_enabled("omarchy.qemu=1") then' in monitor_fragment
++        and 'hl.config({ cursor = { invisible = false, use_cpu_buffer = 1 } })' in monitor_fragment,
++        "only the QEMU profile enables the upright CPU cursor buffer",
++    )
+     check(
+         'runtime_dir .. "/try-omarchy/display-mode"' in monitor_fragment
+         and 'hl.monitor({ output = "", mode = synced_mode, scale = synced_scale })' in monitor_fragment
