@@ -196,7 +196,7 @@ transaction. It does not cover power loss during extraction, a partially
 installed system update, Windows launcher rollback, or the original reporter's
 unknown interruption. Passing it does not establish those other cases.
 
-## On-demand factory images in v0.10.1
+## On-demand factory images (unreleased)
 
 Feature-aware launchers stage kernel, initramfs, guest metadata and Windows
 runtime updates without requesting `rootfs.ext4` or `rootfs.ext4.zst`. Creation

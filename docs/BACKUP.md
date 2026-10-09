@@ -45,7 +45,7 @@ Shut down Omarchy and close the launcher first. From PowerShell:
 .\TryOmarchy.exe -backup "D:\Backups\omarchy.zip"
 ```
 
-The destination folder must already exist on an NTFS or ReFS drive, outside the
+The destination folder must already exist on a drive with enough free space, outside the
 Try Omarchy data folder. Choose a new filename; an existing backup is never
 overwritten. Add `-dir "D:\TryOmarchy"` if you normally use an explicit data path.
 
@@ -106,7 +106,7 @@ Keep the original installation until you have checked the restored copy.
 For changing the active installation's location, see the next preview's
 [move flow](MOVING.md). Restore continues to create an independent copy.
 
-## Template-free installations in v0.10.1
+## Template-free installations (unreleased)
 
 A standard raw disk and an independent portable disk can run without a local
 factory image. Backup does not fetch one. Full archives retain the existing v1
@@ -115,8 +115,8 @@ receipt, authenticated SHA256SUMS and factory size metadata. Every archive store
 a complete independent raw disk, materializing a portable source first and
 verifying its original backing when needed.
 
-Restore v2 with Try Omarchy v0.10.1 or newer. Older launchers require the full
-layout and cannot restore or boot a template-free copy. Restored boot components
+Restore v2 with a launcher that supports template-free installations. Released
+launchers through v0.10.1 require the full layout and cannot restore or boot a template-free copy. Restored boot components
 retain their own release pins and can boot offline. Reset obtains that exact
 release's template before moving the old disk. If acquisition fails or is
 cancelled, the existing disk and boot receipt stay usable. Retained portable

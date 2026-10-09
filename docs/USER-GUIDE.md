@@ -331,14 +331,15 @@ what you expected to happen.
 
 ## Factory images and offline reset
 
-From v0.10.1, ordinary updates download boot components and the Windows runtime.
+With a launcher that supports template-free installations, ordinary updates
+download boot components and the Windows runtime.
 Your independent writable disk can start offline without a cached factory image.
 Creating a new disk or choosing Start fresh obtains the exact selected release's
 factory image and verifies it before replacing your system. A matching local
 image allows offline reset. Otherwise connect to the internet and retry; failed
 or cancelled acquisition keeps your existing system.
 
-Template-free backups require Try Omarchy v0.10.1 or newer to restore. Keep a full
+Template-free backups require a launcher that supports them to restore. Keep a full
 compatible installation if you need an older launcher. Portable factory-backed
 disks must retain their original backing file until the launcher has verified
 an independent conversion. Never replace that file with a newer factory image.

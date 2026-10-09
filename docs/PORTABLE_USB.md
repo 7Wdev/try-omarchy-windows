@@ -79,7 +79,7 @@ the retained folder. Keep both files and the matching original factory payload
 for recovery. A retained QCOW2 disk must be returned to the `vm` folder before
 use because its factory path is relative to that folder.
 
-## Updates and Start fresh in v0.10.1
+## Updates and Start fresh (unreleased)
 
 Updates acquire the matching boot files and Windows runtime without downloading
 another factory image. A factory-backed QCOW2 is checkpointed and verified as

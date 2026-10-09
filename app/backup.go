@@ -78,7 +78,7 @@ func requiredBackupFiles(files map[string]bool, versions ...int) error {
 	case 2:
 		required = append(required, "guest/guest-manifest.json", "guest/SHA256SUMS", "guest/"+installReceiptFilename)
 	default:
-		return fmt.Errorf("unsupported backup version; template-free backups require Try Omarchy v0.10.1 or newer")
+		return fmt.Errorf("unsupported backup version; template-free backups require a launcher that supports backup v2")
 	}
 	for _, name := range required {
 		if !files[name] {
@@ -319,7 +319,7 @@ func readVMBackupReader(z *zip.Reader) (backupManifest, map[string]*zip.File, er
 		return manifest, nil, err
 	}
 	if dec.Decode(&struct{}{}) != io.EOF || (manifest.Version != 1 && manifest.Version != 2) || len(manifest.Files) != len(files)-1 {
-		return manifest, nil, fmt.Errorf("unsupported backup manifest; template-free backups require Try Omarchy v0.10.1 or newer")
+		return manifest, nil, fmt.Errorf("unsupported backup manifest; template-free backups require a launcher that supports backup v2")
 	}
 	seen := map[string]bool{}
 	var total int64
