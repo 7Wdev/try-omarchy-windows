@@ -13,7 +13,7 @@ pacman-key --lsign-key 40DFB630FF42BCFFB047046CF0134EE680CAC571
 # the container boundary stay enabled; this does not alter the guest config.
 pacman --disable-sandbox -Syu --noconfirm
 pacman --disable-sandbox -S --needed --noconfirm quickshell qt6-base qt6-declarative qt6-wayland \
-  qt6-svg qt6-multimedia sway hyprland inotify-tools dbus mesa git python jq fontconfig \
+  qt6-svg qt6-multimedia sway inotify-tools dbus mesa git python jq fontconfig \
   ttf-jetbrains-mono-nerd pipewire wireplumber
 pacman -Q > /results/packages.txt
 cp /etc/pacman.conf /results/pacman.conf
@@ -52,7 +52,10 @@ chown -R canary:canary /home/canary /tmp/canary-runtime
 # The unprivileged probe and host runner both write diagnostic files here.
 chmod 0777 /results
 chmod 700 /tmp/canary-runtime
+mkdir -p /tmp/canary-bin
+install -m 0755 /repo/scripts/shell-canary/hyprctl-fixture.py /tmp/canary-bin/hyprctl
 runuser -u canary -- env HOME=/home/canary XDG_RUNTIME_DIR=/tmp/canary-runtime \
+  PATH=/tmp/canary-bin:/usr/bin \
   OMARCHY_PATH=/tmp/root/usr/share/omarchy QT_QPA_PLATFORM=wayland \
   QT_QUICK_BACKEND=software LIBGL_ALWAYS_SOFTWARE=1 NO_AT_BRIDGE=1 \
   dbus-run-session -- python3 /repo/scripts/shell-canary/probe.py
