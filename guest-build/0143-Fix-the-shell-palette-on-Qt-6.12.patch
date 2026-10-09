@@ -1,6 +1,6 @@
-From b8e56caaea2ec9ee1d8173f4134e28077d712f33 Mon Sep 17 00:00:00 2001
-From: Research scratch <scratch@localhost>
-Date: Thu, 8 Oct 2026 23:15:44 -0400
+From bd9fb2b0058946d1426097f5d0c9d9a2aeb906c6 Mon Sep 17 00:00:00 2001
+From: Tyler South <tsouth2@gmail.com>
+Date: Thu, 8 Oct 2026 23:23:15 -0400
 Subject: [PATCH] Fix the shell palette on Qt 6.12
 
 ---
