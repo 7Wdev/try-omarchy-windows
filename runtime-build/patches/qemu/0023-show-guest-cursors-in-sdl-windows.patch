@@ -1,0 +1,394 @@
+--- a/include/ui/sdl2.h
++++ b/include/ui/sdl2.h
+@@ -49,6 +49,11 @@
+     SDL_GLContext winctx;
+     QKbdState *kbd;
+     SDLScroll scroll;
++    QEMUCursor *cursor;
++    SDL_Cursor *guest_sprite;
++    bool guest_cursor;
++    int guest_x, guest_y;
++    int cursor_width, cursor_height;
+     bool has_dmabuf;
+ #ifdef CONFIG_OPENGL
+     QemuGLShader *gls;
+--- a/ui/sdl2.c
++++ b/ui/sdl2.c
+@@ -44,7 +44,6 @@
+ static int sdl2_num_outputs;
+ static struct sdl2_console *sdl2_console;
+ 
+-static SDL_Surface *guest_sprite_surface;
+ static int gui_grab; /* if true, all keyboard/mouse events are grabbed */
+ static bool alt_grab;
+ static bool ctrl_grab;
+@@ -55,9 +54,6 @@
+ static SDL_Cursor *sdl_cursor_normal;
+ static SDL_Cursor *sdl_cursor_hidden;
+ static int absolute_enabled;
+-static bool guest_cursor;
+-static int guest_x, guest_y;
+-static SDL_Cursor *guest_sprite;
+ static Notifier mouse_mode_notifier;
+ 
+ #define SDL2_MAX_IDLE_COUNT (2 * GUI_REFRESH_INTERVAL_DEFAULT \
+@@ -69,6 +65,8 @@
+ #endif
+ 
+ static void sdl_update_caption(struct sdl2_console *scon);
++static void sdl_show_cursor(struct sdl2_console *scon);
++static void sdl_cursor_free(struct sdl2_console *scon);
+ 
+ static struct sdl2_console *get_scon_from_window(uint32_t window_id)
+ {
+@@ -161,6 +159,7 @@
+     }
+ 
+     scon->scroll = (SDLScroll) {0};
++    sdl_cursor_free(scon);
+     win_pinch_destroy(scon);
+     if (scon->winctx) {
+         SDL_GL_DeleteContext(scon->winctx);
+@@ -236,37 +235,139 @@
+     }
+ }
+ 
++/* SDL has one current cursor. Definitions and visibility belong to a head. */
++static bool sdl_cursor_active(struct sdl2_console *scon)
++{
++    return scon->real_window &&
++           SDL_GetMouseFocus() == scon->real_window;
++}
++
++static void sdl_cursor_free(struct sdl2_console *scon)
++{
++    if (scon->guest_sprite) {
++        if (SDL_GetCursor() == scon->guest_sprite) {
++            SDL_SetCursor(sdl_cursor_hidden);
++            SDL_ShowCursor(SDL_DISABLE);
++        }
++        SDL_FreeCursor(scon->guest_sprite);
++        scon->guest_sprite = NULL;
++    }
++    scon->cursor_width = scon->cursor_height = 0;
++}
++
++static void sdl_cursor_rebuild(struct sdl2_console *scon)
++{
++    QEMUCursor *c = scon->cursor;
++    SDL_Surface *sprite;
++    int ww, wh, gw, gh, width, height, hot_x, hot_y;
++    double sx, sy;
++
++    if (!c || !scon->real_window || !scon->surface) {
++        return;
++    }
++    SDL_GetWindowSize(scon->real_window, &ww, &wh);
++    gw = surface_width(scon->surface);
++    gh = surface_height(scon->surface);
++#ifdef CONFIG_OPENGL
++    if (scon->opengl && scon->scanout_mode) {
++        /* egl_fb_blit stretches the complete scanout to the window. */
++        gw = scon->guest_fb.width;
++        gh = scon->guest_fb.height;
++    }
++#endif
++    if (ww <= 0 || wh <= 0 || gw <= 0 || gh <= 0) {
++        return;
++    }
++    sx = (double)ww / gw;
++    sy = (double)wh / gh;
++#ifdef CONFIG_OPENGL
++    if (!scon->opengl || !scon->scanout_mode)
++#endif
++    {
++        /* SDL_RenderSetLogicalSize and surface_gl_setup_viewport letterbox. */
++        sx = sy = MIN(sx, sy);
++    }
++    width = MAX(1, (int)(c->width * sx + 0.5));
++    height = MAX(1, (int)(c->height * sy + 0.5));
++    if (width == scon->cursor_width && height == scon->cursor_height) {
++        return;
++    }
++    sdl_cursor_free(scon);
++    /* Remember failures too: do not retry every refresh at the same size. */
++    scon->cursor_width = width;
++    scon->cursor_height = height;
++    sprite = SDL_CreateRGBSurface(0, width, height, 32,
++                                 0xff0000, 0x00ff00, 0xff, 0xff000000);
++    if (!sprite) {
++        return;
++    }
++    for (int y = 0; y < height; y++) {
++        uint32_t *row = (uint32_t *)((uint8_t *)sprite->pixels + y * sprite->pitch);
++        for (int x = 0; x < width; x++) {
++            row[x] = c->data[(y * c->height / height) * c->width +
++                             x * c->width / width];
++        }
++    }
++    hot_x = MIN(width - 1, c->hot_x * width / c->width);
++    hot_y = MIN(height - 1, c->hot_y * height / c->height);
++    scon->guest_sprite = SDL_CreateColorCursor(sprite, hot_x, hot_y);
++    SDL_FreeSurface(sprite);
++}
++
+ static void sdl_hide_cursor(struct sdl2_console *scon)
+ {
+-    if (scon->opts->has_show_cursor && scon->opts->show_cursor) {
+-        return;
+-    }
+-
++    if (!sdl_cursor_active(scon) ||
++        (scon->opts->has_show_cursor && scon->opts->show_cursor)) {
++        return;
++    }
+     SDL_ShowCursor(SDL_DISABLE);
+     SDL_SetCursor(sdl_cursor_hidden);
+-
+-    if (!qemu_input_is_absolute(scon->dcl.con)) {
++    if (gui_grab && !qemu_input_is_absolute(scon->dcl.con) &&
++        !absolute_enabled) {
+         SDL_SetRelativeMouseMode(SDL_TRUE);
+     }
+ }
+ 
+ static void sdl_show_cursor(struct sdl2_console *scon)
+ {
+-    if (scon->opts->has_show_cursor && scon->opts->show_cursor) {
+-        return;
+-    }
+-
+-    if (!qemu_input_is_absolute(scon->dcl.con)) {
++    bool absolute;
++
++    if (!sdl_cursor_active(scon)) {
++        return;
++    }
++    absolute = qemu_input_is_absolute(scon->dcl.con) || absolute_enabled;
++    if ((scon->opts->has_show_cursor && scon->opts->show_cursor) ||
++        !qemu_console_is_graphic(scon->dcl.con)) {
+         SDL_SetRelativeMouseMode(SDL_FALSE);
+-    }
+-
+-    if (guest_cursor &&
+-        (gui_grab || qemu_input_is_absolute(scon->dcl.con) || absolute_enabled)) {
+-        SDL_SetCursor(guest_sprite);
++        SDL_SetCursor(sdl_cursor_normal);
++        SDL_ShowCursor(SDL_ENABLE);
++        return;
++    }
++    sdl_cursor_rebuild(scon);
++    if (scon->guest_cursor && scon->guest_sprite && (gui_grab || absolute)) {
++        SDL_SetRelativeMouseMode(SDL_FALSE);
++        SDL_SetCursor(scon->guest_sprite);
++        SDL_ShowCursor(SDL_ENABLE);
++    } else if (gui_grab || (absolute && scon->opts->has_show_cursor &&
++                            !scon->opts->show_cursor)) {
++        sdl_hide_cursor(scon);
+     } else {
++        SDL_SetRelativeMouseMode(SDL_FALSE);
+         SDL_SetCursor(sdl_cursor_normal);
+-    }
+-
++        SDL_ShowCursor(SDL_ENABLE);
++    }
++}
++
++static void sdl_cursor_focus(void)
++{
++    for (int i = 0; i < sdl2_num_outputs; i++) {
++        if (sdl_cursor_active(&sdl2_console[i])) {
++            sdl_show_cursor(&sdl2_console[i]);
++            return;
++        }
++    }
++    SDL_SetRelativeMouseMode(SDL_FALSE);
++    SDL_SetCursor(sdl_cursor_normal);
+     SDL_ShowCursor(SDL_ENABLE);
+ }
+ 
+@@ -285,16 +386,13 @@
+     if (!(SDL_GetWindowFlags(scon->real_window) & SDL_WINDOW_INPUT_FOCUS)) {
+         return;
+     }
+-    if (guest_cursor) {
+-        SDL_SetCursor(guest_sprite);
+-        if (!qemu_input_is_absolute(scon->dcl.con) && !absolute_enabled) {
+-            SDL_WarpMouseInWindow(scon->real_window, guest_x, guest_y);
+-        }
+-    } else {
+-        sdl_hide_cursor(scon);
+-    }
+     SDL_SetWindowGrab(scon->real_window, SDL_TRUE);
+     gui_grab = 1;
++    sdl_show_cursor(scon);
++    if (scon->guest_cursor && scon->guest_sprite &&
++        !qemu_input_is_absolute(scon->dcl.con) && !absolute_enabled) {
++        SDL_WarpMouseInWindow(scon->real_window, scon->guest_x, scon->guest_y);
++    }
+     sdl_update_caption(scon);
+ }
+ 
+@@ -375,11 +473,11 @@
+         qemu_input_queue_abs(scon->dcl.con, INPUT_AXIS_Y,
+                              y, 0, surface_height(scon->surface));
+     } else {
+-        if (guest_cursor) {
+-            x -= guest_x;
+-            y -= guest_y;
+-            guest_x += x;
+-            guest_y += y;
++        if (scon->guest_cursor) {
++            x -= scon->guest_x;
++            y -= scon->guest_y;
++            scon->guest_x += x;
++            scon->guest_y += y;
+             dx = x;
+             dy = y;
+         }
+@@ -404,6 +502,7 @@
+         SDL_SetWindowFullscreen(scon->real_window, 0);
+     }
+     sdl2_redraw(scon);
++    sdl_show_cursor(scon);
+ }
+ 
+ static int get_mod_state(void)
+@@ -721,6 +820,7 @@
+          * Work around this by ignoring further hotkey events until a
+          * key is released.
+          */
++        sdl_show_cursor(scon);
+         scon->ignore_hotkeys = get_mod_state();
+         break;
+     case SDL_WINDOWEVENT_FOCUS_LOST:
+@@ -728,6 +828,9 @@
+         if (gui_grab && !gui_fullscreen) {
+             sdl_grab_end(scon);
+         }
++        break;
++    case SDL_WINDOWEVENT_LEAVE:
++        sdl_cursor_focus();
+         break;
+     case SDL_WINDOWEVENT_RESTORED:
+         update_displaychangelistener(&scon->dcl, GUI_REFRESH_INTERVAL_DEFAULT);
+@@ -881,6 +984,7 @@
+         }
+     }
+ 
++    sdl_cursor_focus();
+     win_pinch_poll(scon);
+ 
+     if (idle) {
+@@ -901,63 +1005,60 @@
+ {
+     struct sdl2_console *scon = container_of(dcl, struct sdl2_console, dcl);
+ 
+-    if (!qemu_console_is_graphic(scon->dcl.con)) {
+-        return;
+-    }
+-
+-    if (on) {
+-        if (!guest_cursor) {
+-            sdl_show_cursor(scon);
+-        }
+-        if (gui_grab || qemu_input_is_absolute(scon->dcl.con) || absolute_enabled) {
+-            SDL_SetCursor(guest_sprite);
+-            if (!qemu_input_is_absolute(scon->dcl.con) && !absolute_enabled) {
+-                SDL_WarpMouseInWindow(scon->real_window, x, y);
++    if (!qemu_console_is_graphic(dcl->con)) {
++        return;
++    }
++    scon->guest_cursor = on;
++    scon->guest_x = x;
++    scon->guest_y = y;
++    sdl_show_cursor(scon);
++    if (on && scon->guest_sprite && sdl_cursor_active(scon) && gui_grab &&
++        !qemu_input_is_absolute(dcl->con) && !absolute_enabled) {
++        SDL_WarpMouseInWindow(scon->real_window, x, y);
++    }
++}
++
++static void sdl_mouse_define(DisplayChangeListener *dcl, QEMUCursor *c)
++{
++    struct sdl2_console *scon = container_of(dcl, struct sdl2_console, dcl);
++    bool empty = true;
++
++    if (!qemu_console_is_graphic(dcl->con)) {
++        return;
++    }
++    sdl_cursor_free(scon);
++    if (scon->cursor) {
++        cursor_unref(scon->cursor);
++        scon->cursor = NULL;
++    }
++    /* Virtio uses at most 64x64. A transparent definition is a hide request. */
++    if (c && c->width > 0 && c->width <= 64 && c->height > 0 &&
++        c->height <= 64 && c->hot_x >= 0 && c->hot_y >= 0 &&
++        c->hot_x < c->width && c->hot_y < c->height) {
++        for (int i = 0; i < c->width * c->height; i++) {
++            if (c->data[i] & 0xff000000) {
++                empty = false;
++                break;
+             }
+         }
+-    } else if (gui_grab) {
+-        sdl_hide_cursor(scon);
+-    }
+-    guest_cursor = on;
+-    guest_x = x, guest_y = y;
+-}
+-
+-static void sdl_mouse_define(DisplayChangeListener *dcl,
+-                             QEMUCursor *c)
+-{
+-
+-    if (guest_sprite) {
+-        SDL_FreeCursor(guest_sprite);
+-    }
+-
+-    if (guest_sprite_surface) {
+-        SDL_FreeSurface(guest_sprite_surface);
+-    }
+-
+-    guest_sprite_surface =
+-        SDL_CreateRGBSurfaceFrom(c->data, c->width, c->height, 32, c->width * 4,
+-                                 0xff0000, 0x00ff00, 0xff, 0xff000000);
+-
+-    if (!guest_sprite_surface) {
+-        fprintf(stderr, "Failed to make rgb surface from %p\n", c);
+-        return;
+-    }
+-    guest_sprite = SDL_CreateColorCursor(guest_sprite_surface,
+-                                         c->hot_x, c->hot_y);
+-    if (!guest_sprite) {
+-        fprintf(stderr, "Failed to make color cursor from %p\n", c);
+-        return;
+-    }
+-    if (guest_cursor &&
+-        (gui_grab || qemu_input_is_absolute(dcl->con) || absolute_enabled)) {
+-        SDL_SetCursor(guest_sprite);
+-    }
++    }
++    if (!empty) {
++        scon->cursor = c;
++        cursor_ref(c);
++        scon->guest_cursor = true;
++    } else {
++        scon->guest_cursor = false;
++    }
++    sdl_show_cursor(scon);
+ }
+ 
+ static void sdl_cleanup(void)
+ {
+-    if (guest_sprite) {
+-        SDL_FreeCursor(guest_sprite);
++    for (int i = 0; i < sdl2_num_outputs; i++) {
++        sdl_cursor_free(&sdl2_console[i]);
++        if (sdl2_console[i].cursor) {
++            cursor_unref(sdl2_console[i].cursor);
++        }
+     }
+     SDL_QuitSubSystem(SDL_INIT_VIDEO);
+ }
