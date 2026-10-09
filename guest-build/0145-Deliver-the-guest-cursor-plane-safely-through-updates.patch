@@ -1,4 +1,4 @@
-From 5785b9e7801fa871b8887610845bdc9384a4a2c2 Mon Sep 17 00:00:00 2001
+From 7f92819925b75edcc2157ea1c2de1f5c3c2e9d0e Mon Sep 17 00:00:00 2001
 From: Tyler South <tsouth2@gmail.com>
 Date: Fri, 9 Oct 2026 07:07:29 -0400
 Subject: [PATCH] Deliver the guest cursor plane safely through updates
@@ -960,14 +960,13 @@ index cc9e931..d2c3327 100644
  
  
 diff --git a/guest/tests/test_write_provenance.py b/guest/tests/test_write_provenance.py
-index 5c4523c..04f54ba 100644
+index 5c4523c..9372f3d 100644
 --- a/guest/tests/test_write_provenance.py
 +++ b/guest/tests/test_write_provenance.py
-@@ -231,3 +231,25 @@ class WriteProvenanceTests(unittest.TestCase):
+@@ -228,6 +228,28 @@ class WriteProvenanceTests(unittest.TestCase):
+             self.assertEqual(result.returncode, 0, result.stderr)
+             self.assertTrue(package_path.is_symlink())
  
- if __name__ == "__main__":
-     unittest.main()
-+
 +    def test_aquamarine_provenance_retains_source_patch_and_build_pins(self):
 +        import shutil
 +        with tempfile.TemporaryDirectory() as temporary:
@@ -989,6 +988,10 @@ index 5c4523c..04f54ba 100644
 +            result = self.run_writer(root, spec, output)
 +            self.assertNotEqual(result.returncode, 0)
 +            self.assertIn('patchSha256 mismatch', result.stderr)
++
+ 
+ if __name__ == "__main__":
+     unittest.main()
 diff --git a/guest/tests/verify.py b/guest/tests/verify.py
 index c703b65..3bbfed3 100755
 --- a/guest/tests/verify.py
