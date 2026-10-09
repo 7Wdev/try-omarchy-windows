@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -67,7 +66,7 @@ func defaultDownloadOptions() downloadOptions {
 func newDownloadClient() *http.Client {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = downloadProxy
-	transport.DialContext = (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext
+	transport.DialContext = newDownloadDialer().DialContext
 	transport.ResponseHeaderTimeout = 15 * time.Second
 	transport.IdleConnTimeout = 30 * time.Second
 	transport.TLSHandshakeTimeout = 15 * time.Second

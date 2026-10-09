@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- System updates keep trying while Omarchy is running when the connection fails.
+- Update downloads give slow Windows name resolution more time.
+- Install the current launcher's system update from browser-downloaded release
+  files using the tray menu, then choose Restart to update.
+
 ## v0.11.0 - 2026-10-09
 
 - Fix the top bar disappearing and Win+K / Win+Space opening black screens

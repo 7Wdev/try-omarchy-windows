@@ -5,7 +5,9 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"os"
 	"sync/atomic"
+	"syscall"
 )
 
 // updateStagingNotice reports whether a failed attempt to stage the Omarchy
@@ -36,6 +38,13 @@ func updateStagingNotice(err error) bool {
 // the retry loop marks the failures it exhausts. Local filesystem and
 // validation errors stay false.
 func isDownloadFailure(err error) bool {
+	// Filesystem errors can wrap syscall.Errno, which also implements net.Error.
+	// Their Timeout/Temporary methods do not make them download failures.
+	var pathErr *os.PathError
+	var linkErr *os.LinkError
+	if errors.As(err, &pathErr) || errors.As(err, &linkErr) {
+		return false
+	}
 	var downloadErr downloadFailure
 	if errors.As(err, &downloadErr) {
 		return true
@@ -49,7 +58,11 @@ func isDownloadFailure(err error) bool {
 		return status.status == http.StatusRequestTimeout || status.status == http.StatusTooManyRequests || status.status >= 500
 	}
 	var netErr net.Error
-	return errors.As(err, &netErr)
+	if !errors.As(err, &netErr) {
+		return false
+	}
+	_, localErrno := netErr.(syscall.Errno)
+	return !localErrno
 }
 
 // updateDownloadNotices shows at most one "could not download the update"

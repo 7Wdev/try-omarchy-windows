@@ -25,6 +25,7 @@ var (
 	restartForUpdate      atomic.Bool
 	intentionalUpdateQuit atomic.Bool
 	updateDownloadNotice  updateDownloadNotices
+	updateStagingGate     = make(chan struct{}, 1)
 	backgroundUpdates     struct {
 		sync.Mutex
 		start  func()
@@ -54,61 +55,70 @@ func configureBackgroundUpdates(cfg *config, feed string, enabled bool, ownPaylo
 				client := newDownloadClient()
 				client.Transport = backgroundUpdateTransport{ctx: ctx, base: client.Transport}
 				defer client.CloseIdleConnections()
-				if ownPayload != nil {
-					err := stagePinnedPayloadUpdate(ctx, client, snapshot.dir,
-						updatePayloadRoot(snapshot.dir, snapshot.payloadDir, snapshot.portable), *ownPayload)
-					if err != nil {
-						if ctx.Err() == nil {
-							logf("launcher payload staging skipped: %v", err)
-							if errors.Is(err, errInsufficientDiskSpace) {
-								showTrayNotice(uiText("update.notice.title"), uiTextWith("update.notice.space", map[string]string{"error": err.Error()}))
-							} else if updateDownloadNotice.shouldShow(err) {
-								showTrayNotice(uiText("update.notice.title"), uiText("update.notice.download_failed"))
-							}
-						}
-					} else if failedUpdateVersion(snapshot.dir) != currentVersion {
-						updateAvailable.Store(true)
-						showTrayNotice(uiText("update.notice.title"), uiTextWith("update.notice.ready", map[string]string{"version": currentVersion}))
-						logf("launcher payload %s verified and staged for the next start", currentVersion)
+				reportFailure := func(err error) {
+					if ctx.Err() != nil {
+						return
 					}
-					return
-				}
-				if feed == defaultUpdateURL && !updateCheckDue(snapshot.dir, time.Now()) {
-					return
-				}
-				// Settings may have disabled automatic updates since this launch started.
-				prefs, err := loadDesktopPreferences(snapshot.dir)
-				if err != nil || prefs.AutomaticUpdatesDisabled || ctx.Err() != nil {
-					return
-				}
-				_ = recordUpdateCheck(snapshot.dir, time.Now())
-				key, err := updatePublicKey()
-				if err != nil {
-					logf("update check skipped: %v", err)
-					return
-				}
-				_, digest, _ := installReceiptIdentity(snapshot.guestDir)
-				if snapshot.portable {
-					logf("%s", uiText("status.preparing_portable_update"))
-				}
-				manifest, err := stageSignedUpdate(ctx, client, feed, snapshot.dir,
-					updatePayloadRoot(snapshot.dir, snapshot.payloadDir, snapshot.portable), currentVersion, digest, key)
-				if err != nil {
-					if ctx.Err() == nil {
-						logf("background update skipped: %v", err)
-						if errors.Is(err, errInsufficientDiskSpace) {
-							showTrayNotice(uiText("update.notice.title"), uiTextWith("update.notice.space", map[string]string{"error": err.Error()}))
-						} else if updateDownloadNotice.shouldShow(err) {
-							showTrayNotice(uiText("update.notice.title"), uiText("update.notice.download_failed"))
-						}
+					logf("background update staging skipped: %v", err)
+					if errors.Is(err, errInsufficientDiskSpace) {
+						showTrayNotice(uiText("update.notice.title"), uiTextWith("update.notice.space", map[string]string{"error": err.Error()}))
+					} else if updateDownloadNotice.shouldShow(err) {
+						showTrayNotice(uiText("update.notice.title"), uiText("update.notice.download_failed"))
 					}
-					return
 				}
-				if manifest != nil {
+				ready := func(version string) {
 					updateAvailable.Store(true)
-					showTrayNotice(uiText("update.notice.title"), uiTextWith("update.notice.ready", map[string]string{"version": manifest.Version}))
-					logf("update %s verified and staged for the next start", manifest.Version)
+					showTrayNotice(uiText("update.notice.title"), uiTextWith("update.notice.ready", map[string]string{"version": version}))
+					logf("update %s verified and staged for the next start", version)
 				}
+				if ownPayload == nil && feed == defaultUpdateURL && !updateCheckDue(snapshot.dir, time.Now()) {
+					return
+				}
+				if ownPayload == nil {
+					_ = recordUpdateCheck(snapshot.dir, time.Now())
+				}
+				_ = retryUpdateStaging(ctx, func() error {
+					return withUpdateStaging(ctx, func() error {
+						if installationUpdateReady(snapshot.dir) {
+							return nil
+						}
+						root := updatePayloadRoot(snapshot.dir, snapshot.payloadDir, snapshot.portable)
+						if ownPayload != nil {
+							if err := stagePinnedPayloadUpdate(ctx, client, snapshot.dir, root, *ownPayload); err != nil {
+								return err
+							}
+							if failedUpdateVersion(snapshot.dir) != currentVersion {
+								ready(currentVersion)
+							}
+							return nil
+						}
+						// Re-read settings before every retry, even when the
+						// first attempt recorded the daily check already.
+						prefs, err := loadDesktopPreferences(snapshot.dir)
+						if err != nil {
+							return err
+						}
+						if prefs.AutomaticUpdatesDisabled {
+							return nil
+						}
+						key, err := updatePublicKey()
+						if err != nil {
+							return err
+						}
+						_, digest, _ := installReceiptIdentity(snapshot.guestDir)
+						if snapshot.portable {
+							logf("%s", uiText("status.preparing_portable_update"))
+						}
+						manifest, err := stageSignedUpdate(ctx, client, feed, snapshot.dir, root, currentVersion, digest, key)
+						if err != nil {
+							return err
+						}
+						if manifest != nil {
+							ready(manifest.Version)
+						}
+						return nil
+					})
+				}, reportFailure, sleepWithContext)
 			}()
 		})
 	}
@@ -116,6 +126,34 @@ func configureBackgroundUpdates(cfg *config, feed string, enabled bool, ownPaylo
 	backgroundUpdates.start, backgroundUpdates.cancel = start, cancel
 	backgroundUpdates.Unlock()
 	return cancel
+}
+
+// Readiness belongs to this installation, even when another configuration in
+// the process has previously completed staging.
+func installationUpdateReady(dir string) bool {
+	if !updateAvailable.Load() {
+		return false
+	}
+	marker, err := os.ReadFile(filepath.Join(launcherUpdateDir(dir), stagedUpdateFilename))
+	if err != nil {
+		return false
+	}
+	_, valid := parseReleaseVersion(string(marker))
+	return valid
+}
+
+// Folder installs and network attempts share the same payload cache and marker.
+func withUpdateStaging(ctx context.Context, stage func() error) error {
+	select {
+	case updateStagingGate <- struct{}{}:
+		defer func() { <-updateStagingGate }()
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return stage()
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func startReadyUpdateCheck() {
