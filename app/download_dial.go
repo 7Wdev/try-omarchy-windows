@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"net"
+	"net/netip"
 	"time"
 )
 
@@ -31,7 +32,7 @@ func (d downloadDialer) DialContext(ctx context.Context, network, address string
 	if err != nil {
 		return nil, err
 	}
-	if net.ParseIP(host) != nil {
+	if _, err := netip.ParseAddr(host); err == nil {
 		return d.dial(ctx, network, address)
 	}
 	var ips []net.IPAddr
@@ -87,8 +88,18 @@ func (d downloadDialer) DialContext(ctx context.Context, network, address string
 	start := func(addresses []string) {
 		go func() {
 			var r result
-			for _, target := range addresses {
-				r.conn, r.err = d.dial(connectCtx, network, target)
+			for index, target := range addresses {
+				// Like net.Dialer, leave time for the remaining addresses
+				// instead of letting one unreachable IP consume the family.
+				deadline, _ := connectCtx.Deadline()
+				remaining := time.Until(deadline)
+				budget := remaining / time.Duration(len(addresses)-index)
+				if minimum := 2 * time.Second; budget < minimum {
+					budget = min(minimum, remaining)
+				}
+				addressCtx, cancelAddress := context.WithTimeout(connectCtx, budget)
+				r.conn, r.err = d.dial(addressCtx, network, target)
+				cancelAddress()
 				if r.err == nil || connectCtx.Err() != nil {
 					break
 				}

@@ -135,3 +135,29 @@ func TestDownloadDialUsesProxyWithoutResolvingTarget(t *testing.T) {
 		t.Fatal(resp.StatusCode)
 	}
 }
+
+func TestDownloadDialTriesRemainingAddresses(t *testing.T) {
+	d := newDownloadDialer()
+	d.lookup = func(context.Context, string) ([]net.IPAddr, error) {
+		return []net.IPAddr{{IP: net.ParseIP("192.0.2.1")}, {IP: net.ParseIP("192.0.2.2")}}, nil
+	}
+	calls := 0
+	client, server := net.Pipe()
+	defer server.Close()
+	d.dial = func(ctx context.Context, network, address string) (net.Conn, error) {
+		calls++
+		deadline, _ := ctx.Deadline()
+		if calls == 1 {
+			if left := time.Until(deadline); left > 5*time.Second || left < 4*time.Second {
+				t.Errorf("first address budget=%s", left)
+			}
+			return nil, &net.OpError{Op: "dial", Net: network, Err: errors.New("unreachable")}
+		}
+		return client, nil
+	}
+	conn, err := d.DialContext(context.Background(), "tcp", "github.com:443")
+	if err != nil || calls != 2 {
+		t.Fatalf("calls=%d err=%v", calls, err)
+	}
+	conn.Close()
+}
