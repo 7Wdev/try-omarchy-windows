@@ -40,7 +40,7 @@ func installUpdateFromFolder(cfg trayLaunchConfig, owner uintptr) {
 		if err == nil {
 			ctx := setupContext()
 			err = withUpdateStaging(ctx, func() error {
-				if updateAvailable.Load() {
+				if installationUpdateReady(snapshot.dataDir) {
 					return nil
 				}
 				if err := stagePinnedPayloadFolder(ctx, folder, snapshot.dataDir,

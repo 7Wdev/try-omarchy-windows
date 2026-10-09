@@ -37,7 +37,7 @@ func TestUpdateRetryScheduleAndRecovery(t *testing.T) {
 }
 
 func TestUpdateRetryLocalFailuresStop(t *testing.T) {
-	for _, err := range []error{errors.New("checksum mismatch"), errInsufficientDiskSpace, &downloadHTTPError{status: 404}, errors.New("permission denied"), &os.PathError{Op: "write", Path: "payload", Err: syscall.ENOSPC}, &os.PathError{Op: "open", Path: "payload", Err: os.ErrPermission}} {
+	for _, err := range []error{errors.New("checksum mismatch"), errInsufficientDiskSpace, &downloadHTTPError{status: 404}, errors.New("permission denied"), &os.PathError{Op: "write", Path: "payload", Err: diskFullErrno}, &os.PathError{Op: "open", Path: "payload", Err: os.ErrPermission}, &os.PathError{Op: "open", Path: "payload", Err: syscall.Errno(5)}, syscall.Errno(5)} {
 		calls := 0
 		got := retryUpdateStaging(context.Background(), func() error { calls++; return err }, func(error) {}, func(context.Context, time.Duration) error { t.Fatal("local failure retried"); return nil })
 		if got != err || calls != 1 {

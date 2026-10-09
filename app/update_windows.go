@@ -79,7 +79,7 @@ func configureBackgroundUpdates(cfg *config, feed string, enabled bool, ownPaylo
 				}
 				_ = retryUpdateStaging(ctx, func() error {
 					return withUpdateStaging(ctx, func() error {
-						if updateAvailable.Load() {
+						if installationUpdateReady(snapshot.dir) {
 							return nil
 						}
 						root := updatePayloadRoot(snapshot.dir, snapshot.payloadDir, snapshot.portable)
@@ -126,6 +126,20 @@ func configureBackgroundUpdates(cfg *config, feed string, enabled bool, ownPaylo
 	backgroundUpdates.start, backgroundUpdates.cancel = start, cancel
 	backgroundUpdates.Unlock()
 	return cancel
+}
+
+// Readiness belongs to this installation, even when another configuration in
+// the process has previously completed staging.
+func installationUpdateReady(dir string) bool {
+	if !updateAvailable.Load() {
+		return false
+	}
+	marker, err := os.ReadFile(filepath.Join(launcherUpdateDir(dir), stagedUpdateFilename))
+	if err != nil {
+		return false
+	}
+	_, valid := parseReleaseVersion(string(marker))
+	return valid
 }
 
 // Folder installs and network attempts share the same payload cache and marker.
