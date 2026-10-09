@@ -1188,7 +1188,9 @@ int main() {
             }
             require(header(s.dispatch(request(Op::LockVendorAllocation,replacement,VendorCpuDesc{device,0}))).status == 0);
         }
-        require(cpuBudget.vendorOwners.empty() && cpuBudget.cpuLocks == cpuBudget.cpuUnlocks-1);
+        // The fake counts explicit unlock attempts; EOF destruction delegates
+        // still-locked allocation cleanup to the native owner.
+        require(cpuBudget.vendorOwners.empty() && cpuBudget.cpuLocks == (expanded ? 9u : 5u) && cpuBudget.cpuUnlocks == 2);
     }
     Fake translation; translation.vendorEnabled = translation.translationEnabled = true;
     {
