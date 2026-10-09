@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Empty compositor data for the four guest CLI queries used under Sway.
+"""Empty compositor data and neutral night-light state used under Sway.
 
 This is test state, not a Hyprland integration test. Unknown queries fail and
 are recorded so expanding the shell's dependency surface needs review.
@@ -11,6 +11,11 @@ import sys
 QUERIES = {
     ('-j', 'clients'): [],
     ('-j', 'devices'): {'keyboards': []},
+    ('devices', '-j'): {'keyboards': []},
+    ('-j', 'monitors'): [],
+    ('monitors', '-j'): [],
+    ('monitors', 'all', '-j'): [],
+    ('hyprsunset', 'temperature'): 6500,
     ('-j', 'getoption', 'decoration:rounding'): {'int': 0},
     ('-j', 'getoption', 'general:gaps_out'): {'custom': '0 0 0 0'},
 }
