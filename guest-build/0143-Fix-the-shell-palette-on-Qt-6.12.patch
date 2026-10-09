@@ -1,4 +1,4 @@
-From 89fc6c0fce1854e8d7c55b2422eb065664761dcb Mon Sep 17 00:00:00 2001
+From b8e56caaea2ec9ee1d8173f4134e28077d712f33 Mon Sep 17 00:00:00 2001
 From: Research scratch <scratch@localhost>
 Date: Thu, 8 Oct 2026 23:15:44 -0400
 Subject: [PATCH] Fix the shell palette on Qt 6.12
@@ -55,7 +55,7 @@ Subject: [PATCH] Fix the shell palette on Qt 6.12
  .../shell_plugins_menu_Menu.qml.0154d0ec3855  | 1428 ++++++++++++
  .../shell_plugins_menu_Menu.qml.acd4f4ae3f10  | 1421 +++++++++++
  ...ifications_components_NotificationCard.qml |  228 ++
- ...mponents_NotificationCard.qml.62e15a07d437 |  228 ++
+ ...mponents_NotificationCard.qml.3f023446cfe2 |  197 ++
  .../qt612-palette/shell_plugins_osd_Osd.qml   |  207 ++
  .../shell_plugins_panels_audio_Panel.qml      | 1249 ++++++++++
  .../shell_plugins_panels_bluetooth_Panel.qml  | 1046 +++++++++
@@ -85,11 +85,11 @@ Subject: [PATCH] Fix the shell palette on Qt 6.12
  guest/tests/test_live_update.py               |    2 +-
  guest/tests/test_native_nightlight.py         |    2 +-
  guest/tests/test_notification_privacy.py      |    4 +-
- guest/tests/test_qt612_palette.py             |  182 ++
+ guest/tests/test_qt612_palette.py             |  196 ++
  guest/tests/test_snapper_guest.py             |    4 +-
  guest/tests/test_windows_volume_sync.py       |    2 +-
  guest/tests/verify.py                         |    6 +-
- 85 files changed, 35800 insertions(+), 43 deletions(-)
+ 85 files changed, 35783 insertions(+), 43 deletions(-)
  create mode 100755 guest/factory-overlay/usr/local/lib/try-omarchy/install-qt612-palette
  create mode 100644 guest/factory-overlay/usr/share/try-omarchy/qt612-palette/manifest.json
  create mode 100644 guest/factory-overlay/usr/share/try-omarchy/qt612-palette/shell_Commons_Border.qml
@@ -132,7 +132,7 @@ Subject: [PATCH] Fix the shell palette on Qt 6.12
  create mode 100644 guest/factory-overlay/usr/share/try-omarchy/qt612-palette/shell_plugins_menu_Menu.qml.0154d0ec3855
  create mode 100644 guest/factory-overlay/usr/share/try-omarchy/qt612-palette/shell_plugins_menu_Menu.qml.acd4f4ae3f10
  create mode 100644 guest/factory-overlay/usr/share/try-omarchy/qt612-palette/shell_plugins_notifications_components_NotificationCard.qml
- create mode 100644 guest/factory-overlay/usr/share/try-omarchy/qt612-palette/shell_plugins_notifications_components_NotificationCard.qml.62e15a07d437
+ create mode 100644 guest/factory-overlay/usr/share/try-omarchy/qt612-palette/shell_plugins_notifications_components_NotificationCard.qml.3f023446cfe2
  create mode 100644 guest/factory-overlay/usr/share/try-omarchy/qt612-palette/shell_plugins_osd_Osd.qml
  create mode 100644 guest/factory-overlay/usr/share/try-omarchy/qt612-palette/shell_plugins_panels_audio_Panel.qml
  create mode 100644 guest/factory-overlay/usr/share/try-omarchy/qt612-palette/shell_plugins_panels_bluetooth_Panel.qml
@@ -525,7 +525,7 @@ index bf5279e..8150721 100644
      }
 diff --git a/guest/factory-overlay/usr/share/try-omarchy/qt612-palette/manifest.json b/guest/factory-overlay/usr/share/try-omarchy/qt612-palette/manifest.json
 new file mode 100644
-index 0000000..d037de8
+index 0000000..0b3fe54
 --- /dev/null
 +++ b/guest/factory-overlay/usr/share/try-omarchy/qt612-palette/manifest.json
 @@ -0,0 +1,538 @@
@@ -889,11 +889,11 @@ index 0000000..d037de8
 +    "afterSha256": "d38a2fa8b4137f5b7735fb1b4a60eb5a4cde50ba5098044762f26c4b11bb3c50",
 +    "previousVersions": [
 +      {
-+        "asset": "shell_plugins_notifications_components_NotificationCard.qml.62e15a07d437",
++        "asset": "shell_plugins_notifications_components_NotificationCard.qml.3f023446cfe2",
 +        "beforeSha256": [
-+          "62e15a07d437a587845289de30b120dc599bcb17d22a9a833c60b0488fd64faf"
++          "3f023446cfe26b9f70570d7088baab31e56ca374c4a206a7c098b09d36cdff3d"
 +        ],
-+        "afterSha256": "d2111a7562908fe20fa14cc2869db81139e45413bffaeb83d865dc9cda5d7687"
++        "afterSha256": "3620ab43732277ac7f1ae04c78544b9648c3b33e2b7a6b6465f02b7cfb70e769"
 +      }
 +    ]
 +  },
@@ -18826,12 +18826,12 @@ index 0000000..9fa9ce1
 +    }
 +  }
 +}
-diff --git a/guest/factory-overlay/usr/share/try-omarchy/qt612-palette/shell_plugins_notifications_components_NotificationCard.qml.62e15a07d437 b/guest/factory-overlay/usr/share/try-omarchy/qt612-palette/shell_plugins_notifications_components_NotificationCard.qml.62e15a07d437
+diff --git a/guest/factory-overlay/usr/share/try-omarchy/qt612-palette/shell_plugins_notifications_components_NotificationCard.qml.3f023446cfe2 b/guest/factory-overlay/usr/share/try-omarchy/qt612-palette/shell_plugins_notifications_components_NotificationCard.qml.3f023446cfe2
 new file mode 100644
-index 0000000..e11752c
+index 0000000..37b2a61
 --- /dev/null
-+++ b/guest/factory-overlay/usr/share/try-omarchy/qt612-palette/shell_plugins_notifications_components_NotificationCard.qml.62e15a07d437
-@@ -0,0 +1,228 @@
++++ b/guest/factory-overlay/usr/share/try-omarchy/qt612-palette/shell_plugins_notifications_components_NotificationCard.qml.3f023446cfe2
+@@ -0,0 +1,197 @@
 +// Notification card. Pure presentational — no service, Notification, or
 +// ListModel references. The popup container drives lifetime; the history
 +// panel drives static rendering. Both use the same component.
@@ -19029,37 +19029,6 @@ index 0000000..e11752c
 +  }
 +
 +}
-+        // Keep the first line clear of the hover-revealed close button.
-+        Layout.rightMargin: Style.space(10)
-+  // Hover-revealed close. Stacked after mainColumn so its MouseArea sits
-+  // above the full-card one and the click never reaches cardClicked.
-+  Item {
-+    anchors.top: parent.top
-+    anchors.right: parent.right
-+    anchors.topMargin: root.borderTop + Style.space(3)
-+    anchors.rightMargin: root.borderRight + Style.space(3)
-+    width: Style.space(18)
-+    height: Style.space(18)
-+    visible: opacity > 0
-+    opacity: root.hovered ? 1 : 0
-+
-+    Behavior on opacity { NumberAnimation { duration: 100 } }
-+
-+    Text {
-+      anchors.centerIn: parent
-+      text: "✕"
-+      color: closeArea.containsMouse ? Commons.Color.notifications.text : root.dimColor
-+      font.pixelSize: Math.round(Style.font.caption * 1.44)
-+    }
-+
-+    MouseArea {
-+      id: closeArea
-+      anchors.fill: parent
-+      hoverEnabled: true
-+      cursorShape: Qt.PointingHandCursor
-+      onClicked: root.closeRequested()
-+    }
-+  }
 diff --git a/guest/factory-overlay/usr/share/try-omarchy/qt612-palette/shell_plugins_osd_Osd.qml b/guest/factory-overlay/usr/share/try-omarchy/qt612-palette/shell_plugins_osd_Osd.qml
 new file mode 100644
 index 0000000..4a3e616
@@ -36469,10 +36438,10 @@ index 75042c8..2dd2b7a 100644
 +        self.assertEqual(json.loads((GUEST / 'spec.json').read_text())['upstream']['packageRelease'], 9)
 diff --git a/guest/tests/test_qt612_palette.py b/guest/tests/test_qt612_palette.py
 new file mode 100644
-index 0000000..5418e6a
+index 0000000..c9ddfa2
 --- /dev/null
 +++ b/guest/tests/test_qt612_palette.py
-@@ -0,0 +1,182 @@
+@@ -0,0 +1,196 @@
 +"""Verify the factory palette backport and guarded repair before login."""
 +import hashlib
 +import importlib.machinery
@@ -36542,6 +36511,20 @@ index 0000000..5418e6a
 +        self.assertIn(b'Commons.Color.bar.background', (self.tree / 'shell/plugins/bar/Bar.qml').read_bytes())
 +        self.assertIn(b'Commons.Color.menu.background', (self.tree / 'shell/plugins/menu/Menu.qml').read_bytes())
 +        self.assertIn(b'Commons.Color.loadShell', (self.tree / 'shell/shell.qml').read_bytes())
++
++    def test_repair_preimages_cover_the_existing_backport_chain(self):
++        accepted = {
++            h['path'].removeprefix('usr/share/omarchy/'): {
++                digest for v in [h, *h.get('previousVersions', [])] for digest in v['beforeSha256']
++            } for h in self.hooks
++        }
++        for backport in self.build_spec['authenticity']['backports']:
++            if backport['id'] == 'qt612-palette':
++                continue
++            for target in backport['targets']:
++                if target['path'] in accepted:
++                    for key in ['beforeSha256', 'afterSha256']:
++                        self.assertIn(target[key], accepted[target['path']], (backport['id'], key))
 +
 +    def test_known_old_disk_is_repaired_once_with_metadata_preserved(self):
 +        before = {h['path']: (self.root / h['path']).stat() for h in self.hooks}
