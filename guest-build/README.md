@@ -301,6 +301,19 @@ The `Refresh guest lock` workflow runs it every Monday and opens a draft pull re
 with the package changes. If GitHub policy blocks bot PRs, its run summary links
 to the generated branch for manual review; `--check` reports drift without writing a patch.
 
+The daily **Shell canary** installs current signed Arch and Omarchy packages,
+then loads the exact pinned and backported guest shell in a private headless
+Wayland session for about 30 seconds. It checks bar geometry, the Omarchy menu,
+and the Keybindings select menu with sample rows; it does not test Windows GPU
+rendering or live Hyprland bindings. A failure opens or updates one `shell-canary`
+issue with package versions and first errors. Inspect its run artifact, reproduce
+with `workflow_dispatch`, and backport the smallest compatibility fix through
+the guest scripts. Only observed harmless container warnings belong in
+`scripts/shell-canary/warnings.allowlist`; QML errors always fail. Recovery
+comments and closes the issue. Branch/PR runs and the optional `unfixed_palette`
+proof input never update issues. Scheduled checks start after this workflow lands
+on master.
+
 ```bash
 scripts/release/refresh-guest-lock.sh
 ```
