@@ -30,6 +30,12 @@ func resetPortableDisk(cfg *config, expandedBytes int64) error {
 	if len(existing) == 0 {
 		return preparePortableDisk(cfg, expandedBytes)
 	}
+	// Factory verification inspects the active disk dependency. Finish it before
+	// taking the exclusive Windows handle; the staged reset reuses this verified
+	// template without reopening the disk protected by that handle.
+	if err := ensureInstalledFactory(cfg); err != nil {
+		return err
+	}
 	var lock *os.File
 	if existing[0] == cfg.disk {
 		var err error
