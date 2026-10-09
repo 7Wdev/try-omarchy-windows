@@ -230,7 +230,10 @@ class Bridge {
     struct Context { std::uint32_t device, flags; };
     std::map<std::uint32_t, Context> contextOwners;
     std::map<std::uint32_t, std::uint32_t> hwQueueContexts;
-    struct Synchronization { std::uint32_t device, type, flags; };
+    std::map<std::uint32_t, std::uint32_t> vendorResources; // typed resource ID -> its sole allocation alias
+    struct BorrowedFence { std::uint32_t owner, device; bool hardware; };
+    std::map<std::uint32_t, BorrowedFence> borrowedFences;
+    struct Synchronization { std::uint32_t device, type, flags; std::uint64_t lastSignal = 0; };
     std::map<std::uint32_t, Synchronization> syncObjects;
     static constexpr std::uint32_t GuestLuidLow = 0x57475055;
     static constexpr std::int32_t GuestLuidHigh = 0;
@@ -432,12 +435,17 @@ public:
                 }
                 a.hPagingQueue = result.header.handle; a.hSyncObject = reply.sync;
                 pagingOwners.emplace(a.hPagingQueue, a.hDevice);
+                if (!borrowedFences.emplace(reply.sync, BorrowedFence{a.hPagingQueue, a.hDevice, false}).second) { transport.fail(); throw Error(EPROTO); }
                 return 0;
             }
             case 28: {
                 auto& a = args<D3DDDI_DESTROYPAGINGQUEUE>(requestNumber, pointer);
                 pagingFences.unmap(a.hPagingQueue);
-                destroy(Op::DestroyPagingQueue, a.hPagingQueue); pagingOwners.erase(a.hPagingQueue); return 0;
+                destroy(Op::DestroyPagingQueue, a.hPagingQueue); pagingOwners.erase(a.hPagingQueue);
+                for (auto fence = borrowedFences.begin(); fence != borrowedFences.end();) {
+                    if (!fence->second.hardware && fence->second.owner == a.hPagingQueue) fence = borrowedFences.erase(fence); else ++fence;
+                }
+                return 0;
             }
             case 4: {
                 auto& a = args<D3DKMT_CREATECONTEXTVIRTUAL>(requestNumber, pointer);
@@ -471,7 +479,9 @@ public:
                         std::fprintf(stderr, "LINUX_BRIDGE allocationItem index=%u flags=%u privateBytes=%u hasSystemMemory=%u priority=%u source=%u\n",
                                      n, item.Flags.Value, item.PrivateDriverDataSize, item.pSystemMem ? 1u : 0u, item.Priority, item.VidPnSourceId);
                     }
-                if (!(caps.flags & VendorAllocationCapability) || flags || a.hResource || a.PrivateRuntimeDataSize ||
+                const bool withResource = flags == 1;
+                if (!(caps.flags & VendorAllocationCapability) || (flags != 0 && !withResource) ||
+                    (withResource && !(caps.flags & VendorResourceCapability)) || a.hResource || a.PrivateRuntimeDataSize ||
                     a.PrivateDriverDataSize || a.NumAllocations != 1 || !a.pAllocationInfo2) {
                     std::fprintf(stderr, "LINUX_BRIDGE unsupported nr=6 bytes=%zu\n", sizeof a); throw Error(ENOSYS);
                 }
@@ -480,16 +490,20 @@ public:
                 if (!validVendorAllocation(desc) || item.pSystemMem || !item.pPrivateDriverData ||
                     std::any_of(std::begin(item.Reserved), std::end(item.Reserved), [](auto value) { return value != 0; })) throw Error(EINVAL);
                 if (vendorOwners.size() >= MaxVendorAllocations) throw Error(EMFILE);
-                auto packet = request(Op::CreateVendorAllocation, a.hDevice, desc);
+                auto packet = request(withResource ? Op::CreateVendorResourceAllocation : Op::CreateVendorAllocation, a.hDevice, desc);
                 const auto begin = static_cast<const std::uint8_t*>(item.pPrivateDriverData);
                 packet.insert(packet.end(), begin, begin + desc.privateBytes);
-                const auto result = call(packet, desc.privateBytes, true);
+                const auto result = call(packet, desc.privateBytes + (withResource ? sizeof(VendorResourceReply) : 0), true);
+                VendorResourceReply resource{};
+                if (withResource) std::memcpy(&resource, result.data.data(), sizeof resource);
                 const bool reusedWireId = std::any_of(vendorWireIds.begin(), vendorWireIds.end(), [&](const auto& owned) {
                     return owned.second == result.header.handle;
                 });
-                if ((result.result.ntstatus >= 0 && (!result.header.handle || result.result.value % 4096 || reusedWireId)) ||
-                    (result.result.ntstatus < 0 && (result.header.handle || result.result.value))) { transport.fail(); throw Error(EPROTO); }
-                std::memcpy(item.pPrivateDriverData, result.data.data(), result.data.size()); checkNt(result.result.ntstatus);
+                if (result.result.ntstatus > 0 || resource.reserved ||
+                    (result.result.ntstatus >= 0 && (!result.header.handle || result.result.value % 4096 || reusedWireId ||
+                        (withResource && (!resource.resource || resource.resource == result.header.handle || vendorResources.count(resource.resource))))) ||
+                    (result.result.ntstatus < 0 && (result.header.handle || result.result.value || resource.resource))) { transport.fail(); throw Error(EPROTO); }
+                std::memcpy(item.pPrivateDriverData, result.data.data() + (withResource ? sizeof resource : 0), desc.privateBytes); checkNt(result.result.ntstatus);
                 std::uint32_t alias = result.header.handle;
                 if (caps.flags & VendorTranslationCapability) {
                     const auto parent = deviceAdapters.find(a.hDevice);
@@ -513,8 +527,10 @@ public:
                 if (!vendorOwners.emplace(alias, a.hDevice).second || !vendorWireIds.emplace(alias, result.header.handle).second) {
                     transport.fail(); throw Error(EPROTO);
                 }
+                if (withResource && !vendorResources.emplace(resource.resource, alias).second) { transport.fail(); throw Error(EPROTO); }
                 item.hAllocation = alias; item.GpuVirtualAddress = result.result.value;
-                a.hResource = 0; a.hGlobalShare = 0;
+                a.hResource = resource.resource; a.hGlobalShare = 0;
+                if (withResource) std::fprintf(stderr, "LINUX_BRIDGE nativeVendorResourceCreated=true allocationCount=1 shared=false systemMemory=false\n");
                 if (desc.source == UninitializedDisplaySource)
                     std::fprintf(stderr, "LINUX_BRIDGE standaloneSourceUninitializedAccepted=true primary=false privateDataPreserved=true\n");
                 std::fprintf(stderr, "LINUX_BRIDGE nativeVendorAllocationCreated=true privateBytes=%u\n", desc.privateBytes); return 0;
@@ -524,18 +540,34 @@ public:
                 if (!(caps.flags & VendorAllocationCapability)) {
                     std::fprintf(stderr, "LINUX_BRIDGE unsupported nr=19 bytes=%zu\n", sizeof a); throw Error(ENOSYS);
                 }
-                if (a.hResource || !a.AllocationCount || a.AllocationCount > MaxVendorAllocations || !a.phAllocationList ||
-                    (a.Flags.Value & ~3u)) throw Error(EINVAL);
+                if (a.Flags.Value & ~3u) throw Error(EINVAL);
                 unsigned ownedQueues = 0;
                 for (const auto& queue : hwQueueContexts)
                     if (contextOwners.at(queue.second).device == a.hDevice) ++ownedQueues;
                 if (ownedQueues && !(caps.flags & VendorRetirementCapability)) throw Error(EBUSY);
+                if (a.hResource) {
+                    if (!(caps.flags & VendorResourceCapability)) throw Error(ENOSYS);
+                    if (a.AllocationCount || a.phAllocationList) throw Error(EINVAL);
+                    const auto resource = vendorResources.find(a.hResource);
+                    if (resource == vendorResources.end() || vendorOwners.at(resource->second) != a.hDevice) throw Error(EBADF);
+                    const auto alias = resource->second;
+                    if (cpuLocks.count(alias)) unlockCpu(alias, a.hDevice, true);
+                    const auto result = call(request(Op::DestroyVendorResource, a.hResource, a.hDevice), 0, true);
+                    if (result.header.handle != a.hResource || result.result.value || result.result.ntstatus > 0) { transport.fail(); throw Error(EPROTO); }
+                    checkNt(result.result.ntstatus);
+                    vendorResources.erase(resource); vendorOwners.erase(alias); vendorWireIds.erase(alias); vendorGpuRanges.erase(alias);
+                    std::fprintf(stderr, "LINUX_BRIDGE nativeVendorResourceDestroyed=true allocationCount=1 hardwareQueuesAlive=%u\n", ownedQueues);
+                    std::fprintf(stderr, "LINUX_BRIDGE nativeVendorAllocationsDestroyed=true count=1 hardwareQueuesAlive=%u\n", ownedQueues); return 0;
+                }
+                if (!a.AllocationCount || a.AllocationCount > MaxVendorAllocations || !a.phAllocationList) throw Error(EINVAL);
                 // Accept the public destruction hints, but always request
                 // synchronous native destruction rather than trusting the
                 // guest's AssumeNotInUse hint to shorten object lifetime.
                 for (unsigned n = 0; n < a.AllocationCount; ++n) {
                     const auto found = vendorOwners.find(a.phAllocationList[n]);
                     if (found == vendorOwners.end() || found->second != a.hDevice) throw Error(EBADF);
+                    if (a.AllocationCount != 1 && std::any_of(vendorResources.begin(), vendorResources.end(), [&](const auto& resource) {
+                            return resource.second == a.phAllocationList[n]; })) throw Error(EINVAL);
                     for (unsigned previous = 0; previous < n; ++previous)
                         if (a.phAllocationList[previous] == a.phAllocationList[n]) throw Error(EINVAL);
                 }
@@ -549,7 +581,12 @@ public:
                 const auto result = call(packet, 0, true);
                 if (result.header.handle != a.hDevice || result.result.value || result.result.ntstatus > 0) { transport.fail(); throw Error(EPROTO); }
                 checkNt(result.result.ntstatus);
-                for (unsigned n = 0; n < a.AllocationCount; ++n) { vendorOwners.erase(a.phAllocationList[n]); vendorWireIds.erase(a.phAllocationList[n]); vendorGpuRanges.erase(a.phAllocationList[n]); }
+                for (unsigned n = 0; n < a.AllocationCount; ++n) {
+                    for (auto resource = vendorResources.begin(); resource != vendorResources.end();) {
+                        if (resource->second == a.phAllocationList[n]) resource = vendorResources.erase(resource); else ++resource;
+                    }
+                    vendorOwners.erase(a.phAllocationList[n]); vendorWireIds.erase(a.phAllocationList[n]); vendorGpuRanges.erase(a.phAllocationList[n]);
+                }
                 std::fprintf(stderr, "LINUX_BRIDGE nativeVendorAllocationsDestroyed=true count=%u hardwareQueuesAlive=%u\n", a.AllocationCount, ownedQueues); return 0;
             }
             case 11: {
@@ -710,6 +747,8 @@ public:
                 if (a.Reserved1 || !validGpuVa(desc)) throw Error(EINVAL);
                 const auto allocation = vendorOwners.find(a.hAllocation), queue = pagingOwners.find(a.hPagingQueue);
                 if (allocation == vendorOwners.end() || queue == pagingOwners.end() || allocation->second != queue->second) throw Error(EBADF);
+                if (desc.driverProtection && !std::any_of(vendorResources.begin(), vendorResources.end(), [&](const auto& resource) {
+                    return resource.second == a.hAllocation; })) throw Error(EINVAL);
                 const auto wire = wireAllocation(a.hAllocation);
                 GpuStateRanges::Plan statePlan;
                 if (desc.base && !gpuStates.prepareRemove(desc.base, desc.sizePages * 4096, statePlan)) throw Error(EMFILE);
@@ -724,6 +763,8 @@ public:
                 gpuStates.commit(statePlan);
                 vendorGpuRanges.emplace(a.hAllocation, VendorGpuRange{result.result.value, desc.sizePages * 4096});
                 a.VirtualAddress = result.result.value; a.PagingFenceValue = fence.fence;
+                if (desc.driverProtection) std::fprintf(stderr, "LINUX_BRIDGE nativeVendorDriverProtectionMapped=true value=%llu resourceOwned=true\n",
+                    static_cast<unsigned long long>(desc.driverProtection));
                 std::fprintf(stderr, "LINUX_BRIDGE nativeVendorGpuVaMapped=true pages=%llu status=%d fence=%llu\n",
                              static_cast<unsigned long long>(desc.sizePages), result.result.ntstatus, static_cast<unsigned long long>(fence.fence));
                 return result.result.ntstatus;
@@ -848,6 +889,7 @@ public:
                 try { fence = hwQueueFences.map(result.header.handle, output.offset, "hwQueue"); }
                 catch (...) { destroy(Op::DestroyHwQueue, result.header.handle); throw; }
                 if (!hwQueueContexts.emplace(result.header.handle, a.hHwContext).second) { transport.fail(); throw Error(EPROTO); }
+                if (!borrowedFences.emplace(output.sync, BorrowedFence{result.header.handle, parent->second.device, true}).second) { transport.fail(); throw Error(EPROTO); }
                 a.hHwQueue = result.header.handle; a.hHwQueueProgressFence = output.sync;
                 a.HwQueueProgressFenceCPUVirtualAddress = fence; a.HwQueueProgressFenceGPUVirtualAddress = output.gpuAddress;
                 std::fprintf(stderr, "LINUX_BRIDGE nativeHwQueueCreated=true privateBytes=%u progressFenceDirect=true\n", desc.privateBytes);
@@ -898,7 +940,7 @@ public:
                     try { fence = syncFences.map(result.header.handle, output.offset, "monitored"); }
                     catch (...) { destroy(Op::DestroySync, result.header.handle); throw; }
                 }
-                if (!syncObjects.emplace(result.header.handle, Synchronization{a.hDevice, desc.type, desc.flags}).second) {
+                if (!syncObjects.emplace(result.header.handle, Synchronization{a.hDevice, desc.type, desc.flags, desc.initial}).second) {
                     transport.fail(); throw Error(EPROTO);
                 }
                 a.hSyncObject = result.header.handle; a.Info.SharedHandle = 0;
@@ -931,6 +973,65 @@ public:
                 if (result.header.handle != a.hContext || result.result.value || result.result.ntstatus > 0) { transport.fail(); throw Error(EPROTO); }
                 checkNt(result.result.ntstatus);
                 std::fprintf(stderr, "LINUX_BRIDGE nativeContextPriorityChanged=true priority=%d inProcessOnly=true\n", a.Priority);
+                return 0;
+            }
+            case 58: {
+                const auto& a = args<D3DKMT_WAITFORSYNCHRONIZATIONOBJECTFROMCPU>(requestNumber, pointer);
+                std::fprintf(stderr, "LINUX_BRIDGE cpuFenceWaitInput count=%u flags=%u asyncEvent=%u ownedDevice=%u hasObjects=%u hasValues=%u\n",
+                    a.ObjectCount, a.Flags.Value, a.hAsyncEvent ? 1u : 0u, deviceAdapters.count(a.hDevice) ? 1u : 0u,
+                    a.ObjectHandleArray ? 1u : 0u, a.FenceValueArray ? 1u : 0u);
+                if (a.hAsyncEvent || a.ObjectCount != 1 || a.Flags.Value) throw Error(ENOSYS);
+                if (!a.ObjectHandleArray || !a.FenceValueArray || a.FenceValueArray[0] == UINT64_MAX) throw Error(EINVAL);
+                const auto id = a.ObjectHandleArray[0]; const auto target = a.FenceValueArray[0];
+                const auto borrowed = borrowedFences.find(id);
+                guest_paging::Fences* fences = nullptr; std::uint32_t owner = id; const char* category = "independent";
+                if (borrowed != borrowedFences.end()) {
+                    if (borrowed->second.device != a.hDevice) throw Error(EBADF);
+                    owner = borrowed->second.owner;
+                    fences = borrowed->second.hardware ? &hwQueueFences : &pagingFences;
+                    category = borrowed->second.hardware ? "hardware" : "paging";
+                } else {
+                    const auto sync = syncObjects.find(id);
+                    if (sync == syncObjects.end() || sync->second.device != a.hDevice || sync->second.type != 5) throw Error(EBADF);
+                    fences = &syncFences;
+                }
+                if (!fences->waitRetired(owner, target, category)) throw Error(EAGAIN);
+                return 0;
+            }
+            case 51: {
+                const auto& a = args<D3DKMT_SIGNALSYNCHRONIZATIONOBJECTFROMGPU2>(requestNumber, pointer);
+                std::fprintf(stderr, "LINUX_BRIDGE contextSignalInput objects=%u flags=%u contexts=%u hasObjects=%u hasContexts=%u hasValues=%u\n",
+                    a.ObjectCount, a.Flags.Value, a.BroadcastContextCount, a.ObjectHandleArray ? 1u : 0u,
+                    a.BroadcastContextArray ? 1u : 0u, a.MonitoredFenceValueArray ? 1u : 0u);
+                if (!(caps.flags & ContextSignalCapability) || a.ObjectCount != 1 || a.BroadcastContextCount != 1 || a.Flags.Value != 4)
+                    throw Error(ENOSYS);
+                if (!a.ObjectHandleArray || !a.BroadcastContextArray || !a.MonitoredFenceValueArray ||
+                    std::any_of(std::begin(a.Reserved) + 1, std::end(a.Reserved), [](auto value) { return value != 0; })) throw Error(EINVAL);
+                if (a.ObjectCount == 1 && a.ObjectHandleArray && a.MonitoredFenceValueArray) {
+                    const auto sync = syncObjects.find(a.ObjectHandleArray[0]);
+                    std::fprintf(stderr, "LINUX_BRIDGE contextSignalObject owned=%u type=%u flags=%u value=%llu\n", sync != syncObjects.end() ? 1u : 0u,
+                        sync == syncObjects.end() ? 0u : sync->second.type, sync == syncObjects.end() ? 0u : sync->second.flags,
+                        static_cast<unsigned long long>(a.MonitoredFenceValueArray[0]));
+                }
+                if (a.BroadcastContextCount == 1 && a.BroadcastContextArray) {
+                    const auto context = contextOwners.find(a.BroadcastContextArray[0]);
+                    std::fprintf(stderr, "LINUX_BRIDGE contextSignalContext owned=%u flags=%u\n", context != contextOwners.end() ? 1u : 0u,
+                        context == contextOwners.end() ? 0u : context->second.flags);
+                }
+                const ContextSignalDesc desc{a.ObjectHandleArray[0],a.Flags.Value,a.MonitoredFenceValueArray[0]};
+                if (!validContextSignal(desc)) throw Error(EINVAL);
+                const auto context = contextOwners.find(a.BroadcastContextArray[0]); const auto sync = syncObjects.find(a.ObjectHandleArray[0]);
+                if (context == contextOwners.end() || context->second.flags != 16 || sync == syncObjects.end() ||
+                    sync->second.type != 5 || sync->second.flags != NoGpuAccessSyncFlag || sync->second.device != context->second.device) throw Error(EBADF);
+                if (desc.fence <= sync->second.lastSignal) throw Error(EINVAL);
+                const auto result = call(request(Op::SignalContextSync, context->first, desc), 0, true);
+                if (result.header.handle != context->first || result.result.ntstatus > 0 ||
+                    (result.result.ntstatus == 0 && (result.result.value < desc.fence || result.result.value == UINT64_MAX)) ||
+                    (result.result.ntstatus < 0 && result.result.value)) { transport.fail(); throw Error(EPROTO); }
+                checkNt(result.result.ntstatus);
+                syncFences.verifyRetired(sync->first, desc.fence, "context-signal"); sync->second.lastSignal = desc.fence;
+                std::fprintf(stderr, "LINUX_BRIDGE nativeContextSignalSubmitted=true flags=%u target=%llu observed=%llu noGpuAccess=true\n",
+                    desc.flags,static_cast<unsigned long long>(desc.fence),static_cast<unsigned long long>(result.result.value));
                 return 0;
             }
             case 29: {
@@ -1004,6 +1105,9 @@ public:
                 const auto result = call(request(Op::DestroyHwQueue, a.hHwQueue));
                 if (result.header.handle != a.hHwQueue || result.result.value || result.result.ntstatus) { transport.fail(); throw Error(EPROTO); }
                 hwQueueContexts.erase(a.hHwQueue);
+                for (auto fence = borrowedFences.begin(); fence != borrowedFences.end();) {
+                    if (fence->second.hardware && fence->second.owner == a.hHwQueue) fence = borrowedFences.erase(fence); else ++fence;
+                }
                 std::fprintf(stderr, "LINUX_BRIDGE nativeHwQueueDestroyed=true\n"); return 0;
             }
             default:

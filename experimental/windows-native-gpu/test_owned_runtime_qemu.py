@@ -34,11 +34,39 @@ def initialization_complete(log, owner_exit, control, cleanup):
         cleanup.get('driverCleanupVerified') is True)
 
 
+def copy_workload_complete(log):
+    """Require two independently checked patterns after guest GPU submission."""
+    if re.findall(r'^GPU_COPY_TEST_BEGIN bytes=(\d+) rounds=(\d+)[ \t\r]*$', log, re.MULTILINE) != [('65536', '2')]:
+        return False
+    if re.findall(r'^GPU_COPY_TEST_COMPLETE verified=true bytes=(\d+) rounds=(\d+)[ \t\r]*$', log, re.MULTILINE) != [('65536', '2')]:
+        return False
+    tail = log.split('GPU_COPY_TEST_BEGIN', 1)[1]
+    if tail.count('nativeCommandSubmitted=true') < 2:
+        return False
+    for stage, count in (('Upload', 1), ('Default', 1), ('Readback', 1), ('Allocator', 1), ('CommandList', 1),
+                         ('Fence', 1), ('UploadMap', 2), ('ReadbackMap', 2), ('Close', 2), ('Signal', 2),
+                         ('AllocatorReset', 1), ('CommandListReset', 1)):
+        if re.findall(r'^gpuCopy' + stage + r'=([0-9a-f]{8})[ \t\r]*$', tail, re.MULTILINE) != ['00000000'] * count:
+            return False
+    rounds = re.findall(r'^GPU_COPY_ROUND round=(\d+) verifiedBytes=(\d+) expectedHash=([0-9a-f]{16}) observedHash=([0-9a-f]{16}) fenceTarget=(\d+) fenceObserved=(\d+)[ \t\r]*$', tail, re.MULTILINE)
+    if len(rounds) != 2:
+        return False
+    for expected_round, (round_, bytes_, expected, observed, target, retired) in enumerate(rounds, 1):
+        checksum = 14695981039346656037
+        for offset in range(65536):
+            checksum = ((checksum ^ ((offset * 37 + (offset >> 8) * 11 + expected_round * 73) & 255)) * 1099511628211) & ((1 << 64) - 1)
+        if (int(round_) != expected_round or int(bytes_) != 65536 or expected != f'{checksum:016x}' or observed != expected or
+                int(target) != expected_round or int(retired) < int(target) or int(retired) == (1 << 64) - 1):
+            return False
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('qemu', 'firmware', 'kernel', 'initramfs', 'bridge', 'report'):
         parser.add_argument('--' + name, type=pathlib.Path, required=True)
     parser.add_argument('--expected-unimplemented-ioctl', type=int, required=True)
+    parser.add_argument('--runtime-workload', choices=('init', 'copy'), default='init', help='Require the workload selected when packing the private guest image')
     parser.add_argument('--driver-allocations', action='store_true', help='Explicitly enable diagnostic vendor video-memory allocations')
     parser.add_argument('--minimum-vendor-allocations', type=int, default=0)
     parser.add_argument('--minimum-uninitialized-source-allocations', type=int, default=0)
@@ -82,6 +110,8 @@ def main():
     parser.add_argument('--gpu-state-eof-test', action='store_true', help='Exit the guest after its first retired GPU Zero/NoAccess mapping')
     args = parser.parse_args()
     guest_eof = args.cpu_eof_test or args.hwqueue_eof_test or args.sync_eof_test or args.reservation_eof_test or args.gpu_state_eof_test or args.cpu_span_eof_test or args.sync_no_max_eof_test
+    if args.runtime_workload == 'copy' and (not args.driver_submit or not args.driver_retirement or args.cpu_store_test or guest_eof):
+        parser.error('GPU copy workload requires submission and retirement in a separate run from CPU/EOF controls')
     if args.sync_no_max_eof_test and (not args.driver_syncs or args.cpu_store_test or args.cpu_eof_test or args.hwqueue_eof_test or args.sync_eof_test or args.reservation_eof_test or args.gpu_state_eof_test or args.cpu_span_eof_test):
         parser.error('NoSignalMaxValueOnTdr EOF control requires syncs and a separate diagnostic run')
     if args.minimum_uninitialized_source_allocations < 0 or (args.minimum_uninitialized_source_allocations and not args.driver_allocations):
@@ -445,8 +475,43 @@ def main():
                         cleanup.get('completedCpuStoreTests') == len(cpu) and cleanup.get('failedCpuStoreTests') == 0 and
                         log.count('allocationCpuStoreTest=true firstLastReadback=true') == len(cpu) and
                         log.count('allocationCpuReferenceTest=true sameGuestPointer=true intermediateUnlockRetained=true') == len(cpu))
+        resources = log.count('LINUX_BRIDGE nativeVendorResourceCreated=true allocationCount=1 shared=false systemMemory=false')
+        resource_native = [json.loads(line) for line in errors if line.startswith('{') and '"nativeVendorResourceCreated"' in line]
+        driver_protection = [json.loads(line) for line in errors if line.startswith('{') and '"nativeVendorDriverProtectionMap"' in line]
+        guest_driver_protection = [int(value) for value in re.findall(r'nativeVendorDriverProtectionMapped=true value=(\d+) resourceOwned=true', log)]
+        cpu_waits = [{'target':int(target), 'observed':int(observed), 'owner':owner} for target,observed,owner in re.findall(
+            r'cpuFenceWaitRetired=true direct=true target=(\d+) observed=(\d+) owner=(paging|hardware|independent)',log)]
+        cpu_wait_inputs = re.findall(r'cpuFenceWaitInput count=(\d+) flags=(\d+) asyncEvent=(\d+) ownedDevice=(\d+) hasObjects=(\d+) hasValues=(\d+)',log)
+        context_signals = [{'flags':int(flags),'target':int(target),'observed':int(observed)} for flags,target,observed in re.findall(
+            r'nativeContextSignalSubmitted=true flags=(\d+) target=(\d+) observed=(\d+) noGpuAccess=true',log)]
+        context_signal_native = [json.loads(line) for line in errors if line.startswith('{') and '"nativeContextSignalRetired"' in line]
+        context_signal_status = [json.loads(line) for line in errors if line.startswith('{') and '"nativeContextSignalStatus"' in line]
+        context_signal_retirements = [r for r in retirements if r['operation'] == 'context-signal']
+        accepted = (accepted and cleanup.get('completedVendorResources',0) == cleanup.get('destroyedVendorResources',0) == resources == len(resource_native) and
+                    cleanup.get('liveVendorResources',0) == 0 and
+                    all(r['allocationCount'] == 1 and r['shared'] is False and r['systemMemory'] is False and r['ntstatus'] == 0 for r in resource_native) and
+                    cleanup.get('completedVendorDriverProtectionMaps',0) == len(driver_protection) == len(guest_driver_protection) and
+                    all(p['driverProtection'] == g == 268435457 and p['resourceOwned'] is True and p['unchanged'] is True and p['ntstatus'] in (0,259)
+                        for p,g in zip(driver_protection,guest_driver_protection)) and
+                    cpu_wait_inputs == [('1','0','0','1','1','1')] * len(cpu_waits) and
+                    all(0 <= w['target'] <= w['observed'] < (1<<64)-1 for w in cpu_waits) and
+                    cleanup.get('nativeContextSignalAttempts',0) == cleanup.get('completedNativeContextSignals',0) == len(context_signals) == len(context_signal_native) == len(context_signal_status) == len(context_signal_retirements) and
+                    cleanup.get('failedNativeContextSignals',0) == cleanup.get('nativeContextSignalTimeouts',0) == 0 and
+                    all(g['flags'] == s['flags'] == 4 and g['target'] == n['target'] == s['target'] == r['target'] and
+                        s['ntstatus'] == 0 and 0 < g['target'] <= g['observed'] < (1<<64)-1 and
+                        g['observed'] == n['observed'] and r['observed'] >= r['target'] and n['noGpuAccess'] is True and n['cpuValueWrittenByBridge'] is False
+                        for g,n,s,r in zip(context_signals,context_signal_native,context_signal_status,context_signal_retirements)))
+        copy_verified = copy_workload_complete(log)
+        workload_matches = copy_verified if args.runtime_workload == 'copy' else 'GPU_COPY_TEST_BEGIN' not in log
+        accepted = accepted and workload_matches
         report = {'schema': 1, 'diagnosticAccepted': bool(accepted), 'runtimeInitializationComplete': bool(initialized and accepted),
                   'runtimeInitializationResultsSucceeded': bool(initialized),
+                  'runtimeWorkload': args.runtime_workload, 'guestGpuBufferCopyVerified': bool(copy_verified and accepted),
+                  'nativeVendorResourcesCreatedByLiveRuntime': resources, 'nativeVendorResourceChecks': resource_native,
+                  'nativeVendorDriverProtectionMaps': driver_protection, 'directGuestCpuFenceWaits': cpu_waits,
+                  'nativeContextSignals': context_signals, 'nativeContextSignalRetirementChecks': context_signal_native,
+                  'guestGpuBufferCopyBytesPerRound': 65536 if copy_verified and accepted else 0,
+                  'guestGpuBufferCopyRounds': 2 if copy_verified and accepted else 0,
                   'stage': 'owned VM exit with a NoSignalMaxValueOnTdr fence and standalone source allocation' if args.sync_no_max_eof_test else
                            'live NVIDIA runtime with standalone source normalization and native TDR fence flags' if args.minimum_no_max_tdr_fences else
                            'owned VM exit with a spanning native CPU allocation view' if args.cpu_span_eof_test else

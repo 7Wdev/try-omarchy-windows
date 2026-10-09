@@ -54,11 +54,19 @@ struct Fake : Driver {
     int badGpuVaReply = 0;
     int badVendorReply = 0;
     std::map<std::uint32_t, std::uint32_t> vendorOwners;
+    bool resourceEnabled = false;
+    int badResourceReply = 0;
+    bool contextSignalEnabled = false;
+    int badContextSignalReply = 0;
+    unsigned contextSignalCalls = 0;
+    std::map<std::uint32_t, std::uint32_t> vendorResources;
     std::map<std::uint32_t, std::vector<std::uint8_t>> buffers;
     std::vector<Kind> destroyed;
     native_gpu::Capabilities capabilities() const override {
         return {1, 31u | (contextsEnabled ? ContextCapability : 0u) | (queriesEnabled ? QueryCapability : 0u) |
                 (guestPagingEnabled ? GuestPagingCapability : 0u) | (vendorEnabled ? VendorAllocationCapability : 0u) |
+                (resourceEnabled ? VendorResourceCapability : 0u) |
+                (contextSignalEnabled ? ContextSignalCapability : 0u) |
                 (gpuVaEnabled ? VendorGpuVaCapability : 0u) | (residencyEnabled ? VendorResidencyCapability : 0u) |
                 (cpuEnabled ? VendorCpuCapability : 0u) | (translationEnabled ? VendorTranslationCapability : 0u) |
                 (hwQueuesEnabled ? HwQueueCapability : 0u) | (syncEnabled ? SyncCapability : 0u) |
@@ -115,8 +123,15 @@ struct Fake : Driver {
         if (badVendorDestroyReply) return {badVendorDestroyReply == 1 ? 259 : 0,
                                           badVendorDestroyReply == 2 ? 777u : 0u,
                                           badVendorDestroyReply == 3 ? 1ull : 0ull};
-        for (const auto handle : handles) { vendorOwners.erase(handle); destroyed.push_back(Kind::VendorAllocation); }
+        for (const auto handle : handles) { vendorResources.erase(handle); vendorOwners.erase(handle); destroyed.push_back(Kind::VendorAllocation); }
         return {0, 0, 0};
+    }
+    VendorResourceResult createVendorResourceAllocation(std::uint32_t device, VendorAllocationDesc desc, std::vector<std::uint8_t>& data) override {
+        auto result = createVendorAllocation(device, desc, data);
+        if (result.ntstatus < 0) return {result, badResourceReply == 3 ? 777u : 0u};
+        const auto resource = ++next;
+        vendorResources.emplace(result.nativeHandle, resource);
+        return {result, badResourceReply == 1 ? 0u : badResourceReply == 2 ? result.nativeHandle : resource};
     }
     GpuVaResult mapVendorAllocation(std::uint32_t allocation, std::uint32_t queue, GpuVaDesc desc) override {
         require(vendorOwners.count(allocation) && queue > 500 && validGpuVa(desc)); ++calls;
@@ -182,6 +197,12 @@ struct Fake : Driver {
                 {desc.type == 1 && badSyncReply != 9 ? 0ull : badSyncReply == 4 ? 1ull : badSyncReply == 5 ? FenceApertureBytes : 8192ull,
                  badSyncReply == 11 ? 65536ull : desc.type == 1 || desc.flags == NoGpuAccessSyncFlag || badSyncReply == 6 ? 0ull :
                      badSyncReply == 7 ? 65537ull : badSyncReply == 8 ? MaxGpuAddress : 65536ull}};
+    }
+    Result signalContextSync(std::uint32_t context, std::uint32_t sync, ContextSignalDesc desc) override {
+        require(context > 500 && syncParents.count(sync) && validContextSignal(desc)); ++calls; ++contextSignalCalls;
+        if (fail) return {-123,0,badContextSignalReply == 5 ? 1ull : 0ull};
+        return {badContextSignalReply == 1 ? 259 : 0, badContextSignalReply == 2 ? 777u : 0u,
+                badContextSignalReply == 3 ? desc.fence - 1 : badContextSignalReply == 4 ? UINT64_MAX : desc.fence};
     }
     GuestPagingResult createGuestPagingQueue(std::uint32_t h) override {
         require(h > 500);
@@ -1431,6 +1452,123 @@ int main() {
         require(header(s.dispatch(request(Op::CreateGuestPagingQueue, d))).status == -24 && pagingQuota.calls == before);
         require(header(s.dispatch(request(Op::CloseAdapter, spare))).status == 0 && s.objectCount() == MaxObjects - 2);
         require(header(s.dispatch(request(Op::CreateGuestPagingQueue, d))).handle != 0 && s.objectCount() == MaxObjects);
+    }
+    Fake contextSignals; contextSignals.contextSignalEnabled = true; contextSignals.contextsEnabled = true; contextSignals.syncEnabled = true;
+    {
+        Session signalSession(contextSignals);
+        require(header(signalSession.dispatch(request(Op::SignalContextSync,1,ContextSignalDesc{2,4,1}))).status == -71);
+        signalSession.dispatch(hello());
+        const auto adapterId = header(signalSession.dispatch(request(Op::OpenAdapter))).handle;
+        const auto deviceId = header(signalSession.dispatch(request(Op::CreateDevice,adapterId))).handle;
+        const auto otherDevice = header(signalSession.dispatch(request(Op::CreateDevice,adapterId))).handle;
+        auto contextPacket = request(Op::CreateContext,deviceId,ContextDesc{0,1,16,12,1,0}); contextPacket.push_back(37);
+        const auto contextId = header(signalSession.dispatch(contextPacket)).handle;
+        const auto fenceId = header(signalSession.dispatch(request(Op::CreateSync,deviceId,SyncDesc{5,128,0,0,0}))).handle;
+        const auto otherFence = header(signalSession.dispatch(request(Op::CreateSync,otherDevice,SyncDesc{5,128,0,0,0}))).handle;
+        const auto mutexId = header(signalSession.dispatch(request(Op::CreateSync,deviceId,SyncDesc{1,0,0,0,0}))).handle;
+        const auto gpuFence = header(signalSession.dispatch(request(Op::CreateSync,deviceId,SyncDesc{5,0,0,0,0}))).handle;
+        const auto before = contextSignals.calls;
+        contextSignals.contextSignalEnabled = false;
+        require(header(signalSession.dispatch(request(Op::SignalContextSync,contextId,ContextSignalDesc{fenceId,4,1}))).status == -95);
+        contextSignals.contextSignalEnabled = true;
+        for (const auto desc : {ContextSignalDesc{0,4,1},ContextSignalDesc{fenceId,0,1},ContextSignalDesc{fenceId,5,1},
+                               ContextSignalDesc{fenceId,4,0},ContextSignalDesc{fenceId,4,UINT64_MAX}})
+            require(header(signalSession.dispatch(request(Op::SignalContextSync,contextId,desc))).status == -22);
+        for (const auto bad : {otherFence,mutexId,gpuFence,deviceId,999u})
+            require(header(signalSession.dispatch(request(Op::SignalContextSync,contextId,ContextSignalDesc{bad,4,1}))).status == -9);
+        require(header(signalSession.dispatch(request(Op::SignalContextSync,deviceId,ContextSignalDesc{fenceId,4,1}))).status == -9);
+        require(contextSignals.calls == before);
+        require(!header(signalSession.dispatch(request(Op::SignalContextSync,contextId,ContextSignalDesc{fenceId,4,1}))).status);
+        require(header(signalSession.dispatch(request(Op::SignalContextSync,contextId,ContextSignalDesc{fenceId,4,1}))).status == -22);
+        for (const auto mode : {1,2,3,4}) {
+            contextSignals.badContextSignalReply = mode;
+            require(header(signalSession.dispatch(request(Op::SignalContextSync,contextId,ContextSignalDesc{fenceId,4,2}))).status == -5);
+        }
+        contextSignals.badContextSignalReply = 0; contextSignals.fail = true;
+        auto out = signalSession.dispatch(request(Op::SignalContextSync,contextId,ContextSignalDesc{fenceId,4,2})); Reply nativeFailure{};
+        std::memcpy(&nativeFailure,out.data()+sizeof(Header),sizeof nativeFailure);
+        require(!header(out).status && nativeFailure.ntstatus == -123);
+        contextSignals.badContextSignalReply = 5;
+        require(header(signalSession.dispatch(request(Op::SignalContextSync,contextId,ContextSignalDesc{fenceId,4,2}))).status == -5);
+        contextSignals.fail = false; contextSignals.badContextSignalReply = 0;
+        std::uint64_t target = 2;
+        while (contextSignals.contextSignalCalls < MaxContextSignals)
+            require(!header(signalSession.dispatch(request(Op::SignalContextSync,contextId,ContextSignalDesc{fenceId,4,target++}))).status);
+        const auto after = contextSignals.calls;
+        require(header(signalSession.dispatch(request(Op::SignalContextSync,contextId,ContextSignalDesc{fenceId,4,target}))).status == -24 && contextSignals.calls == after);
+        require(!header(signalSession.dispatch(request(Op::DestroySync,fenceId))).status);
+        require(header(signalSession.dispatch(request(Op::SignalContextSync,contextId,ContextSignalDesc{fenceId,4,target}))).status == -9);
+    }
+    require(contextSignals.syncParents.empty());
+    Fake resources; resources.vendorEnabled = true; resources.resourceEnabled = true;
+    {
+        Session session(resources);
+        auto create = [&](std::uint32_t device) {
+            auto packet = request(Op::CreateVendorResourceAllocation, device, VendorAllocationDesc{4, 0x78100000, UninitializedDisplaySource, 4, 0, 0});
+            packet.insert(packet.end(), {37, 38, 39, 40}); return packet;
+        };
+        require(header(session.dispatch(create(1))).status == -71);
+        session.dispatch(hello());
+        const auto adapter = header(session.dispatch(request(Op::OpenAdapter))).handle;
+        const auto device = header(session.dispatch(request(Op::CreateDevice, adapter))).handle;
+        const auto other = header(session.dispatch(request(Op::CreateDevice, adapter))).handle;
+        const auto before = resources.calls;
+        resources.resourceEnabled = false;
+        require(header(session.dispatch(create(device))).status == -95 && resources.calls == before);
+        resources.resourceEnabled = true;
+        auto malformedPacket = create(device); malformedPacket.pop_back();
+        require(header(session.dispatch(malformedPacket)).status == -22 && resources.calls == before);
+        for (const auto mode : {1, 2}) {
+            resources.badResourceReply = mode;
+            require(header(session.dispatch(create(device))).status == -5 && resources.vendorOwners.empty() && resources.vendorResources.empty());
+        }
+        resources.fail = true; resources.badResourceReply = 0;
+        auto out = session.dispatch(create(device)); Reply failed{}; VendorResourceReply absent{};
+        std::memcpy(&failed, out.data() + sizeof(Header), sizeof failed);
+        std::memcpy(&absent, out.data() + sizeof(Header) + sizeof failed, sizeof absent);
+        require(!header(out).status && !header(out).handle && failed.ntstatus == -123 && !absent.resource);
+        resources.badResourceReply = 3;
+        require(header(session.dispatch(create(device))).status == -5);
+        resources.fail = false; resources.badResourceReply = 0;
+        out = session.dispatch(create(device));
+        const auto allocation = header(out).handle; VendorResourceReply resource{};
+        std::memcpy(&resource, out.data() + sizeof(Header) + sizeof(Reply), sizeof resource);
+        require(allocation && resource.resource && resource.resource != allocation && !resource.reserved);
+        require(resources.vendorOwners.size() == 1 && resources.vendorResources.size() == 1 && session.objectCount() == 5);
+        require(header(session.dispatch(request(Op::DestroyVendorResource, allocation, device))).status == -9);
+        require(header(session.dispatch(request(Op::DestroyVendorResource, resource.resource, other))).status == -9);
+        require(header(session.dispatch(request(Op::DestroyDevice, device))).status == -16);
+        resources.fail = true;
+        out = session.dispatch(request(Op::DestroyVendorResource, resource.resource, device));
+        std::memcpy(&failed, out.data() + sizeof(Header), sizeof failed);
+        require(!header(out).status && header(out).handle == resource.resource && failed.ntstatus == -123 && session.objectCount() == 5);
+        resources.fail = false;
+        require(!header(session.dispatch(request(Op::DestroyVendorResource, resource.resource, device))).status && session.objectCount() == 3);
+        require(header(session.dispatch(request(Op::DestroyVendorResource, resource.resource, device))).status == -9);
+        out = session.dispatch(create(device));
+        const auto second = header(out).handle;
+        resources.guestPagingEnabled = true; resources.gpuVaEnabled = true;
+        const auto resourcePaging = header(session.dispatch(request(Op::CreateGuestPagingQueue, device))).handle;
+        const GpuVaDesc protectedMap{resourcePaging,0,0,67108864,1099511627776ull,0,16,1,VendorDefaultDriverProtection};
+        require(!header(session.dispatch(request(Op::MapVendorAllocation, second, protectedMap))).status);
+        auto release = request(Op::DestroyVendorAllocations, device, DestroyVendorDesc{1, 0});
+        const auto bytes = reinterpret_cast<const std::uint8_t*>(&second); release.insert(release.end(), bytes, bytes + sizeof second);
+        require(!header(session.dispatch(release)).status && resources.vendorResources.empty() && session.objectCount() == 5);
+        auto standalone = request(Op::CreateVendorAllocation, device, VendorAllocationDesc{0,0,0,1,0,0}); standalone.push_back(37);
+        const auto standaloneId = header(session.dispatch(standalone)).handle;
+        const auto nativeBeforeMap = resources.calls;
+        require(header(session.dispatch(request(Op::MapVendorAllocation, standaloneId, protectedMap))).status == -22 && resources.calls == nativeBeforeMap);
+        require(header(session.dispatch(create(device))).handle != 0); // Disconnect also releases its resource.
+    }
+    require(resources.vendorResources.empty() && resources.vendorOwners.empty());
+    {
+        Session session(resources); session.dispatch(hello());
+        const auto adapter = header(session.dispatch(request(Op::OpenAdapter))).handle;
+        std::uint32_t device = 0;
+        for (std::size_t n = 0; n < MaxObjects - 2; ++n) device = header(session.dispatch(request(Op::CreateDevice, adapter))).handle;
+        auto packet = request(Op::CreateVendorResourceAllocation, device, VendorAllocationDesc{0,0,0,1,0,0}); packet.push_back(37);
+        const auto before = resources.calls;
+        require(session.objectCount() == MaxObjects - 1 && header(session.dispatch(packet)).status == -24 && resources.calls == before);
     }
     Fake malformed; Session s(malformed); s.dispatch(hello());
     auto p = request(Op::OpenAdapter); p.push_back(0);

@@ -24,6 +24,7 @@ def main():
     parser.add_argument('--strace', type=pathlib.Path, help='Optional locally supplied syscall tracer; failed calls only')
     parser.add_argument('--dependency-directory', type=pathlib.Path, action='append', default=[], help='Optional local ELF dependencies; mapped to the guest library directory')
     parser.add_argument('--extra-runtime', type=pathlib.Path, action='append', default=[], help='Installed library loaded dynamically; preserves its absolute guest path')
+    parser.add_argument('--runtime-workload', choices=('init', 'copy'), default='init', help='Explicit guest D3D12 workload; copy verifies upload/default/readback transfers')
     args = parser.parse_args()
     if sys.platform != 'linux':
         parser.error('Run in Linux/WSL with locally installed runtime libraries')
@@ -91,12 +92,13 @@ def main():
         entry(directory, stat.S_IFDIR | (0o1777 if directory == 'tmp' else 0o755))
     entry('dev/console', stat.S_IFCHR | 0o600, major=5, minor=1)
     manifest = {'schema': 1, 'privateImage': True, 'vendorBinariesIncluded': True,
-                'redistributionApproved': False, 'files': []}
+                'redistributionApproved': False, 'runtimeWorkload': args.runtime_workload, 'files': []}
     for name, path in sorted(files.items()):
         data = path.read_bytes()
         entry(name, stat.S_IFREG | 0o755, data)
         manifest['files'].append({'path': '/' + name, 'bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest()})
     entry('linux-umd-name', stat.S_IFREG | 0o600, module.encode())
+    entry('runtime-workload', stat.S_IFREG | 0o600, args.runtime_workload.encode())
     entry('TRAILER!!!', 0)
     packed = gzip.compress(archive, mtime=0)
     with args.output.open('xb') as destination:

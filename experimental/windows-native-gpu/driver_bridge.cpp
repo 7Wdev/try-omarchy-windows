@@ -55,12 +55,14 @@ class KmtDriver : public Driver {
         volatile std::uint64_t* fence;
         std::uint64_t gpuAddress;
         std::optional<driver_qemu::FenceLease> lease;
+        std::uint64_t lastSignal = 0;
     };
     std::map<std::uint32_t, Synchronization> syncObjects;
     bool syncEnabled = false;
     unsigned completedSyncs = 0, destroyedSyncs = 0, failedSyncs = 0, monitoredSyncs = 0, mutexSyncs = 0;
     unsigned syncsReleasedAfterVmExit = 0;
     unsigned noGpuAccessSyncs = 0, noSignalMaxValueOnTdrSyncs = 0;
+    unsigned contextSignalAttempts = 0, completedContextSignals = 0, failedContextSignals = 0, contextSignalTimeouts = 0;
     driver_qemu::Runtime* runtime = nullptr;
     struct Allocation {
         std::uint32_t device, resource, size;
@@ -75,6 +77,7 @@ class KmtDriver : public Driver {
     // size field. Never mix these with the byte-counted standard allocations.
     struct VendorAllocation {
         std::uint32_t device;
+        std::uint32_t resource = 0;
         std::uint64_t address = 0, pages = 0;
         std::uint32_t residencyAttempts = 0;
         std::uint64_t offsetPages = 0;
@@ -87,6 +90,8 @@ class KmtDriver : public Driver {
         std::optional<driver_qemu::AllocationLease> cpuLease;
     };
     std::map<std::uint32_t, VendorAllocation> vendorAllocations;
+    unsigned completedVendorResources = 0, destroyedVendorResources = 0;
+    unsigned completedVendorDriverProtectionMaps = 0;
     ComPtr<IDXGIAdapter3> allocationBudgetAdapter;
     bool allocationsEnabled = false;
     bool gpuVaEnabled = false;
@@ -252,6 +257,8 @@ public:
                 (residencyEnabled ? VendorResidencyCapability : 0u) | (cpuEnabled ? VendorCpuCapability : 0u) |
                 (translationEnabled ? VendorTranslationCapability : 0u) | (hwQueuesEnabled ? HwQueueCapability : 0u) |
                 (syncEnabled ? SyncCapability : 0u) | (submitEnabled ? HwSubmitCapability : 0u) |
+                (allocationsEnabled ? VendorResourceCapability : 0u) |
+                (submitEnabled && syncEnabled ? ContextSignalCapability : 0u) |
                 (retirementEnabled ? VendorRetirementCapability : 0u) | (reservationEnabled ? GpuReservationCapability : 0u) |
                 (gpuStateEnabled ? GpuStateCapability : 0u),
                 description.VendorId, description.DeviceId};
@@ -510,6 +517,7 @@ public:
         const auto status = D3DKMTCreateSynchronizationObject2(&a);
         if (status < 0) { ++failedSyncs; return {{status, 0, 0}, {0, 0}}; }
         Synchronization owned{device, desc.type, desc.flags, nullptr, 0, std::nullopt};
+        owned.lastSignal = desc.initial;
         if (desc.type == 5) {
             owned.fence = static_cast<volatile std::uint64_t*>(a.Info.MonitoredFence.FenceValueCPUVirtualAddress);
             owned.gpuAddress = a.Info.MonitoredFence.FenceValueGPUVirtualAddress;
@@ -538,7 +546,46 @@ public:
             ++failedSyncs; runtime->stop(0); destroy(Kind::Sync, a.hSyncObject); throw;
         }
     }
+    Result signalContextSync(std::uint32_t context, std::uint32_t sync, ContextSignalDesc desc) override {
+        const auto owner = contextOwners.find(context); const auto object = syncObjects.find(sync);
+        if (!submitEnabled || !syncEnabled || !runtime || runtime->hasStopped() || !validContextSignal(desc) ||
+            owner == contextOwners.end() || owner->second.flags != 16 || object == syncObjects.end() ||
+            object->second.device != owner->second.device || object->second.type != 5 || object->second.flags != NoGpuAccessSyncFlag ||
+            !object->second.lease || !object->second.fence || desc.fence <= object->second.lastSignal || contextSignalAttempts >= MaxContextSignals)
+            return {Invalid,0,0};
+        D3DKMT_SIGNALSYNCHRONIZATIONOBJECTFROMGPU2 a{};
+        a.ObjectCount = 1; a.ObjectHandleArray = &sync; a.Flags.Value = desc.flags;
+        a.BroadcastContextCount = 1; a.BroadcastContextArray = &context; a.MonitoredFenceValueArray = &desc.fence;
+        ++contextSignalAttempts;
+        const auto status = D3DKMTSignalSynchronizationObjectFromGpu2(&a);
+        std::cerr << "{\"nativeContextSignalStatus\":true,\"flags\":" << desc.flags << ",\"target\":" << desc.fence << ",\"ntstatus\":" << status << "}\n";
+        if (status < 0) { ++failedContextSignals; return {status,0,0}; }
+        object->second.lastSignal = desc.fence;
+        if (status != 0) { ++failedContextSignals; throw std::runtime_error("Unexpected native context signal status"); }
+        const auto deadline = GetTickCount64() + 5000;
+        std::uint64_t observed = 0;
+        do {
+            MemoryBarrier(); observed = *object->second.fence;
+            if (observed >= desc.fence && observed != UINT64_MAX) {
+                ++completedContextSignals;
+                std::cerr << "{\"nativeContextSignalRetired\":true,\"target\":" << desc.fence << ",\"observed\":" << observed
+                          << ",\"noGpuAccess\":true,\"cpuValueWrittenByBridge\":false}\n";
+                return {0,0,observed};
+            }
+            if (observed == UINT64_MAX) break;
+            Sleep(1);
+        } while (GetTickCount64() < deadline);
+        ++failedContextSignals; ++contextSignalTimeouts;
+        throw std::runtime_error("Native context signal retirement deadline exceeded");
+    }
     Result createVendorAllocation(std::uint32_t device, VendorAllocationDesc desc, std::vector<std::uint8_t>& data) override {
+        return createVendorAllocationImpl(device, desc, data, false);
+    }
+    VendorResourceResult createVendorResourceAllocation(std::uint32_t device, VendorAllocationDesc desc, std::vector<std::uint8_t>& data) override {
+        const auto result = createVendorAllocationImpl(device, desc, data, true);
+        return {result, result.ntstatus == 0 ? vendorAllocations.at(result.nativeHandle).resource : 0};
+    }
+    Result createVendorAllocationImpl(std::uint32_t device, VendorAllocationDesc desc, std::vector<std::uint8_t>& data, bool withResource) {
         if (!allocationsEnabled || !validVendorAllocation(desc) || data.size() != desc.privateBytes) return {Invalid, 0, 0};
         if (vendorAllocations.size() >= MaxVendorAllocations || !reportedGpuUsageAcceptable())
             return {static_cast<std::int32_t>(0xc0000017u), 0, 0};
@@ -551,12 +598,14 @@ public:
         info.VidPnSourceId = D3DDDI_ID_NOTAPPLICABLE;
         info.pPrivateDriverData = data.data(); info.PrivateDriverDataSize = desc.privateBytes;
         D3DKMT_CREATEALLOCATION a{}; a.hDevice = device; a.NumAllocations = 1; a.pAllocationInfo2 = &info;
+        a.Flags.CreateResource = withResource ? 1u : 0u;
         auto status = D3DKMTCreateAllocation2(&a);
         if (desc.source == UninitializedDisplaySource)
             std::cerr << "{\"vendorAllocationSourceNormalization\":true,\"inputSource\":" << desc.source
                       << ",\"nativeSource\":" << info.VidPnSourceId << ",\"primary\":false,\"ntstatus\":" << status << "}\n";
         if (status < 0) { ++failedVendorAllocations; return {status, 0, 0}; }
-        if (!info.hAllocation || a.hResource || a.hGlobalShare || info.GpuVirtualAddress % 4096 || info.PrivateDriverDataSize != desc.privateBytes) {
+        if (!info.hAllocation || status != 0 || (a.hResource != 0) != withResource || a.hResource == info.hAllocation ||
+            a.hGlobalShare || info.GpuVirtualAddress % 4096 || info.PrivateDriverDataSize != desc.privateBytes) {
             D3DKMT_DESTROYALLOCATION2 release{}; release.hDevice = device;
             release.hResource = a.hResource; release.Flags.SynchronousDestroy = 1;
             if (!a.hResource) { release.phAllocationList = &info.hAllocation; release.AllocationCount = 1; }
@@ -564,12 +613,13 @@ public:
             throw std::runtime_error("Unexpected native vendor-allocation result");
         }
         try {
-            VendorAllocation owned{}; owned.device = device; owned.address = info.GpuVirtualAddress;
+            VendorAllocation owned{}; owned.device = device; owned.address = info.GpuVirtualAddress; owned.resource = a.hResource;
             vendorAllocations.emplace(info.hAllocation, owned);
         }
         catch (...) {
             D3DKMT_DESTROYALLOCATION2 release{}; release.hDevice = device; release.phAllocationList = &info.hAllocation;
             release.AllocationCount = 1; release.Flags.SynchronousDestroy = 1;
+            if (a.hResource) { release.hResource = a.hResource; release.phAllocationList = nullptr; release.AllocationCount = 0; }
             if (D3DKMTDestroyAllocation2(&release) < 0) ++cleanupFailures;
             throw;
         }
@@ -579,6 +629,10 @@ public:
             ++failedVendorAllocations; return {static_cast<std::int32_t>(0xc0000017u), 0, 0};
         }
         ++completedVendorAllocations;
+        if (withResource) {
+            ++completedVendorResources;
+            std::cerr << "{\"nativeVendorResourceCreated\":true,\"allocationCount\":1,\"shared\":false,\"systemMemory\":false,\"ntstatus\":" << status << "}\n";
+        }
         if (desc.source == UninitializedDisplaySource) ++uninitializedSourceAllocations;
         peakVendorAllocationObjects = (std::max)(peakVendorAllocationObjects, vendorAllocations.size());
         return {status, info.hAllocation, info.GpuVirtualAddress};
@@ -600,6 +654,7 @@ public:
             const auto found = vendorAllocations.find(handles[n]);
             if (found == vendorAllocations.end() || found->second.device != device ||
                 std::find(handles.begin(), handles.begin() + n, handles[n]) != handles.begin() + n) return {Invalid, 0, 0};
+            if (found->second.resource && handles.size() != 1) return {Invalid, 0, 0};
         }
         // Explicit protocol destruction rejects locked objects. EOF cleanup
         // reaches this path only after the server has reaped its owned VM.
@@ -613,9 +668,12 @@ public:
         // AssumeNotInUse remains zero: VidMm retains memory needed by earlier
         // commands. SynchronousDestroy confirms reclamation before reuse.
         a.AllocationCount = static_cast<UINT>(handles.size()); a.Flags.SynchronousDestroy = 1;
+        const auto resource = vendorAllocations.at(handles.front()).resource;
+        if (resource) { a.hResource = resource; a.phAllocationList = nullptr; a.AllocationCount = 0; }
         const auto status = D3DKMTDestroyAllocation2(&a);
         if (status > 0) throw std::runtime_error("Unexpected native allocation-destruction status");
         if (status == 0) {
+            if (resource) ++destroyedVendorResources;
             for (const auto handle : handles) {
                 vendorMappedPages -= static_cast<std::uint32_t>(vendorAllocations.at(handle).pages);
                 vendorResidencyAttempts -= vendorAllocations.at(handle).residencyAttempts;
@@ -675,6 +733,7 @@ public:
         const auto entry = vendorAllocations.find(allocation);
         if (!gpuVaEnabled || !validGpuVa(desc) || entry == vendorAllocations.end() || !pagingFences.count(queue) ||
             entry->second.device != pagingFences.at(queue).device ||
+            (desc.driverProtection && !entry->second.resource) ||
             entry->second.pages || entry->second.address || desc.sizePages > MaxVendorMappedPages - vendorMappedPages)
             return {{Invalid, 0, 0}, 0};
         if (desc.base) {
@@ -716,6 +775,11 @@ public:
             throw std::runtime_error("Reported GPU usage limit after address mapping");
         }
         ++completedVendorMapWaits; ++completedVendorMaps;
+        if (desc.driverProtection) {
+            ++completedVendorDriverProtectionMaps;
+            std::cerr << "{\"nativeVendorDriverProtectionMap\":true,\"driverProtection\":" << desc.driverProtection
+                      << ",\"resourceOwned\":true,\"unchanged\":true,\"ntstatus\":" << status << "}\n";
+        }
         // Preserve STATUS_PENDING even though our native wait already retired
         // the fence. The Linux KMT thunk preserves positive ioctl statuses.
         return {{status, 0, a.VirtualAddress}, a.PagingFenceValue};
@@ -1022,6 +1086,8 @@ public:
             const auto found = vendorAllocations.find(handle);
             if (found == vendorAllocations.end()) return {Invalid, 0, 0};
             return destroyVendorAllocations(found->second.device, {handle});
+        } else if (kind == Kind::VendorResource) {
+            return {0, 0, 0}; // Borrowed resource identity; its single allocation owns native destruction.
         } else if (kind == Kind::Allocation) {
             const auto entry = allocations.find(handle);
             if (entry == allocations.end()) return {Invalid, 0, 0};
@@ -1170,6 +1236,10 @@ public:
                   << ",\"completedMonitoredFences\":" << monitoredSyncs << ",\"completedSynchronizationMutexes\":" << mutexSyncs
                   << ",\"completedNoGpuAccessFences\":" << noGpuAccessSyncs << ",\"syncObjectLimit\":" << MaxSyncObjects
                   << ",\"completedNoSignalMaxValueOnTdrFences\":" << noSignalMaxValueOnTdrSyncs
+                  << ",\"nativeContextSignalAttempts\":" << contextSignalAttempts
+                  << ",\"completedNativeContextSignals\":" << completedContextSignals
+                  << ",\"failedNativeContextSignals\":" << failedContextSignals
+                  << ",\"nativeContextSignalTimeouts\":" << contextSignalTimeouts
                   << ",\"syncObjectsReleasedAfterVmExit\":" << syncsReleasedAfterVmExit
                   << ",\"liveGpuReservations\":" << gpuReservations.size() << ",\"liveGpuReservedBytes\":" << gpuReservedBytes
                   << ",\"peakGpuReservedBytes\":" << peakGpuReservedBytes << ",\"completedGpuReservations\":" << completedReservations
@@ -1198,6 +1268,10 @@ public:
                   << ",\"vendorCpuSlotLimit\":" << (runtime ? runtime->allocationSlotLimit() : DefaultVendorCpuSlots)
                   << ",\"vendorCpuSlotQuotaRejections\":" << vendorCpuSlotQuotaRejections
                   << ",\"completedVendorAllocations\":" << completedVendorAllocations
+                  << ",\"completedVendorResources\":" << completedVendorResources
+                  << ",\"destroyedVendorResources\":" << destroyedVendorResources
+                  << ",\"liveVendorResources\":" << std::count_if(vendorAllocations.begin(), vendorAllocations.end(), [](const auto& item) { return item.second.resource != 0; })
+                  << ",\"completedVendorDriverProtectionMaps\":" << completedVendorDriverProtectionMaps
                   << ",\"completedVendorUninitializedSourceAllocations\":" << uninitializedSourceAllocations
                   << ",\"destroyedVendorAllocations\":" << destroyedVendorAllocations
                   << ",\"allocationRetirementOptIn\":" << (retirementEnabled ? "true" : "false")

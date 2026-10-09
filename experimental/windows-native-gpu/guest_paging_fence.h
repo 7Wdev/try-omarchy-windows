@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <map>
 #include <atomic>
+#include <chrono>
 #include <stdexcept>
 #include <string>
 
@@ -94,10 +95,29 @@ public:
         std::atomic_thread_fence(std::memory_order_seq_cst);
         std::uint64_t observed = 0;
         for (unsigned n = 0; n < 10000; ++n) observed = *found->second.fence;
-        if (observed < target || word(0x48) != before) throw std::runtime_error("Guest fence did not directly observe paging retirement");
+        if (observed == UINT64_MAX || observed < target || word(0x48) != before) throw std::runtime_error("Guest fence did not directly observe paging retirement");
         reads += 10000;
         std::fprintf(stderr, "LINUX_BRIDGE pagingFenceRetired=true direct=true loads=10000 target=%llu observed=%llu operation=%s\n",
                      static_cast<unsigned long long>(target), static_cast<unsigned long long>(observed), operation);
+    }
+    bool waitRetired(std::uint32_t object, std::uint64_t target, const char* owner) {
+        const auto found = mappings.find(object);
+        if (found == mappings.end() || target == UINT64_MAX) throw std::runtime_error("Invalid mapped CPU wait fence");
+        const auto before = word(0x48);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        std::uint64_t observed = 0;
+        do {
+            std::atomic_thread_fence(std::memory_order_seq_cst);
+            observed = *found->second.fence; ++reads;
+            if (observed == UINT64_MAX) throw std::runtime_error("Mapped CPU wait observed device loss");
+            if (observed >= target) break;
+            usleep(100);
+        } while (std::chrono::steady_clock::now() < deadline);
+        if (word(0x48) != before) throw std::runtime_error("CPU wait used emulated fence reads");
+        if (observed < target) return false;
+        std::fprintf(stderr, "LINUX_BRIDGE cpuFenceWaitRetired=true direct=true target=%llu observed=%llu owner=%s\n",
+                     static_cast<unsigned long long>(target), static_cast<unsigned long long>(observed), owner);
+        return true;
     }
     void unmap(std::uint32_t queue) {
         const auto found = mappings.find(queue);

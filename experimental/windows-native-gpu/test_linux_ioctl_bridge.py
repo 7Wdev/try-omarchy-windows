@@ -18,6 +18,9 @@ def send(op, handle, value=0, data=b'', padding=0, hello=False, ntstatus=0):
     caps = 103 | (128 if mode.startswith('paging-') and mode != 'paging-disabled' else 0)
     if mode == 'priority-disabled': caps &= ~32
     caps |= 256 if mode.startswith('allocation-') and mode != 'allocation-disabled' else 0
+    caps |= 256 if mode.startswith('resource-') else 0
+    caps |= 524288 if mode.startswith('resource-') and mode != 'resource-disabled' else 0
+    caps |= 1048576 if mode.startswith('context-signal-') and mode != 'context-signal-disabled' else 0
     caps |= 256 if mode.startswith('gpuva-') else 0
     caps |= 512 if mode == 'gpuva-invalid' else 0
     caps |= 1024 if mode == 'resident-invalid' else 0
@@ -139,6 +142,24 @@ try:
             if mode == 'paging-short': data = data[:-1]
             send(op,3,value=1 if mode == 'paging-bad-value' else 0,data=data)
         elif op == 0x2008: send(op,handle)
+        elif op == 0x2057:
+            assert handle == 2 and struct.unpack_from('<6I',packet,16) == (4,0x78100000,0,4,0,0)
+            assert packet[40:] == bytes([37,38,39,40])
+            failed = mode in ('resource-nt-failure','resource-bad-failure')
+            resource = 0 if failed or mode == 'resource-zero' else 3 if mode == 'resource-same-id' else 4
+            if mode == 'resource-bad-failure': resource = 4
+            data = struct.pack('<II', resource, 1 if mode == 'resource-reserved' else 0) + bytes([37 ^ 255,38,39,40])
+            if mode == 'resource-short': data = data[:-1]
+            send(op, 0 if failed or mode == 'resource-no-allocation' else 3, data=data,
+                 value=1 if mode == 'resource-bad-va' else 0,
+                 ntstatus=-1073741811 if failed else 259 if mode == 'resource-bad-status' else 0)
+        elif op == 0x2058:
+            assert handle == 4 and packet[16:] == struct.pack('<I',2)
+            send(op, 0 if mode == 'resource-destroy-id' else handle,
+                 value=1 if mode == 'resource-destroy-value' else 0,
+                 data=b'X' if mode == 'resource-destroy-long' else b'',
+                 ntstatus=-1073741811 if mode == 'resource-failed-destroy' and operations.count(op) == 1 else
+                          259 if mode == 'resource-destroy-status' else 0)
         elif op == 0x2050:
             priority = 0xc8000000 if mode == 'allocation-maximum' else 0x78100000
             source = 0xffffffff if mode == 'allocation-uninitialized-source' else 0
@@ -190,6 +211,12 @@ if mode in ('allocation-normal','allocation-maximum'): assert operations.count(0
 if mode == 'allocation-failed-destroy': assert operations.count(0x2051) == 2, operations
 if mode.startswith('allocation-destroy-'): assert operations.count(0x2051) == 1, operations
 if mode.startswith('gpuva-'): assert operations == [0x2000], operations
+if mode.startswith('cpu-wait-'): assert operations == [0x2000], operations
+if mode.startswith('context-signal-'): assert operations == [0x2000], operations
+if mode in ('resource-disabled','resource-invalid'): assert 0x2057 not in operations, operations
+if mode == 'resource-normal' or mode.startswith('resource-destroy-'): assert operations.count(0x2058) == 1, operations
+if mode == 'resource-failed-destroy': assert operations.count(0x2058) == 2, operations
+if mode == 'resource-list-destroy': assert operations.count(0x2051) == 1, operations
 if mode.startswith('gpu-state-'): assert operations == [0x2000], operations
 if mode.startswith('resident-'): assert operations == [0x2000], operations
 if mode in ('cpu-disabled','cpu-invalid'): assert 0x2054 not in operations, operations
@@ -224,6 +251,12 @@ def main():
         worker = pathlib.Path(directory) / 'owned-worker'
         worker.write_text(WORKER, encoding='utf-8'); worker.chmod(0o700)
         for mode in ('no-worker', 'wrong-version', 'reuse', 'bad-reply', 'closed-worker', 'normal',
+                     'cpu-wait-invalid', 'cpu-wait-unowned',
+                     'context-signal-invalid', 'context-signal-disabled', 'context-signal-unowned',
+                     'resource-normal', 'resource-disabled', 'resource-invalid', 'resource-nt-failure', 'resource-bad-failure',
+                     'resource-zero', 'resource-same-id', 'resource-reserved', 'resource-short', 'resource-no-allocation',
+                     'resource-bad-va', 'resource-bad-status', 'resource-failed-destroy', 'resource-list-destroy',
+                     'resource-destroy-id', 'resource-destroy-value', 'resource-destroy-long', 'resource-destroy-status',
                      'paging-disabled', 'paging-invalid', 'paging-bad-sync', 'paging-bad-offset',
                      'paging-bad-reserved', 'paging-bad-value', 'paging-short', 'paging-no-hub',
                      'allocation-normal', 'allocation-maximum', 'allocation-uninitialized-source', 'allocation-disabled', 'allocation-invalid', 'allocation-nt-failure',

@@ -21,6 +21,109 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (fd < 0) return failed("open");
+    if (!std::strncmp(mode,"context-signal-",15)) {
+        D3DKMT_HANDLE context = 99, sync = 98; UINT64 value = 1;
+        D3DKMT_SIGNALSYNCHRONIZATIONOBJECTFROMGPU2 signal{};
+        signal.ObjectCount = 1; signal.ObjectHandleArray = &sync; signal.Flags.Value = 4;
+        signal.BroadcastContextCount = 1; signal.BroadcastContextArray = &context; signal.MonitoredFenceValueArray = &value;
+        if (!std::strcmp(mode,"context-signal-invalid")) {
+            for (unsigned n = 0; n < 13; ++n) {
+                auto bad = signal; value = 1; sync = 98;
+                switch (n) {
+                    case 0: bad.ObjectCount = 0; break;
+                    case 1: bad.ObjectCount = 2; break;
+                    case 2: bad.BroadcastContextCount = 0; break;
+                    case 3: bad.BroadcastContextCount = 2; break;
+                    case 4: bad.Flags.Value = 0; break;
+                    case 5: bad.Flags.Value = 2; break;
+                    case 6: bad.ObjectHandleArray = nullptr; break;
+                    case 7: bad.BroadcastContextArray = nullptr; break;
+                    case 8: bad.MonitoredFenceValueArray = nullptr; break;
+                    case 9: bad.Reserved[7] = 1; break;
+                    case 10: value = 0; break;
+                    case 11: value = UINT64_MAX; break;
+                    case 12: sync = 0; break;
+                }
+                if (ioctl(fd,_IOWR('G',51,D3DKMT_SIGNALSYNCHRONIZATIONOBJECTFROMGPU2),&bad) != -1 || errno != (n<6 ? ENOSYS : EINVAL))
+                    return failed("invalid GPU context signal forwarded");
+            }
+        } else if (ioctl(fd,_IOWR('G',51,D3DKMT_SIGNALSYNCHRONIZATIONOBJECTFROMGPU2),&signal) != -1 ||
+                   errno != (!std::strcmp(mode,"context-signal-disabled") ? ENOSYS : EBADF)) return failed("unowned GPU context signal forwarded");
+        close(fd); return 0;
+    }
+    if (!std::strncmp(mode, "cpu-wait-", 9)) {
+        D3DKMT_HANDLE handle = 99; UINT64 value = 1;
+        D3DKMT_WAITFORSYNCHRONIZATIONOBJECTFROMCPU wait{}; wait.hDevice = 2; wait.ObjectCount = 1;
+        wait.ObjectHandleArray = &handle; wait.FenceValueArray = &value;
+        if (!std::strcmp(mode, "cpu-wait-invalid")) {
+            for (unsigned n = 0; n < 7; ++n) {
+                auto bad = wait; value = 1;
+                switch (n) {
+                    case 0: bad.ObjectCount = 0; break;
+                    case 1: bad.ObjectCount = 2; break;
+                    case 2: bad.Flags.Value = 1; break;
+                    case 3: bad.hAsyncEvent = reinterpret_cast<HANDLE>(1); break;
+                    case 4: bad.ObjectHandleArray = nullptr; break;
+                    case 5: bad.FenceValueArray = nullptr; break;
+                    case 6: value = UINT64_MAX; break;
+                }
+                if (ioctl(fd, _IOWR('G', 58, D3DKMT_WAITFORSYNCHRONIZATIONOBJECTFROMCPU), &bad) != -1 ||
+                    errno != (n < 4 ? ENOSYS : EINVAL)) return failed("invalid CPU wait reached native backend");
+            }
+        } else if (ioctl(fd, _IOWR('G', 58, D3DKMT_WAITFORSYNCHRONIZATIONOBJECTFROMCPU), &wait) != -1 || errno != EBADF)
+            return failed("CPU wait accepted unowned fence");
+        close(fd); return 0;
+    }
+    if (!std::strncmp(mode, "resource-", 9)) {
+        D3DKMT_OPENADAPTERFROMLUID adapter{}; adapter.AdapterLuid.LowPart = 0x57475055;
+        if (ioctl(fd, _IOWR('G', 1, D3DKMT_OPENADAPTERFROMLUID), &adapter)) return failed("resource adapter");
+        D3DKMT_CREATEDEVICE device{}; device.hAdapter = adapter.hAdapter; device.Flags.RequestVSync = 1;
+        if (ioctl(fd, _IOWR('G', 2, D3DKMT_CREATEDEVICE), &device)) return failed("resource device");
+        unsigned char data[]{37,38,39,40};
+        D3DDDI_ALLOCATIONINFO2 info{}; info.Flags.Value = 4; info.Priority = 0x78100000;
+        info.pPrivateDriverData = data; info.PrivateDriverDataSize = sizeof data;
+        D3DKMT_CREATEALLOCATION allocation{}; allocation.hDevice = device.hDevice; allocation.NumAllocations = 1;
+        allocation.pAllocationInfo2 = &info; allocation.Flags.CreateResource = 1;
+        if (!std::strcmp(mode, "resource-invalid")) {
+            for (const auto flags : {2u,3u,5u,129u}) {
+                static_assert(sizeof allocation.Flags == sizeof flags); std::memcpy(&allocation.Flags, &flags, sizeof flags);
+                if (ioctl(fd, _IOWR('G', 6, D3DKMT_CREATEALLOCATION), &allocation) != -1 || errno != ENOSYS)
+                    return failed("resource sharing flags reached native backend");
+            }
+            close(fd); return 0;
+        }
+        const bool normal = !std::strcmp(mode,"resource-normal") || !std::strcmp(mode,"resource-failed-destroy") ||
+                            !std::strcmp(mode,"resource-list-destroy") || !std::strncmp(mode,"resource-destroy-",17);
+        const auto created = ioctl(fd, _IOWR('G', 6, D3DKMT_CREATEALLOCATION), &allocation);
+        if (normal) {
+            if (created || info.hAllocation != 3 || allocation.hResource != 4 || allocation.hGlobalShare || data[0] != (37 ^ 255))
+                return failed("resource identities or private bytes lost");
+            D3DKMT_DESTROYALLOCATION2 release{}; release.hDevice = device.hDevice; release.hResource = allocation.hResource;
+            release.hDevice = 999;
+            if (ioctl(fd, _IOWR('G', 19, D3DKMT_DESTROYALLOCATION2), &release) != -1 || errno != EBADF) return failed("resource wrong device accepted");
+            release.hDevice = device.hDevice; release.hResource = info.hAllocation;
+            if (ioctl(fd, _IOWR('G', 19, D3DKMT_DESTROYALLOCATION2), &release) != -1 || errno != EBADF) return failed("allocation accepted as resource");
+            release.hResource = allocation.hResource; release.phAllocationList = &info.hAllocation; release.AllocationCount = 1;
+            if (ioctl(fd, _IOWR('G', 19, D3DKMT_DESTROYALLOCATION2), &release) != -1 || errno != EINVAL) return failed("combined resource and list accepted");
+            release.phAllocationList = nullptr; release.AllocationCount = 0;
+            if (!std::strcmp(mode,"resource-list-destroy")) { release.hResource = 0; release.phAllocationList = &info.hAllocation; release.AllocationCount = 1; }
+            if (!std::strcmp(mode,"resource-failed-destroy") &&
+                (ioctl(fd, _IOWR('G', 19, D3DKMT_DESTROYALLOCATION2), &release) != -1 || errno != EINVAL)) return failed("resource native failure lost ownership");
+            if (!std::strncmp(mode,"resource-destroy-",17)) {
+                if (ioctl(fd, _IOWR('G', 19, D3DKMT_DESTROYALLOCATION2), &release) != -1 || errno != EPROTO ||
+                    open("/dev/dxg", O_RDONLY) != -1 || errno != EIO) return failed("malformed resource destruction accepted");
+                close(fd); return 0;
+            }
+            if (ioctl(fd, _IOWR('G', 19, D3DKMT_DESTROYALLOCATION2), &release)) return failed("resource destruction");
+            release.hResource = allocation.hResource; release.phAllocationList = nullptr; release.AllocationCount = 0;
+            if (ioctl(fd, _IOWR('G', 19, D3DKMT_DESTROYALLOCATION2), &release) != -1 || errno != EBADF) return failed("stale resource accepted");
+        } else {
+            const auto expected = !std::strcmp(mode,"resource-disabled") ? ENOSYS : !std::strcmp(mode,"resource-nt-failure") ? EINVAL : EPROTO;
+            if (created != -1 || errno != expected || info.hAllocation || allocation.hResource) return failed("resource malformed reply accepted");
+            if (expected == EPROTO && (open("/dev/dxg",O_RDONLY) != -1 || errno != EIO)) return failed("resource broken transport reused");
+        }
+        close(fd); return 0;
+    }
     if (!std::strncmp(mode, "priority-", 9)) {
         D3DKMT_SETCONTEXTINPROCESSSCHEDULINGPRIORITY priority{}; priority.hContext = 99;
         if (std::strcmp(mode, "priority-disabled") && std::strcmp(mode, "priority-unowned")) {

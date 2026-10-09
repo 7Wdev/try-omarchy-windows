@@ -22,6 +22,7 @@ constexpr std::uint32_t MaxContextPrivateBytes = 4000;
 constexpr std::uint32_t QueryCapability = 64;
 constexpr std::uint32_t GuestPagingCapability = 128;
 constexpr std::uint32_t VendorAllocationCapability = 256;
+constexpr std::uint32_t VendorResourceCapability = 524288;
 constexpr std::uint32_t MaxVendorPrivateBytes = 4000;
 constexpr std::size_t MaxVendorAllocations = 96;
 constexpr std::size_t DefaultVendorCpuSlots = 16;
@@ -40,6 +41,11 @@ constexpr std::uint32_t SyncCapability = 16384;
 constexpr std::size_t MaxSyncObjects = 96;
 constexpr std::uint32_t NoSignalMaxValueOnTdrSyncFlag = 64;
 constexpr std::uint32_t NoGpuAccessSyncFlag = 128;
+constexpr std::uint32_t ContextSignalCapability = 1048576;
+constexpr std::uint32_t MaxContextSignals = 16;
+struct ContextSignalDesc { std::uint32_t sync, flags; std::uint64_t fence; };
+static_assert(sizeof(ContextSignalDesc) == 16, "fixed context signal layout");
+inline bool validContextSignal(ContextSignalDesc d) { return d.sync && d.flags == 4 && d.fence && d.fence != UINT64_MAX; }
 struct SyncDesc { std::uint32_t type, flags, affinity, reserved; std::uint64_t initial; };
 struct SyncReply { std::uint64_t offset, gpuAddress; };
 static_assert(sizeof(SyncDesc) == 24 && sizeof(SyncReply) == 16, "fixed synchronization layouts");
@@ -133,10 +139,13 @@ struct GpuVaDesc {
     std::uint32_t queue, reserved;
     std::uint64_t base, minimum, maximum, offsetPages, sizePages, protection, driverProtection;
 };
+// Opaque NVIDIA mapping value observed for a nonshared D3D12 DEFAULT resource.
+constexpr std::uint64_t VendorDefaultDriverProtection = 0x10000001;
 static_assert(sizeof(GpuVaDesc) == 64, "fixed GPU-address descriptor");
 inline bool validGpuVa(GpuVaDesc d) {
     if (!d.queue || d.reserved || !d.sizePages || d.sizePages > MaxVendorMapPages ||
-        d.offsetPages > MaxVendorMapPages - d.sizePages || d.protection > 3 || d.driverProtection ||
+        d.offsetPages > MaxVendorMapPages - d.sizePages || d.protection > 3 ||
+        (d.driverProtection && (d.driverProtection != VendorDefaultDriverProtection || d.protection != 1)) ||
         d.base % 4096 || d.minimum % 4096 || d.maximum % 4096 ||
         d.base >= MaxGpuAddress || d.minimum >= MaxGpuAddress || d.maximum > MaxGpuAddress) return false;
     const auto bytes = d.sizePages * 4096;
@@ -177,6 +186,8 @@ inline bool validVendorAllocation(VendorAllocationDesc d) {
 }
 struct DestroyVendorDesc { std::uint32_t count, reserved; };
 static_assert(sizeof(DestroyVendorDesc) == 8, "fixed vendor destruction layout");
+struct VendorResourceReply { std::uint32_t resource, reserved; };
+static_assert(sizeof(VendorResourceReply) == 8, "fixed resource ownership reply");
 constexpr std::uint64_t FenceApertureBytes = 64 * 4096;
 constexpr std::uint32_t MaxQueryBytes = 65536;
 constexpr std::size_t MaxActiveQueries = 2;
@@ -212,11 +223,12 @@ enum class Op : std::uint32_t {
     CreateGuestPagingQueue = 0x2040,
     CreateVendorAllocation = 0x2050, DestroyVendorAllocations, MapVendorAllocation, MakeVendorResident,
     LockVendorAllocation, UnlockVendorAllocation, TranslateVendorAllocation,
+    CreateVendorResourceAllocation, DestroyVendorResource,
     CreateHwQueue = 0x2060, DestroyHwQueue, SubmitHwQueue,
-    CreateSync = 0x2070, DestroySync,
+    CreateSync = 0x2070, DestroySync, SignalContextSync,
     ReserveGpuAddress = 0x2080, FreeGpuReservation, MapGpuState
 };
-enum class Kind { Adapter, Device, PagingQueue, Allocation, Context, PagingSync, VendorAllocation, HwQueue, HwQueueSync, Sync, GpuReservation };
+enum class Kind { Adapter, Device, PagingQueue, Allocation, Context, PagingSync, VendorAllocation, HwQueue, HwQueueSync, Sync, GpuReservation, VendorResource };
 struct ContextDesc {
     std::uint32_t node, engine, flags, clientHint, privateBytes, reserved;
 };
@@ -241,6 +253,7 @@ struct Result { std::int32_t ntstatus; std::uint32_t nativeHandle; std::uint64_t
 struct GpuVaResult { Result map; std::uint64_t fence; };
 struct ResidentResult { Result residency; ResidentReply output; };
 struct VendorCpuResult { Result lock; VendorCpuReply output; };
+struct VendorResourceResult { Result allocation; std::uint32_t resource; };
 // The synchronization object is borrowed from the paging queue. Destruction
 // of the queue owns its lifetime; no native handle is exposed to the guest.
 struct GuestPagingResult { Result queue; std::uint32_t sync; std::uint64_t offset; };
@@ -270,6 +283,9 @@ public:
     virtual Result createVendorAllocation(std::uint32_t, VendorAllocationDesc, std::vector<std::uint8_t>&) {
         return {static_cast<std::int32_t>(0xc00000bbu), 0, 0};
     }
+    virtual VendorResourceResult createVendorResourceAllocation(std::uint32_t, VendorAllocationDesc, std::vector<std::uint8_t>&) {
+        return {{static_cast<std::int32_t>(0xc00000bbu), 0, 0}, 0};
+    }
     virtual Result destroyVendorAllocations(std::uint32_t, const std::vector<std::uint32_t>&) {
         return {static_cast<std::int32_t>(0xc00000bbu), 0, 0};
     }
@@ -297,6 +313,9 @@ public:
     }
     virtual SyncResult createSync(std::uint32_t, SyncDesc) {
         return {{static_cast<std::int32_t>(0xc00000bbu), 0, 0}, {0, 0}};
+    }
+    virtual Result signalContextSync(std::uint32_t, std::uint32_t, ContextSignalDesc) {
+        return {static_cast<std::int32_t>(0xc00000bbu), 0, 0};
     }
     virtual Result submitHwQueue(std::uint32_t, HwSubmitDesc, const std::vector<std::uint8_t>&) {
         return {static_cast<std::int32_t>(0xc00000bbu), 0, 0};
@@ -334,6 +353,8 @@ class Session {
         std::uint64_t reservedGpuBytes = 0;
         bool resident = false;
         std::uint64_t submittedFence = 0;
+        std::uint32_t vendorResource = 0;
+        std::uint32_t syncFlags = 0;
     };
     Driver& driver;
     std::map<std::uint32_t, Object> objects;
@@ -347,6 +368,7 @@ class Session {
     std::uint32_t vendorMappedPages = 0;
     std::uint32_t vendorCpuBytes = 0;
     std::uint32_t submissionAttempts = 0;
+    std::uint32_t contextSignalAttempts = 0;
     std::uint64_t gpuReservedBytes = 0;
     GpuStateRanges gpuStates;
     bool negotiated = false;
@@ -649,6 +671,7 @@ public:
                 std::memcpy(out.data() + start, &native.output, sizeof native.output);
                 if (id) {
                     Object owned{Kind::Sync, h.handle, native.object.nativeHandle, 0, 0, false}; owned.syncType = desc.type;
+                    owned.syncFlags = desc.flags; owned.submittedFence = desc.initial;
                     objects.emplace(id, owned);
                 }
                 return out;
@@ -657,9 +680,52 @@ public:
                 throw;
             }
         }
-        if (op == Op::CreateVendorAllocation || op == Op::DestroyVendorAllocations) {
+        if (op == Op::SignalContextSync) {
+            if (!negotiated) return reply(h, -71);
+            if (!(driver.capabilities().flags & ContextSignalCapability)) return reply(h, -95);
+            if (packet.size() != sizeof h + sizeof(ContextSignalDesc)) return reply(h, -22);
+            ContextSignalDesc desc{}; std::memcpy(&desc, packet.data() + sizeof h, sizeof desc);
+            if (!validContextSignal(desc)) return reply(h, -22);
+            const auto context = objects.find(h.handle), sync = objects.find(desc.sync);
+            if (context == objects.end() || context->second.kind != Kind::Context || context->second.contextFlags != 16 ||
+                sync == objects.end() || sync->second.kind != Kind::Sync || sync->second.syncType != 5 ||
+                sync->second.syncFlags != NoGpuAccessSyncFlag || sync->second.parent != context->second.parent) return reply(h, -9);
+            if (desc.fence <= sync->second.submittedFence) return reply(h, -22);
+            if (contextSignalAttempts >= MaxContextSignals) return reply(h, -24);
+            ++contextSignalAttempts;
+            const auto result = driver.signalContextSync(context->second.nativeHandle, sync->second.nativeHandle, desc);
+            if (result.ntstatus > 0 || result.nativeHandle ||
+                (result.ntstatus == 0 && (result.value < desc.fence || result.value == UINT64_MAX)) ||
+                (result.ntstatus < 0 && result.value)) return reply(h, -5);
+            if (result.ntstatus == 0) sync->second.submittedFence = desc.fence;
+            return reply(h, 0, h.handle, &result);
+        }
+        if (op == Op::DestroyVendorResource) {
+            if (!negotiated) return reply(h, -71);
+            if (!(driver.capabilities().flags & VendorResourceCapability)) return reply(h, -95);
+            if (packet.size() != sizeof h + 4) return reply(h, -22);
+            std::uint32_t deviceId{}; std::memcpy(&deviceId, packet.data() + sizeof h, 4);
+            const auto resource = objects.find(h.handle);
+            if (resource == objects.end() || resource->second.kind != Kind::VendorResource) return reply(h, -9);
+            const auto allocation = objects.find(resource->second.parent);
+            if (allocation == objects.end() || allocation->second.parent != deviceId ||
+                allocation->second.kind != Kind::VendorAllocation || allocation->second.vendorResource != h.handle) return reply(h, -9);
+            const Header destroyHeader{static_cast<std::uint32_t>(Op::DestroyVendorAllocations), deviceId, 0, 0};
+            const DestroyVendorDesc desc{1, 0}; const auto id = allocation->first;
+            std::vector<std::uint8_t> destroyPacket(sizeof destroyHeader + sizeof desc + sizeof id);
+            std::memcpy(destroyPacket.data(), &destroyHeader, sizeof destroyHeader);
+            std::memcpy(destroyPacket.data() + sizeof destroyHeader, &desc, sizeof desc);
+            std::memcpy(destroyPacket.data() + sizeof destroyHeader + sizeof desc, &id, sizeof id);
+            auto out = dispatch(destroyPacket);
+            Header response{}; std::memcpy(&response, out.data(), sizeof response);
+            response.type = h.type; response.handle = response.status ? 0 : h.handle;
+            std::memcpy(out.data(), &response, sizeof response); return out;
+        }
+        if (op == Op::CreateVendorAllocation || op == Op::CreateVendorResourceAllocation || op == Op::DestroyVendorAllocations) {
             if (!negotiated) return reply(h, -71);
             if (!(driver.capabilities().flags & VendorAllocationCapability)) return reply(h, -95);
+            const bool withResource = op == Op::CreateVendorResourceAllocation;
+            if (withResource && !(driver.capabilities().flags & VendorResourceCapability)) return reply(h, -95);
             const auto device = objects.find(h.handle);
             if (device == objects.end() || device->second.kind != Kind::Device) return reply(h, -9);
             if (op == Op::DestroyVendorAllocations) {
@@ -680,11 +746,13 @@ public:
                         return reply(h, -9);
                     if (std::find(ids.begin(), ids.begin() + n, ids[n]) != ids.begin() + n) return reply(h, -22);
                     if (entry->second.cpuBytes) return reply(h, -16);
+                    if (entry->second.vendorResource && ids.size() != 1) return reply(h, -22);
                     native[n] = entry->second.nativeHandle;
                 }
                 const auto result = driver.destroyVendorAllocations(device->second.nativeHandle, native);
                 if (result.ntstatus > 0 || result.nativeHandle || result.value) return reply(h, -5);
                 if (result.ntstatus == 0) for (const auto id : ids) {
+                    if (objects.at(id).vendorResource) objects.erase(objects.at(id).vendorResource);
                     vendorMappedPages -= objects.at(id).gpuPages; objects.erase(id);
                 }
                 return reply(h, 0, h.handle, &result);
@@ -693,21 +761,35 @@ public:
             VendorAllocationDesc desc{}; std::memcpy(&desc, packet.data() + sizeof h, sizeof desc);
             if (!validVendorAllocation(desc) || packet.size() != sizeof h + sizeof desc + desc.privateBytes) return reply(h, -22);
             const auto count = std::count_if(objects.begin(), objects.end(), [](const auto& item) { return item.second.kind == Kind::VendorAllocation; });
-            if (objects.size() >= MaxObjects || nextId == UINT32_MAX || static_cast<std::size_t>(count) >= MaxVendorAllocations) return reply(h, -24);
+            if (objects.size() > MaxObjects - (withResource ? 2 : 1) || nextId >= UINT32_MAX - (withResource ? 1 : 0) || static_cast<std::size_t>(count) >= MaxVendorAllocations) return reply(h, -24);
             std::vector<std::uint8_t> data(packet.begin() + sizeof h + sizeof desc, packet.end());
-            const auto result = driver.createVendorAllocation(device->second.nativeHandle, desc, data);
+            const auto created = withResource ? driver.createVendorResourceAllocation(device->second.nativeHandle, desc, data) :
+                                               VendorResourceResult{driver.createVendorAllocation(device->second.nativeHandle, desc, data), 0};
+            const auto result = created.allocation;
             if (data.size() != desc.privateBytes || (result.ntstatus >= 0 && (!result.nativeHandle || result.value % 4096)) ||
-                (result.ntstatus < 0 && (result.nativeHandle || result.value))) {
+                (result.ntstatus >= 0 && withResource && (!created.resource || created.resource == result.nativeHandle)) ||
+                (result.ntstatus < 0 && (result.nativeHandle || result.value || created.resource))) {
                 if (result.nativeHandle) driver.destroy(Kind::VendorAllocation, result.nativeHandle);
                 return reply(h, -5);
             }
             const auto id = result.ntstatus >= 0 ? nextId++ : 0;
+            const auto resourceId = id && withResource ? nextId++ : 0;
             try {
                 auto out = reply(h, 0, id, &result);
+                if (withResource) {
+                    const VendorResourceReply resource{resourceId, 0};
+                    const auto bytes = reinterpret_cast<const std::uint8_t*>(&resource);
+                    out.insert(out.end(), bytes, bytes + sizeof resource);
+                }
                 out.insert(out.end(), data.begin(), data.end()); // Preserve in/out on native failure too.
-                if (id) objects.emplace(id, Object{Kind::VendorAllocation, h.handle, result.nativeHandle, 0, 0, false});
+                if (id) {
+                    Object allocation{Kind::VendorAllocation, h.handle, result.nativeHandle, 0, 0, false}; allocation.vendorResource = resourceId;
+                    objects.emplace(id, allocation);
+                    if (resourceId) objects.emplace(resourceId, Object{Kind::VendorResource, id, created.resource, 0, 0, false});
+                }
                 return out;
             } catch (...) {
+                objects.erase(id); objects.erase(resourceId);
                 if (result.nativeHandle) driver.destroy(Kind::VendorAllocation, result.nativeHandle);
                 throw;
             }
@@ -916,6 +998,7 @@ public:
                 queue == objects.end() || queue->second.kind != Kind::PagingQueue || allocation->second.parent != queue->second.parent)
                 return reply(h, -9);
             auto& object = allocation->second;
+            if (desc.driverProtection && !object.vendorResource) return reply(h, -22);
             if (object.gpuPages) return reply(h, -16);
             if (desc.sizePages > MaxVendorMappedPages - vendorMappedPages) return reply(h, -24);
             if (desc.base) for (const auto& item : objects) {

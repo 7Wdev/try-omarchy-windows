@@ -2,12 +2,20 @@
 
 Experimental Windows NVIDIA driver bridge for the 7Wdev fork. The genuine Linux
 NVIDIA runtime in an owned QEMU/WHPX guest now passes
-[full D3D12 device and copy queue initialization](../../docs/LIVE-D3D12-INITIALIZATION.md).
-Both return `00000000`, with normal probe/VM exit and verified native cleanup.
-Two normal RTX 5090 Laptop runs create 67 allocations, 46 direct CPU views, four
-hardware queues, 50 monitored fences and 16 mutexes. Two bounded initialization
-commands retire at fences 5 and 17. This does not establish accelerated Omarchy,
-the requested APIs or the minimum 93% native performance.
+[full D3D12 device and copy queue initialization](../../docs/LIVE-D3D12-INITIALIZATION.md)
+and [GPU buffer copies with verified guest readback](../../docs/LIVE-GPU-BUFFER-COPY.md).
+Two normal RTX 5090 Laptop runs each copy two distinct 64 KiB patterns through
+UPLOAD, DEFAULT and READBACK resources; every byte matches. Native command and
+queue-signal fences retire, with normal probe/VM exit and verified cleanup.
+This does not establish accelerated Omarchy, the requested APIs or the minimum
+93% native performance.
+
+The diagnostic adds owned, nonshared single-allocation resources, the observed
+NVIDIA DEFAULT-resource DriverProtection value, direct CPU fence waits and a
+bounded GPU2 context-signal route. `--runtime-workload copy` must be selected
+both when packing the private guest image and when verifying it. The default
+remains initialization only. The copy guard rejects incomplete, duplicated or
+incorrect readback results and requires matching native resource/signal evidence.
 
 The bridge preserves source sentinels, TDR fence flags, native allocation
 subranges and verified in-process context priority. GPU mappings have a separate
@@ -23,7 +31,7 @@ VM exit, old-guest, capacity-rejection and restored CPU write controls.
 [bounded command submission](../../docs/LIVE-COMMAND-SUBMISSION.md),
 [GPU reservations](../../docs/LIVE-GPU-RESERVATION.md) and
 [Zero address state](../../docs/LIVE-GPU-ADDRESS-STATE.md) preserve ownership and
-verify native progress. General submission, asynchronous queues, signal/wait,
+verify native progress. General submission, asynchronous queues and signal/wait,
 eviction, guest kernel/DRM support and presentation remain unfinished. The
 launcher does not select the experiment. Read the
 [investigation](../../docs/WINDOWS-NVIDIA-BACKEND.md) and
@@ -89,7 +97,7 @@ acknowledged destruction and native cleanup after abrupt guest exit.
 The separate `--driver-submit` route validates ownership, residency and a
 retained CPU command mapping before native submission. It synchronously waits
 for retirement as a diagnostic; production queues must preserve asynchronous
-execution and overlap. General allocation layouts, synchronization signal/wait operations,
+execution and overlap. General allocation layouts, broader synchronization operations,
 scanout and desktop integration remain unfinished.
 The separate `--driver-retirement` option uses documented VidMm destruction,
 keeps `AssumeNotInUse` zero, requires acknowledged CPU unmap and preserves
