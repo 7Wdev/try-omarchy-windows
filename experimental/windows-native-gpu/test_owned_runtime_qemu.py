@@ -425,6 +425,7 @@ def main():
                     control.get('ownedQemuExited') is True and control.get('qemuExit') == 0 and
                     control.get('qemuForcedStop') is False and control.get('fenceControlFailed') is False and
                     control.get('liveFenceMappings') == 0 and control.get('fenceMappingsCreated') == total_fence_mappings and
+                    control.get('fenceApertureSlots',64) == (128 if args.driver_cpu_slots == 128 else 64) and
                     control.get('fenceUnmapAcknowledgements') == (late_fence_unmaps if late_guest_eof else 0 if early_guest_eof else total_fence_mappings) and
                     cleanup.get('driverCleanupVerified') is True and cleanup.get('failedAdapterQueries') == 0 and
                     len(context_priorities) >= args.minimum_context_priority_changes and
@@ -611,9 +612,11 @@ def main():
         clear_verified = clear_workload_complete(log)
         hwqueue_flags = [int(flag or '0') for flag in re.findall(r'nativeHwQueueCreated=true privateBytes=\d+ progressFenceDirect=true(?: flags=(\d+))?',log)]
         hwqueue_flag_checks = [json.loads(line) for line in errors if line.startswith('{') and '"nativeHardwareQueueFlagsVerified"' in line]
-        no_broadcast_queues = hwqueue_flags.count(2)
-        accepted = (accepted and all(flag in (0,2) for flag in hwqueue_flags) and
+        no_broadcast_queues = sum(bool(flag & 2) for flag in hwqueue_flags)
+        no_broadcast_wait_queues = hwqueue_flags.count(6)
+        accepted = (accepted and all(flag in (0,2,6) for flag in hwqueue_flags) and
                     cleanup.get('completedNoBroadcastSignalHwQueues',0) == no_broadcast_queues and
+                    cleanup.get('completedNoBroadcastWaitHwQueues',0) == no_broadcast_wait_queues and
                     ((not hwqueue_flag_checks and not no_broadcast_queues) or
                      (len(hwqueue_flag_checks) == len(hwqueue_flags) == cleanup.get('completedHwQueues') and
                       all(n['flags'] == g and n['unchanged'] is True and n['ntstatus'] == 0 for n,g in zip(hwqueue_flag_checks,hwqueue_flags)))))
@@ -638,6 +641,7 @@ def main():
                   'guestGpuRenderTargetClearPixelsPerRound': 9490 if clear_verified and accepted else 0,
                   'guestGpuRenderTargetClearRounds': 2 if clear_verified and accepted else 0,
                   'nativeNoBroadcastSignalHardwareQueues': no_broadcast_queues,
+                  'nativeNoBroadcastWaitHardwareQueues': no_broadcast_wait_queues,
                   'guestHardwareQueueFlags': hwqueue_flags, 'nativeHardwareQueueFlagChecks': hwqueue_flag_checks,
                   'd3d12DirectQueueHresult': next(iter(re.findall(r'^gpuClearDirectQueue=([0-9a-f]{8})[ \t\r]*$',log,re.MULTILINE)),None),
                   'stage': 'owned VM exit with a NoBroadcastSignal hardware queue; graphics rendering unverified' if late_guest_eof else

@@ -6,10 +6,10 @@ int main(void)
 {
     WddmFenceCommand command;
     const char *bad[] = { "", "map", "map:", "map:0:4096", "map:0:4096:1:2",
-        "map:-1:4096:1", "map:+1:4096:1", "map:64:4096:1", "map:0:0:1",
+        "map:-1:4096:1", "map:+1:4096:1", "map:128:4096:1", "map:0:0:1",
         "map:0:4097:1", "map:0:4096:0", "map:0:18446744073709551616:1",
         "map:0:4096:18446744073709551616", "unmap:0", "unmap:0:0",
-        "unmap:64:1", "unmap:0:1:", "unmap:0:1 ", "MAP:0:4096:1" };
+        "unmap:128:1", "unmap:0:1:", "unmap:0:1 ", "MAP:0:4096:1" };
     for (size_t n = 0; n < sizeof bad / sizeof bad[0]; ++n) {
         assert(!wddm_fence_command(bad[n], &command));
     }
@@ -28,6 +28,14 @@ int main(void)
     assert(wddm_fence_command("map:0:4096:11", &command));
     assert(wddm_fence_transition(&command, 10, 0));
     assert(wddm_fence_command("map:0:18446744073709551608:18446744073709551615", &command));
+    for (uint32_t slots = 0; slots <= 256; ++slots)
+        assert(wddm_fence_slots_valid(slots) == (slots == 64 || slots == 128));
+    assert(wddm_fence_command_for_slots("map:63:4096:1", 64, &command));
+    assert(!wddm_fence_command_for_slots("map:64:4096:1", 64, &command));
+    assert(!wddm_fence_command_for_slots("unmap:64:1", 64, &command));
+    assert(wddm_fence_command_for_slots("map:127:4096:1", 128, &command));
+    assert(wddm_fence_command_for_slots("unmap:127:1", 128, &command));
+    assert(!wddm_fence_command_for_slots("map:127:4096:1", 65, &command));
     puts("PASS: bounded host fence commands and generation ownership");
     return 0;
 }

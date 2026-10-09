@@ -31,6 +31,7 @@ struct Fake : Driver {
     std::vector<std::uint32_t> lastTranslationHandles;
     bool hwQueuesEnabled = false;
     bool noBroadcastHwQueuesEnabled = false;
+    bool noBroadcastWaitHwQueuesEnabled = false;
     HwQueueDesc lastHwQueueDesc{};
     bool retirementEnabled = false;
     bool reservationEnabled = false;
@@ -73,6 +74,7 @@ struct Fake : Driver {
                 (cpuEnabled ? VendorCpuCapability : 0u) | (translationEnabled ? VendorTranslationCapability : 0u) |
                 (hwQueuesEnabled ? HwQueueCapability : 0u) | (syncEnabled ? SyncCapability : 0u) |
                 (noBroadcastHwQueuesEnabled ? NoBroadcastSignalHwQueueCapability : 0u) |
+                (noBroadcastWaitHwQueuesEnabled ? NoBroadcastWaitHwQueueCapability : 0u) |
                 (submitEnabled ? HwSubmitCapability : 0u) | (retirementEnabled ? VendorRetirementCapability : 0u) |
                 (reservationEnabled ? GpuReservationCapability : 0u) | (gpuStateEnabled ? GpuStateCapability : 0u), 0x10de, 123};
     }
@@ -1313,6 +1315,14 @@ int main() {
         require(hardware.calls == before);
         require(header(s.dispatch(create(context, {2, 4, 0, 0}))).status == -95 && hardware.calls == before);
         hardware.noBroadcastHwQueuesEnabled = true;
+        require(header(s.dispatch(create(context, {6, 4, 0, 0}))).status == -95 && hardware.calls == before);
+        hardware.noBroadcastWaitHwQueuesEnabled = true; hardware.noBroadcastHwQueuesEnabled = false;
+        require(header(s.dispatch(create(context, {6, 4, 0, 0}))).status == -95 && hardware.calls == before);
+        hardware.noBroadcastHwQueuesEnabled = true;
+        const auto internalHelper = header(s.dispatch(create(context, {6, 4, 0, 0}))).handle;
+        require(internalHelper && hardware.lastHwQueueDesc.flags == InternalNoBroadcastHwQueueFlags);
+        require(header(s.dispatch(request(Op::DestroyHwQueue, internalHelper))).status == 0);
+        hardware.noBroadcastWaitHwQueuesEnabled = false;
         const auto helper = header(s.dispatch(create(context, {2, 4, 0, 0}))).handle;
         require(helper && hardware.lastHwQueueDesc.flags == NoBroadcastSignalHwQueueFlag);
         before = hardware.calls;

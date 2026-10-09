@@ -361,7 +361,12 @@ int main(int argc, char** argv) {
         unsigned char data[]{37, 38, 39, 40};
         D3DKMT_CREATEHWQUEUE queue{}; queue.hHwContext = context.hContext; queue.pPrivateDriverData = data; queue.PrivateDriverDataSize = sizeof data;
         if (!std::strncmp(mode, "hwqueue-nobroadcast-", 20)) queue.Flags.NoBroadcastSignal = 1;
+        if (!std::strncmp(mode, "hwqueue-internal-", 17)) queue.Flags.Value = 6;
         if (!std::strcmp(mode, "hwqueue-invalid")) {
+            for (const unsigned flags : {5u,7u,8u,16u,32u,64u,UINT32_MAX}) {
+                auto invalid = queue; invalid.Flags.Value = flags;
+                if (ioctl(fd, _IOWR('G', 24, D3DKMT_CREATEHWQUEUE), &invalid) != -1 || errno != EINVAL) return failed("queue invalid flag combination");
+            }
             for (unsigned n = 0; n < 8; ++n) {
                 auto invalid = queue;
                 switch (n) {
@@ -379,13 +384,14 @@ int main(int argc, char** argv) {
             D3DKMT_DESTROYHWQUEUE release{}; release.hHwQueue = 999;
             if (ioctl(fd, _IOWR('G', 27, D3DKMT_DESTROYHWQUEUE), &release) != -1 || errno != EBADF) return failed("queue unowned destruction");
         } else {
-            const auto expected = !std::strcmp(mode, "hwqueue-disabled") || !std::strcmp(mode, "hwqueue-nobroadcast-disabled") || sync ? ENOSYS :
-                                  !std::strcmp(mode, "hwqueue-nt-failure") || !std::strcmp(mode, "hwqueue-nobroadcast-nt-failure") ? EINVAL :
-                                  !std::strcmp(mode, "hwqueue-no-hub") || !std::strcmp(mode, "hwqueue-nobroadcast-no-hub") ? EIO : EPROTO;
+            const auto expected = !std::strcmp(mode, "hwqueue-disabled") || !std::strcmp(mode, "hwqueue-nobroadcast-disabled") ||
+                                  !std::strcmp(mode, "hwqueue-internal-disabled") || !std::strcmp(mode, "hwqueue-internal-missing-signal") || sync ? ENOSYS :
+                                  !std::strcmp(mode, "hwqueue-nt-failure") || !std::strcmp(mode, "hwqueue-nobroadcast-nt-failure") || !std::strcmp(mode, "hwqueue-internal-nt-failure") ? EINVAL :
+                                  !std::strcmp(mode, "hwqueue-no-hub") || !std::strcmp(mode, "hwqueue-nobroadcast-no-hub") || !std::strcmp(mode, "hwqueue-internal-no-hub") ? EIO : EPROTO;
             if (ioctl(fd, _IOWR('G', 24, D3DKMT_CREATEHWQUEUE), &queue) != -1 || errno != expected || queue.hHwQueue ||
                 queue.hHwQueueProgressFence || queue.HwQueueProgressFenceCPUVirtualAddress || queue.HwQueueProgressFenceGPUVirtualAddress)
                 return failed("queue malformed response");
-            if ((!std::strcmp(mode, "hwqueue-nt-failure") || !std::strcmp(mode, "hwqueue-nobroadcast-nt-failure")) && data[0] != (37 ^ 255)) return failed("queue failure private in/out");
+            if ((!std::strcmp(mode, "hwqueue-nt-failure") || !std::strcmp(mode, "hwqueue-nobroadcast-nt-failure") || !std::strcmp(mode, "hwqueue-internal-nt-failure")) && data[0] != (37 ^ 255)) return failed("queue failure private in/out");
             if ((expected == EPROTO || expected == EIO) && (open("/dev/dxg", O_RDONLY) != -1 || errno != EIO)) return failed("queue broken transport reused");
         }
         close(fd); return 0;

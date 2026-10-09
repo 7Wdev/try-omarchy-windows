@@ -21,10 +21,10 @@ typedef struct WddmFenceSlot {
 struct WddmFenceHub {
     PCIDevice parent_obj;
     MemoryRegion bar;
-    WddmFenceSlot slots[WDDM_FENCE_HUB_PAGES];
+    WddmFenceSlot slots[WDDM_FENCE_HUB_MAX_PAGES];
     uint64_t source_process, last_generation;
     HANDLE process;
-    uint32_t emulated_reads, mapped;
+    uint32_t emulated_reads, mapped, slot_count;
     Error *migration_blocker;
 };
 
@@ -35,7 +35,7 @@ bool wddm_fence_hub_mapping(MemoryRegion *mr, void **process, void **source)
     if (!s || !s->process) {
         return false;
     }
-    for (unsigned n = 0; n < WDDM_FENCE_HUB_PAGES; ++n) {
+    for (unsigned n = 0; n < s->slot_count; ++n) {
         WddmFenceSlot *slot = &s->slots[n];
         if (mr == &slot->region && slot->source) {
             *process = s->process;
@@ -77,7 +77,7 @@ static void hub_set_mapping(Object *object, const char *value, Error **errp)
     WddmFenceCommand command;
     SIZE_T copied = 0;
     uint64_t observed = 0;
-    if (!DEVICE(s)->realized || !s->process || !wddm_fence_command(value, &command)) {
+    if (!DEVICE(s)->realized || !s->process || !wddm_fence_command_for_slots(value, s->slot_count, &command)) {
         error_setg(errp, "Invalid host fence mapping command or unrealized device");
         return;
     }
@@ -126,6 +126,10 @@ static void hub_realize(PCIDevice *pci, Error **errp)
 {
     WddmFenceHub *s = WDDM_FENCE_HUB(pci);
     HMODULE whp = GetModuleHandleW(L"WinHvPlatform.dll");
+    if (!wddm_fence_slots_valid(s->slot_count)) {
+        error_setg(errp, "WDDM fence slot-count must be 64 or 128");
+        return;
+    }
     if (!whpx_enabled() || !whp || !GetProcAddress(whp, "WHvMapGpaRange2")) {
         error_setg(errp, "WDDM fence hub requires WHPX and WHvMapGpaRange2");
         return;
@@ -141,8 +145,8 @@ static void hub_realize(PCIDevice *pci, Error **errp)
     if (migrate_add_blocker(&s->migration_blocker, errp)) {
         return;
     }
-    memory_region_init(&s->bar, OBJECT(s), "wddm-fence-hub", WDDM_FENCE_HUB_PAGES * 4096);
-    for (unsigned n = 0; n < WDDM_FENCE_HUB_PAGES; ++n) {
+    memory_region_init(&s->bar, OBJECT(s), "wddm-fence-hub", s->slot_count * 4096);
+    for (unsigned n = 0; n < s->slot_count; ++n) {
         WddmFenceSlot *slot = &s->slots[n];
         char name[48]; snprintf(name, sizeof name, "wddm-fence-slot-%u", n);
         slot->hub = s;
@@ -153,7 +157,7 @@ static void hub_realize(PCIDevice *pci, Error **errp)
     }
     pci_register_bar(pci, 0, PCI_BASE_ADDRESS_SPACE_MEMORY, &s->bar);
     pci_set_long(pci->config + 0x40, 0x31484e46); /* FNH1 */
-    pci_set_long(pci->config + 0x44, WDDM_FENCE_HUB_PAGES);
+    pci_set_long(pci->config + 0x44, s->slot_count);
 }
 static void hub_finalize(Object *object)
 {
@@ -167,6 +171,7 @@ static void hub_finalize(Object *object)
 }
 static const Property hub_properties[] = {
     DEFINE_PROP_UINT64("source-process", WddmFenceHub, source_process, 0),
+    DEFINE_PROP_UINT32("slot-count", WddmFenceHub, slot_count, WDDM_FENCE_HUB_PAGES),
 };
 static void hub_class_init(ObjectClass *klass, const void *data)
 {

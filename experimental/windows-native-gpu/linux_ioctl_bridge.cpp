@@ -854,6 +854,8 @@ public:
             case 24: {
                 auto& a = args<D3DKMT_CREATEHWQUEUE>(requestNumber, pointer);
                 const HwQueueDesc desc{a.Flags.Value, a.PrivateDriverDataSize, 0, 0};
+                std::fprintf(stderr, "LINUX_BRIDGE hwQueueDescriptor flags=%u privateBytes=%u hasPrivateData=%u\n",
+                             desc.flags, desc.privateBytes, a.pPrivateDriverData ? 1u : 0u);
                 if (!validHwQueue(desc) || !a.pPrivateDriverData) throw Error(EINVAL);
                 unsigned allocationReferences = 0;
                 if (a.pPrivateDriverData && a.PrivateDriverDataSize <= MaxContextPrivateBytes) {
@@ -867,7 +869,8 @@ public:
                 if (!(caps.flags & HwQueueCapability)) {
                     std::fprintf(stderr, "LINUX_BRIDGE unsupported nr=24 bytes=%zu\n", sizeof a); throw Error(ENOSYS);
                 }
-                if (desc.flags == NoBroadcastSignalHwQueueFlag && !(caps.flags & NoBroadcastSignalHwQueueCapability)) throw Error(ENOSYS);
+                if ((desc.flags & NoBroadcastSignalHwQueueFlag) && !(caps.flags & NoBroadcastSignalHwQueueCapability)) throw Error(ENOSYS);
+                if ((desc.flags & NoBroadcastWaitHwQueueFlag) && !(caps.flags & NoBroadcastWaitHwQueueCapability)) throw Error(ENOSYS);
                 const auto parent = contextOwners.find(a.hHwContext);
                 if (parent == contextOwners.end()) throw Error(EBADF);
                 if (parent->second.flags != 16) throw Error(ENOSYS);

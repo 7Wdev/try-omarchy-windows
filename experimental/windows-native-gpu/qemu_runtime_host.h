@@ -146,7 +146,8 @@ class Runtime {
     Handle job;
     OwnedProcess process;
     std::unique_ptr<Qmp> qmp;
-    std::array<std::optional<FenceLease>, 64> leases;
+    std::array<std::optional<FenceLease>, driver_bridge::MaxFenceSlots> leases;
+    std::uint32_t fenceSlots = driver_bridge::DefaultFenceSlots;
     std::size_t allocationSlots = driver_bridge::DefaultVendorCpuSlots;
     driver_cpu::Aperture allocationAperture;
     bool allocationsEnabled = false;
@@ -156,7 +157,8 @@ class Runtime {
     std::filesystem::path logfile;
 public:
     Runtime(unsigned short driverPort, const qemu_fence::Paths& paths, bool enableCpu = false, bool cpuStoreTest = false, bool cpuEofTest = false, bool hwQueueEofTest = false, std::size_t cpuSlots = driver_bridge::DefaultVendorCpuSlots, bool syncEofTest = false, bool reservationEofTest = false, bool gpuStateEofTest = false, bool cpuSpanEofTest = false, bool syncNoMaxEofTest = false, bool hwQueueNoBroadcastEofTest = false)
-        : allocationSlots(cpuSlots), allocationAperture(cpuSlots), allocationsEnabled(enableCpu), logfile(std::filesystem::absolute(paths.log)) {
+        : fenceSlots(cpuSlots == 128 ? driver_bridge::MaxFenceSlots : driver_bridge::DefaultFenceSlots),
+          allocationSlots(cpuSlots), allocationAperture(cpuSlots), allocationsEnabled(enableCpu), logfile(std::filesystem::absolute(paths.log)) {
         if (!driver_bridge::validVendorCpuSlots(cpuSlots) || (!enableCpu && cpuSlots != driver_bridge::DefaultVendorCpuSlots))
             throw std::runtime_error("Invalid configured allocation aperture capacity");
         const auto executable = std::filesystem::absolute(paths.qemu).wstring();
@@ -198,7 +200,8 @@ public:
             hwQueueEofTest ? L"console=ttyS0 rdinit=/init panic=1 wddm_hwqueue_eof_test=1" :
             cpuEofTest ? L"console=ttyS0 rdinit=/init panic=1 wddm_cpu_eof_test=1" : L"console=ttyS0 rdinit=/init panic=1",
             L"-name", std::wstring(name.begin(), name.end()), L"-qmp", L"tcp:127.0.0.1:" + std::to_wstring(qmpPort) + L",server=on,wait=off",
-            L"-device", L"wddm-fence-hub,id=wddm-fences,source-process=" + std::to_wstring(reinterpret_cast<std::uintptr_t>(source.value)),
+            L"-device", L"wddm-fence-hub,id=wddm-fences,source-process=" + std::to_wstring(reinterpret_cast<std::uintptr_t>(source.value)) +
+                (fenceSlots == driver_bridge::DefaultFenceSlots ? L"" : L",slot-count=" + std::to_wstring(fenceSlots)),
             L"-device", L"virtio-serial-pci,id=bridge-serial", L"-chardev",
             L"socket,id=wddm,host=127.0.0.1,port=" + std::to_wstring(driverPort), L"-device",
             L"virtserialport,bus=bridge-serial.0,chardev=wddm,name=org.7wdev.wddm"};
@@ -232,8 +235,8 @@ public:
     FenceLease map(volatile std::uint64_t* fence) {
         if (stopped || !fence || generation == UINT64_MAX) throw std::runtime_error("Fence mapping owner unavailable");
         std::uint32_t slot = 0;
-        for (; slot < leases.size(); ++slot) if (!leases[slot]) break;
-        if (slot == leases.size()) throw std::runtime_error("Fence slot quota exceeded");
+        for (; slot < fenceSlots; ++slot) if (!leases[slot]) break;
+        if (slot == fenceSlots) throw std::runtime_error("Fence slot quota exceeded");
         const auto source = reinterpret_cast<std::uintptr_t>(fence);
         const FenceLease lease{slot, ++generation, slot * 4096ull + (source & 4095)};
         try { qmp->mapping("map:" + std::to_string(slot) + ':' + std::to_string(source) + ':' + std::to_string(lease.generation)); }
@@ -242,7 +245,7 @@ public:
     }
     void unmap(FenceLease lease) {
         if (stopped) return; // stop() verified owned VM exit before clearing pages.
-        if (lease.slot >= leases.size() || !leases[lease.slot] || leases[lease.slot]->generation != lease.generation)
+        if (lease.slot >= fenceSlots || !leases[lease.slot] || leases[lease.slot]->generation != lease.generation)
             throw std::runtime_error("Native fence lease ownership mismatch");
         try { qmp->mapping("unmap:" + std::to_string(lease.slot) + ':' + std::to_string(lease.generation)); }
         catch (...) { failed = true; stop(0); throw; }
@@ -259,7 +262,7 @@ public:
     bool cleanExit() const { return stopped && !failed && !process.forced && process.exit == 0; }
     bool hasStopped() const { return stopped; }
     unsigned liveMappings() const { return mapped; }
-    bool canMapFence() const { return !stopped && generation != UINT64_MAX && mapped < leases.size(); }
+    bool canMapFence() const { return !stopped && generation != UINT64_MAX && mapped < fenceSlots; }
     std::size_t allocationSlotLimit() const { return allocationSlots; }
     bool canMapAllocation(std::uint32_t bytes) const { return allocationsEnabled && !stopped && allocationAperture.canMap(bytes); }
     AllocationLease mapAllocation(void* data, std::uint32_t bytes) {
@@ -283,6 +286,7 @@ public:
                   << ",\"fenceControlFailed\":" << (failed ? "true" : "false")
                   << ",\"liveFenceMappings\":" << mapped << ",\"fenceMappingsCreated\":" << mappedTotal
                   << ",\"fenceUnmapAcknowledgements\":" << unmappedTotal
+                  << ",\"fenceApertureSlots\":" << fenceSlots
                   << ",\"liveAllocationMappings\":" << allocationAperture.groups() << ",\"liveAllocationMappedBytes\":" << allocationAperture.bytes()
                   << ",\"allocationMappingsCreated\":" << allocationAperture.maps()
                   << ",\"liveAllocationSlotMappings\":" << allocationAperture.chunks()

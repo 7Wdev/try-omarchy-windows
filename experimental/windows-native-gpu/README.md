@@ -25,16 +25,17 @@ diagnostic capacity and rendering remains unverified. Initialization and copy
 controls cannot satisfy the clear workload verifier.
 
 The bridge preserves source sentinels, TDR fence flags, native allocation
-subranges and verified in-process context priority. GPU mappings have a separate
+subranges and verified in-process context priority. Those baseline GPU mappings have a separate
 32 MiB cap; CPU views retain their 16 MiB live-byte cap and 4 MiB per-view limit.
 The [CPU aperture](../../docs/LIVE-CPU-APERTURE-CAPACITY.md) defaults to 16 slots
 and supports 32/64 slots. The optional 128-slot graphics startup profile
 negotiates a 32 MiB live vendor CPU-view budget and a separate 64 MiB GPU-map
 budget; other profiles retain 16 MiB CPU and 32 MiB GPU budgets.
+It also selects 128 read-only fence pages; other profiles retain 64.
 Its rendering acceptance is pending. [Contiguous views](../../docs/LIVE-CPU-ALLOCATION-SPANS.md)
 span adjacent slots without a QEMU rebuild. Native pools allow 96 allocations,
 96 independent synchronization objects and 256 aggregate wire objects; the
-read-only fence BAR remains 64 pages. Hardware acceptance includes repeat, owned
+default read-only fence BAR has 64 pages. Earlier hardware acceptance includes repeat, owned
 VM exit, old-guest, capacity-rejection and restored CPU write controls.
 
 [Allocation retirement](../../docs/LIVE-ALLOCATION-RETIREMENT.md),

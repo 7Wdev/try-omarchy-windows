@@ -75,6 +75,10 @@ not a graphics device, command-submission interface or production fence ABI.
 ## Dynamic fence hub
 
 `wddm-fence-hub` adds 64 initially unmapped, read-only 4 KiB slots in a PCI BAR.
+The opt-in 128-slot CPU graphics profile selects 128 fence slots as well;
+other profiles retain 64. `slot-count` accepts only 64 or 128. Each mapping
+is checked against the selected count; the expanded profile still requires
+physical graphics acceptance.
 The owning host controls the `fence-mapping` QOM property over QMP with
 `map:slot:source-address:generation` and `unmap:slot:generation`. Only its fixed
 inherited source-process handle is used. Commands are bounded, require an

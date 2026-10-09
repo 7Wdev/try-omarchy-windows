@@ -6,6 +6,11 @@
 #include <stdint.h>
 #include <string.h>
 #define WDDM_FENCE_HUB_PAGES 64
+#define WDDM_FENCE_HUB_MAX_PAGES 128
+static inline bool wddm_fence_slots_valid(uint32_t slots)
+{
+    return slots == WDDM_FENCE_HUB_PAGES || slots == WDDM_FENCE_HUB_MAX_PAGES;
+}
 typedef struct WddmFenceCommand {
     bool map;
     uint32_t slot;
@@ -57,7 +62,7 @@ static inline bool wddm_fence_command(const char *input, WddmFenceCommand *out)
     } else {
         return false;
     }
-    if (!wddm_fence_number(&input, &slot, ':') || slot >= WDDM_FENCE_HUB_PAGES) {
+    if (!wddm_fence_number(&input, &slot, ':') || slot >= WDDM_FENCE_HUB_MAX_PAGES) {
         return false;
     }
     if (result.map && (!wddm_fence_number(&input, &result.source, ':') ||
@@ -71,6 +76,11 @@ static inline bool wddm_fence_command(const char *input, WddmFenceCommand *out)
     result.slot = (uint32_t)slot;
     *out = result;
     return true;
+}
+
+static inline bool wddm_fence_command_for_slots(const char *input, uint32_t slots, WddmFenceCommand *out)
+{
+    return wddm_fence_slots_valid(slots) && wddm_fence_command(input, out) && out->slot < slots;
 }
 
 static inline bool wddm_fence_transition(const WddmFenceCommand *command,

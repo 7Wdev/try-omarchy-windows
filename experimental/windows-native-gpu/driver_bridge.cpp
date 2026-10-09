@@ -51,6 +51,7 @@ class KmtDriver : public Driver {
     unsigned vendorCpuSlotQuotaRejections = 0;
     unsigned completedHwQueues = 0, destroyedHwQueues = 0, failedHwQueues = 0, hwQueuesReleasedAfterVmExit = 0;
     unsigned completedNoBroadcastSignalHwQueues = 0;
+    unsigned completedNoBroadcastWaitHwQueues = 0;
     struct Synchronization {
         std::uint32_t device, type, flags;
         volatile std::uint64_t* fence;
@@ -260,6 +261,7 @@ public:
                 (gpuVaEnabled && runtime && runtime->allocationSlotLimit() == 128 ? ExpandedVendorGpuCapability : 0u) |
                 (translationEnabled ? VendorTranslationCapability : 0u) | (hwQueuesEnabled ? HwQueueCapability : 0u) |
                 (hwQueuesEnabled ? NoBroadcastSignalHwQueueCapability : 0u) |
+                (hwQueuesEnabled ? NoBroadcastWaitHwQueueCapability : 0u) |
                 (syncEnabled ? SyncCapability : 0u) | (submitEnabled ? HwSubmitCapability : 0u) |
                 (allocationsEnabled ? VendorResourceCapability : 0u) |
                 (submitEnabled && syncEnabled ? ContextSignalCapability : 0u) |
@@ -363,6 +365,8 @@ public:
         D3DKMT_CREATEHWQUEUE a{}; a.hHwContext = context; a.Flags.Value = desc.flags;
         D3DDDI_CREATEHWQUEUEFLAGS layout{}; layout.NoBroadcastSignal = 1;
         if (layout.Value != NoBroadcastSignalHwQueueFlag) throw std::runtime_error("Native NoBroadcastSignal bit layout mismatch");
+        layout.Value = 0; layout.NoBroadcastWait = 1;
+        if (layout.Value != NoBroadcastWaitHwQueueFlag) throw std::runtime_error("Native NoBroadcastWait bit layout mismatch");
         a.pPrivateDriverData = data.data(); a.PrivateDriverDataSize = desc.privateBytes;
         // The live UMD constructs this private payload using its translated
         // allocation alias. No captured payload or vendor offset patch is used.
@@ -386,7 +390,8 @@ public:
                 throw std::runtime_error("Unexpected native hardware queue output");
             owned.lease = runtime->map(owned.fence);
             ++completedHwQueues;
-            if (desc.flags == NoBroadcastSignalHwQueueFlag) ++completedNoBroadcastSignalHwQueues;
+            if (desc.flags & NoBroadcastSignalHwQueueFlag) ++completedNoBroadcastSignalHwQueues;
+            if (desc.flags & NoBroadcastWaitHwQueueFlag) ++completedNoBroadcastWaitHwQueues;
             std::cerr << "{\"nativeHardwareQueueFlagsVerified\":true,\"flags\":" << desc.flags
                       << ",\"unchanged\":true,\"ntstatus\":" << status << "}\n";
             return {{status, a.hHwQueue, 0}, owned.sync, owned.lease->offset, owned.gpuAddress};
@@ -1239,6 +1244,7 @@ public:
                   << ",\"failedContextPriorityChanges\":" << failedContextPriorities
                   << ",\"liveHwQueues\":" << hwQueues.size() << ",\"completedHwQueues\":" << completedHwQueues
                   << ",\"completedNoBroadcastSignalHwQueues\":" << completedNoBroadcastSignalHwQueues
+                  << ",\"completedNoBroadcastWaitHwQueues\":" << completedNoBroadcastWaitHwQueues
                   << ",\"destroyedHwQueues\":" << destroyedHwQueues << ",\"failedHwQueues\":" << failedHwQueues
                   << ",\"hwQueuesReleasedAfterVmExit\":" << hwQueuesReleasedAfterVmExit
                   << ",\"liveSyncObjects\":" << syncObjects.size() << ",\"completedSyncObjects\":" << completedSyncs

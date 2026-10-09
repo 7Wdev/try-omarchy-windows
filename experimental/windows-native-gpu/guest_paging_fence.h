@@ -27,6 +27,7 @@ class Fences {
         }
     };
     File config, resource;
+    std::uint32_t slotCount = 0;
     struct Mapping { void* page; volatile std::uint64_t* fence; };
     std::map<std::uint32_t, Mapping> mappings;
     std::uint64_t reads = 0;
@@ -57,20 +58,23 @@ class Fences {
         closedir(devices);
         if (found.empty()) throw std::runtime_error("Private fence hub absent");
         config.open(found + "/config", O_RDONLY | O_CLOEXEC);
-        if (word(0) != Identity || word(0x40) != Magic || word(0x44) != 64) throw std::runtime_error("Fence hub layout mismatch");
+        slotCount = word(0x44);
+        if (word(0) != Identity || word(0x40) != Magic || !driver_bridge::validFenceSlots(slotCount)) throw std::runtime_error("Fence hub layout mismatch");
         File enable; enable.open(found + "/enable", O_WRONLY | O_CLOEXEC);
         if (enable.fd < 0 || write(enable.fd, "1", 1) != 1) throw std::runtime_error("Cannot enable private fence hub");
         resource.open(found + "/resource0", O_RDONLY | O_CLOEXEC | O_SYNC);
         if (resource.fd < 0) throw std::runtime_error("Fence BAR unavailable");
+        std::fprintf(stderr, "LINUX_BRIDGE fenceHubLayout=true slots=%u stride=4096 readonly=true\n", slotCount);
     }
 public:
     Fences() = default;
     Fences(const Fences&) = delete;
     ~Fences() { for (const auto& mapping : mappings) munmap(mapping.second.page, 4096); }
     void* map(std::uint32_t queue, std::uint64_t offset, const char* category = "paging") {
-        if (!queue || offset % 8 || offset >= driver_bridge::FenceApertureBytes || mappings.count(queue) || mappings.size() >= 64)
+        if (!queue || offset % 8 || offset >= driver_bridge::FenceApertureBytes || mappings.count(queue))
             throw std::runtime_error("Invalid guest fence identity or offset");
         if (resource.fd < 0) discover();
+        if (offset >= slotCount * 4096ull || mappings.size() >= slotCount) throw std::runtime_error("Fence mapping exceeds configured aperture");
         const auto before = word(0x48);
         auto page = mmap(nullptr, 4096, PROT_READ, MAP_SHARED, resource.fd, static_cast<off_t>(offset & ~4095ull));
         if (page == MAP_FAILED) throw std::runtime_error("Guest fence mapping failed");
