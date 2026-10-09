@@ -88,13 +88,39 @@ func (r setupReader) Read(p []byte) (int, error) {
 	return r.r.Read(p)
 }
 
+// Existing user or recovery data protects the whole tree even when verification
+// fails. Completeness alone must never authorize recursive cancellation cleanup.
+func installationDataExists(dir string) bool {
+	for _, name := range []string{"vm/disk.raw", "vm/disk.qcow2", "checkpoints", "guest.previous", "runtime.previous", payloadUpdateStateFilename, updateStateFilename} {
+		if _, err := os.Lstat(filepath.Join(dir, filepath.FromSlash(name))); !os.IsNotExist(err) {
+			return true
+		}
+	}
+	entries, err := os.ReadDir(filepath.Join(dir, "vm"))
+	if err != nil && !os.IsNotExist(err) {
+		return true
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), "before-reset-") || strings.HasPrefix(entry.Name(), "disk.") && strings.Contains(entry.Name(), ".incomplete-") {
+			return true
+		}
+	}
+	return false
+}
+
 func completeInstallExists(dir, diskName string) bool {
-	for _, name := range []string{
-		filepath.Join("guest", "build-spec.json"),
-		filepath.Join("guest", "rootfs.ext4"),
-		filepath.Join("vm", diskName),
-	} {
-		info, err := os.Stat(filepath.Join(dir, name))
+	for _, name := range bootGuestArtifacts {
+		info, err := os.Lstat(filepath.Join(dir, "guest", name))
+		if err != nil || !info.Mode().IsRegular() {
+			return false
+		}
+	}
+	disk, err := inspectInstallationDisk(dir)
+	if err != nil || filepath.Base(disk.Path) != diskName {
+		return false
+	}
+	if disk.Backing != "" {
+		info, err := os.Lstat(disk.Backing)
 		if err != nil || !info.Mode().IsRegular() {
 			return false
 		}
@@ -103,7 +129,7 @@ func completeInstallExists(dir, diskName string) bool {
 }
 
 func cleanupCancelledSetup(dir, executable string, removeAll bool) error {
-	if removeAll {
+	if removeAll && !installationDataExists(dir) {
 		return removeInstallExceptExecutable(dir, executable)
 	}
 	// Restrict cleanup to the launcher's own staging files. A recursive *.part
@@ -150,6 +176,35 @@ func cleanupCancelledSetup(dir, executable string, removeAll bool) error {
 			}
 		}
 	}
+	// Only remove private acquisition directories with a valid digest suffix.
+	// Never follow a linked staging path or touch retained recovery directories.
+	entries, err := os.ReadDir(dir)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	for _, entry := range entries {
+		if !strings.HasPrefix(entry.Name(), ".factory-") || !validSHA256(strings.TrimPrefix(entry.Name(), ".factory-")) || !entry.IsDir() {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		if err := validateMovePath(path); err != nil {
+			continue
+		}
+		if err := os.RemoveAll(path); err != nil {
+			return err
+		}
+	}
+	// Pending publication recovery owns its directories. A pre-publication
+	// cancellation has no journal and can discard the verified staging tree.
+	if _, err := os.Lstat(filepath.Join(dir, payloadUpdateStateFilename)); os.IsNotExist(err) {
+		path := filepath.Join(dir, "guest.next")
+		if info, err := os.Lstat(path); err == nil && info.IsDir() && validateMovePath(path) == nil {
+			if err := os.RemoveAll(path); err != nil {
+				return err
+			}
+		}
+	}
+
 	return nil
 }
 

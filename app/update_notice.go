@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"net/http"
 	"sync/atomic"
 )
 
@@ -38,6 +39,14 @@ func isDownloadFailure(err error) bool {
 	var downloadErr downloadFailure
 	if errors.As(err, &downloadErr) {
 		return true
+	}
+	var transfer *downloadUnavailableError
+	if errors.As(err, &transfer) {
+		return true
+	}
+	var status *downloadHTTPError
+	if errors.As(err, &status) {
+		return status.status == http.StatusRequestTimeout || status.status == http.StatusTooManyRequests || status.status >= 500
 	}
 	var netErr net.Error
 	return errors.As(err, &netErr)

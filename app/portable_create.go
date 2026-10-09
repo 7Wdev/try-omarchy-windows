@@ -44,7 +44,7 @@ func createPortableCopyUsingTool(dir, destination, launcher, tool string, report
 	if err != nil {
 		return err
 	}
-	ready, err := installReceiptMatches(filepath.Join(dir, "guest"), defaultReleaseURL, defaultSumsSHA256, installedGuestArtifacts)
+	ready, err := installReceiptMatches(filepath.Join(dir, "guest"), defaultReleaseURL, defaultSumsSHA256, bootGuestArtifacts)
 	if err != nil {
 		return err
 	}

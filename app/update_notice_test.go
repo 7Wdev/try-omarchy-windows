@@ -5,7 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"testing"
 )
 
@@ -58,5 +61,50 @@ func TestUpdateDownloadNoticeShowsOncePerLaunch(t *testing.T) {
 	}
 	if !other.shouldShow(networkErr) {
 		t.Fatal("a quiet failure must not consume the launch's notice")
+	}
+}
+
+func TestDownloadFailuresKeepUpdateAndFactoryHints(t *testing.T) {
+	for _, tc := range []struct {
+		name                    string
+		status                  int
+		body                    string
+		length                  string
+		wantNotice, wantFactory bool
+	}{
+		{"service unavailable", 503, "", "", true, true},
+		{"request timeout", 408, "", "", true, true},
+		{"rate limited", 429, "", "", true, true},
+		{"missing factory", 404, "", "", false, true},
+		{"bad request", 400, "", "", false, false},
+		{"truncated transfer", 200, "short", "100", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if tc.length != "" {
+					w.Header().Set("Content-Length", tc.length)
+				}
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer server.Close()
+			_, smallErr := fetchSmallFileContext(context.Background(), server.Client(), server.URL, 1024)
+			opts := fastDownloadOptions()
+			opts.ctx = context.Background()
+			opts.maxAttempts = 1
+			downloadErr := downloadVerifiedWithOptions(server.Client(), server.URL, filepath.Join(t.TempDir(), "payload"), testSHA256([]byte("expected payload")), nil, opts)
+			for _, err := range []error{smallErr, downloadErr} {
+				if err == nil {
+					t.Fatal("failure was not reported")
+				}
+				err = fmt.Errorf("staging: %w", err)
+				if got := updateStagingNotice(err); got != tc.wantNotice {
+					t.Errorf("update hint for %v = %v, want %v", err, got, tc.wantNotice)
+				}
+				if got := factoryUnavailable(err); got != tc.wantFactory {
+					t.Errorf("factory hint for %v = %v, want %v", err, got, tc.wantFactory)
+				}
+			}
+		})
 	}
 }

@@ -163,6 +163,44 @@ func writeInstallReceipt(dir, release, manifestSHA256 string, names []string, su
 			ModTimeUnixNano: info.ModTime().UnixNano(),
 		}
 	}
+	return writeInstallReceiptFile(dir, receipt)
+}
+
+// refreshInstallReceiptTimes records the current times of files whose contents
+// were just verified against the receipt, so later launches take the fast path
+// again. Copying an installation changes times without changing contents, and
+// exFAT keeps coarser times than NTFS, so restoring the old time is not enough.
+func refreshInstallReceiptTimes(dir string, names []string) error {
+	data, err := os.ReadFile(filepath.Join(dir, installReceiptFilename))
+	if err != nil {
+		return err
+	}
+	if len(data) > maxInstallReceiptBytes {
+		return fmt.Errorf("install receipt is too large")
+	}
+	var receipt installReceipt
+	if err := json.Unmarshal(data, &receipt); err != nil {
+		return err
+	}
+	for _, name := range names {
+		entry, ok := receipt.Files[name]
+		if !ok {
+			return fmt.Errorf("install receipt has no entry for %s", name)
+		}
+		info, err := os.Lstat(filepath.Join(dir, name))
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() || info.Size() != entry.Size {
+			return fmt.Errorf("%s changed after verification", name)
+		}
+		entry.ModTimeUnixNano = info.ModTime().UnixNano()
+		receipt.Files[name] = entry
+	}
+	return writeInstallReceiptFile(dir, receipt)
+}
+
+func writeInstallReceiptFile(dir string, receipt installReceipt) error {
 	data, err := json.MarshalIndent(receipt, "", "  ")
 	if err != nil {
 		return err

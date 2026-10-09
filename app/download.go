@@ -32,6 +32,17 @@ type downloadFailure struct{ err error }
 func (e downloadFailure) Error() string { return e.err.Error() }
 func (e downloadFailure) Unwrap() error { return e.err }
 
+// HTTP failures identify unavailable remote artifacts without hiding local
+// storage, authentication or publication errors behind a network hint.
+type downloadHTTPError struct{ status int }
+
+func (e *downloadHTTPError) Error() string { return fmt.Sprintf("HTTP %d", e.status) }
+
+type downloadUnavailableError struct{ err error }
+
+func (e *downloadUnavailableError) Error() string { return e.err.Error() }
+func (e *downloadUnavailableError) Unwrap() error { return e.err }
+
 type downloadProgress func(phase string, done, total int64)
 
 type downloadOptions struct {
@@ -192,7 +203,7 @@ func downloadAttemptContext(ctx context.Context, client *http.Client, url, dest,
 		appendPart = offset > 0
 	case http.StatusRequestedRangeNotSatisfiable:
 		if offset == 0 {
-			return false, false, fmt.Errorf("HTTP %d", resp.StatusCode)
+			return false, false, &downloadHTTPError{status: resp.StatusCode}
 		}
 		ok, err := verifyAndCommitPartContext(ctx, tmp, dest, wantSum, progress)
 		if err != nil {
@@ -221,7 +232,7 @@ func downloadAttemptContext(ctx context.Context, client *http.Client, url, dest,
 				return false, false, nil
 			}
 		}
-		return retry, false, fmt.Errorf("HTTP %d", resp.StatusCode)
+		return retry, false, &downloadHTTPError{status: resp.StatusCode}
 	}
 
 	flags := os.O_CREATE | os.O_WRONLY
@@ -258,10 +269,13 @@ func downloadAttemptContext(ctx context.Context, client *http.Client, url, dest,
 		return false, false, closeErr
 	}
 	if copyErr != nil {
+		if retry {
+			copyErr = &downloadUnavailableError{err: copyErr}
+		}
 		return retry, false, copyErr
 	}
 	if segmentLength >= 0 && written != segmentLength {
-		return true, false, fmt.Errorf("download ended after %d of %d response bytes", written, segmentLength)
+		return true, false, &downloadUnavailableError{err: fmt.Errorf("download ended after %d of %d response bytes", written, segmentLength)}
 	}
 	info, err := os.Stat(tmp)
 	if err != nil {

@@ -12,12 +12,17 @@ import (
 func portableResetFixture(t *testing.T) *config {
 	t.Helper()
 	cfg := resetFixture(t)
+	os.Remove(cfg.disk)
 	cfg.portable = true
 	cfg.diskFormat = "qcow2"
 	cfg.disk = filepath.Join(cfg.vmDir, "disk.qcow2")
-	if err := os.WriteFile(cfg.disk, []byte("personal USB files"), 0600); err != nil {
+	independentFixture(t, cfg.disk, 1<<20)
+	f, err := os.OpenFile(cfg.disk, os.O_WRONLY, 0)
+	if err != nil {
 		t.Fatal(err)
 	}
+	f.WriteAt([]byte("personal USB files"), 2048)
+	f.Close()
 	if err := writePortableBackingState(cfg.disk, testSHA256([]byte("older factory"))); err != nil {
 		t.Fatal(err)
 	}
@@ -40,7 +45,7 @@ func TestPortableResetRetainsDiskAndIdentity(t *testing.T) {
 		t.Fatalf("retained: %v %v", retained, err)
 	}
 	old, err := os.ReadFile(retained[0])
-	if err != nil || string(old) != "personal USB files" {
+	if err != nil || !bytes.Contains(old, []byte("personal USB files")) {
 		t.Fatalf("previous disk: %q %v", old, err)
 	}
 	identity, err := os.ReadFile(portableBackingStatePath(retained[0]))
@@ -84,7 +89,7 @@ func TestPortableResetFailureKeepsOldPair(t *testing.T) {
 				lock.Close()
 			}
 			old, err := os.ReadFile(cfg.disk)
-			if err != nil || string(old) != "personal USB files" {
+			if err != nil || !bytes.Contains(old, []byte("personal USB files")) {
 				t.Fatalf("previous disk changed: %q %v", old, err)
 			}
 			if ok, err := portableBackingStateMatches(cfg.disk, testSHA256([]byte("older factory"))); err != nil || !ok {

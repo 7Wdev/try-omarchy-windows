@@ -1,4 +1,5 @@
 {
+  "error.factory.unavailable": "The factory image for {version} is unavailable. Connect to the internet and retry Start fresh, or restore the matching factory image.",
   "tray.menu.restart_update": "Restart to update",
   "update.notice.title": "Try Omarchy update",
   "update.notice.ready": "{version} is ready. Choose Restart to update, or it will be applied the next time you start Omarchy.",

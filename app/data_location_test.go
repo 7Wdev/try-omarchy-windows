@@ -204,7 +204,8 @@ func TestStandardDataDirectorySelectionAcceptsCompleteInstall(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), defaultDataDirectoryName)
 	for _, name := range []string{
 		filepath.Join("guest", "build-spec.json"),
-		filepath.Join("guest", "rootfs.ext4"),
+		filepath.Join("guest", "vmlinuz-linux"),
+		filepath.Join("guest", "initramfs-linux.img"),
 		filepath.Join("vm", "disk.raw"),
 	} {
 		path := filepath.Join(dir, name)

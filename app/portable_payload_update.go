@@ -24,7 +24,7 @@ func portablePayloadDirectory(root, digest string) string {
 }
 
 func updatePayloadNames() []string {
-	return append([]string{runtimeZip, "rootfs.ext4.zst"}, downloadedGuestArtifacts...)
+	return append([]string{runtimeZip}, downloadedGuestArtifacts...)
 }
 
 func verifyUpdatePayload(ctx context.Context, root, digest string) error {
