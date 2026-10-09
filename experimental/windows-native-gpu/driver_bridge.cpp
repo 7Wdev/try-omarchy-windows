@@ -598,7 +598,7 @@ public:
         const auto locks = std::count_if(vendorAllocations.begin(), vendorAllocations.end(), [](const auto& item) { return item.second.locked; });
         // Exhaustion is a native allocation failure that the live UMD can
         // recover from, not a QMP mapping exception after obtaining a lock.
-        if (static_cast<std::size_t>(locks) >= MaxVendorCpuSlots) {
+        if (static_cast<std::size_t>(locks) >= runtime->allocationSlotLimit()) {
             ++vendorCpuSlotQuotaRejections;
             return {{static_cast<std::int32_t>(0xc0000017u), 0, 0}, {0, 0, 0}};
         }
@@ -1010,7 +1010,7 @@ public:
                   << ",\"liveVendorAllocations\":" << vendorAllocations.size()
                   << ",\"peakVendorAllocationObjects\":" << peakVendorAllocationObjects
                   << ",\"vendorAllocationObjectLimit\":" << MaxVendorAllocations
-                  << ",\"vendorCpuSlotLimit\":" << MaxVendorCpuSlots
+                  << ",\"vendorCpuSlotLimit\":" << (runtime ? runtime->allocationSlotLimit() : DefaultVendorCpuSlots)
                   << ",\"vendorCpuSlotQuotaRejections\":" << vendorCpuSlotQuotaRejections
                   << ",\"completedVendorAllocations\":" << completedVendorAllocations
                   << ",\"destroyedVendorAllocations\":" << destroyedVendorAllocations
@@ -1119,7 +1119,16 @@ int main(int argc, char** argv) {
         // Explicit experimental opt-in; keep the existing allocation endpoint
         // closed to vendor-private context data unless requested by its owner.
         bool contexts = false, queries = false, allocations = false, gpuVa = false, residency = false, cpu = false, cpuStoreTest = false, cpuEofTest = false, translation = false, hwQueues = false, hwQueueEofTest = false, sync = false, submit = false, retirement = false;
+        std::size_t cpuSlots = DefaultVendorCpuSlots;
+        bool cpuSlotsConfigured = false;
         while (argc > 1) {
+            if (argc > 2 && std::string(argv[argc - 2]) == "--driver-cpu-slots") {
+                const auto value = std::string(argv[argc - 1]);
+                if (cpuSlotsConfigured || (value != "16" && value != "32" && value != "64"))
+                    throw std::runtime_error("CPU aperture slots must be specified once as 16, 32 or 64");
+                cpuSlots = static_cast<std::size_t>(std::stoul(value)); cpuSlotsConfigured = true;
+                argc -= 2; continue;
+            }
             const auto option = std::string(argv[argc - 1]);
             if (option == "--driver-contexts" && !contexts) contexts = true;
             else if (option == "--driver-queries" && !queries) queries = true;
@@ -1153,6 +1162,7 @@ int main(int argc, char** argv) {
         if (cpu && (!gpuVa || argc != 7 || std::string(argv[1]) != "--run-qemu"))
             throw std::runtime_error("Vendor CPU locks require GPU-address mappings and an owned QEMU runtime");
         if (cpuStoreTest && !cpu) throw std::runtime_error("CPU store control requires explicit CPU-lock opt-in");
+        if (cpuSlotsConfigured && !cpu) throw std::runtime_error("CPU aperture capacity requires the explicit CPU-lock opt-in");
         if (cpuEofTest && (!cpu || cpuStoreTest)) throw std::runtime_error("CPU EOF control requires CPU locks and a separate run from store control");
         if (hwQueueEofTest && (!hwQueues || cpuEofTest || cpuStoreTest))
             throw std::runtime_error("Hardware queue EOF control requires hardware queues and a separate diagnostic run");
@@ -1164,7 +1174,7 @@ int main(int argc, char** argv) {
         const bool ownedRuntime = argc == 7 && std::string(argv[1]) == "--run-qemu";
         if (!ownedRuntime && ((argc != 3 && argc != 7) || std::string(argv[1]) != "--listen")) {
             std::cerr << "Usage: driver-bridge.exe --stdio | --listen port [--guest-section name --guest-ram-bytes count] "
-                "[--driver-contexts] [--driver-queries] [--driver-allocations] [--driver-gpuva] [--driver-residency] [--driver-cpu] [--driver-translation] [--driver-hwqueues] [--driver-syncs] [--driver-submit] [--driver-retirement] [--cpu-store-test | --cpu-eof-test | --hwqueue-eof-test]\n"
+                "[--driver-contexts] [--driver-queries] [--driver-allocations] [--driver-gpuva] [--driver-residency] [--driver-cpu] [--driver-cpu-slots 16|32|64] [--driver-translation] [--driver-hwqueues] [--driver-syncs] [--driver-submit] [--driver-retirement] [--cpu-store-test | --cpu-eof-test | --hwqueue-eof-test]\n"
                 "       driver-bridge.exe --run-qemu qemu firmware kernel initramfs fresh-log --driver-contexts --driver-queries\n"; return 2;
         }
         if (ownedRuntime && (!contexts || !queries)) throw std::runtime_error("Owned QEMU runtime requires explicit query/context opt-ins");
@@ -1194,7 +1204,7 @@ int main(int argc, char** argv) {
         std::cout << "{\"port\":" << ntohs(address.sin_port) << ",\"transport\":\"tcp-loopback\"}\n" << std::flush;
         std::unique_ptr<driver_qemu::Runtime> runtime;
         if (ownedRuntime) runtime = std::make_unique<driver_qemu::Runtime>(ntohs(address.sin_port),
-            qemu_fence::Paths{argv[2], argv[3], argv[4], argv[5], argv[6]}, cpu, cpuStoreTest, cpuEofTest, hwQueueEofTest);
+            qemu_fence::Paths{argv[2], argv[3], argv[4], argv[5], argv[6]}, cpu, cpuStoreTest, cpuEofTest, hwQueueEofTest, cpuSlots);
         fd_set reads; FD_ZERO(&reads); FD_SET(listener.value, &reads); timeval timeout{60, 0};
         if (select(0, &reads, nullptr, nullptr, &timeout) != 1) throw std::runtime_error("Connection timed out");
         Socket client; client.value = accept(listener.value, nullptr, nullptr);

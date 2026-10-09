@@ -32,6 +32,9 @@ def main():
     parser.add_argument('--driver-residency', action='store_true')
     parser.add_argument('--minimum-vendor-residency-requests', type=int, default=0)
     parser.add_argument('--driver-cpu', action='store_true')
+    parser.add_argument('--driver-cpu-slots', type=int, choices=(16, 32, 64), default=16)
+    parser.add_argument('--minimum-expanded-cpu-mappings', type=int, default=0)
+    parser.add_argument('--expected-cpu-slot-quota-rejections', type=int)
     parser.add_argument('--minimum-vendor-cpu-locks', type=int, default=0)
     parser.add_argument('--driver-translation', action='store_true')
     parser.add_argument('--minimum-allocation-translations', type=int, default=0)
@@ -58,6 +61,10 @@ def main():
         parser.error('Residency acceptance requires explicit allocation and residency opt-ins')
     if args.minimum_vendor_cpu_locks < 0 or (args.driver_cpu and not args.driver_gpuva) or (args.minimum_vendor_cpu_locks and not args.driver_cpu):
         parser.error('CPU-lock acceptance requires explicit CPU and GPU-address opt-ins')
+    if args.minimum_expanded_cpu_mappings < 0 or (args.driver_cpu_slots != 16 and not args.driver_cpu) or (args.minimum_expanded_cpu_mappings and args.driver_cpu_slots == 16):
+        parser.error('Expanded CPU mappings require explicit CPU locks with 32 or 64 aperture slots')
+    if args.expected_cpu_slot_quota_rejections is not None and (args.expected_cpu_slot_quota_rejections < 0 or not args.driver_cpu):
+        parser.error('CPU-slot quota acceptance requires explicit CPU locks')
     if args.cpu_store_test and not args.driver_cpu:
         parser.error('CPU store control requires explicit CPU-lock opt-in')
     if args.minimum_allocation_translations < 0 or (args.driver_translation and not args.driver_allocations) or (args.minimum_allocation_translations and not args.driver_translation):
@@ -98,6 +105,7 @@ def main():
                               str(log_path.resolve()), '--driver-contexts', '--driver-queries'] +
                              (['--driver-allocations'] if args.driver_allocations else []) + (['--driver-gpuva'] if args.driver_gpuva else []) +
                              (['--driver-residency'] if args.driver_residency else []) + (['--driver-cpu'] if args.driver_cpu else []) +
+                             (['--driver-cpu-slots', str(args.driver_cpu_slots)] if args.driver_cpu_slots != 16 else []) +
                              (['--driver-translation'] if args.driver_translation else []) +
                              (['--driver-hwqueues'] if args.driver_hwqueues else []) +
                              (['--driver-syncs'] if args.driver_syncs else []) +
@@ -174,6 +182,8 @@ def main():
                      re.findall(r'nativeVendorResident=true count=(\d+) status=(\d+) fence=(\d+) bytesToTrim=(\d+)', log)]
         cpu = [{'bytes': int(b), 'offset': int(o), 'generation': int(g)} for b, o, g in
                re.findall(r'allocationCpuMapped=true direct=true loads=10000 bytes=(\d+) offset=(\d+) generation=(\d+)', log)]
+        cpu_layouts = [{'slots': int(s), 'stride': int(b)} for s, b in re.findall(r'allocationCpuLayout=true slots=(\d+) stride=(\d+)', log)]
+        expanded_cpu = [mapping for mapping in cpu if mapping['offset'] >= 16 * 1048576]
         cpu_unlocks = log.count('nativeVendorCpuUnlocked=true')
         cpu_unmaps = log.count('allocationCpuUnmapped=true direct=true mmioReads=0 mmioWrites=0')
         cpu_released_after_exit = cleanup.get('cpuLocksReleasedAfterVmExit', 0)
@@ -268,6 +278,9 @@ def main():
                         all(retired['target'] == made['fence'] and retired['observed'] >= made['fence'] for retired, made in zip(resident_retirements, residency)))
         if args.driver_cpu:
             accepted = (accepted and len(cpu) >= args.minimum_vendor_cpu_locks and 37 not in unsupported and 55 not in unsupported and
+                        cpu_layouts == [{'slots': args.driver_cpu_slots, 'stride': 1048576}] and
+                        cleanup.get('vendorCpuSlotLimit') == control.get('allocationApertureSlots') == args.driver_cpu_slots and
+                        len(expanded_cpu) >= args.minimum_expanded_cpu_mappings and
                         cpu_unlocks + cpu_released_after_exit == len(cpu) and cpu_unmaps == cpu_unlocks and
                         (not guest_eof or cpu_unlocks == 0) and
                         cleanup.get('completedVendorCpuLocks') == len(cpu) and cleanup.get('completedVendorCpuUnlocks') == len(cpu) and
@@ -275,6 +288,8 @@ def main():
                         cleanup.get('liveVendorCpuBytes') == 0 and control.get('liveAllocationMappings') == 0 and
                         control.get('liveAllocationMappedBytes') == 0 and control.get('allocationMappingsCreated') == len(cpu) and
                         control.get('allocationUnmapAcknowledgements') == cpu_unlocks)
+        if args.expected_cpu_slot_quota_rejections is not None:
+            accepted = accepted and cleanup.get('vendorCpuSlotQuotaRejections') == args.expected_cpu_slot_quota_rejections
         if args.cpu_eof_test:
             accepted = (accepted and len(cpu) > 0 and 'allocationCpuEofTest=true exitingWithLockOwned=true' in log and
                         cleanup.get('cpuLocksReleasedAfterVmExit') == len(cpu) and result is None)
@@ -326,6 +341,10 @@ def main():
                   'vendorResidencyOptIn': args.driver_residency, 'nativeVendorResidencyRequests': residency,
                   'minimumVendorResidencyRequestsRequired': args.minimum_vendor_residency_requests,
                   'vendorCpuOptIn': args.driver_cpu, 'nativeVendorCpuLocks': cpu,
+                  'configuredCpuApertureSlots': args.driver_cpu_slots, 'guestCpuApertureLayouts': cpu_layouts,
+                  'directCpuMappingsBeyondDefaultAperture': expanded_cpu,
+                  'minimumExpandedCpuMappingsRequired': args.minimum_expanded_cpu_mappings,
+                  'expectedCpuSlotQuotaRejections': args.expected_cpu_slot_quota_rejections,
                   'minimumVendorCpuLocksRequired': args.minimum_vendor_cpu_locks,
                   'guestCpuViewsUnmapped': cpu_unmaps, 'nativeVendorCpuLocksReleased': cpu_unlocks,
                   'cpuLocksRetainedUntilOwnedVmExit': cpu_released_after_exit,

@@ -205,6 +205,8 @@ struct Fake : Driver {
     }
 };
 int main() {
+    require(validVendorCpuSlots(16) && validVendorCpuSlots(32) && validVendorCpuSlots(64));
+    for (const auto slots : {0u, 1u, 8u, 15u, 17u, 31u, 33u, 63u, 65u, UINT32_MAX}) require(!validVendorCpuSlots(slots));
     Fake driver;
     {
         Session s(driver);

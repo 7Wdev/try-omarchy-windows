@@ -128,7 +128,7 @@ try:
             size = 0 if native_failure or mode == 'cpu-bad-bytes' else 65537 if mode == 'cpu-bad-alignment' else 65536
             reserved = 1 if mode == 'cpu-bad-reserved' else 0
             generation = 0 if native_failure or mode == 'cpu-bad-generation' else 1
-            offset = 16777216 if mode == 'cpu-bad-offset' else 1 if mode == 'cpu-bad-slot' else 0
+            offset = 67108864 if mode == 'cpu-bad-offset' else 1 if mode == 'cpu-bad-slot' else 0
             if mode == 'cpu-bad-failure': size = 4096
             data = struct.pack('<IIQ',size,reserved,generation)
             if mode == 'cpu-short': data = data[:-1]

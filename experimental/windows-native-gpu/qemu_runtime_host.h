@@ -147,6 +147,7 @@ class Runtime {
     std::unique_ptr<Qmp> qmp;
     std::array<std::optional<FenceLease>, 64> leases;
     std::array<std::optional<AllocationLease>, driver_bridge::MaxVendorCpuSlots> allocationLeases;
+    std::size_t allocationSlots = driver_bridge::DefaultVendorCpuSlots;
     std::uint64_t allocationGeneration = 0;
     unsigned allocationMapped = 0, allocationMappedTotal = 0, allocationUnmappedTotal = 0;
     std::uint32_t allocationMappedBytes = 0;
@@ -156,8 +157,10 @@ class Runtime {
     bool stopped = false, failed = false;
     std::filesystem::path logfile;
 public:
-    Runtime(unsigned short driverPort, const qemu_fence::Paths& paths, bool enableCpu = false, bool cpuStoreTest = false, bool cpuEofTest = false, bool hwQueueEofTest = false)
-        : allocationsEnabled(enableCpu), logfile(std::filesystem::absolute(paths.log)) {
+    Runtime(unsigned short driverPort, const qemu_fence::Paths& paths, bool enableCpu = false, bool cpuStoreTest = false, bool cpuEofTest = false, bool hwQueueEofTest = false, std::size_t cpuSlots = driver_bridge::DefaultVendorCpuSlots)
+        : allocationSlots(cpuSlots), allocationsEnabled(enableCpu), logfile(std::filesystem::absolute(paths.log)) {
+        if (!driver_bridge::validVendorCpuSlots(cpuSlots) || (!enableCpu && cpuSlots != driver_bridge::DefaultVendorCpuSlots))
+            throw std::runtime_error("Invalid configured allocation aperture capacity");
         const auto executable = std::filesystem::absolute(paths.qemu).wstring();
         job.value = CreateJobObjectW(nullptr, nullptr);
         JOBOBJECT_EXTENDED_LIMIT_INFORMATION limit{};
@@ -198,7 +201,8 @@ public:
         if (allocationsEnabled) {
             args.push_back(L"-device");
             args.push_back(L"wddm-allocation-hub,id=wddm-allocations,source-process=" +
-                           std::to_wstring(reinterpret_cast<std::uintptr_t>(source.value)));
+                           std::to_wstring(reinterpret_cast<std::uintptr_t>(source.value)) +
+                           (allocationSlots == driver_bridge::DefaultVendorCpuSlots ? L"" : L",slot-count=" + std::to_wstring(allocationSlots)));
         }
         std::wstring command;
         for (const auto& argument : args) { if (!command.empty()) command += L' '; command += qemu_fence::quote(argument); }
@@ -252,14 +256,15 @@ public:
     bool cleanExit() const { return stopped && !failed && !process.forced && process.exit == 0; }
     bool hasStopped() const { return stopped; }
     unsigned liveMappings() const { return mapped; }
+    std::size_t allocationSlotLimit() const { return allocationSlots; }
     AllocationLease mapAllocation(void* data, std::uint32_t bytes) {
         const auto source = reinterpret_cast<std::uintptr_t>(data);
         if (!allocationsEnabled || stopped || !source || source % 4096 || !bytes || bytes % 4096 || bytes > 1024 * 1024 ||
             source > (1ull << 47) - bytes || allocationGeneration == UINT64_MAX)
             throw std::runtime_error("Invalid owned allocation mapping");
         std::uint32_t slot = 0;
-        for (; slot < allocationLeases.size(); ++slot) if (!allocationLeases[slot]) break;
-        if (slot == allocationLeases.size()) throw std::runtime_error("Allocation slot quota exceeded");
+        for (; slot < allocationSlots; ++slot) if (!allocationLeases[slot]) break;
+        if (slot == allocationSlots) throw std::runtime_error("Allocation slot quota exceeded");
         const AllocationLease lease{slot, bytes, ++allocationGeneration, slot * 1024ull * 1024};
         try { qmp->allocationMapping("map:" + std::to_string(slot) + ':' + std::to_string(source) + ':' +
                                      std::to_string(bytes) + ':' + std::to_string(lease.generation)); }
@@ -284,6 +289,7 @@ public:
                   << ",\"fenceUnmapAcknowledgements\":" << unmappedTotal
                   << ",\"liveAllocationMappings\":" << allocationMapped << ",\"liveAllocationMappedBytes\":" << allocationMappedBytes
                   << ",\"allocationMappingsCreated\":" << allocationMappedTotal
+                  << ",\"allocationApertureSlots\":" << allocationSlots
                   << ",\"allocationUnmapAcknowledgements\":" << allocationUnmappedTotal << "}\n";
     }
 };

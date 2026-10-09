@@ -19,7 +19,11 @@ constexpr std::uint32_t GuestPagingCapability = 128;
 constexpr std::uint32_t VendorAllocationCapability = 256;
 constexpr std::uint32_t MaxVendorPrivateBytes = 4000;
 constexpr std::size_t MaxVendorAllocations = 32;
-constexpr std::size_t MaxVendorCpuSlots = 16;
+constexpr std::size_t DefaultVendorCpuSlots = 16;
+constexpr std::size_t MaxVendorCpuSlots = 64;
+inline bool validVendorCpuSlots(std::size_t slots) {
+    return slots >= DefaultVendorCpuSlots && slots <= MaxVendorCpuSlots && !(slots & (slots - 1));
+}
 constexpr std::uint32_t VendorGpuVaCapability = 512;
 constexpr std::uint32_t VendorResidencyCapability = 1024;
 constexpr std::uint32_t VendorCpuCapability = 2048;

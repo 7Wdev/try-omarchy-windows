@@ -28,6 +28,7 @@ class Memory {
         }
     };
     File config, resource;
+    std::size_t slotCount = 0;
     struct Mapping { void* data; std::uint32_t bytes, references; std::uint64_t offset, generation; };
     std::map<std::uint32_t, Mapping> mappings;
     unsigned created = 0, unmapped = 0;
@@ -58,12 +59,15 @@ class Memory {
         closedir(devices);
         if (found.empty()) throw std::runtime_error("Allocation hub absent");
         config.open(found + "/config", O_RDONLY | O_CLOEXEC);
-        if (word(0) != Identity || word(0x40) != Magic || word(0x44) != driver_bridge::MaxVendorCpuSlots || word(0x48) != driver_bridge::VendorCpuSlotBytes)
+        slotCount = word(0x44);
+        if (word(0) != Identity || word(0x40) != Magic || !driver_bridge::validVendorCpuSlots(slotCount) || word(0x48) != driver_bridge::VendorCpuSlotBytes)
             throw std::runtime_error("Allocation hub layout mismatch");
         File enable; enable.open(found + "/enable", O_WRONLY | O_CLOEXEC);
         if (enable.fd < 0 || write(enable.fd, "1", 1) != 1) throw std::runtime_error("Cannot enable allocation hub");
         resource.open(found + "/resource0", O_RDWR | O_CLOEXEC | O_SYNC);
         if (resource.fd < 0) throw std::runtime_error("Allocation BAR unavailable");
+        std::fprintf(stderr, "LINUX_BRIDGE allocationCpuLayout=true slots=%zu stride=%llu\n", slotCount,
+                     static_cast<unsigned long long>(driver_bridge::VendorCpuSlotBytes));
     }
 public:
     Memory() = default;
@@ -76,10 +80,12 @@ public:
         ++entry.references; return entry.data;
     }
     void* map(std::uint32_t allocation, std::uint64_t offset, driver_bridge::VendorCpuReply reply) {
-        if (!allocation || !driver_bridge::validVendorCpuReply(offset, reply) || mappings.count(allocation) || mappings.size() >= 16)
+        if (!allocation || !driver_bridge::validVendorCpuReply(offset, reply) || mappings.count(allocation))
             throw std::runtime_error("Invalid allocation CPU lease");
         for (const auto& item : mappings) if (item.second.offset == offset) throw std::runtime_error("Duplicate allocation CPU slot");
         if (resource.fd < 0) discover();
+        if (offset / driver_bridge::VendorCpuSlotBytes >= slotCount || mappings.size() >= slotCount)
+            throw std::runtime_error("Allocation CPU lease exceeds configured aperture");
         const auto beforeRead = word(0x4c), beforeWrite = word(0x50);
         auto data = mmap(nullptr, reply.bytes, PROT_READ | PROT_WRITE, MAP_SHARED, resource.fd, static_cast<off_t>(offset));
         if (data == MAP_FAILED) throw std::runtime_error("Allocation CPU view failed");

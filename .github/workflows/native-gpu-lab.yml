@@ -19,6 +19,7 @@ jobs:
         run: |
           scripts/fork/build.ps1
           experimental/windows-native-gpu/build.ps1
+          python experimental/windows-native-gpu/test_driver_cli.py --bridge experimental/windows-native-gpu/build/driver-bridge.exe
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: native-gpu-experiment
