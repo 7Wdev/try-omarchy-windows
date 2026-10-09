@@ -2,8 +2,9 @@
 
 ## Unreleased
 
-- Lay the groundwork for smoother guest cursors with the matching host update (#321).
-
+- The cursor is drawn by Windows with Omarchy's shapes, so it moves as smoothly
+  as the Windows pointer even when the desktop is busy. Existing installs get it
+  after running Update > Omarchy once (#321).
 - System updates keep trying while Omarchy is running when the connection fails.
 - Update downloads give slow Windows name resolution more time.
 - Install the current launcher's system update from browser-downloaded release
