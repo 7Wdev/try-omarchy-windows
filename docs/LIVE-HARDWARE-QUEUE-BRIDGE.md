@@ -1,5 +1,10 @@
 # Live NVIDIA hardware queues in QEMU
 
+The counts and commands below describe the original acceptance. Current
+sources also support [allocation retirement with live queues](LIVE-ALLOCATION-RETIREMENT.md),
+with 32 allocation objects and a separate 16-slot CPU aperture. Omit the
+historical `--expected-allocation-limit 16` for current sources.
+
 The live NVIDIA Linux runtime now creates Windows hardware queues through an
 owned QEMU/WHPX bridge. Physical testing on the RTX 5090 Laptop GPU created
 three queues and 16 allocations, mapped GPU addresses, made all allocations

@@ -58,7 +58,7 @@ class Memory {
         closedir(devices);
         if (found.empty()) throw std::runtime_error("Allocation hub absent");
         config.open(found + "/config", O_RDONLY | O_CLOEXEC);
-        if (word(0) != Identity || word(0x40) != Magic || word(0x44) != 16 || word(0x48) != driver_bridge::VendorCpuSlotBytes)
+        if (word(0) != Identity || word(0x40) != Magic || word(0x44) != driver_bridge::MaxVendorCpuSlots || word(0x48) != driver_bridge::VendorCpuSlotBytes)
             throw std::runtime_error("Allocation hub layout mismatch");
         File enable; enable.open(found + "/enable", O_WRONLY | O_CLOEXEC);
         if (enable.fd < 0 || write(enable.fd, "1", 1) != 1) throw std::runtime_error("Cannot enable allocation hub");

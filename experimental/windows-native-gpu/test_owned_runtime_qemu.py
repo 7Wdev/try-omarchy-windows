@@ -42,6 +42,8 @@ def main():
     parser.add_argument('--minimum-sync-mutexes', type=int, default=0)
     parser.add_argument('--driver-submit', action='store_true')
     parser.add_argument('--minimum-submissions', type=int, default=0)
+    parser.add_argument('--driver-retirement', action='store_true')
+    parser.add_argument('--minimum-retirements-with-queues', type=int, default=0)
     parser.add_argument('--expected-allocation-limit', type=int, default=0, help='Require the observed diagnostic allocation-count boundary')
     parser.add_argument('--cpu-store-test', action='store_true', help='Explicit first/last-word diagnostic stores, checked and restored by Windows')
     parser.add_argument('--cpu-eof-test', action='store_true', help='Exit the guest probe while it owns the CPU lock; require VM-exit-first native teardown')
@@ -64,6 +66,8 @@ def main():
         parser.error('Hardware queue acceptance requires allocation translation and hardware queue opt-ins')
     if args.expected_allocation_limit < 0 or (args.expected_allocation_limit and not args.driver_allocations):
         parser.error('An allocation-limit boundary requires allocation opt-in')
+    if args.minimum_retirements_with_queues < 0 or (args.driver_retirement and not args.driver_hwqueues) or (args.minimum_retirements_with_queues and not args.driver_retirement):
+        parser.error('Allocation retirement requires the owned hardware queue opt-in')
     if min(args.minimum_monitored_fences, args.minimum_sync_mutexes) < 0 or ((args.minimum_monitored_fences or args.minimum_sync_mutexes) and not args.driver_syncs):
         parser.error('Synchronization acceptance requires the explicit synchronization opt-in')
     if args.cpu_eof_test and (not args.driver_cpu or args.cpu_store_test):
@@ -98,6 +102,7 @@ def main():
                              (['--driver-hwqueues'] if args.driver_hwqueues else []) +
                              (['--driver-syncs'] if args.driver_syncs else []) +
                              (['--driver-submit'] if args.driver_submit else []) +
+                             (['--driver-retirement'] if args.driver_retirement else []) +
                              (['--cpu-store-test'] if args.cpu_store_test else []) + (['--cpu-eof-test'] if args.cpu_eof_test else []) +
                              (['--hwqueue-eof-test'] if args.hwqueue_eof_test else []),
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
@@ -173,6 +178,9 @@ def main():
         cpu_unmaps = log.count('allocationCpuUnmapped=true direct=true mmioReads=0 mmioWrites=0')
         cpu_released_after_exit = cleanup.get('cpuLocksReleasedAfterVmExit', 0)
         allocation_limit_rejections = log.count('LINUX_BRIDGE ioctlFailed nr=6 errno=24')
+        retirement_batches = [{'count': int(c), 'queues': int(q)} for c, q in re.findall(
+            r'nativeVendorAllocationsDestroyed=true count=(\d+) hardwareQueuesAlive=(\d+)', log)]
+        retirements_with_queues = sum(batch['count'] for batch in retirement_batches if batch['queues'])
         map_retirements = [r for r in retirements if r['operation'] == 'gpuva']
         resident_retirements = [r for r in retirements if r['operation'] == 'residency']
         command_retirements = [r for r in retirements if r['operation'] == 'command']
@@ -205,6 +213,14 @@ def main():
                         cleanup.get('liveVendorAllocations') == 0 and cleanup.get('failedVendorAllocations') == 0 and
                         cleanup.get('completedVendorAllocations') == allocations and cleanup.get('destroyedVendorAllocations') == allocations and
                         6 not in unsupported and 19 not in unsupported)
+        retirement_verified = (args.driver_retirement and retirements_with_queues >= max(1, args.minimum_retirements_with_queues) and
+                               cleanup.get('allocationRetirementOptIn') is True and
+                               cleanup.get('vendorDestructionsWithHwQueues') == retirements_with_queues)
+        if args.driver_retirement:
+            accepted = (accepted and retirement_verified)
+        else:
+            accepted = (accepted and cleanup.get('allocationRetirementOptIn') is False and
+                        cleanup.get('vendorDestructionsWithHwQueues') == 0 and retirements_with_queues == 0)
         if args.expected_allocation_limit:
             accepted = (accepted and allocation_limit_rejections > 0 and
                         cleanup.get('peakVendorAllocationObjects') == args.expected_allocation_limit and
@@ -288,6 +304,11 @@ def main():
                   'minimumVendorAllocationsRequired': args.minimum_vendor_allocations,
                   'expectedAllocationObjectLimit': args.expected_allocation_limit,
                   'allocationLimitRejections': allocation_limit_rejections,
+                  'allocationRetirementOptIn': args.driver_retirement,
+                  'nativeAllocationRetirementWithQueuesVerified': bool(retirement_verified),
+                  'guestAllocationRetirementBatches': retirement_batches,
+                  'guestAllocationRetirementsWithHardwareQueues': retirements_with_queues,
+                  'minimumRetirementsWithHardwareQueuesRequired': args.minimum_retirements_with_queues,
                   'allocationTranslationOptIn': args.driver_translation, 'guestAllocationDriverAliasesCreated': translations,
                   'minimumAllocationTranslationsRequired': args.minimum_allocation_translations,
                   'hardwareQueueOptIn': args.driver_hwqueues, 'nativeHardwareQueuesCreatedByLiveRuntime': hwqueues,

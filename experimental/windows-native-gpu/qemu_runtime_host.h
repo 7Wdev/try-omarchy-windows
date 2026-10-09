@@ -5,6 +5,7 @@
 #include <windows.h>
 #include <bcrypt.h>
 #include "qmp_protocol.h"
+#include "driver_wire.h"
 #include "qemu_fence_test.h"
 #include <array>
 #include <memory>
@@ -145,7 +146,7 @@ class Runtime {
     OwnedProcess process;
     std::unique_ptr<Qmp> qmp;
     std::array<std::optional<FenceLease>, 64> leases;
-    std::array<std::optional<AllocationLease>, 16> allocationLeases;
+    std::array<std::optional<AllocationLease>, driver_bridge::MaxVendorCpuSlots> allocationLeases;
     std::uint64_t allocationGeneration = 0;
     unsigned allocationMapped = 0, allocationMappedTotal = 0, allocationUnmappedTotal = 0;
     std::uint32_t allocationMappedBytes = 0;

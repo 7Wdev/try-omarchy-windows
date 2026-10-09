@@ -15,6 +15,7 @@ struct Fake : Driver {
     bool guestPagingEnabled = false;
     int badPagingReply = 0;
     bool vendorEnabled = false;
+    int badVendorDestroyReply = 0;
     bool gpuVaEnabled = false;
     bool residencyEnabled = false;
     bool cpuEnabled = false;
@@ -23,6 +24,7 @@ struct Fake : Driver {
     std::uint32_t translationOverride = 0;
     std::vector<std::uint32_t> lastTranslationHandles;
     bool hwQueuesEnabled = false;
+    bool retirementEnabled = false;
     int badHwQueueReply = 0;
     std::map<std::uint32_t, std::uint32_t> hwQueueParents;
     bool syncEnabled = false;
@@ -48,7 +50,7 @@ struct Fake : Driver {
                 (gpuVaEnabled ? VendorGpuVaCapability : 0u) | (residencyEnabled ? VendorResidencyCapability : 0u) |
                 (cpuEnabled ? VendorCpuCapability : 0u) | (translationEnabled ? VendorTranslationCapability : 0u) |
                 (hwQueuesEnabled ? HwQueueCapability : 0u) | (syncEnabled ? SyncCapability : 0u) |
-                (submitEnabled ? HwSubmitCapability : 0u), 0x10de, 123};
+                (submitEnabled ? HwSubmitCapability : 0u) | (retirementEnabled ? VendorRetirementCapability : 0u), 0x10de, 123};
     }
     Result created() { ++calls; return {fail ? -123 : 0, ++next, 0}; }
     Result openAdapter() override { return created(); }
@@ -79,6 +81,9 @@ struct Fake : Driver {
         require(!handles.empty()); ++calls;
         for (const auto handle : handles) require(vendorOwners.at(handle) == device);
         if (fail) return {-123, 0, 0};
+        if (badVendorDestroyReply) return {badVendorDestroyReply == 1 ? 259 : 0,
+                                          badVendorDestroyReply == 2 ? 777u : 0u,
+                                          badVendorDestroyReply == 3 ? 1ull : 0ull};
         for (const auto handle : handles) { vendorOwners.erase(handle); destroyed.push_back(Kind::VendorAllocation); }
         return {0, 0, 0};
     }
@@ -654,10 +659,13 @@ int main() {
         gpuVa.fail = true; release(allocation); gpuVa.fail = false;
         require(header(s.dispatch(request(Op::MapVendorAllocation, allocation, input))).status == -16);
         require(header(release(allocation)).status == 0);
-        for (std::size_t n = 0; n < MaxVendorAllocations; ++n) {
+        for (std::size_t n = 0; n < MaxAllocatedBytes / MaxAllocation; ++n) {
             const auto id = create(); auto large = input; large.sizePages = MaxVendorMapPages;
             require(header(s.dispatch(request(Op::MapVendorAllocation, id, large))).status == 0);
         }
+        const auto extra = create(); auto large = input; large.sizePages = MaxVendorMapPages;
+        before = gpuVa.calls;
+        require(header(s.dispatch(request(Op::MapVendorAllocation, extra, large))).status == -24 && gpuVa.calls == before);
         // Disconnect releases all mapped native allocations before their devices.
     }
     require(gpuVa.vendorOwners.empty());
@@ -899,12 +907,23 @@ int main() {
         auto release = request(Op::DestroyVendorAllocations, device, DestroyVendorDesc{1, 0});
         const auto bytes = reinterpret_cast<const std::uint8_t*>(&allocation); release.insert(release.end(), bytes, bytes + 4);
         before = hardware.calls; require(header(s.dispatch(release)).status == -16 && hardware.calls == before);
+        hardware.retirementEnabled = true;
+        hardware.fail = true; out = s.dispatch(release); std::memcpy(&body, out.data() + sizeof(Header), sizeof body);
+        require(header(out).status == 0 && body.ntstatus == -123 && !hardware.vendorOwners.empty());
+        hardware.fail = false;
+        for (int bad = 1; bad <= 3; ++bad) {
+            hardware.badVendorDestroyReply = bad;
+            require(header(s.dispatch(release)).status == -5 && !hardware.vendorOwners.empty());
+        }
+        hardware.badVendorDestroyReply = 0;
+        require(header(s.dispatch(release)).status == 0 && hardware.vendorOwners.empty() && !hardware.hwQueueParents.empty());
+        before = hardware.calls; require(header(s.dispatch(release)).status == -9 && hardware.calls == before);
+        hardware.retirementEnabled = false;
         hardware.fail = true; out = s.dispatch(request(Op::DestroyHwQueue, queue)); std::memcpy(&body, out.data() + sizeof(Header), sizeof body);
         require(header(out).status == 0 && body.ntstatus == -123 && !hardware.hwQueueParents.empty());
         hardware.fail = false;
         require(header(s.dispatch(request(Op::DestroyHwQueue, queue))).status == 0);
         require(header(s.dispatch(request(Op::DestroyHwQueue, queue))).status == -9);
-        require(header(s.dispatch(release)).status == 0);
         for (std::size_t n = 0; n < MaxHwQueues; ++n) require(header(s.dispatch(create(context))).handle != 0);
         before = hardware.calls; require(header(s.dispatch(create(context))).status == -24 && hardware.calls == before);
         // An allocation created after the queues still outlives them at EOF.

@@ -514,8 +514,10 @@ public:
                 }
                 if (a.hResource || !a.AllocationCount || a.AllocationCount > MaxVendorAllocations || !a.phAllocationList ||
                     (a.Flags.Value & ~3u)) throw Error(EINVAL);
+                unsigned ownedQueues = 0;
                 for (const auto& queue : hwQueueContexts)
-                    if (contextOwners.at(queue.second).device == a.hDevice) throw Error(EBUSY);
+                    if (contextOwners.at(queue.second).device == a.hDevice) ++ownedQueues;
+                if (ownedQueues && !(caps.flags & VendorRetirementCapability)) throw Error(EBUSY);
                 // Accept the public destruction hints, but always request
                 // synchronous native destruction rather than trusting the
                 // guest's AssumeNotInUse hint to shorten object lifetime.
@@ -532,10 +534,11 @@ public:
                 for (unsigned n = 0; n < a.AllocationCount; ++n) wireIds.push_back(wireAllocation(a.phAllocationList[n]));
                 const auto begin = reinterpret_cast<const std::uint8_t*>(wireIds.data());
                 packet.insert(packet.end(), begin, begin + a.AllocationCount * sizeof(wireIds[0]));
-                const auto result = call(packet);
-                if (result.header.handle != a.hDevice || result.result.value) { transport.fail(); throw Error(EPROTO); }
+                const auto result = call(packet, 0, true);
+                if (result.header.handle != a.hDevice || result.result.value || result.result.ntstatus > 0) { transport.fail(); throw Error(EPROTO); }
+                checkNt(result.result.ntstatus);
                 for (unsigned n = 0; n < a.AllocationCount; ++n) { vendorOwners.erase(a.phAllocationList[n]); vendorWireIds.erase(a.phAllocationList[n]); vendorGpuRanges.erase(a.phAllocationList[n]); }
-                std::fprintf(stderr, "LINUX_BRIDGE nativeVendorAllocationsDestroyed=true count=%u\n", a.AllocationCount); return 0;
+                std::fprintf(stderr, "LINUX_BRIDGE nativeVendorAllocationsDestroyed=true count=%u hardwareQueuesAlive=%u\n", a.AllocationCount, ownedQueues); return 0;
             }
             case 11: {
                 auto& a = args<D3DDDI_MAKERESIDENT>(requestNumber, pointer);

@@ -18,7 +18,8 @@ constexpr std::uint32_t QueryCapability = 64;
 constexpr std::uint32_t GuestPagingCapability = 128;
 constexpr std::uint32_t VendorAllocationCapability = 256;
 constexpr std::uint32_t MaxVendorPrivateBytes = 4000;
-constexpr std::size_t MaxVendorAllocations = 16;
+constexpr std::size_t MaxVendorAllocations = 32;
+constexpr std::size_t MaxVendorCpuSlots = 16;
 constexpr std::uint32_t VendorGpuVaCapability = 512;
 constexpr std::uint32_t VendorResidencyCapability = 1024;
 constexpr std::uint32_t VendorCpuCapability = 2048;
@@ -42,7 +43,7 @@ inline bool validHwQueue(HwQueueDesc d) {
 struct VendorTranslationDesc { std::uint32_t device, adapter, reserved, reserved2; };
 static_assert(sizeof(VendorTranslationDesc) == 16, "fixed allocation translation layout");
 constexpr std::uint64_t VendorCpuSlotBytes = MaxAllocation;
-constexpr std::uint64_t VendorCpuApertureBytes = MaxVendorAllocations * VendorCpuSlotBytes;
+constexpr std::uint64_t VendorCpuApertureBytes = MaxVendorCpuSlots * VendorCpuSlotBytes;
 constexpr std::uint64_t CpuStoreFirstMarker = 0x4350554649525354ull, CpuStoreLastMarker = 0x4350554c41535421ull;
 struct VendorCpuDesc { std::uint32_t device, flags; };
 struct VendorCpuReply { std::uint32_t bytes, reserved; std::uint64_t generation; };
@@ -63,6 +64,7 @@ struct ResidentReply { std::uint32_t count, reserved; std::uint64_t bytesToTrim;
 static_assert(sizeof(ResidentReply) == 16, "fixed residency output");
 constexpr std::uint64_t MaxGpuAddress = 1ull << 48;
 constexpr std::uint32_t HwSubmitCapability = 32768;
+constexpr std::uint32_t VendorRetirementCapability = 65536;
 constexpr std::uint32_t MaxHwSubmissions = 16;
 struct HwSubmitDesc {
     std::uint64_t address, fence;
@@ -562,10 +564,11 @@ public:
             const auto device = objects.find(h.handle);
             if (device == objects.end() || device->second.kind != Kind::Device) return reply(h, -9);
             if (op == Op::DestroyVendorAllocations) {
-                // No private queue format decoder is assumed. Conservatively
-                // retain all allocations on the device while a queue exists.
-                for (const auto& queue : objects)
-                    if (queue.second.kind == Kind::HwQueue && objects.at(queue.second.parent).parent == h.handle) return reply(h, -16);
+                // Opt-in native retirement uses VidMm's documented deferred
+                // destruction contract rather than decoding private queue data.
+                if (!(driver.capabilities().flags & VendorRetirementCapability))
+                    for (const auto& queue : objects)
+                        if (queue.second.kind == Kind::HwQueue && objects.at(queue.second.parent).parent == h.handle) return reply(h, -16);
                 if (packet.size() < sizeof h + sizeof(DestroyVendorDesc)) return reply(h, -22);
                 DestroyVendorDesc desc{}; std::memcpy(&desc, packet.data() + sizeof h, sizeof desc);
                 if (desc.reserved || !desc.count || desc.count > MaxVendorAllocations ||
@@ -581,7 +584,8 @@ public:
                     native[n] = entry->second.nativeHandle;
                 }
                 const auto result = driver.destroyVendorAllocations(device->second.nativeHandle, native);
-                if (result.ntstatus >= 0) for (const auto id : ids) {
+                if (result.ntstatus > 0 || result.nativeHandle || result.value) return reply(h, -5);
+                if (result.ntstatus == 0) for (const auto id : ids) {
                     vendorMappedPages -= objects.at(id).gpuPages; objects.erase(id);
                 }
                 return reply(h, 0, h.handle, &result);

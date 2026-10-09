@@ -109,7 +109,11 @@ try:
                  ntstatus=-1073741811 if mode == 'allocation-nt-failure' else 0)
         elif op == 0x2051:
             assert handle == 2 and packet[16:] == struct.pack('<III',1,0,3)
-            send(op,handle,ntstatus=-1073741811 if (mode == 'allocation-failed-destroy' and operations.count(op) == 1) or mode == 'translation-failed-cleanup' else 0)
+            send(op,0 if mode == 'allocation-destroy-bad-id' else handle,
+                 value=1 if mode == 'allocation-destroy-bad-value' else 0,
+                 data=b'X' if mode == 'allocation-destroy-long' else b'',
+                 ntstatus=-1073741811 if (mode == 'allocation-failed-destroy' and operations.count(op) == 1) or mode == 'translation-failed-cleanup' else
+                          259 if mode == 'allocation-destroy-bad-status' else 0)
         elif op == 0x2056:
             assert handle == 3 and packet[16:] == struct.pack('<IIII',2,1,0,0)
             failed = mode in ('translation-nt-failure','translation-bad-failure','translation-failed-cleanup')
@@ -142,6 +146,7 @@ if mode == 'paging-no-hub': assert operations[-2:] == [0x2040,0x2008], operation
 if mode in ('allocation-disabled','allocation-invalid'): assert 0x2050 not in operations, operations
 if mode == 'allocation-normal': assert operations.count(0x2051) == 1, operations
 if mode == 'allocation-failed-destroy': assert operations.count(0x2051) == 2, operations
+if mode.startswith('allocation-destroy-'): assert operations.count(0x2051) == 1, operations
 if mode.startswith('gpuva-'): assert operations == [0x2000], operations
 if mode.startswith('resident-'): assert operations == [0x2000], operations
 if mode in ('cpu-disabled','cpu-invalid'): assert 0x2054 not in operations, operations
@@ -174,6 +179,7 @@ def main():
                      'paging-bad-reserved', 'paging-bad-value', 'paging-short', 'paging-no-hub',
                      'allocation-normal', 'allocation-disabled', 'allocation-invalid', 'allocation-nt-failure',
                      'allocation-bad-id', 'allocation-bad-va', 'allocation-short', 'allocation-failed-destroy',
+                     'allocation-destroy-bad-id', 'allocation-destroy-bad-status', 'allocation-destroy-bad-value', 'allocation-destroy-long',
                      'gpuva-disabled', 'gpuva-invalid', 'resident-disabled', 'resident-invalid',
                      'cpu-disabled', 'cpu-invalid', 'cpu-nt-failure', 'cpu-bad-failure', 'cpu-bad-id',
                      'cpu-bad-bytes', 'cpu-bad-alignment', 'cpu-bad-reserved', 'cpu-bad-generation',

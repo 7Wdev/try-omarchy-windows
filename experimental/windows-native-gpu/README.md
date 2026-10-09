@@ -9,8 +9,10 @@ Live NVIDIA Linux runtime initialization now reaches native paging and graphics
 context creation, standalone video-memory allocation, GPU-address mapping,
 residency, direct CPU allocation access, hardware queues and synchronization
 objects through QEMU. Physical testing created eight monitored fences, eight
-mutexes, three hardware queues and 16 allocations before
-the diagnostic allocation-count limit. The [bounded command route](../../docs/LIVE-COMMAND-SUBMISSION.md)
+mutexes, three hardware queues and 18 allocations. The
+[allocation retirement route](../../docs/LIVE-ALLOCATION-RETIREMENT.md) reclaimed
+an allocation with two queues alive. The object quota is 32; the separate CPU
+aperture still has 16 slots. The [bounded command route](../../docs/LIVE-COMMAND-SUBMISSION.md)
 has executed one live runtime initialization command and verified its progress
 fence in Windows and the guest. General command submission remains unfinished. Direct guest
 fence reads, synchronous allocation destruction and acknowledged unmap passed physical testing. Omarchy
@@ -79,6 +81,10 @@ retained CPU command mapping before native submission. It synchronously waits
 for retirement as a diagnostic; production queues must preserve asynchronous
 execution and overlap. General allocation layouts, synchronization signal/wait operations,
 scanout and desktop integration remain unfinished.
+The separate `--driver-retirement` option uses documented VidMm destruction,
+keeps `AssumeNotInUse` zero, requires acknowledged CPU unmap and preserves
+ownership on native failure. CPU-slot exhaustion returns allocation failure
+before taking a native lock or issuing a QMP mapping.
 The [product acceptance gates](../../docs/PRODUCT-ACCEPTANCE.md) require CUDA,
 OpenGL, Vulkan, video acceleration, a stable interactive Omarchy desktop and at
 least 93% of native performance. No current test proves those gates.

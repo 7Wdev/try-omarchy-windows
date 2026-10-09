@@ -2,6 +2,7 @@
 // Fault tests for the diagnostic interposer. No real GPU calls are made.
 #include <wsl/winadapter.h>
 #include <dxg/d3dkmthk.h>
+#include "driver_wire.h"
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
@@ -244,7 +245,7 @@ int main(int argc, char** argv) {
                 auto invalid = resident;
                 switch (n) {
                     case 0: invalid.NumAllocations = 0; break;
-                    case 1: invalid.NumAllocations = 17; break;
+                    case 1: invalid.NumAllocations = driver_bridge::MaxVendorAllocations + 1; break;
                     case 2: invalid.Flags.Value = 2; break;
                     case 3: invalid.Flags.Value = 4; break;
                     default: invalid.AllocationList = nullptr; break;
@@ -303,7 +304,7 @@ int main(int argc, char** argv) {
         } else if (!std::strcmp(mode, "allocation-nt-failure")) {
             if (ioctl(fd, _IOWR('G', 6, D3DKMT_CREATEALLOCATION), &allocation) != -1 || errno != EINVAL ||
                 data[0] != (37 ^ 255) || info.hAllocation) return failed("native failure lost in/out");
-        } else if (!std::strcmp(mode, "allocation-normal") || !std::strcmp(mode, "allocation-failed-destroy")) {
+        } else if (!std::strcmp(mode, "allocation-normal") || !std::strcmp(mode, "allocation-failed-destroy") || !std::strncmp(mode, "allocation-destroy-", 19)) {
             if (ioctl(fd, _IOWR('G', 6, D3DKMT_CREATEALLOCATION), &allocation) || info.hAllocation != 3 || info.GpuVirtualAddress ||
                 data[0] != (37 ^ 255) || allocation.hResource || allocation.hGlobalShare) return failed("allocation response");
             D3DKMT_HANDLE duplicates[]{3, 3};
@@ -313,6 +314,11 @@ int main(int argc, char** argv) {
             release.AllocationCount = 1; release.hDevice = 999;
             if (ioctl(fd, _IOWR('G', 19, D3DKMT_DESTROYALLOCATION2), &release) != -1 || errno != EBADF) return failed("wrong device destruction");
             release.hDevice = device.hDevice; release.Flags.Value = 3;
+            if (!std::strncmp(mode, "allocation-destroy-", 19)) {
+                if (ioctl(fd, _IOWR('G', 19, D3DKMT_DESTROYALLOCATION2), &release) != -1 || errno != EPROTO) return failed("malformed destruction accepted");
+                if (open("/dev/dxg", O_RDONLY) != -1 || errno != EIO) return failed("destruction broken transport reused");
+                close(fd); return 0;
+            }
             if (!std::strcmp(mode, "allocation-failed-destroy") &&
                 (ioctl(fd, _IOWR('G', 19, D3DKMT_DESTROYALLOCATION2), &release) != -1 || errno != EINVAL)) return failed("native destroy failure");
             if (ioctl(fd, _IOWR('G', 19, D3DKMT_DESTROYALLOCATION2), &release)) return failed("allocation destruction");

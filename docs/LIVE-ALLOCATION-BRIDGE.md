@@ -1,5 +1,10 @@
 # Live NVIDIA allocation from QEMU to Windows
 
+This page records the original allocation acceptance. The current
+[retirement route](LIVE-ALLOCATION-RETIREMENT.md) separates the 32-allocation
+object quota from the 16-slot CPU aperture and permits opted-in native
+destruction while hardware queues exist.
+
 This document records the allocation milestone. The
 [later GPU-address mapping result](LIVE-GPUVA-BRIDGE.md) now reaches live
 `MapGpuVirtualAddress`; its next unsupported call is `MakeResident`, ioctl 11.
