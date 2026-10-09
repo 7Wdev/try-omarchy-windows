@@ -50,7 +50,7 @@ class KmtDriver : public Driver {
     unsigned vendorCpuSlotQuotaRejections = 0;
     unsigned completedHwQueues = 0, destroyedHwQueues = 0, failedHwQueues = 0, hwQueuesReleasedAfterVmExit = 0;
     struct Synchronization {
-        std::uint32_t device, type;
+        std::uint32_t device, type, flags;
         volatile std::uint64_t* fence;
         std::uint64_t gpuAddress;
         std::optional<driver_qemu::FenceLease> lease;
@@ -59,6 +59,7 @@ class KmtDriver : public Driver {
     bool syncEnabled = false;
     unsigned completedSyncs = 0, destroyedSyncs = 0, failedSyncs = 0, monitoredSyncs = 0, mutexSyncs = 0;
     unsigned syncsReleasedAfterVmExit = 0;
+    unsigned noGpuAccessSyncs = 0;
     driver_qemu::Runtime* runtime = nullptr;
     struct Allocation {
         std::uint32_t device, resource, size;
@@ -390,11 +391,12 @@ public:
             return {{Invalid, 0, 0}, {0, 0}};
         D3DKMT_CREATESYNCHRONIZATIONOBJECT2 a{}; a.hDevice = device;
         a.Info.Type = static_cast<D3DDDI_SYNCHRONIZATIONOBJECT_TYPE>(desc.type);
+        a.Info.Flags.Value = desc.flags;
         if (desc.type == 1) a.Info.SynchronizationMutex.InitialState = static_cast<BOOL>(desc.initial);
         else { a.Info.MonitoredFence.InitialFenceValue = desc.initial; a.Info.MonitoredFence.EngineAffinity = desc.affinity; }
         const auto status = D3DKMTCreateSynchronizationObject2(&a);
         if (status < 0) { ++failedSyncs; return {{status, 0, 0}, {0, 0}}; }
-        Synchronization owned{device, desc.type, nullptr, 0, std::nullopt};
+        Synchronization owned{device, desc.type, desc.flags, nullptr, 0, std::nullopt};
         if (desc.type == 5) {
             owned.fence = static_cast<volatile std::uint64_t*>(a.Info.MonitoredFence.FenceValueCPUVirtualAddress);
             owned.gpuAddress = a.Info.MonitoredFence.FenceValueGPUVirtualAddress;
@@ -410,11 +412,12 @@ public:
         auto& retained = syncObjects.at(a.hSyncObject);
         try {
             if (status != 0 || a.Info.Type != static_cast<D3DDDI_SYNCHRONIZATIONOBJECT_TYPE>(desc.type) ||
-                a.Info.Flags.Value || a.Info.SharedHandle || (desc.type == 5 && (!retained.fence || !retained.gpuAddress ||
-                    retained.gpuAddress % 8 || retained.gpuAddress >= MaxGpuAddress)))
+                a.Info.Flags.Value != retained.flags || a.Info.SharedHandle ||
+                (desc.type == 5 && (!retained.fence || !validSyncGpuAddress(desc, retained.gpuAddress))))
                 throw std::runtime_error("Unexpected native synchronization output");
             if (desc.type == 5) retained.lease = runtime->map(retained.fence);
             ++completedSyncs;
+            if (desc.flags == NoGpuAccessSyncFlag) ++noGpuAccessSyncs;
             if (desc.type == 5) ++monitoredSyncs; else ++mutexSyncs;
             return {{status, a.hSyncObject, 0}, {retained.lease ? retained.lease->offset : 0, retained.gpuAddress}};
         } catch (...) {
@@ -994,6 +997,7 @@ public:
                   << ",\"liveSyncObjects\":" << syncObjects.size() << ",\"completedSyncObjects\":" << completedSyncs
                   << ",\"destroyedSyncObjects\":" << destroyedSyncs << ",\"failedSyncObjects\":" << failedSyncs
                   << ",\"completedMonitoredFences\":" << monitoredSyncs << ",\"completedSynchronizationMutexes\":" << mutexSyncs
+                  << ",\"completedNoGpuAccessFences\":" << noGpuAccessSyncs << ",\"syncObjectLimit\":" << MaxSyncObjects
                   << ",\"syncObjectsReleasedAfterVmExit\":" << syncsReleasedAfterVmExit
                   << ",\"commandSubmissionOptIn\":" << (submitEnabled ? "true" : "false")
                   << ",\"nativeSubmissionAttempts\":" << submissionAttempts << ",\"completedNativeSubmissions\":" << completedSubmissions
@@ -1118,7 +1122,7 @@ int main(int argc, char** argv) {
     try {
         // Explicit experimental opt-in; keep the existing allocation endpoint
         // closed to vendor-private context data unless requested by its owner.
-        bool contexts = false, queries = false, allocations = false, gpuVa = false, residency = false, cpu = false, cpuStoreTest = false, cpuEofTest = false, translation = false, hwQueues = false, hwQueueEofTest = false, sync = false, submit = false, retirement = false;
+        bool contexts = false, queries = false, allocations = false, gpuVa = false, residency = false, cpu = false, cpuStoreTest = false, cpuEofTest = false, translation = false, hwQueues = false, hwQueueEofTest = false, sync = false, syncEofTest = false, submit = false, retirement = false;
         std::size_t cpuSlots = DefaultVendorCpuSlots;
         bool cpuSlotsConfigured = false;
         while (argc > 1) {
@@ -1141,6 +1145,7 @@ int main(int argc, char** argv) {
             else if (option == "--driver-translation" && !translation) translation = true;
             else if (option == "--driver-hwqueues" && !hwQueues) hwQueues = true;
             else if (option == "--hwqueue-eof-test" && !hwQueueEofTest) hwQueueEofTest = true;
+            else if (option == "--sync-eof-test" && !syncEofTest) syncEofTest = true;
             else if (option == "--driver-syncs" && !sync) sync = true;
             else if (option == "--driver-submit" && !submit) submit = true;
             else if (option == "--driver-retirement" && !retirement) retirement = true;
@@ -1157,12 +1162,14 @@ int main(int argc, char** argv) {
             throw std::runtime_error("Synchronization objects require an owned QEMU runtime");
         if (retirement && !hwQueues)
             throw std::runtime_error("Allocation retirement requires owned hardware queues");
-        if (submit && (!hwQueues || !sync || !cpu || !residency || cpuStoreTest || cpuEofTest || hwQueueEofTest))
+        if (submit && (!hwQueues || !sync || !cpu || !residency || cpuStoreTest || cpuEofTest || hwQueueEofTest || syncEofTest))
             throw std::runtime_error("Submission requires owned queues, syncs, CPU mappings and residency in a separate diagnostic run");
         if (cpu && (!gpuVa || argc != 7 || std::string(argv[1]) != "--run-qemu"))
             throw std::runtime_error("Vendor CPU locks require GPU-address mappings and an owned QEMU runtime");
         if (cpuStoreTest && !cpu) throw std::runtime_error("CPU store control requires explicit CPU-lock opt-in");
         if (cpuSlotsConfigured && !cpu) throw std::runtime_error("CPU aperture capacity requires the explicit CPU-lock opt-in");
+        if (syncEofTest && (!sync || cpuStoreTest || cpuEofTest || hwQueueEofTest))
+            throw std::runtime_error("Synchronization EOF control requires synchronization opt-in and a separate diagnostic run");
         if (cpuEofTest && (!cpu || cpuStoreTest)) throw std::runtime_error("CPU EOF control requires CPU locks and a separate run from store control");
         if (hwQueueEofTest && (!hwQueues || cpuEofTest || cpuStoreTest))
             throw std::runtime_error("Hardware queue EOF control requires hardware queues and a separate diagnostic run");
@@ -1174,7 +1181,7 @@ int main(int argc, char** argv) {
         const bool ownedRuntime = argc == 7 && std::string(argv[1]) == "--run-qemu";
         if (!ownedRuntime && ((argc != 3 && argc != 7) || std::string(argv[1]) != "--listen")) {
             std::cerr << "Usage: driver-bridge.exe --stdio | --listen port [--guest-section name --guest-ram-bytes count] "
-                "[--driver-contexts] [--driver-queries] [--driver-allocations] [--driver-gpuva] [--driver-residency] [--driver-cpu] [--driver-cpu-slots 16|32|64] [--driver-translation] [--driver-hwqueues] [--driver-syncs] [--driver-submit] [--driver-retirement] [--cpu-store-test | --cpu-eof-test | --hwqueue-eof-test]\n"
+                "[--driver-contexts] [--driver-queries] [--driver-allocations] [--driver-gpuva] [--driver-residency] [--driver-cpu] [--driver-cpu-slots 16|32|64] [--driver-translation] [--driver-hwqueues] [--driver-syncs] [--driver-submit] [--driver-retirement] [--cpu-store-test | --cpu-eof-test | --hwqueue-eof-test | --sync-eof-test]\n"
                 "       driver-bridge.exe --run-qemu qemu firmware kernel initramfs fresh-log --driver-contexts --driver-queries\n"; return 2;
         }
         if (ownedRuntime && (!contexts || !queries)) throw std::runtime_error("Owned QEMU runtime requires explicit query/context opt-ins");
@@ -1204,7 +1211,7 @@ int main(int argc, char** argv) {
         std::cout << "{\"port\":" << ntohs(address.sin_port) << ",\"transport\":\"tcp-loopback\"}\n" << std::flush;
         std::unique_ptr<driver_qemu::Runtime> runtime;
         if (ownedRuntime) runtime = std::make_unique<driver_qemu::Runtime>(ntohs(address.sin_port),
-            qemu_fence::Paths{argv[2], argv[3], argv[4], argv[5], argv[6]}, cpu, cpuStoreTest, cpuEofTest, hwQueueEofTest, cpuSlots);
+            qemu_fence::Paths{argv[2], argv[3], argv[4], argv[5], argv[6]}, cpu, cpuStoreTest, cpuEofTest, hwQueueEofTest, cpuSlots, syncEofTest);
         fd_set reads; FD_ZERO(&reads); FD_SET(listener.value, &reads); timeval timeout{60, 0};
         if (select(0, &reads, nullptr, nullptr, &timeout) != 1) throw std::runtime_error("Connection timed out");
         Socket client; client.value = accept(listener.value, nullptr, nullptr);

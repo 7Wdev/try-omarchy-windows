@@ -15,12 +15,15 @@ def main():
              for value in ('0', '8', '17', '33', '65', '-1', '4294967296', '32x')]
     cases += [(['--driver-cpu-slots', '16', '--driver-cpu-slots', '32'], 'specified once'),
               (['--stdio', '--driver-cpu-slots', '32'], 'capacity requires')]
+    cases += [(['--stdio', '--sync-eof-test'], 'Synchronization EOF control requires'),
+              (['--run-qemu', 'qemu', 'firmware', 'kernel', 'image', 'log', '--driver-syncs',
+                '--sync-eof-test', '--hwqueue-eof-test'], 'Synchronization EOF control requires')]
     for options, message in cases:
         result = subprocess.run([str(args.bridge.resolve()), *options], capture_output=True, text=True,
                                 timeout=5, creationflags=subprocess.CREATE_NO_WINDOW)
         if result.returncode != 1 or message not in result.stderr or result.stdout:
             raise RuntimeError(f'Invalid capacity reached startup: {options}: {result.returncode}')
-    print(f'PASS: {len(cases)} native capacity rejection cases before runtime startup')
+    print(f'PASS: {len(cases)} native capacity/control rejection cases before runtime startup')
 
 
 if __name__ == '__main__':

@@ -8,13 +8,14 @@ also tested, including locally captured Linux NVIDIA initialization data.
 Live NVIDIA Linux runtime initialization now reaches native paging and graphics
 context creation, standalone video-memory allocation, GPU-address mapping,
 residency, direct CPU allocation access, hardware queues and synchronization
-objects through QEMU. Physical testing created eight monitored fences, eight
-mutexes, three hardware queues and 21 allocations. The
+objects through QEMU. Physical testing created ten monitored fences (including
+two [CPU-only fences](../../docs/LIVE-CPU-ONLY-FENCES.md)), eight
+mutexes, three hardware queues and 27 allocations. The
 [allocation retirement route](../../docs/LIVE-ALLOCATION-RETIREMENT.md) reclaimed
 allocations with two queues alive. The object quota is 32; the separate CPU
 aperture defaults to 16 slots and supports bounded
 [32/64-slot configurations](../../docs/LIVE-CPU-APERTURE-CAPACITY.md). The
-expanded physical test directly mapped five slots beyond the old limit with no
+expanded physical test directly mapped eight slots beyond the old limit with no
 CPU-slot exhaustion. The [bounded command route](../../docs/LIVE-COMMAND-SUBMISSION.md)
 has executed one live runtime initialization command and verified its progress
 fence in Windows and the guest. General command submission remains unfinished. Direct guest

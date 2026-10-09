@@ -53,11 +53,14 @@ try:
         elif op == 0x2005: send(op,handle)
         elif op == 0x2070:
             mutex = mode in ('sync-mutex', 'sync-failed-destroy', 'sync-mutex-bad-map') or mode.startswith('sync-destroy-')
-            assert handle == 2 and packet[16:] == struct.pack('<IIIIQ',1 if mutex else 5,0,0 if mutex else 1,0,1 if mutex else 42)
+            no_gpu = mode.startswith('sync-nogpu-')
+            assert handle == 2 and packet[16:] == struct.pack('<IIIIQ',1 if mutex else 5,128 if no_gpu else 0,0 if mutex else 1,0,1 if mutex else 42)
             failed = mode in ('sync-nt-failure','sync-bad-failure')
             identity = 0 if failed or mode == 'sync-bad-id' else 3
             offset = 0 if failed or mutex else 1 if mode == 'sync-bad-alignment' else 262144 if mode == 'sync-bad-offset' else 8192
             gpu = 0 if failed or mutex or mode == 'sync-zero-gpu' else 65537 if mode == 'sync-bad-gpu-alignment' else 1 << 48 if mode == 'sync-bad-gpu-range' else 65536
+            if no_gpu: gpu = 65536 if mode == 'sync-nogpu-nonzero-gpu' else 0
+            if mode == 'sync-nogpu-bad-offset': offset = 262144
             if mode in ('sync-bad-failure', 'sync-mutex-bad-map'): offset = 8192
             data = struct.pack('<QQ',offset,gpu)
             if mode == 'sync-short': data = data[:-1]
@@ -158,7 +161,7 @@ if mode.startswith('translation-'): assert 0x2016 not in operations, operations
 if mode in ('hwqueue-disabled','hwqueue-invalid','hwqueue-sync-context'): assert 0x2060 not in operations, operations
 if mode == 'hwqueue-no-hub': assert operations[-2:] == [0x2060,0x2061], operations
 if mode in ('sync-disabled','sync-invalid'): assert 0x2070 not in operations and 0x2071 not in operations, operations
-if mode == 'sync-no-hub': assert operations[-2:] == [0x2070,0x2071], operations
+if mode in ('sync-no-hub','sync-nogpu-no-hub'): assert operations[-2:] == [0x2070,0x2071], operations
 if mode == 'sync-mutex' or mode.startswith('sync-destroy-'): assert operations.count(0x2071) == 1, operations
 if mode == 'sync-failed-destroy': assert operations.count(0x2071) == 2, operations
 if mode.startswith('submit-'): assert 0x2062 not in operations, operations
@@ -194,6 +197,7 @@ def main():
                      'sync-mutex', 'sync-failed-destroy', 'sync-disabled', 'sync-invalid', 'sync-nt-failure', 'sync-bad-failure',
                      'sync-bad-id', 'sync-bad-alignment', 'sync-bad-offset', 'sync-zero-gpu', 'sync-bad-gpu-alignment',
                      'sync-bad-gpu-range', 'sync-short', 'sync-bad-value', 'sync-bad-status', 'sync-no-hub', 'sync-mutex-bad-map',
+                     'sync-nogpu-no-hub', 'sync-nogpu-nonzero-gpu', 'sync-nogpu-bad-offset',
                      'sync-destroy-bad-id', 'sync-destroy-bad-value', 'sync-destroy-long', 'sync-destroy-bad-status',
                      'submit-disabled', 'submit-invalid', 'submit-unowned', 'submit-ignored-pointer'):
             environment = {k: v for k, v in os.environ.items() if not k.startswith('WDDM_BRIDGE_') and k != 'LD_PRELOAD'}

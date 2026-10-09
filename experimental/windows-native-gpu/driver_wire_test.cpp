@@ -149,7 +149,8 @@ struct Fake : Driver {
         if (handle) syncParents.emplace(handle, device);
         return {{badSyncReply == 1 ? 259 : 0, handle, badSyncReply == 3 ? 1ull : 0ull},
                 {desc.type == 1 && badSyncReply != 9 ? 0ull : badSyncReply == 4 ? 1ull : badSyncReply == 5 ? FenceApertureBytes : 8192ull,
-                 desc.type == 1 || badSyncReply == 6 ? 0ull : badSyncReply == 7 ? 65537ull : badSyncReply == 8 ? MaxGpuAddress : 65536ull}};
+                 badSyncReply == 11 ? 65536ull : desc.type == 1 || desc.flags == NoGpuAccessSyncFlag || badSyncReply == 6 ? 0ull :
+                     badSyncReply == 7 ? 65537ull : badSyncReply == 8 ? MaxGpuAddress : 65536ull}};
     }
     GuestPagingResult createGuestPagingQueue(std::uint32_t h) override {
         require(h > 500);
@@ -950,7 +951,8 @@ int main() {
         require(header(s.dispatch(request(Op::CreateSync, adapter, SyncDesc{5, 0, 0, 0, 0}))).status == -9);
         require(header(s.dispatch(request(Op::CreateSync, device))).status == -22);
         for (const auto desc : {SyncDesc{4, 0, 0, 0, 0}, SyncDesc{5, 1, 0, 0, 0}, SyncDesc{5, 0, 2, 0, 0},
-                               SyncDesc{5, 0, 0, 1, 0}, SyncDesc{1, 0, 0, 0, 2}, SyncDesc{1, 0, 1, 0, 0}})
+                               SyncDesc{5, 0, 0, 1, 0}, SyncDesc{1, 0, 0, 0, 2}, SyncDesc{1, 0, 1, 0, 0},
+                               SyncDesc{1, NoGpuAccessSyncFlag, 0, 0, 0}, SyncDesc{5, NoGpuAccessSyncFlag | 1, 0, 0, 0}})
             require(header(s.dispatch(request(Op::CreateSync, device, desc))).status == -22);
         require(header(s.dispatch(request(Op::DestroySync, borrowed.sync))).status == -9 && synchronization.calls == before);
         synchronization.fail = true;
@@ -978,6 +980,18 @@ int main() {
         synchronization.fail = false;
         require(header(s.dispatch(request(Op::DestroySync, mutex))).status == 0);
         require(header(s.dispatch(request(Op::DestroySync, mutex))).status == -9);
+        const auto cpuFenceRequest = request(Op::CreateSync, device, SyncDesc{5, NoGpuAccessSyncFlag, 0, 0, 42});
+        synchronization.badSyncReply = 11;
+        require(header(s.dispatch(cpuFenceRequest)).status == -5 && synchronization.syncParents.size() == 1);
+        synchronization.badSyncReply = 0;
+        out = s.dispatch(cpuFenceRequest); const auto cpuFence = header(out).handle;
+        std::memcpy(&view, out.data() + sizeof(Header) + sizeof body, sizeof view);
+        require(cpuFence && view.offset == 8192 && !view.gpuAddress && synchronization.lastSyncDesc.flags == NoGpuAccessSyncFlag);
+        require(header(s.dispatch(request(Op::DestroySync, cpuFence))).status == 0);
+        for (std::uint32_t flags = 0; flags < 1024; ++flags) {
+            require(validSync({5, flags, 0, 0, 0}) == (flags == 0 || flags == NoGpuAccessSyncFlag));
+            require(validSync({1, flags, 0, 0, 0}) == (flags == 0));
+        }
         for (std::size_t n = 1; n < MaxSyncObjects; ++n)
             require(header(s.dispatch(request(Op::CreateSync, device, SyncDesc{1, 0, 0, 0, 0}))).handle != 0);
         require(header(s.dispatch(create)).status == -24);

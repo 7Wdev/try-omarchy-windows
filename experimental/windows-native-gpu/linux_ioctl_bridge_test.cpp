@@ -66,8 +66,9 @@ int main(int argc, char** argv) {
         create.Info.Type = mutex ? D3DDDI_SYNCHRONIZATION_MUTEX : D3DDDI_MONITORED_FENCE;
         if (mutex) create.Info.SynchronizationMutex.InitialState = 1;
         else { create.Info.MonitoredFence.InitialFenceValue = 42; create.Info.MonitoredFence.EngineAffinity = 1; }
+        if (!std::strncmp(mode, "sync-nogpu-", 11)) create.Info.Flags.NoGPUAccess = 1;
         if (!std::strcmp(mode, "sync-invalid")) {
-            for (unsigned n = 0; n < 8; ++n) {
+            for (unsigned n = 0; n < 12; ++n) {
                 auto invalid = create;
                 switch (n) {
                     case 0: invalid.Info.Flags.Value = 1; break;
@@ -77,9 +78,13 @@ int main(int argc, char** argv) {
                     case 4: invalid.Info.Type = D3DDDI_CPU_NOTIFICATION; break;
                     case 5: invalid.Info.Type = D3DDDI_SEMAPHORE; break;
                     case 6: invalid.hDevice = 999; break;
-                    default: invalid.hDevice = adapter.hAdapter; break;
+                    case 7: invalid.hDevice = adapter.hAdapter; break;
+                    case 8: invalid.Info.Type = D3DDDI_SYNCHRONIZATION_MUTEX; invalid.Info.Flags.NoGPUAccess = 1; break;
+                    case 9: invalid.Info.Flags.Value = 129; break;
+                    case 10: invalid.Info.Flags.Value = 256; break;
+                    default: invalid.Info.SharedHandle = 123; break;
                 }
-                const auto expected = n < 4 ? EINVAL : n < 6 ? ENOSYS : EBADF;
+                const auto expected = n < 4 || n >= 8 ? EINVAL : n < 6 ? ENOSYS : EBADF;
                 if (ioctl(fd, _IOWR('G', 16, D3DKMT_CREATESYNCHRONIZATIONOBJECT2), &invalid) != -1 || errno != expected) return failed("sync invalid input");
             }
             D3DKMT_DESTROYSYNCHRONIZATIONOBJECT release{}; release.hSyncObject = device.hDevice;
@@ -101,7 +106,7 @@ int main(int argc, char** argv) {
             }
         } else {
             const auto expected = !std::strcmp(mode, "sync-disabled") ? ENOSYS : !std::strcmp(mode, "sync-nt-failure") ? EINVAL :
-                                  !std::strcmp(mode, "sync-no-hub") ? EIO : EPROTO;
+                                  (!std::strcmp(mode, "sync-no-hub") || !std::strcmp(mode, "sync-nogpu-no-hub")) ? EIO : EPROTO;
             if (ioctl(fd, _IOWR('G', 16, D3DKMT_CREATESYNCHRONIZATIONOBJECT2), &create) != -1 || errno != expected || create.hSyncObject || create.Info.SharedHandle ||
                 (!mutex && (create.Info.MonitoredFence.FenceValueCPUVirtualAddress || create.Info.MonitoredFence.FenceValueGPUVirtualAddress)))
                 return failed("sync malformed response");

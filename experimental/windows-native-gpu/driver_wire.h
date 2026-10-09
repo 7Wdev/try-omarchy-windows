@@ -30,12 +30,14 @@ constexpr std::uint32_t VendorCpuCapability = 2048;
 constexpr std::uint32_t VendorTranslationCapability = 4096;
 constexpr std::uint32_t HwQueueCapability = 8192;
 constexpr std::uint32_t SyncCapability = 16384;
-constexpr std::size_t MaxSyncObjects = 16;
+constexpr std::size_t MaxSyncObjects = 32;
+constexpr std::uint32_t NoGpuAccessSyncFlag = 128;
 struct SyncDesc { std::uint32_t type, flags, affinity, reserved; std::uint64_t initial; };
 struct SyncReply { std::uint64_t offset, gpuAddress; };
 static_assert(sizeof(SyncDesc) == 24 && sizeof(SyncReply) == 16, "fixed synchronization layouts");
 inline bool validSync(SyncDesc d) {
-    return !d.flags && !d.reserved && ((d.type == 1 && !d.affinity && d.initial <= 1) || (d.type == 5 && d.affinity <= 1));
+    return !d.reserved && ((d.type == 1 && !d.flags && !d.affinity && d.initial <= 1) ||
+           (d.type == 5 && (d.flags == 0 || d.flags == NoGpuAccessSyncFlag) && d.affinity <= 1));
 }
 constexpr std::size_t MaxHwQueues = 8;
 struct HwQueueDesc { std::uint32_t flags, privateBytes, reserved, reserved2; };
@@ -67,6 +69,10 @@ inline bool validResident(ResidentDesc d) {
 struct ResidentReply { std::uint32_t count, reserved; std::uint64_t bytesToTrim; };
 static_assert(sizeof(ResidentReply) == 16, "fixed residency output");
 constexpr std::uint64_t MaxGpuAddress = 1ull << 48;
+inline bool validSyncGpuAddress(SyncDesc desc, std::uint64_t address) {
+    // NoGPUAccess fences have CPU storage but no GPU virtual address.
+    return desc.flags == NoGpuAccessSyncFlag ? address == 0 : address && !(address % 8) && address < MaxGpuAddress;
+}
 constexpr std::uint32_t HwSubmitCapability = 32768;
 constexpr std::uint32_t VendorRetirementCapability = 65536;
 constexpr std::uint32_t MaxHwSubmissions = 16;
@@ -542,7 +548,7 @@ public:
             if (native.object.value || (native.object.ntstatus >= 0 && (native.object.ntstatus != 0 || !native.object.nativeHandle ||
                     (desc.type == 1 && (native.output.offset || native.output.gpuAddress)) ||
                     (desc.type == 5 && (native.output.offset % 8 || native.output.offset >= FenceApertureBytes ||
-                        !native.output.gpuAddress || native.output.gpuAddress % 8 || native.output.gpuAddress >= MaxGpuAddress)))) ||
+                        !validSyncGpuAddress(desc, native.output.gpuAddress))))) ||
                 (native.object.ntstatus < 0 && (native.object.nativeHandle || native.output.offset || native.output.gpuAddress))) {
                 if (native.object.nativeHandle) driver.destroy(Kind::Sync, native.object.nativeHandle);
                 return reply(h, -5);

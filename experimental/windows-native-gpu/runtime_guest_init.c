@@ -29,6 +29,10 @@ int main(void) {
     const char* eof_option = strstr(command, " wddm_cpu_eof_test=1");
     const size_t eof_bytes = sizeof(" wddm_cpu_eof_test=1") - 1;
     const int cpu_eof_test = eof_option && (eof_option[eof_bytes] == 0 || eof_option[eof_bytes] == ' ' || eof_option[eof_bytes] == '\n');
+    const char* sync_eof_option = strstr(command, " wddm_sync_eof_test=1");
+    const size_t sync_eof_bytes = sizeof(" wddm_sync_eof_test=1") - 1;
+    const int sync_eof_test = sync_eof_option && (sync_eof_option[sync_eof_bytes] == 0 ||
+        sync_eof_option[sync_eof_bytes] == ' ' || sync_eof_option[sync_eof_bytes] == '\n');
     const char* hwqueue_eof_option = strstr(command, " wddm_hwqueue_eof_test=1");
     const size_t hwqueue_eof_bytes = sizeof(" wddm_hwqueue_eof_test=1") - 1;
     const int hwqueue_eof_test = hwqueue_eof_option && (hwqueue_eof_option[hwqueue_eof_bytes] == 0 ||
@@ -48,6 +52,7 @@ int main(void) {
                 setenv("WDDM_BRIDGE_CPU_REFERENCE_TEST", "1", 1);
             }
             if (cpu_eof_test) setenv("WDDM_BRIDGE_CPU_EOF_TEST", "1", 1);
+            if (sync_eof_test) setenv("WDDM_BRIDGE_SYNC_EOF_TEST", "1", 1);
             if (hwqueue_eof_test) setenv("WDDM_BRIDGE_HWQUEUE_EOF_TEST", "1", 1);
             setenv("WDDM_BRIDGE_LINUX_UMD_NAME", module, 1);
             setenv("LD_PRELOAD", "/linux-ioctl-bridge.so", 1);
