@@ -124,6 +124,7 @@ public:
         if (found == mappings.end()) throw std::runtime_error("Guest paging queue absent");
         if (munmap(found->second.page, 4096)) throw std::runtime_error("Guest fence unmap failed");
         mappings.erase(found);
+        std::fprintf(stderr, "LINUX_BRIDGE guestFenceUnmapped=true\n");
     }
     unsigned total() const { return created; }
     bool contains(std::uint32_t queue) const { return mappings.count(queue) != 0; }

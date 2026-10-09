@@ -17,6 +17,13 @@ both when packing the private guest image and when verifying it. The default
 remains initialization only. The copy guard rejects incomplete, duplicated or
 incorrect readback results and requires matching native resource/signal evidence.
 
+The next [graphics queue control](../../docs/LIVE-GRAPHICS-QUEUE-CONTROL.md)
+forwards the runtime's documented `NoBroadcastSignal` flag unchanged. Two owned
+VM exit controls pass its native lifecycle. The explicit `clear` workload and
+pixel verifier are implemented, but graphics startup still exceeds the current
+diagnostic capacity and rendering remains unverified. Initialization and copy
+controls cannot satisfy the clear workload verifier.
+
 The bridge preserves source sentinels, TDR fence flags, native allocation
 subranges and verified in-process context priority. GPU mappings have a separate
 32 MiB cap; CPU views retain their 16 MiB live-byte cap and 4 MiB per-view limit.

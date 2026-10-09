@@ -52,6 +52,11 @@ int main(void) {
     const size_t hwqueue_eof_bytes = sizeof(" wddm_hwqueue_eof_test=1") - 1;
     const int hwqueue_eof_test = hwqueue_eof_option && (hwqueue_eof_option[hwqueue_eof_bytes] == 0 ||
         hwqueue_eof_option[hwqueue_eof_bytes] == ' ' || hwqueue_eof_option[hwqueue_eof_bytes] == '\n');
+    const char* hwqueue_no_broadcast_option = strstr(command, " wddm_hwqueue_no_broadcast_eof_test=1");
+    const size_t hwqueue_no_broadcast_bytes = sizeof(" wddm_hwqueue_no_broadcast_eof_test=1") - 1;
+    const int hwqueue_no_broadcast_eof_test = hwqueue_no_broadcast_option &&
+        (hwqueue_no_broadcast_option[hwqueue_no_broadcast_bytes] == 0 || hwqueue_no_broadcast_option[hwqueue_no_broadcast_bytes] == ' ' ||
+         hwqueue_no_broadcast_option[hwqueue_no_broadcast_bytes] == '\n');
     const char* port = "/dev/vport0p1";
     for (int i = 0; i < 200 && access(port, F_OK); ++i) usleep(50000);
     char module[130] = {0};
@@ -66,6 +71,7 @@ int main(void) {
                 char workload[8] = {0}; const size_t count = fread(workload, 1, sizeof(workload), workload_file);
                 fclose(workload_file);
                 if (count == 4 && !memcmp(workload, "copy", 4)) setenv("WDDM_BRIDGE_RUNTIME_WORKLOAD", "copy", 1);
+                else if (count == 5 && !memcmp(workload, "clear", 5)) setenv("WDDM_BRIDGE_RUNTIME_WORKLOAD", "clear", 1);
                 else if (count != 4 || memcmp(workload, "init", 4)) _exit(126);
             }
             setenv("WDDM_BRIDGE_PORT", port, 1);
@@ -80,6 +86,7 @@ int main(void) {
             if (reservation_eof_test) setenv("WDDM_BRIDGE_RESERVATION_EOF_TEST", "1", 1);
             if (gpu_state_eof_test) setenv("WDDM_BRIDGE_GPU_STATE_EOF_TEST", "1", 1);
             if (hwqueue_eof_test) setenv("WDDM_BRIDGE_HWQUEUE_EOF_TEST", "1", 1);
+            if (hwqueue_no_broadcast_eof_test) setenv("WDDM_BRIDGE_HWQUEUE_EOF_TEST", "2", 1);
             setenv("WDDM_BRIDGE_LINUX_UMD_NAME", module, 1);
             setenv("LD_PRELOAD", "/linux-ioctl-bridge.so", 1);
             setenv("LD_LIBRARY_PATH", "/usr/lib/wsl/lib:/usr/lib/x86_64-linux-gnu", 1);

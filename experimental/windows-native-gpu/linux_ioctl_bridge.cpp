@@ -853,6 +853,8 @@ public:
             }
             case 24: {
                 auto& a = args<D3DKMT_CREATEHWQUEUE>(requestNumber, pointer);
+                const HwQueueDesc desc{a.Flags.Value, a.PrivateDriverDataSize, 0, 0};
+                if (!validHwQueue(desc) || !a.pPrivateDriverData) throw Error(EINVAL);
                 unsigned allocationReferences = 0;
                 if (a.pPrivateDriverData && a.PrivateDriverDataSize <= MaxContextPrivateBytes) {
                     for (std::size_t offset = 0; offset + 4 <= a.PrivateDriverDataSize; offset += 4) {
@@ -865,8 +867,7 @@ public:
                 if (!(caps.flags & HwQueueCapability)) {
                     std::fprintf(stderr, "LINUX_BRIDGE unsupported nr=24 bytes=%zu\n", sizeof a); throw Error(ENOSYS);
                 }
-                const HwQueueDesc desc{a.Flags.Value, a.PrivateDriverDataSize, 0, 0};
-                if (!validHwQueue(desc) || !a.pPrivateDriverData) throw Error(EINVAL);
+                if (desc.flags == NoBroadcastSignalHwQueueFlag && !(caps.flags & NoBroadcastSignalHwQueueCapability)) throw Error(ENOSYS);
                 const auto parent = contextOwners.find(a.hHwContext);
                 if (parent == contextOwners.end()) throw Error(EBADF);
                 if (parent->second.flags != 16) throw Error(ENOSYS);
@@ -892,10 +893,11 @@ public:
                 if (!borrowedFences.emplace(output.sync, BorrowedFence{result.header.handle, parent->second.device, true}).second) { transport.fail(); throw Error(EPROTO); }
                 a.hHwQueue = result.header.handle; a.hHwQueueProgressFence = output.sync;
                 a.HwQueueProgressFenceCPUVirtualAddress = fence; a.HwQueueProgressFenceGPUVirtualAddress = output.gpuAddress;
-                std::fprintf(stderr, "LINUX_BRIDGE nativeHwQueueCreated=true privateBytes=%u progressFenceDirect=true\n", desc.privateBytes);
+                std::fprintf(stderr, "LINUX_BRIDGE nativeHwQueueCreated=true privateBytes=%u progressFenceDirect=true flags=%u\n", desc.privateBytes, desc.flags);
                 const auto eofTest = std::getenv("WDDM_BRIDGE_HWQUEUE_EOF_TEST");
-                if (eofTest && std::strcmp(eofTest, "1") == 0) {
-                    std::fprintf(stderr, "LINUX_BRIDGE hwQueueEofTest=true exitingWithQueueOwned=true\n");
+                if (eofTest && (std::strcmp(eofTest, "1") == 0 ||
+                    (std::strcmp(eofTest, "2") == 0 && desc.flags == NoBroadcastSignalHwQueueFlag))) {
+                    std::fprintf(stderr, "LINUX_BRIDGE hwQueueEofTest=true exitingWithQueueOwned=true flags=%u\n", desc.flags);
                     _exit(1);
                 }
                 return 0;

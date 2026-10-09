@@ -39,6 +39,14 @@ def main():
     cases += [(owned + ['--driver-syncs', '--sync-no-max-eof-test', control], 'NoSignalMaxValueOnTdr EOF control requires')
               for control in ('--reservation-eof-test', '--sync-eof-test', '--hwqueue-eof-test', '--cpu-eof-test', '--cpu-store-test', '--gpu-state-eof-test', '--cpu-span-eof-test')]
     cases += [(owned + ['--driver-syncs', '--sync-no-max-eof-test', '--driver-submit'], 'Submission requires')]
+    cases += [(['--stdio', '--hwqueue-no-broadcast-eof-test'], 'NoBroadcastSignal queue EOF control requires')]
+    no_broadcast = owned + ['--driver-translation','--driver-hwqueues','--driver-syncs','--driver-cpu','--driver-residency',
+                            '--driver-submit','--driver-retirement','--hwqueue-no-broadcast-eof-test']
+    for missing in ('--driver-submit', '--driver-retirement'):
+        cases.append(([o for o in no_broadcast if o != missing], 'NoBroadcastSignal queue EOF control requires'))
+    cases += [(no_broadcast + [control], 'requires') for control in
+              ('--hwqueue-eof-test','--cpu-eof-test','--cpu-store-test','--cpu-span-eof-test',
+               '--sync-eof-test','--sync-no-max-eof-test','--reservation-eof-test','--gpu-state-eof-test')]
     for options, message in cases:
         result = subprocess.run([str(args.bridge.resolve()), *options], capture_output=True, text=True,
                                 timeout=5, creationflags=subprocess.CREATE_NO_WINDOW)

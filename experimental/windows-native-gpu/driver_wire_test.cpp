@@ -30,6 +30,8 @@ struct Fake : Driver {
     std::uint32_t translationOverride = 0;
     std::vector<std::uint32_t> lastTranslationHandles;
     bool hwQueuesEnabled = false;
+    bool noBroadcastHwQueuesEnabled = false;
+    HwQueueDesc lastHwQueueDesc{};
     bool retirementEnabled = false;
     bool reservationEnabled = false;
     bool gpuStateEnabled = false;
@@ -70,6 +72,7 @@ struct Fake : Driver {
                 (gpuVaEnabled ? VendorGpuVaCapability : 0u) | (residencyEnabled ? VendorResidencyCapability : 0u) |
                 (cpuEnabled ? VendorCpuCapability : 0u) | (translationEnabled ? VendorTranslationCapability : 0u) |
                 (hwQueuesEnabled ? HwQueueCapability : 0u) | (syncEnabled ? SyncCapability : 0u) |
+                (noBroadcastHwQueuesEnabled ? NoBroadcastSignalHwQueueCapability : 0u) |
                 (submitEnabled ? HwSubmitCapability : 0u) | (retirementEnabled ? VendorRetirementCapability : 0u) |
                 (reservationEnabled ? GpuReservationCapability : 0u) | (gpuStateEnabled ? GpuStateCapability : 0u), 0x10de, 123};
     }
@@ -171,6 +174,7 @@ struct Fake : Driver {
     }
     HwQueueResult createHwQueue(std::uint32_t context, HwQueueDesc desc, std::vector<std::uint8_t>& data) override {
         require(context > 500 && validHwQueue(desc) && data.size() == desc.privateBytes); ++calls;
+        lastHwQueueDesc = desc;
         data[0] ^= 255;
         if (badHwQueueReply == 11) data.pop_back();
         if (fail) return {{-123, 0, 0}, badHwQueueReply == 12 ? 777u : 0u, 0, 0};
@@ -1185,10 +1189,20 @@ int main() {
         require(header(s.dispatch(create(device))).status == -9);
         require(header(s.dispatch(create(syncContext))).status == -95);
         require(header(s.dispatch(request(Op::CreateHwQueue, context))).status == -22);
-        for (const auto desc : {HwQueueDesc{1, 4, 0, 0}, HwQueueDesc{2, 4, 0, 0}, HwQueueDesc{4, 4, 0, 0},
+        for (const auto desc : {HwQueueDesc{1, 4, 0, 0}, HwQueueDesc{3, 4, 0, 0}, HwQueueDesc{4, 4, 0, 0}, HwQueueDesc{8, 4, 0, 0},
                                HwQueueDesc{0, 0, 0, 0}, HwQueueDesc{0, 4001, 0, 0}, HwQueueDesc{0, 4, 1, 0}, HwQueueDesc{0, 4, 0, 1}})
             require(header(s.dispatch(create(context, desc))).status == -22);
         require(hardware.calls == before);
+        require(header(s.dispatch(create(context, {2, 4, 0, 0}))).status == -95 && hardware.calls == before);
+        hardware.noBroadcastHwQueuesEnabled = true;
+        const auto helper = header(s.dispatch(create(context, {2, 4, 0, 0}))).handle;
+        require(helper && hardware.lastHwQueueDesc.flags == NoBroadcastSignalHwQueueFlag);
+        before = hardware.calls;
+        require(header(s.dispatch(create(device, {2, 4, 0, 0}))).status == -9 && hardware.calls == before);
+        require(header(s.dispatch(create(syncContext, {2, 4, 0, 0}))).status == -95 && hardware.calls == before);
+        require(header(s.dispatch(request(Op::DestroyHwQueue, helper))).status == 0);
+        require(header(s.dispatch(request(Op::DestroyHwQueue, helper))).status == -9);
+        hardware.noBroadcastHwQueuesEnabled = false;
         hardware.fail = true;
         auto out = s.dispatch(create(context)); Reply body{}; HwQueueReply progress{};
         std::memcpy(&body, out.data() + sizeof(Header), sizeof body);

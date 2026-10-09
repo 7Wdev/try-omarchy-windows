@@ -61,12 +61,95 @@ def copy_workload_complete(log):
     return True
 
 
+def expected_clear_pixels(round_):
+    """Dense RGBA oracle, independent of the guest's pitched readback addressing."""
+    background, inner = ((b'\xff\x00\x00\xff', b'\x00\xff\xff\xff') if round_ == 1 else
+                         (b'\x00\x00\xff\xff', b'\xff\xff\x00\xff'))
+    return b''.join(inner if 11 <= x < 119 and 7 <= y < 65 else background for y in range(73) for x in range(130))
+
+
+def clear_workload_complete(log):
+    """Check graphics queue execution, both hashes and every final exported pixel."""
+    if re.findall(r'^GPU_CLEAR_TEST_BEGIN width=(\d+) height=(\d+) format=(\w+) rounds=(\d+)[ \t\r]*$', log, re.MULTILINE) != [('130', '73', 'R8G8B8A8_UNORM', '2')]:
+        return False
+    if re.findall(r'^GPU_CLEAR_TEST_COMPLETE verified=true width=(\d+) height=(\d+) rounds=(\d+)[ \t\r]*$', log, re.MULTILINE) != [('130', '73', '2')]:
+        return False
+    tail = log.split('GPU_CLEAR_TEST_BEGIN', 1)[1]
+    if tail.count('nativeCommandSubmitted=true') < 2 or 'GPU_CLEAR_TIMEOUT' in tail or 'gpuClearDeviceRemoved=' in tail:
+        return False
+    for stage, count in (('DirectQueue', 1), ('RenderTarget', 1), ('Readback', 1), ('RtvHeap', 1), ('Allocator', 1),
+                         ('CommandList', 1), ('Fence', 1), ('Close', 2), ('Signal', 2), ('ReadbackMap', 2),
+                         ('AllocatorReset', 1), ('CommandListReset', 1)):
+        if re.findall(r'^gpuClear' + stage + r'=([0-9a-f]{8})[ \t\r]*$', tail, re.MULTILINE) != ['00000000'] * count:
+            return False
+    footprints = re.findall(r'^GPU_CLEAR_FOOTPRINT width=(\d+) height=(\d+) offset=(\d+) rowPitch=(\d+) rowBytes=(\d+) rows=(\d+) totalBytes=(\d+)[ \t\r]*$', tail, re.MULTILINE)
+    if len(footprints) != 1:
+        return False
+    width, height, offset, pitch, row_bytes, rows, total = map(int, footprints[0])
+    if (width, height, offset, row_bytes, rows) != (130, 73, 512, 520, 73) or not 520 <= pitch <= 4096 or pitch % 256 or not offset + 72 * pitch + row_bytes <= total <= 1048576:
+        return False
+    rounds = re.findall(r'^GPU_CLEAR_ROUND round=(\d+) verifiedPixels=(\d+) expectedHash=([0-9a-f]{16}) observedHash=([0-9a-f]{16}) fenceTarget=(\d+) fenceObserved=(\d+)[ \t\r]*$', tail, re.MULTILINE)
+    if len(rounds) != 2:
+        return False
+    for expected_round, (round_, pixels, expected, observed, target, retired) in enumerate(rounds, 1):
+        checksum = 14695981039346656037
+        for byte in expected_clear_pixels(expected_round):
+            checksum = ((checksum ^ byte) * 1099511628211) & ((1 << 64) - 1)
+        if (int(round_) != expected_round or int(pixels) != 9490 or expected != f'{checksum:016x}' or observed != expected or
+                int(target) != expected_round or not int(target) <= int(retired) < (1 << 64) - 1):
+            return False
+    pixel_rows = re.findall(r'^GPU_CLEAR_PIXEL_ROW round=(\d+) y=(\d+) rgba=([0-9a-f]+)[ \t\r]*$', tail, re.MULTILINE)
+    if len(pixel_rows) != 73:
+        return False
+    expected = expected_clear_pixels(2)
+    for y, (round_, row, rgba) in enumerate(pixel_rows):
+        if int(round_) != 2 or int(row) != y or rgba != expected[y * 520:(y + 1) * 520].hex():
+            return False
+    return tail.index('GPU_CLEAR_ROUND round=1') < tail.index('GPU_CLEAR_ROUND round=2') < tail.index('GPU_CLEAR_PIXEL_ROW') < tail.index('GPU_CLEAR_TEST_COMPLETE')
+
+
+def no_broadcast_queue_eof_complete(log, control, cleanup):
+    """Late EOF has acknowledged earlier teardown and retains the new queue.
+
+    Keep early-EOF zero-ack rules separate. Count each successfully unmapped
+    CPU span and fence rather than treating all created views as exit releases.
+    This control cannot certify initialization or rendered pixels.
+    """
+    marker = 'LINUX_BRIDGE hwQueueEofTest=true exitingWithQueueOwned=true flags=2'
+    if log.count(marker) != 1 or re.findall(r'^BRIDGE_RUNTIME_EXIT=(\d+)[ \t\r]*$', log, re.MULTILINE) != ['1']:
+        return False
+    if (log.count('GPU_CLEAR_TEST_BEGIN') != 1 or 'GPU_COPY_TEST_BEGIN' in log or 'gpuClearDirectQueue=' in log or
+        'GPU_CLEAR_ROUND' in log or 'GPU_CLEAR_TEST_COMPLETE' in log):
+        return False
+    if any(re.findall(r'^' + prefix + r'=([0-9a-f]{8})[ \t\r]*$', log, re.MULTILINE) != ['00000000'] for prefix in ('device', 'copyQueue')):
+        return False
+    flags = re.findall(r'nativeHwQueueCreated=true privateBytes=\d+ progressFenceDirect=true flags=(\d+)', log)
+    if not flags or flags[-1] != '2' or flags.count('2') != 1 or cleanup.get('completedNoBroadcastSignalHwQueues') != 1:
+        return False
+    if log.index('GPU_CLEAR_TEST_BEGIN') > log.index(marker) or cleanup.get('hwQueuesReleasedAfterVmExit', 0) < 1:
+        return False
+    fences = log.count('LINUX_BRIDGE guestFenceUnmapped=true')
+    cpu = re.findall(r'allocationCpuUnmapped=true direct=true mmioReads=0 mmioWrites=0 bytes=(\d+)', log)
+    if len(cpu) != log.count('allocationCpuUnmapped=true direct=true mmioReads=0 mmioWrites=0'):
+        return False
+    sizes = list(map(int, cpu))
+    if any(not 0 < b <= 4194304 or b % 4096 for b in sizes):
+        return False
+    slots = sum((b + 1048575) // 1048576 for b in sizes)
+    return (control.get('ownedQemuExited') is True and control.get('qemuExit') == 0 and
+            control.get('qemuForcedStop') is False and control.get('fenceControlFailed') is False and
+            cleanup.get('driverCleanupVerified') is True and
+            0 <= fences < control.get('fenceMappingsCreated', 0) and control.get('fenceUnmapAcknowledgements') == fences and
+            control.get('allocationUnmapAcknowledgements') == len(sizes) and
+            control.get('allocationSlotUnmapAcknowledgements') == slots)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('qemu', 'firmware', 'kernel', 'initramfs', 'bridge', 'report'):
         parser.add_argument('--' + name, type=pathlib.Path, required=True)
     parser.add_argument('--expected-unimplemented-ioctl', type=int, required=True)
-    parser.add_argument('--runtime-workload', choices=('init', 'copy'), default='init', help='Require the workload selected when packing the private guest image')
+    parser.add_argument('--runtime-workload', choices=('init', 'copy', 'clear'), default='init', help='Require the workload selected when packing the private guest image')
     parser.add_argument('--driver-allocations', action='store_true', help='Explicitly enable diagnostic vendor video-memory allocations')
     parser.add_argument('--minimum-vendor-allocations', type=int, default=0)
     parser.add_argument('--minimum-uninitialized-source-allocations', type=int, default=0)
@@ -104,14 +187,19 @@ def main():
     parser.add_argument('--cpu-eof-test', action='store_true', help='Exit the guest probe while it owns the CPU lock; require VM-exit-first native teardown')
     parser.add_argument('--cpu-span-eof-test', action='store_true', help='Exit after a CPU view spanning multiple native slots is mapped')
     parser.add_argument('--hwqueue-eof-test', action='store_true', help='Exit the guest probe with its first hardware queue still owned')
+    parser.add_argument('--hwqueue-no-broadcast-eof-test', action='store_true', help='Clear workload control: exit immediately after its first NoBroadcastSignal queue, before graphics startup fills the aperture')
     parser.add_argument('--sync-eof-test', action='store_true', help='Exit the guest probe with its first NoGPUAccess fence still owned')
     parser.add_argument('--sync-no-max-eof-test', action='store_true', help='Exit with the first NoSignalMaxValueOnTdr fence still owned')
     parser.add_argument('--reservation-eof-test', action='store_true', help='Exit the guest probe with its first GPU address reservation still owned')
     parser.add_argument('--gpu-state-eof-test', action='store_true', help='Exit the guest after its first retired GPU Zero/NoAccess mapping')
     args = parser.parse_args()
-    guest_eof = args.cpu_eof_test or args.hwqueue_eof_test or args.sync_eof_test or args.reservation_eof_test or args.gpu_state_eof_test or args.cpu_span_eof_test or args.sync_no_max_eof_test
-    if args.runtime_workload == 'copy' and (not args.driver_submit or not args.driver_retirement or args.cpu_store_test or guest_eof):
-        parser.error('GPU copy workload requires submission and retirement in a separate run from CPU/EOF controls')
+    early_guest_eof = args.cpu_eof_test or args.hwqueue_eof_test or args.sync_eof_test or args.reservation_eof_test or args.gpu_state_eof_test or args.cpu_span_eof_test or args.sync_no_max_eof_test
+    late_guest_eof = args.hwqueue_no_broadcast_eof_test
+    guest_eof = early_guest_eof or late_guest_eof
+    if late_guest_eof and (args.runtime_workload != 'clear' or not args.driver_submit or not args.driver_retirement or args.cpu_store_test or early_guest_eof):
+        parser.error('NoBroadcastSignal EOF control requires the clear image with submission and retirement in a separate run')
+    if args.runtime_workload != 'init' and (not args.driver_submit or not args.driver_retirement or args.cpu_store_test or early_guest_eof):
+        parser.error('GPU workload requires submission and retirement in a separate run from CPU/EOF controls')
     if args.sync_no_max_eof_test and (not args.driver_syncs or args.cpu_store_test or args.cpu_eof_test or args.hwqueue_eof_test or args.sync_eof_test or args.reservation_eof_test or args.gpu_state_eof_test or args.cpu_span_eof_test):
         parser.error('NoSignalMaxValueOnTdr EOF control requires syncs and a separate diagnostic run')
     if args.minimum_uninitialized_source_allocations < 0 or (args.minimum_uninitialized_source_allocations and not args.driver_allocations):
@@ -163,7 +251,7 @@ def main():
         parser.error('Synchronization EOF control requires syncs and a separate diagnostic run')
     if args.minimum_submissions < 0 or (args.minimum_submissions and not args.driver_submit) or (
             args.driver_submit and (not args.driver_hwqueues or not args.driver_syncs or not args.driver_cpu or not args.driver_residency or
-                                    args.cpu_store_test or guest_eof)):
+                                    args.cpu_store_test or early_guest_eof)):
         parser.error('Submission requires queues, syncs, CPU mappings and residency in a separate diagnostic run')
     if sys.platform != 'win32':
         parser.error('Run on the Windows NVIDIA host')
@@ -171,7 +259,8 @@ def main():
         if not path.is_file():
             parser.error(f'Missing file: {path}')
     log_path = args.report.with_suffix('.log')
-    if args.report.exists() or log_path.exists():
+    error_log_path = args.report.with_suffix('.errors.log')
+    if args.report.exists() or log_path.exists() or error_log_path.exists() or args.report.with_suffix('.host.log').exists():
         parser.error('Use a fresh report path')
     api = ctypes.WinDLL('kernel32', use_last_error=True)
     api.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
@@ -196,6 +285,7 @@ def main():
                              (['--cpu-store-test'] if args.cpu_store_test else []) + (['--cpu-eof-test'] if args.cpu_eof_test else []) +
                              (['--cpu-span-eof-test'] if args.cpu_span_eof_test else []) +
                              (['--hwqueue-eof-test'] if args.hwqueue_eof_test else []) +
+                             (['--hwqueue-no-broadcast-eof-test'] if late_guest_eof else []) +
                              (['--sync-eof-test'] if args.sync_eof_test else []) +
                              (['--sync-no-max-eof-test'] if args.sync_no_max_eof_test else []) +
                              (['--reservation-eof-test'] if args.reservation_eof_test else []) +
@@ -223,8 +313,18 @@ def main():
         except Exception as error:
             observer_errors.append(str(error))
 
-    reader = threading.Thread(target=read_stdout)
-    error_reader = threading.Thread(target=lambda: errors.extend(owner.stderr.readlines()))
+    def read_stderr():
+        try:
+            with error_log_path.open('x', encoding='utf-8', newline='\n') as stream:
+                for line in owner.stderr:
+                    errors.append(line); stream.write(line); stream.flush()
+        except Exception as error:
+            observer_errors.append(str(error))
+
+    # Inherited pipe writers must not keep a failed observer alive after its
+    # bounded owner/VM termination path. Neither thread releases native pages.
+    reader = threading.Thread(target=read_stdout, daemon=True)
+    error_reader = threading.Thread(target=read_stderr, daemon=True)
     reader.start(); error_reader.start()
     try:
         try:
@@ -275,6 +375,7 @@ def main():
         sync_destroyed = [int(t) for t in re.findall(r'LINUX_BRIDGE nativeSynchronizationDestroyed=true type=(\d+)', log)]
         monitored_fences = [{'offset': int(o), 'value': int(v)} for o, v in re.findall(r'monitoredFenceMapped=true direct=true loads=10000 offset=(\d+) value=(\d+)', log)]
         total_fence_mappings = len(fences) + len(hwqueue_fences) + len(monitored_fences)
+        late_fence_unmaps = log.count('LINUX_BRIDGE guestFenceUnmapped=true')
         gpuva = [{'pages': int(p), 'status': int(s), 'fence': int(f)} for p, s, f in
                  re.findall(r'nativeVendorGpuVaMapped=true pages=(\d+) status=(\d+) fence=(\d+)', log)]
         gpu_states = [{'pages': int(p), 'protection': int(t), 'status': int(s), 'fence': int(f)} for p, t, s, f in
@@ -291,6 +392,8 @@ def main():
         cpu_slot_maps = sum((mapping['bytes'] + 1048575) // 1048576 for mapping in cpu)
         cpu_unlocks = log.count('nativeVendorCpuUnlocked=true')
         cpu_unmaps = log.count('allocationCpuUnmapped=true direct=true mmioReads=0 mmioWrites=0')
+        late_cpu_unmap_sizes = [int(b) for b in re.findall(r'allocationCpuUnmapped=true direct=true mmioReads=0 mmioWrites=0 bytes=(\d+)', log)]
+        late_cpu_slot_unmaps = sum((b + 1048575) // 1048576 for b in late_cpu_unmap_sizes)
         cpu_released_after_exit = cleanup.get('cpuLocksReleasedAfterVmExit', 0)
         allocation_limit_rejections = log.count('LINUX_BRIDGE ioctlFailed nr=6 errno=24')
         retirement_batches = [{'count': int(c), 'queues': int(q)} for c, q in re.findall(
@@ -322,7 +425,7 @@ def main():
                     control.get('ownedQemuExited') is True and control.get('qemuExit') == 0 and
                     control.get('qemuForcedStop') is False and control.get('fenceControlFailed') is False and
                     control.get('liveFenceMappings') == 0 and control.get('fenceMappingsCreated') == total_fence_mappings and
-                    control.get('fenceUnmapAcknowledgements') == (0 if guest_eof else total_fence_mappings) and
+                    control.get('fenceUnmapAcknowledgements') == (late_fence_unmaps if late_guest_eof else 0 if early_guest_eof else total_fence_mappings) and
                     cleanup.get('driverCleanupVerified') is True and cleanup.get('failedAdapterQueries') == 0 and
                     len(context_priorities) >= args.minimum_context_priority_changes and
                     cleanup.get('completedContextPriorityChanges') == len(context_priorities) == len(guest_priorities) and
@@ -367,7 +470,8 @@ def main():
                         cleanup.get('completedAllocationTranslations') == translations and
                         cleanup.get('failedAllocationTranslations') == 0 and cleanup.get('liveAllocationTranslations') == 0)
         if args.driver_hwqueues:
-            accepted = (accepted and hwqueues >= args.minimum_hwqueues and hwqueues == len(hwqueue_fences) and hwqueue_unmaps == (0 if args.hwqueue_eof_test or args.sync_eof_test or args.reservation_eof_test or args.gpu_state_eof_test or args.cpu_span_eof_test or args.sync_no_max_eof_test else hwqueues) and
+            expected_hw_unmaps = hwqueues - cleanup.get('hwQueuesReleasedAfterVmExit', 0) if late_guest_eof else 0 if args.hwqueue_eof_test or args.sync_eof_test or args.reservation_eof_test or args.gpu_state_eof_test or args.cpu_span_eof_test or args.sync_no_max_eof_test else hwqueues
+            accepted = (accepted and hwqueues >= args.minimum_hwqueues and hwqueues == len(hwqueue_fences) and hwqueue_unmaps == expected_hw_unmaps and
                         cleanup.get('completedHwQueues') == hwqueues and cleanup.get('destroyedHwQueues') == hwqueues and
                         cleanup.get('failedHwQueues') == 0 and cleanup.get('liveHwQueues') == 0 and 24 not in unsupported and 27 not in unsupported)
         if args.driver_syncs:
@@ -381,7 +485,7 @@ def main():
                         all(d['flags'] in (0, 64, 128) and (d['type'] == 5 or not d['flags']) and
                             d['gpuMapped'] == (d['type'] == 5 and d['flags'] != 128) for d in sync_descriptors) and
                         cleanup.get('failedSyncObjects') == 0 and cleanup.get('liveSyncObjects') == 0 and 16 not in unsupported and 29 not in unsupported and
-                        (not guest_eof or not sync_destroyed) and
+                        (not early_guest_eof or not sync_destroyed) and
                         len(sync_destroyed) + cleanup.get('syncObjectsReleasedAfterVmExit', 0) == len(sync_types) and
                         (guest_eof or sorted(sync_destroyed) == sorted(sync_types)))
         if args.driver_submit:
@@ -399,7 +503,7 @@ def main():
                         cleanup.get('completedGpuReservations') == len(reservations) and cleanup.get('freedGpuReservations') == len(reservations) and
                         cleanup.get('failedGpuReservations') == 0 and cleanup.get('liveGpuReservations') == 0 and cleanup.get('liveGpuReservedBytes') == 0 and
                         len(reservations_freed) + cleanup.get('gpuReservationsReleasedAfterVmExit', 0) == len(reservations) and
-                        (not guest_eof or not reservations_freed))
+                        (not early_guest_eof or not reservations_freed))
         else:
             accepted = (accepted and not reservations and cleanup.get('completedGpuReservations') == 0 and cleanup.get('liveGpuReservations') == 0)
         accepted = (accepted and cleanup.get('liveGpuStateRanges') == 0 and cleanup.get('liveGpuStateBytes') == 0 and cleanup.get('failedGpuStateMaps') == 0)
@@ -431,7 +535,7 @@ def main():
                         cleanup.get('vendorCpuSlotLimit') == control.get('allocationApertureSlots') == args.driver_cpu_slots and
                         len(expanded_cpu) >= args.minimum_expanded_cpu_mappings and
                         cpu_unlocks + cpu_released_after_exit == len(cpu) and cpu_unmaps == cpu_unlocks and
-                        (not guest_eof or cpu_unlocks == 0) and
+                        (not early_guest_eof or cpu_unlocks == 0) and
                         cleanup.get('completedVendorCpuLocks') == len(cpu) and cleanup.get('completedVendorCpuUnlocks') == len(cpu) and
                         cleanup.get('failedVendorCpuLocks') == 0 and cleanup.get('failedVendorCpuUnlocks') == 0 and
                         cleanup.get('liveVendorCpuBytes') == 0 and control.get('liveAllocationMappings') == 0 and
@@ -439,7 +543,7 @@ def main():
                         control.get('allocationUnmapAcknowledgements') == cpu_unlocks and
                         len(spanning_cpu) >= args.minimum_spanning_cpu_mappings and control.get('liveAllocationSlotMappings') == 0 and
                         control.get('allocationSlotMappingsCreated') == cpu_slot_maps and
-                        control.get('allocationSlotUnmapAcknowledgements') == (0 if guest_eof else cpu_slot_maps))
+                        control.get('allocationSlotUnmapAcknowledgements') == (late_cpu_slot_unmaps if late_guest_eof else 0 if early_guest_eof else cpu_slot_maps))
         if args.expected_cpu_slot_quota_rejections is not None:
             accepted = accepted and cleanup.get('vendorCpuSlotQuotaRejections') == args.expected_cpu_slot_quota_rejections
         if args.cpu_eof_test:
@@ -502,7 +606,23 @@ def main():
                         g['observed'] == n['observed'] and r['observed'] >= r['target'] and n['noGpuAccess'] is True and n['cpuValueWrittenByBridge'] is False
                         for g,n,s,r in zip(context_signals,context_signal_native,context_signal_status,context_signal_retirements)))
         copy_verified = copy_workload_complete(log)
-        workload_matches = copy_verified if args.runtime_workload == 'copy' else 'GPU_COPY_TEST_BEGIN' not in log
+        clear_verified = clear_workload_complete(log)
+        hwqueue_flags = [int(flag or '0') for flag in re.findall(r'nativeHwQueueCreated=true privateBytes=\d+ progressFenceDirect=true(?: flags=(\d+))?',log)]
+        hwqueue_flag_checks = [json.loads(line) for line in errors if line.startswith('{') and '"nativeHardwareQueueFlagsVerified"' in line]
+        no_broadcast_queues = hwqueue_flags.count(2)
+        accepted = (accepted and all(flag in (0,2) for flag in hwqueue_flags) and
+                    cleanup.get('completedNoBroadcastSignalHwQueues',0) == no_broadcast_queues and
+                    ((not hwqueue_flag_checks and not no_broadcast_queues) or
+                     (len(hwqueue_flag_checks) == len(hwqueue_flags) == cleanup.get('completedHwQueues') and
+                      all(n['flags'] == g and n['unchanged'] is True and n['ntstatus'] == 0 for n,g in zip(hwqueue_flag_checks,hwqueue_flags)))))
+        if late_guest_eof:
+            accepted = accepted and no_broadcast_queue_eof_complete(log, control, cleanup)
+        elif args.runtime_workload == 'clear':
+            accepted = accepted and no_broadcast_queues >= 1 and len(context_signals) == 2 and resources >= 2
+        workload_matches = ((not clear_verified and not copy_verified and 'GPU_CLEAR_TEST_BEGIN' in log and 'GPU_COPY_TEST_BEGIN' not in log) if late_guest_eof else
+                            (copy_verified and 'GPU_CLEAR_TEST_BEGIN' not in log) if args.runtime_workload == 'copy' else
+                            (clear_verified and 'GPU_COPY_TEST_BEGIN' not in log) if args.runtime_workload == 'clear' else
+                            'GPU_COPY_TEST_BEGIN' not in log and 'GPU_CLEAR_TEST_BEGIN' not in log)
         accepted = accepted and workload_matches
         report = {'schema': 1, 'diagnosticAccepted': bool(accepted), 'runtimeInitializationComplete': bool(initialized and accepted),
                   'runtimeInitializationResultsSucceeded': bool(initialized),
@@ -512,7 +632,16 @@ def main():
                   'nativeContextSignals': context_signals, 'nativeContextSignalRetirementChecks': context_signal_native,
                   'guestGpuBufferCopyBytesPerRound': 65536 if copy_verified and accepted else 0,
                   'guestGpuBufferCopyRounds': 2 if copy_verified and accepted else 0,
-                  'stage': 'owned VM exit with a NoSignalMaxValueOnTdr fence and standalone source allocation' if args.sync_no_max_eof_test else
+                  'guestGpuRenderTargetClearVerified': bool(clear_verified and accepted),
+                  'guestGpuRenderTargetClearPixelsPerRound': 9490 if clear_verified and accepted else 0,
+                  'guestGpuRenderTargetClearRounds': 2 if clear_verified and accepted else 0,
+                  'nativeNoBroadcastSignalHardwareQueues': no_broadcast_queues,
+                  'guestHardwareQueueFlags': hwqueue_flags, 'nativeHardwareQueueFlagChecks': hwqueue_flag_checks,
+                  'd3d12DirectQueueHresult': next(iter(re.findall(r'^gpuClearDirectQueue=([0-9a-f]{8})[ \t\r]*$',log,re.MULTILINE)),None),
+                  'stage': 'owned VM exit with a NoBroadcastSignal hardware queue; graphics rendering unverified' if late_guest_eof else
+                           'live NVIDIA D3D12 graphics queue render-target clears with verified pixels' if args.runtime_workload == 'clear' else
+                           'live NVIDIA D3D12 GPU buffer copies with verified guest readback' if args.runtime_workload == 'copy' else
+                           'owned VM exit with a NoSignalMaxValueOnTdr fence and standalone source allocation' if args.sync_no_max_eof_test else
                            'live NVIDIA runtime with standalone source normalization and native TDR fence flags' if args.minimum_no_max_tdr_fences else
                            'owned VM exit with a spanning native CPU allocation view' if args.cpu_span_eof_test else
                            'live NVIDIA runtime with spanning native CPU allocation views' if args.minimum_spanning_cpu_mappings else
@@ -584,6 +713,7 @@ def main():
                   'diagnosticCpuEofRequested': args.cpu_eof_test,
                   'diagnosticCpuSpanEofRequested': args.cpu_span_eof_test,
                   'diagnosticHardwareQueueEofRequested': args.hwqueue_eof_test,
+                  'diagnosticNoBroadcastSignalQueueEofRequested': late_guest_eof,
                   'diagnosticSynchronizationEofRequested': args.sync_eof_test,
                   'diagnosticNoMaxSynchronizationEofRequested': args.sync_no_max_eof_test,
                   'diagnosticReservationEofRequested': args.reservation_eof_test,
@@ -608,7 +738,24 @@ def main():
                 print(line)
         print(json.dumps(report, indent=2))
         return 0 if accepted else 1
+    except Exception as error:
+        if not args.report.exists():
+            def last_metadata(lines, marker):
+                return next((json.loads(line) for line in reversed(lines) if line.startswith('{') and marker in line), {})
+            failure = {'schema':1, 'diagnosticAccepted':False, 'runtimeInitializationComplete':False,
+                       'guestGpuBufferCopyVerified':False, 'guestGpuRenderTargetClearVerified':False,
+                       'runtimeWorkload':args.runtime_workload, 'fatalDiagnosticError':str(error),
+                       'hostBridgeExit':owner.poll(), 'observerErrors':list(observer_errors),
+                       'ownedQemuControl':last_metadata(output,'ownedQemuExited'),
+                       'disconnectCleanup':last_metadata(errors,'driverCleanupVerified'),
+                       'kernelSha256':sha256(args.kernel), 'initramfsSha256':sha256(args.initramfs),
+                       'driverBridgeSha256':sha256(args.bridge), 'qemuSha256':sha256(args.qemu),
+                       'guestDesktopAcceleratedByThisBackend':False, 'nearNativePerformanceMeasured':False}
+            args.report.write_text(json.dumps(failure,indent=2)+'\n',encoding='utf-8',newline='\n')
+        raise
     finally:
+        if not args.report.with_suffix('.host.log').exists():
+            args.report.with_suffix('.host.log').write_text(''.join(output+errors),encoding='utf-8',newline='\n')
         if child_handle:
             api.CloseHandle(child_handle)
         # Do not kill a native page owner here: the timeout path verifies

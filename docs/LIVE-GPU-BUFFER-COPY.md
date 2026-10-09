@@ -136,3 +136,7 @@ layouts, sharing, guest kernel/DRM integration, eviction, asynchronous
 submission/synchronization and reset recovery remain unfinished. Every
 requested API needs its own acceptance and controlled native-versus-guest
 measurements under [PRODUCT-ACCEPTANCE.md](PRODUCT-ACCEPTANCE.md).
+
+The [graphics queue control](LIVE-GRAPHICS-QUEUE-CONTROL.md) records the subsequent
+NoBroadcastSignal queue lifecycle and the rejected graphics-startup attempt.
+It preserves this GPU-copy milestone but does not prove rendered pixels.

@@ -122,8 +122,9 @@ public:
         }
         if (word(0x4c) || word(0x50)) throw std::runtime_error("Allocation CPU access used MMIO emulation");
         if (munmap(entry->second.data, entry->second.bytes)) throw std::runtime_error("Allocation CPU unmap failed");
+        const auto bytes = entry->second.bytes;
         mappings.erase(entry); ++unmapped;
-        std::fprintf(stderr, "LINUX_BRIDGE allocationCpuUnmapped=true direct=true mmioReads=0 mmioWrites=0\n");
+        std::fprintf(stderr, "LINUX_BRIDGE allocationCpuUnmapped=true direct=true mmioReads=0 mmioWrites=0 bytes=%u\n", bytes);
         return true;
     }
     unsigned total() const { return created; }

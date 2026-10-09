@@ -29,6 +29,7 @@ def send(op, handle, value=0, data=b'', padding=0, hello=False, ntstatus=0):
     caps |= 256 if mode.startswith('translation-') else 0
     caps |= 4096 if mode.startswith('translation-') and mode != 'translation-disabled' else 0
     caps |= 8192 if mode.startswith('hwqueue-') and mode != 'hwqueue-disabled' else 0
+    caps |= 2097152 if mode.startswith('hwqueue-nobroadcast-') and mode != 'hwqueue-nobroadcast-disabled' else 0
     caps |= 16384 if mode.startswith('sync-') and mode != 'sync-disabled' else 0
     caps |= 32768 if mode.startswith('submit-') and mode != 'submit-disabled' else 0
     caps |= 131072 if mode.startswith('reservation-') and mode != 'reservation-disabled' else 0
@@ -119,9 +120,9 @@ try:
             assert desc == ((0,0,8,0,0,0) if mode == 'hwqueue-sync-context' else (0,1,16,12,4,0))
             send(op,3,data=b'' if mode == 'hwqueue-sync-context' else bytes([37 ^ 255,38,39,40]))
         elif op == 0x2060:
-            assert handle == 3 and packet[16:32] == struct.pack('<4I',0,4,0,0)
+            assert handle == 3 and packet[16:32] == struct.pack('<4I',2 if mode.startswith('hwqueue-nobroadcast-') else 0,4,0,0)
             assert packet[32:] == bytes([37,38,39,40])
-            failed = mode in ('hwqueue-nt-failure','hwqueue-bad-failure')
+            failed = mode in ('hwqueue-nt-failure','hwqueue-bad-failure','hwqueue-nobroadcast-nt-failure')
             queue = 0 if failed or mode == 'hwqueue-bad-id' else 4
             sync = 0 if failed or mode == 'hwqueue-bad-sync' else 4 if mode == 'hwqueue-same-sync' else 5
             offset = 0 if failed else 1 if mode == 'hwqueue-bad-alignment' else 262144 if mode == 'hwqueue-bad-offset' else 8192
@@ -130,7 +131,7 @@ try:
             data = struct.pack('<IIQQ',sync,1 if mode == 'hwqueue-bad-reserved' else 0,offset,gpu) + bytes([37 ^ 255,38,39,40])
             if mode == 'hwqueue-short': data = data[:-1]
             send(op,queue,value=1 if mode == 'hwqueue-bad-value' else 0,data=data,
-                 ntstatus=-1073741811 if failed else 259 if mode == 'hwqueue-bad-status' else 0)
+                 ntstatus=-1073741811 if failed else 259 if mode in ('hwqueue-bad-status','hwqueue-nobroadcast-bad-status') else 0)
         elif op == 0x2061:
             assert handle == 4 and len(packet) == 16
             send(op,handle)
@@ -225,8 +226,8 @@ if mode == 'translation-disabled': assert 0x2056 not in operations, operations
 if mode in ('translation-normal','translation-invalid','translation-disabled','translation-nt-failure','translation-failed-cleanup'):
     assert operations.count(0x2051) == 1, operations
 if mode.startswith('translation-'): assert 0x2016 not in operations, operations
-if mode in ('hwqueue-disabled','hwqueue-invalid','hwqueue-sync-context'): assert 0x2060 not in operations, operations
-if mode == 'hwqueue-no-hub': assert operations[-2:] == [0x2060,0x2061], operations
+if mode in ('hwqueue-disabled','hwqueue-invalid','hwqueue-sync-context','hwqueue-nobroadcast-disabled'): assert 0x2060 not in operations, operations
+if mode in ('hwqueue-no-hub','hwqueue-nobroadcast-no-hub'): assert operations[-2:] == [0x2060,0x2061], operations
 if mode in ('sync-disabled','sync-invalid'): assert 0x2070 not in operations and 0x2071 not in operations, operations
 if mode in ('sync-no-hub','sync-nogpu-no-hub'): assert operations[-2:] == [0x2070,0x2071], operations
 if mode == 'sync-mutex' or mode.startswith('sync-destroy-'): assert operations.count(0x2071) == 1, operations
@@ -273,6 +274,7 @@ def main():
                      'hwqueue-bad-id', 'hwqueue-bad-sync', 'hwqueue-same-sync', 'hwqueue-bad-alignment', 'hwqueue-bad-offset',
                      'hwqueue-zero-gpu', 'hwqueue-bad-gpu-alignment', 'hwqueue-bad-gpu-range', 'hwqueue-bad-reserved',
                      'hwqueue-short', 'hwqueue-bad-value', 'hwqueue-bad-status', 'hwqueue-no-hub',
+                     'hwqueue-nobroadcast-disabled', 'hwqueue-nobroadcast-no-hub', 'hwqueue-nobroadcast-nt-failure', 'hwqueue-nobroadcast-bad-status',
                      'sync-mutex', 'sync-failed-destroy', 'sync-disabled', 'sync-invalid', 'sync-nt-failure', 'sync-bad-failure',
                      'sync-bad-id', 'sync-bad-alignment', 'sync-bad-offset', 'sync-zero-gpu', 'sync-bad-gpu-alignment',
                      'sync-bad-gpu-range', 'sync-short', 'sync-bad-value', 'sync-bad-status', 'sync-no-hub', 'sync-mutex-bad-map',

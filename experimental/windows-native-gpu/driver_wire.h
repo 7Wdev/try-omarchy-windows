@@ -54,11 +54,13 @@ inline bool validSync(SyncDesc d) {
            (d.type == 5 && (d.flags == 0 || d.flags == NoSignalMaxValueOnTdrSyncFlag || d.flags == NoGpuAccessSyncFlag) && d.affinity <= 1));
 }
 constexpr std::size_t MaxHwQueues = 8;
+constexpr std::uint32_t NoBroadcastSignalHwQueueCapability = 2097152;
+constexpr std::uint32_t NoBroadcastSignalHwQueueFlag = 2;
 struct HwQueueDesc { std::uint32_t flags, privateBytes, reserved, reserved2; };
 struct HwQueueReply { std::uint32_t sync, reserved; std::uint64_t offset, gpuAddress; };
 static_assert(sizeof(HwQueueDesc) == 16 && sizeof(HwQueueReply) == 24, "fixed hardware queue layouts");
 inline bool validHwQueue(HwQueueDesc d) {
-    return !d.flags && d.privateBytes && d.privateBytes <= 4000 && !d.reserved && !d.reserved2;
+    return (d.flags == 0 || d.flags == NoBroadcastSignalHwQueueFlag) && d.privateBytes && d.privateBytes <= 4000 && !d.reserved && !d.reserved2;
 }
 struct VendorTranslationDesc { std::uint32_t device, adapter, reserved, reserved2; };
 static_assert(sizeof(VendorTranslationDesc) == 16, "fixed allocation translation layout");
@@ -575,6 +577,7 @@ public:
             if (packet.size() < sizeof h + sizeof(HwQueueDesc)) return reply(h, -22);
             HwQueueDesc desc{}; std::memcpy(&desc, packet.data() + sizeof h, sizeof desc);
             if (!validHwQueue(desc) || packet.size() != sizeof h + sizeof desc + desc.privateBytes) return reply(h, -22);
+            if (desc.flags == NoBroadcastSignalHwQueueFlag && !(driver.capabilities().flags & NoBroadcastSignalHwQueueCapability)) return reply(h, -95);
             const auto count = std::count_if(objects.begin(), objects.end(), [](const auto& item) { return item.second.kind == Kind::HwQueue; });
             if (objects.size() > MaxObjects - 2 || nextId >= UINT32_MAX - 1 || static_cast<std::size_t>(count) >= MaxHwQueues) return reply(h, -24);
             std::vector<std::uint8_t> data(packet.begin() + sizeof h + sizeof desc, packet.end());
