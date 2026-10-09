@@ -93,6 +93,10 @@
       {
         "file": "patches/qemu/0021-detach-windows-ime-from-graphic-consoles.patch",
         "sha256": "5c7a87f18a40a7c22b58ba7e70918ae2b9f7f571400aff6bf3ad05119488bb4e"
+      },
+      {
+        "file": "patches/qemu/0022-keep-sdl-capture-running-without-a-microphone.patch",
+        "sha256": "94835ab3e9fe7bf348401ff5d50424f8c116511ef60c138e4de7e73fb4461cec"
       }
     ]
   },

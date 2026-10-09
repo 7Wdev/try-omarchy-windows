@@ -1,0 +1,170 @@
+--- a/audio/sdlaudio.c
++++ b/audio/sdlaudio.c
+@@ -75,6 +75,7 @@
+     gint64 next_route_check;
+     bool route_matches;
+     bool enabled;
++    RateCtl silence_rate;
+ } SDLVoiceIn;
+ 
+ static int aud_to_sdlfmt (AudioFormat fmt)
+@@ -257,7 +258,16 @@
+                                   bool *route_matches)
+ {
+     SDL_AudioDeviceID devid;
+-#ifndef _WIN32
++#ifdef _WIN32
++    /* WASAPI retries E_NOTFOUND for eight seconds. An empty capture
++     * inventory is normal while a headset is disconnected, not an open error.
++     * Check again on the next route poll so microphone hotplug keeps working.
++     */
++    if (rec && SDL_GetNumAudioDevices(rec) <= 0) {
++        *route_matches = false;
++        return 0;
++    }
++#else
+     int err;
+     sigset_t new, old;
+ 
+@@ -539,6 +549,36 @@
+     return true;
+ }
+ 
++/* Keep virtio-sound capture periods moving even without a host microphone.
++ * Use the same virtual-clock pacing and format-aware silence as audio-none.
++ */
++static void sdl_silence_in(SDLVoiceIn *sdl)
++{
++    HWVoiceIn *hw = &sdl->hw;
++    size_t bytes = audio_rate_get_bytes(&sdl->silence_rate, &hw->info,
++                                       hw->size_emul - hw->pending_emul);
++
++    while (bytes) {
++        size_t len = MIN(bytes, hw->size_emul - hw->pos_emul);
++
++        audio_pcm_info_clear_buf(&hw->info, hw->buf_emul + hw->pos_emul,
++                                 len / hw->info.bytes_per_frame);
++        hw->pos_emul = (hw->pos_emul + len) % hw->size_emul;
++        hw->pending_emul += len;
++        bytes -= len;
++    }
++}
++
++/* SDL's cached inventory check is cheap; an attempted WASAPI open may block.
++ * Leave ten seconds after a failed open before trying a listed endpoint again.
++ */
++static void sdl_backoff_in(SDLVoiceIn *sdl)
++{
++    int seconds = SDL_GetNumAudioDevices(1) > 0 ? 10 : 1;
++
++    sdl->next_route_check = g_get_monotonic_time() + seconds * G_USEC_PER_SEC;
++}
++
+ static void sdl_refresh_route_In(SDLVoiceIn *sdl)
+ {
+     g_autofree char *requested = NULL;
+@@ -548,11 +588,26 @@
+     bool route_matches;
+     bool stopped;
+ 
++    if (sdl->devid &&
++        SDL_GetAudioDeviceStatus(sdl->devid) == SDL_AUDIO_STOPPED) {
++        sdl_release_in(sdl);
++        sdl->hw.pos_emul = sdl->hw.pending_emul = 0;
++        audio_rate_start(&sdl->silence_rate);
++    }
+     if (!sdl->devid) {
+-        if (sdl->enabled && sdl_route_check_due(&sdl->next_route_check) &&
+-            sdl_acquire_in(sdl)) {
+-            SDL_PauseAudioDevice(sdl->devid, 0);
++        if (!sdl->enabled) {
++            return;
+         }
++        if (sdl_route_check_due(&sdl->next_route_check)) {
++            if (sdl_acquire_in(sdl)) {
++                /* Discard queued silence before real capture resumes. */
++                sdl->hw.pos_emul = sdl->hw.pending_emul = 0;
++                SDL_PauseAudioDevice(sdl->devid, 0);
++                return;
++            }
++            sdl_backoff_in(sdl);
++        }
++        sdl_silence_in(sdl);
+         return;
+     }
+     if (!sdl_route_check_due(&sdl->next_route_check)) {
+@@ -574,6 +629,7 @@
+     replacement = sdl_open(&sdl->reopen_spec, &obtained, 1, requested,
+                            &route_matches);
+     if (!replacement) {
++        sdl_backoff_in(sdl);
+         return;
+     }
+     if (!sdl_audio_specs_match(&sdl->reopen_spec, &obtained)) {
+@@ -611,21 +667,6 @@
+         return ret;                                            \
+     }
+ 
+-#define SDL_WRAPPER_VOID_FUNC(name, args_decl, args, dir)      \
+-    static void glue(sdl_, name)args_decl                      \
+-    {                                                          \
+-        glue(SDLVoice, dir) *sdl = (glue(SDLVoice, dir) *)hw;  \
+-                                                               \
+-        glue(sdl_refresh_route_, glue(dir, ))(sdl);             \
+-        if (sdl->devid) {                                      \
+-            SDL_LockAudioDevice(sdl->devid);                   \
+-        }                                                      \
+-        glue(audio_generic_, name)args;                        \
+-        if (sdl->devid) {                                      \
+-            SDL_UnlockAudioDevice(sdl->devid);                 \
+-        }                                                      \
+-    }
+-
+ SDL_WRAPPER_FUNC(buffer_get_free, size_t, (HWVoiceOut *hw), (hw), Out)
+ SDL_WRAPPER_FUNC(get_buffer_out, void *, (HWVoiceOut *hw, size_t *size),
+                  (hw, size), Out)
+@@ -637,10 +678,23 @@
+                  (hw, buf, size), In)
+ SDL_WRAPPER_FUNC(get_buffer_in, void *, (HWVoiceIn *hw, size_t *size),
+                  (hw, size), In)
+-SDL_WRAPPER_VOID_FUNC(put_buffer_in, (HWVoiceIn *hw, void *buf, size_t size),
+-                      (hw, buf, size), In)
+ #undef SDL_WRAPPER_FUNC
+-#undef SDL_WRAPPER_VOID_FUNC
++
++static void sdl_put_buffer_in(HWVoiceIn *hw, void *buf, size_t size)
++{
++    SDLVoiceIn *sdl = (SDLVoiceIn *)hw;
++
++    /* A route refresh can discard the buffer returned by get_buffer_in.
++     * Defer hotplug and retry handling until the next get/read instead.
++     */
++    if (sdl->devid) {
++        SDL_LockAudioDevice(sdl->devid);
++    }
++    audio_generic_put_buffer_in(hw, buf, size);
++    if (sdl->devid) {
++        SDL_UnlockAudioDevice(sdl->devid);
++    }
++}
+ 
+ static void sdl_fini_out(HWVoiceOut *hw)
+ {
+@@ -787,12 +841,11 @@
+     sdl->enabled = enable;
+     if (!enable) {
+         sdl_release_in(sdl);
+-        return;
+-    }
+-    if (!sdl->devid && !sdl_acquire_in(sdl)) {
+-        return;
+-    }
+-    SDL_PauseAudioDevice(sdl->devid, 0);
++        hw->pos_emul = hw->pending_emul = 0;
++        return;
++    }
++    audio_rate_start(&sdl->silence_rate);
++    sdl_refresh_route_In(sdl);
+ }
+ 
+ static bool audio_sdl_realize(AudioBackend *abe, Audiodev *dev, Error **errp)
