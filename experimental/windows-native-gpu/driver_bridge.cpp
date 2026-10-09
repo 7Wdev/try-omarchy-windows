@@ -257,6 +257,7 @@ public:
                 (allocationsEnabled ? VendorAllocationCapability : 0u) | (gpuVaEnabled ? VendorGpuVaCapability : 0u) |
                 (residencyEnabled ? VendorResidencyCapability : 0u) | (cpuEnabled ? VendorCpuCapability : 0u) |
                 (cpuEnabled && runtime && runtime->allocationSlotLimit() == 128 ? ExpandedVendorCpuCapability : 0u) |
+                (gpuVaEnabled && runtime && runtime->allocationSlotLimit() == 128 ? ExpandedVendorGpuCapability : 0u) |
                 (translationEnabled ? VendorTranslationCapability : 0u) | (hwQueuesEnabled ? HwQueueCapability : 0u) |
                 (hwQueuesEnabled ? NoBroadcastSignalHwQueueCapability : 0u) |
                 (syncEnabled ? SyncCapability : 0u) | (submitEnabled ? HwSubmitCapability : 0u) |
@@ -742,7 +743,7 @@ public:
         if (!gpuVaEnabled || !validGpuVa(desc) || entry == vendorAllocations.end() || !pagingFences.count(queue) ||
             entry->second.device != pagingFences.at(queue).device ||
             (desc.driverProtection && !entry->second.resource) ||
-            entry->second.pages || entry->second.address || desc.sizePages > MaxVendorMappedPages - vendorMappedPages)
+            entry->second.pages || entry->second.address || !vendorGpuBudgetFits(vendorMappedPages, desc.sizePages, capabilities().flags))
             return {{Invalid, 0, 0}, 0};
         if (desc.base) {
             const auto overlaps = [&](std::uint64_t address, std::uint64_t bytes) {
@@ -1292,7 +1293,7 @@ public:
                   << ",\"completedVendorGpuVaWaits\":" << completedVendorMapWaits
                   << ",\"liveVendorMappedPages\":" << vendorMappedPages
                   << ",\"peakVendorMappedPages\":" << peakVendorMappedPages
-                  << ",\"vendorGpuMappedByteLimit\":" << MaxVendorGpuMappedBytes
+                  << ",\"vendorGpuMappedByteLimit\":" << vendorGpuPageLimit(capabilities().flags) * 4096
                   << ",\"completedVendorResidencyRequests\":" << completedVendorResidency
                   << ",\"failedVendorResidencyRequests\":" << failedVendorResidency
                   << ",\"completedVendorResidencyWaits\":" << completedVendorResidencyWaits

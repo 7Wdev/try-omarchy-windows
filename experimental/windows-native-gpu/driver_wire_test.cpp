@@ -989,6 +989,53 @@ int main() {
         // Disconnect releases all mapped native allocations before their devices.
     }
     require(gpuVa.vendorOwners.empty());
+    struct BudgetGpu : Fake {
+        bool expanded = false;
+        native_gpu::Capabilities capabilities() const override {
+            auto c = Fake::capabilities();
+            if (expanded) c.flags |= ExpandedVendorGpuCapability;
+            return c;
+        }
+    };
+    for (const bool expanded : {false,true}) {
+        BudgetGpu gpuBudget; gpuBudget.vendorEnabled = gpuBudget.gpuVaEnabled = true; gpuBudget.expanded = expanded;
+        const auto flags = gpuBudget.capabilities().flags;
+        const auto limit = vendorGpuPageLimit(flags);
+        require(limit == (expanded ? 16384u : 8192u));
+        require(vendorGpuBudgetFits(limit-1,1,flags) && !vendorGpuBudgetFits(limit,1,flags));
+        require(!vendorGpuBudgetFits(limit+1,1,flags) && !vendorGpuBudgetFits(UINT32_MAX,1,flags));
+        require(!vendorGpuBudgetFits(0,UINT64_MAX,flags));
+        {
+            Session s(gpuBudget); s.dispatch(hello());
+            const auto adapter = header(s.dispatch(request(Op::OpenAdapter))).handle;
+            const auto device = header(s.dispatch(request(Op::CreateDevice,adapter))).handle;
+            const auto queue = header(s.dispatch(request(Op::CreatePagingQueue,device))).handle;
+            std::vector<std::uint32_t> held;
+            const auto create = [&] {
+                auto packet = request(Op::CreateVendorAllocation,device,VendorAllocationDesc{0,0,0,1,0,0}); packet.push_back(1);
+                const auto allocation = header(s.dispatch(packet)).handle; require(allocation != 0); return allocation;
+            };
+            const auto map = [&](std::uint32_t allocation,unsigned index) {
+                return s.dispatch(request(Op::MapVendorAllocation,allocation,GpuVaDesc{queue,0,
+                    67108864ull+index*std::uint64_t(MaxVendorCpuMappingBytes),67108864,1ull<<40,0,MaxVendorMapPages,1,0}));
+            };
+            for (unsigned n=0;n<limit/MaxVendorMapPages;++n) {
+                held.push_back(create()); require(header(map(held.back(),n)).status == 0);
+            }
+            const auto extra = create(); auto before = gpuBudget.calls;
+            require(header(map(extra,static_cast<unsigned>(held.size()))).status == -24 && gpuBudget.calls == before);
+            auto destroy = request(Op::DestroyVendorAllocations,device,DestroyVendorDesc{1,0});
+            const auto bytes = reinterpret_cast<const std::uint8_t*>(&held[0]); destroy.insert(destroy.end(),bytes,bytes+4);
+            require(header(s.dispatch(destroy)).status == 0);
+            if (expanded) {
+                gpuBudget.expanded = false; before = gpuBudget.calls;
+                require(header(map(extra,0)).status == -24 && gpuBudget.calls == before);
+                gpuBudget.expanded = true;
+            }
+            require(header(map(extra,0)).status == 0);
+        }
+        require(gpuBudget.vendorOwners.empty());
+    }
     Fake resident; resident.vendorEnabled = true;
     {
         Session s(resident);

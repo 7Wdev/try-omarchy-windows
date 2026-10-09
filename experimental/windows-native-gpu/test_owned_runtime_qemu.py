@@ -463,6 +463,7 @@ def main():
             accepted = (accepted and len(gpuva) >= args.minimum_vendor_gpuva_maps and (12 not in unsupported or (not args.driver_gpu_state and args.expected_unimplemented_ioctl == 12)) and
                         cleanup.get('completedVendorGpuVaMaps') == len(gpuva) and cleanup.get('failedVendorGpuVaMaps') == 0 and
                         cleanup.get('completedVendorGpuVaWaits') == len(gpuva) and cleanup.get('liveVendorMappedPages') == 0 and
+                        cleanup.get('vendorGpuMappedByteLimit') == (67108864 if args.driver_cpu_slots == 128 else 33554432) and
                         len(map_retirements) == len(gpuva) and
                         all(retired['target'] == mapped['fence'] and retired['observed'] >= mapped['fence'] for retired, mapped in zip(map_retirements, gpuva)))
         if args.driver_translation:

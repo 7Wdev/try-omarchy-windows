@@ -144,10 +144,20 @@ inline bool validHwSubmit(HwSubmitDesc d) {
 // GPU-only mappings do not consume the separate 1 MiB CPU aperture slots.
 constexpr std::uint32_t MaxVendorMapPages = 4 * MaxAllocation / 4096;
 // A successful device occupies almost all of the old 16 MiB GPU map budget;
-// queue startup then needs another 4 MiB allocation. CPU views keep their
-// independent 16 MiB cap and native reported usage keeps its 64 MiB guard.
+// queue startup then needs another 4 MiB allocation. The 128-slot graphics
+// profile negotiates a separate 64 MiB GPU-map budget. Native reported usage
+// keeps its independent 64 MiB guard.
 constexpr std::uint32_t MaxVendorGpuMappedBytes = 32 * 1024 * 1024;
 constexpr std::uint32_t MaxVendorMappedPages = MaxVendorGpuMappedBytes / 4096;
+constexpr std::uint32_t ExpandedVendorGpuCapability = 8388608;
+constexpr std::uint32_t ExpandedVendorGpuMappedBytes = 64 * 1024 * 1024;
+inline std::uint32_t vendorGpuPageLimit(std::uint32_t capabilities) {
+    return ((capabilities & ExpandedVendorGpuCapability) ? ExpandedVendorGpuMappedBytes : MaxVendorGpuMappedBytes) / 4096;
+}
+inline bool vendorGpuBudgetFits(std::uint32_t usedPages, std::uint64_t pages, std::uint32_t capabilities) {
+    const auto limit = vendorGpuPageLimit(capabilities);
+    return usedPages <= limit && pages <= limit - usedPages;
+}
 struct GpuVaDesc {
     std::uint32_t queue, reserved;
     std::uint64_t base, minimum, maximum, offsetPages, sizePages, protection, driverProtection;
@@ -1014,7 +1024,7 @@ public:
             auto& object = allocation->second;
             if (desc.driverProtection && !object.vendorResource) return reply(h, -22);
             if (object.gpuPages) return reply(h, -16);
-            if (desc.sizePages > MaxVendorMappedPages - vendorMappedPages) return reply(h, -24);
+            if (!vendorGpuBudgetFits(vendorMappedPages, desc.sizePages, driver.capabilities().flags)) return reply(h, -24);
             if (desc.base) for (const auto& item : objects) {
                 const auto& mapped = item.second;
                 if (mapped.kind == Kind::VendorAllocation && mapped.gpuPages &&
