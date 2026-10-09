@@ -182,7 +182,7 @@ func removeUpdateFile(path string) error {
 }
 
 func updateDownloadSize(ctx context.Context, client *http.Client, source string) (int64, error) {
-	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, downloadMetadataTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodHead, source, nil)
 	if err != nil {

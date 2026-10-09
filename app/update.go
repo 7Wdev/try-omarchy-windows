@@ -14,7 +14,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"time"
 )
 
 const (
@@ -85,7 +84,7 @@ func fetchSmallFile(client *http.Client, source string, limit int64) ([]byte, er
 }
 
 func fetchSmallFileContext(ctx context.Context, client *http.Client, source string, limit int64) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, downloadMetadataTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, source, nil)
 	if err != nil {
