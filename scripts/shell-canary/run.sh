@@ -8,8 +8,11 @@ pacman-key --populate archlinux
 test "$(gpg --batch --with-colons --show-keys "$guest/keys/omarchy-pkgs.asc" | awk -F: '/^fpr:/ {print $10; exit}')" = 40DFB630FF42BCFFB047046CF0134EE680CAC571
 pacman-key --add "$guest/keys/omarchy-pkgs.asc"
 pacman-key --lsign-key 40DFB630FF42BCFFB047046CF0134EE680CAC571
-pacman -Syu --noconfirm
-pacman -S --needed --noconfirm quickshell qt6-base qt6-declarative qt6-wayland \
+# Match build-container.sh's OMARCHY_PACMAN_DISABLE_SANDBOX=1: the hosted
+# Docker kernel cannot enforce pacman's Landlock downloader. Signatures and
+# the container boundary stay enabled; this does not alter the guest config.
+pacman --disable-sandbox -Syu --noconfirm
+pacman --disable-sandbox -S --needed --noconfirm quickshell qt6-base qt6-declarative qt6-wayland \
   qt6-svg qt6-multimedia sway dbus mesa git python jq fontconfig \
   ttf-jetbrains-mono-nerd pipewire wireplumber
 pacman -Q > /results/packages.txt

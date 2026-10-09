@@ -34,6 +34,10 @@ def main():
     probe = json.loads(probe_path.read_text()) if probe_path.exists() else {}
     if not probe.get('success'):
         failures.append(probe.get('error', 'Shell probe did not finish; see setup.log'))
+        setup_path = args.results / 'setup.log'
+        if not probe and setup_path.exists():
+            failures.extend(line for line in setup_path.read_text(errors='replace').splitlines()
+                            if re.search(r'^(?:error:|fatal:)|Traceback|Canary probe failed:', line))
     if not log_path.exists() or 'Configuration Loaded' not in log_path.read_text(errors='replace'):
         failures.append('Quickshell did not report Configuration Loaded')
     (args.results / 'errors.txt').write_text('\n'.join(failures) + ('\n' if failures else ''))
