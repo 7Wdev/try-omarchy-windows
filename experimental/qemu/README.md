@@ -96,8 +96,13 @@ remain unverified or unimplemented; the result is partial initialization.
 
 ## Writable allocation hub
 
-`wddm-allocation-hub` adds 16 initially unmapped slots, each with a 1 MiB
-stride, in a separate 16 MiB PCI BAR (`1234:11fc`, layout `ALH1`). The fixed
+`wddm-allocation-hub` adds 16 initially unmapped slots by default. The host
+may select 32 or 64 with `slot-count`; other counts are rejected. Each slot
+keeps a 1 MiB stride in a separate bounded PCI BAR (`1234:11fc`, layout
+`ALH1`). The aperture has no backing memory until owned pages are mapped.
+Commands outside the selected count are rejected. Portable capacity/parser
+checks pass; expanded capacity still requires Windows build and physical
+acceptance. The fixed
 native owner controls `allocation-mapping` over QMP with
 `map:slot:source-address:bytes:generation` and `unmap:slot:generation`.
 Source and byte count must be aligned to 4 KiB; each active range is at most

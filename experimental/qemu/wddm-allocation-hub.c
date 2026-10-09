@@ -20,7 +20,8 @@ typedef struct WddmAllocationSlot {
 struct WddmAllocationHub {
     PCIDevice parent_obj;
     MemoryRegion bar;
-    WddmAllocationSlot slots[WDDM_ALLOCATION_HUB_SLOTS];
+    WddmAllocationSlot slots[WDDM_ALLOCATION_HUB_MAX_SLOTS];
+    uint32_t slot_count;
     uint64_t source_process, last_generation, mapped_bytes;
     HANDLE process;
     uint32_t emulated_reads, emulated_writes, mapped;
@@ -34,7 +35,7 @@ bool wddm_allocation_hub_mapping(MemoryRegion *mr, void **process,
     if (!s || !s->process) {
         return false;
     }
-    for (unsigned n = 0; n < WDDM_ALLOCATION_HUB_SLOTS; ++n) {
+    for (unsigned n = 0; n < s->slot_count; ++n) {
         WddmAllocationSlot *slot = &s->slots[n];
         if (mr == &slot->region && slot->source && slot->bytes) {
             *process = s->process;
@@ -82,7 +83,7 @@ static void hub_set_mapping(Object *object, const char *value, Error **errp)
     WddmAllocationCommand command;
     SIZE_T copied = 0;
     uint64_t observed = 0;
-    if (!DEVICE(s)->realized || !s->process || !wddm_allocation_command(value, &command)) {
+    if (!DEVICE(s)->realized || !s->process || !wddm_allocation_command(value, &command) || command.slot >= s->slot_count) {
         error_setg(errp, "Invalid host allocation mapping command or unrealized device");
         return;
     }
@@ -99,7 +100,7 @@ static void hub_set_mapping(Object *object, const char *value, Error **errp)
             error_setg(errp, "Host allocation range is not readable in its fixed owner process");
             return;
         }
-        for (unsigned n = 0; n < WDDM_ALLOCATION_HUB_SLOTS; ++n) {
+        for (unsigned n = 0; n < s->slot_count; ++n) {
             WddmAllocationSlot *other = &s->slots[n];
             if (other->source && command.source < other->source + other->bytes &&
                 other->source < command.source + command.bytes) {
@@ -141,6 +142,10 @@ static void hub_realize(PCIDevice *pci, Error **errp)
 {
     WddmAllocationHub *s = WDDM_ALLOCATION_HUB(pci);
     HMODULE whp = GetModuleHandleW(L"WinHvPlatform.dll");
+    if (!wddm_allocation_slots_valid(s->slot_count)) {
+        error_setg(errp, "WDDM allocation slot-count must be 16, 32 or 64");
+        return;
+    }
     if (!whpx_enabled() || !whp || !GetProcAddress(whp, "WHvMapGpaRange2")) {
         error_setg(errp, "WDDM allocation hub requires WHPX and WHvMapGpaRange2");
         return;
@@ -156,8 +161,8 @@ static void hub_realize(PCIDevice *pci, Error **errp)
         return;
     }
     memory_region_init(&s->bar, OBJECT(s), "wddm-allocation-hub",
-                       WDDM_ALLOCATION_HUB_SLOTS * WDDM_ALLOCATION_SLOT_BYTES);
-    for (unsigned n = 0; n < WDDM_ALLOCATION_HUB_SLOTS; ++n) {
+                       s->slot_count * WDDM_ALLOCATION_SLOT_BYTES);
+    for (unsigned n = 0; n < s->slot_count; ++n) {
         WddmAllocationSlot *slot = &s->slots[n];
         char name[48]; snprintf(name, sizeof name, "wddm-allocation-slot-%u", n);
         slot->hub = s;
@@ -167,7 +172,7 @@ static void hub_realize(PCIDevice *pci, Error **errp)
     }
     pci_register_bar(pci, 0, PCI_BASE_ADDRESS_SPACE_MEMORY, &s->bar);
     pci_set_long(pci->config + 0x40, 0x31484c41); /* ALH1 */
-    pci_set_long(pci->config + 0x44, WDDM_ALLOCATION_HUB_SLOTS);
+    pci_set_long(pci->config + 0x44, s->slot_count);
     pci_set_long(pci->config + 0x48, WDDM_ALLOCATION_SLOT_BYTES);
 }
 static void hub_finalize(Object *object)
@@ -176,7 +181,10 @@ static void hub_finalize(Object *object)
     if (s->process) { CloseHandle(s->process); }
     if (s->migration_blocker) { migrate_del_blocker(&s->migration_blocker); }
 }
-static const Property hub_properties[] = { DEFINE_PROP_UINT64("source-process", WddmAllocationHub, source_process, 0), };
+static const Property hub_properties[] = {
+    DEFINE_PROP_UINT64("source-process", WddmAllocationHub, source_process, 0),
+    DEFINE_PROP_UINT32("slot-count", WddmAllocationHub, slot_count, WDDM_ALLOCATION_HUB_DEFAULT_SLOTS),
+};
 static void hub_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass); PCIDeviceClass *pc = PCI_DEVICE_CLASS(klass);
