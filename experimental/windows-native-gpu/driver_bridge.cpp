@@ -1413,6 +1413,7 @@ int main(int argc, char** argv) {
         std::size_t cpuSlots = DefaultVendorCpuSlots;
         bool cpuSlotsConfigured = false;
         bool hwQueueNoBroadcastEofTest = false;
+        bool hwQueueNoBroadcastWaitEofTest = false;
         while (argc > 1) {
             if (argc > 2 && std::string(argv[argc - 2]) == "--driver-cpu-slots") {
                 const auto value = std::string(argv[argc - 1]);
@@ -1435,6 +1436,7 @@ int main(int argc, char** argv) {
             else if (option == "--driver-hwqueues" && !hwQueues) hwQueues = true;
             else if (option == "--hwqueue-eof-test" && !hwQueueEofTest) hwQueueEofTest = true;
             else if (option == "--hwqueue-no-broadcast-eof-test" && !hwQueueNoBroadcastEofTest) hwQueueNoBroadcastEofTest = true;
+            else if (option == "--hwqueue-no-broadcast-wait-eof-test" && !hwQueueNoBroadcastWaitEofTest) hwQueueNoBroadcastWaitEofTest = true;
             else if (option == "--sync-eof-test" && !syncEofTest) syncEofTest = true;
             else if (option == "--sync-no-max-eof-test" && !syncNoMaxEofTest) syncNoMaxEofTest = true;
             else if (option == "--driver-syncs" && !sync) sync = true;
@@ -1482,6 +1484,9 @@ int main(int argc, char** argv) {
         if (hwQueueNoBroadcastEofTest && (!hwQueues || !submit || !retirement || cpuStoreTest || cpuEofTest || hwQueueEofTest ||
             syncEofTest || reservationEofTest || gpuStateEofTest || cpuSpanEofTest || syncNoMaxEofTest))
             throw std::runtime_error("NoBroadcastSignal queue EOF control requires submission, retirement and a separate diagnostic run");
+        if (hwQueueNoBroadcastWaitEofTest && (!hwQueues || !submit || !retirement || cpuStoreTest || cpuEofTest || hwQueueEofTest ||
+            syncEofTest || reservationEofTest || gpuStateEofTest || cpuSpanEofTest || syncNoMaxEofTest || hwQueueNoBroadcastEofTest))
+            throw std::runtime_error("NoBroadcastWait queue EOF control requires submission, retirement and a separate diagnostic run");
         if (argc == 2 && std::string(argv[1]) == "--stdio") {
             if (_setmode(_fileno(stdin), _O_BINARY) == -1 || _setmode(_fileno(stdout), _O_BINARY) == -1)
                 throw std::runtime_error("Cannot set binary stdio mode");
@@ -1490,7 +1495,7 @@ int main(int argc, char** argv) {
         const bool ownedRuntime = argc == 7 && std::string(argv[1]) == "--run-qemu";
         if (!ownedRuntime && ((argc != 3 && argc != 7) || std::string(argv[1]) != "--listen")) {
             std::cerr << "Usage: driver-bridge.exe --stdio | --listen port [--guest-section name --guest-ram-bytes count] "
-                "[--driver-contexts] [--driver-queries] [--driver-allocations] [--driver-gpuva] [--driver-residency] [--driver-cpu] [--driver-cpu-slots 16|32|64|128] [--driver-translation] [--driver-hwqueues] [--driver-syncs] [--driver-submit] [--driver-retirement] [--driver-reservation] [--driver-gpu-state] [--cpu-store-test | --cpu-eof-test | --cpu-span-eof-test | --hwqueue-eof-test | --hwqueue-no-broadcast-eof-test | --sync-eof-test | --sync-no-max-eof-test | --reservation-eof-test | --gpu-state-eof-test]\n"
+                "[--driver-contexts] [--driver-queries] [--driver-allocations] [--driver-gpuva] [--driver-residency] [--driver-cpu] [--driver-cpu-slots 16|32|64|128] [--driver-translation] [--driver-hwqueues] [--driver-syncs] [--driver-submit] [--driver-retirement] [--driver-reservation] [--driver-gpu-state] [--cpu-store-test | --cpu-eof-test | --cpu-span-eof-test | --hwqueue-eof-test | --hwqueue-no-broadcast-eof-test | --hwqueue-no-broadcast-wait-eof-test | --sync-eof-test | --sync-no-max-eof-test | --reservation-eof-test | --gpu-state-eof-test]\n"
                 "       driver-bridge.exe --run-qemu qemu firmware kernel initramfs fresh-log --driver-contexts --driver-queries\n"; return 2;
         }
         if (ownedRuntime && (!contexts || !queries)) throw std::runtime_error("Owned QEMU runtime requires explicit query/context opt-ins");
@@ -1520,7 +1525,7 @@ int main(int argc, char** argv) {
         std::cout << "{\"port\":" << ntohs(address.sin_port) << ",\"transport\":\"tcp-loopback\"}\n" << std::flush;
         std::unique_ptr<driver_qemu::Runtime> runtime;
         if (ownedRuntime) runtime = std::make_unique<driver_qemu::Runtime>(ntohs(address.sin_port),
-            qemu_fence::Paths{argv[2], argv[3], argv[4], argv[5], argv[6]}, cpu, cpuStoreTest, cpuEofTest, hwQueueEofTest, cpuSlots, syncEofTest, reservationEofTest, gpuStateEofTest, cpuSpanEofTest, syncNoMaxEofTest, hwQueueNoBroadcastEofTest);
+            qemu_fence::Paths{argv[2], argv[3], argv[4], argv[5], argv[6]}, cpu, cpuStoreTest, cpuEofTest, hwQueueEofTest, cpuSlots, syncEofTest, reservationEofTest, gpuStateEofTest, cpuSpanEofTest, syncNoMaxEofTest, hwQueueNoBroadcastEofTest, hwQueueNoBroadcastWaitEofTest);
         fd_set reads; FD_ZERO(&reads); FD_SET(listener.value, &reads); timeval timeout{60, 0};
         if (select(0, &reads, nullptr, nullptr, &timeout) != 1) throw std::runtime_error("Connection timed out");
         Socket client; client.value = accept(listener.value, nullptr, nullptr);

@@ -47,6 +47,15 @@ def main():
     cases += [(no_broadcast + [control], 'requires') for control in
               ('--hwqueue-eof-test','--cpu-eof-test','--cpu-store-test','--cpu-span-eof-test',
                '--sync-eof-test','--sync-no-max-eof-test','--reservation-eof-test','--gpu-state-eof-test')]
+    wait_control = '--hwqueue-no-broadcast-wait-eof-test'
+    cases += [(['--stdio', wait_control], 'NoBroadcastWait queue EOF control requires')]
+    no_broadcast_wait = [wait_control if o == '--hwqueue-no-broadcast-eof-test' else o for o in no_broadcast]
+    for missing in ('--driver-submit', '--driver-retirement'):
+        cases.append(([o for o in no_broadcast_wait if o != missing], 'NoBroadcastWait queue EOF control requires'))
+    cases += [(no_broadcast_wait + [control], 'requires') for control in
+              ('--hwqueue-eof-test','--cpu-eof-test','--cpu-store-test','--cpu-span-eof-test',
+               '--sync-eof-test','--sync-no-max-eof-test','--reservation-eof-test','--gpu-state-eof-test',
+               '--hwqueue-no-broadcast-eof-test')]
     for options, message in cases:
         result = subprocess.run([str(args.bridge.resolve()), *options], capture_output=True, text=True,
                                 timeout=5, creationflags=subprocess.CREATE_NO_WINDOW)

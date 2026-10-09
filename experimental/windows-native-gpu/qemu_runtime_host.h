@@ -156,7 +156,7 @@ class Runtime {
     bool stopped = false, failed = false;
     std::filesystem::path logfile;
 public:
-    Runtime(unsigned short driverPort, const qemu_fence::Paths& paths, bool enableCpu = false, bool cpuStoreTest = false, bool cpuEofTest = false, bool hwQueueEofTest = false, std::size_t cpuSlots = driver_bridge::DefaultVendorCpuSlots, bool syncEofTest = false, bool reservationEofTest = false, bool gpuStateEofTest = false, bool cpuSpanEofTest = false, bool syncNoMaxEofTest = false, bool hwQueueNoBroadcastEofTest = false)
+    Runtime(unsigned short driverPort, const qemu_fence::Paths& paths, bool enableCpu = false, bool cpuStoreTest = false, bool cpuEofTest = false, bool hwQueueEofTest = false, std::size_t cpuSlots = driver_bridge::DefaultVendorCpuSlots, bool syncEofTest = false, bool reservationEofTest = false, bool gpuStateEofTest = false, bool cpuSpanEofTest = false, bool syncNoMaxEofTest = false, bool hwQueueNoBroadcastEofTest = false, bool hwQueueNoBroadcastWaitEofTest = false)
         : fenceSlots(cpuSlots == 128 ? driver_bridge::MaxFenceSlots : driver_bridge::DefaultFenceSlots),
           allocationSlots(cpuSlots), allocationAperture(cpuSlots), allocationsEnabled(enableCpu), logfile(std::filesystem::absolute(paths.log)) {
         if (!driver_bridge::validVendorCpuSlots(cpuSlots) || (!enableCpu && cpuSlots != driver_bridge::DefaultVendorCpuSlots))
@@ -190,6 +190,7 @@ public:
             L"-display", L"none", L"-monitor", L"none", L"-serial", L"stdio", L"-nodefaults", L"-no-reboot",
             L"-L", std::filesystem::absolute(paths.firmware).wstring(), L"-kernel", std::filesystem::absolute(paths.kernel).wstring(),
             L"-initrd", std::filesystem::absolute(paths.initramfs).wstring(), L"-append",
+            hwQueueNoBroadcastWaitEofTest ? L"console=ttyS0 rdinit=/init panic=1 wddm_hwqueue_no_broadcast_wait_eof_test=1" :
             hwQueueNoBroadcastEofTest ? L"console=ttyS0 rdinit=/init panic=1 wddm_hwqueue_no_broadcast_eof_test=1" :
             cpuStoreTest ? L"console=ttyS0 rdinit=/init panic=1 wddm_cpu_store_test=1" :
             syncEofTest ? L"console=ttyS0 rdinit=/init panic=1 wddm_sync_eof_test=1" :

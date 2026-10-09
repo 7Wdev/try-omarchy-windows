@@ -141,6 +141,26 @@ class NoBroadcastQueueEofTests(unittest.TestCase):
         self.assertFalse(copy_workload_complete(self.log))
         self.assertFalse(initialization_complete(self.log, 0, self.control, self.cleanup))
 
+    def test_combined_wait_queue_requires_exact_native_counts(self):
+        log = self.log.replace('flags=2', 'flags=6')
+        prior = 'LINUX_BRIDGE nativeHwQueueCreated=true privateBytes=144 progressFenceDirect=true flags=2\n'
+        log = prior * 2 + log
+        cleanup = dict(self.cleanup, completedNoBroadcastSignalHwQueues=3, completedNoBroadcastWaitHwQueues=1)
+        self.assertTrue(no_broadcast_queue_eof_complete(log, self.control, cleanup, 6))
+        self.assertFalse(no_broadcast_queue_eof_complete(log, self.control, cleanup))
+        self.assertFalse(no_broadcast_queue_eof_complete(self.log, self.control, self.cleanup, 6))
+        for flag in (0, 1, 4, 5, 7, 8):
+            self.assertFalse(no_broadcast_queue_eof_complete(log, self.control, cleanup, flag))
+        for key in ('completedNoBroadcastSignalHwQueues','completedNoBroadcastWaitHwQueues'):
+            for bad in (-1,0,2,4,None):
+                changed = dict(cleanup); changed[key] = bad
+                self.assertFalse(no_broadcast_queue_eof_complete(log, self.control, changed, 6))
+        extra = prior.replace('flags=2', 'flags=6')
+        self.assertFalse(no_broadcast_queue_eof_complete(log + '\n' + extra, self.control, cleanup, 6))
+        self.assertFalse(clear_workload_complete(log))
+        self.assertFalse(copy_workload_complete(log))
+        self.assertFalse(initialization_complete(log, 0, self.control, cleanup))
+
 
 if __name__ == '__main__':
     unittest.main()

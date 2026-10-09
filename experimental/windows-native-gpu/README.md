@@ -24,6 +24,12 @@ pixel verifier are implemented, but graphics startup still exceeds the current
 diagnostic capacity and rendering remains unverified. Initialization and copy
 controls cannot satisfy the clear workload verifier.
 
+The optional `--hwqueue-no-broadcast-wait-eof-test` stops the clear workload
+after its first combined `NoBroadcastSignal | NoBroadcastWait` queue (flags 6).
+It requires submission, retirement and a separate run from other EOF controls.
+Its verifier requires unchanged native flags, acknowledged earlier unmaps and
+verified native cleanup after owned VM exit. It cannot certify rendered pixels.
+
 The bridge preserves source sentinels, TDR fence flags, native allocation
 subranges and verified in-process context priority. Those baseline GPU mappings have a separate
 32 MiB cap; CPU views retain their 16 MiB live-byte cap and 4 MiB per-view limit.

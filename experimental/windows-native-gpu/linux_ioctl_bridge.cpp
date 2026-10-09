@@ -899,7 +899,8 @@ public:
                 std::fprintf(stderr, "LINUX_BRIDGE nativeHwQueueCreated=true privateBytes=%u progressFenceDirect=true flags=%u\n", desc.privateBytes, desc.flags);
                 const auto eofTest = std::getenv("WDDM_BRIDGE_HWQUEUE_EOF_TEST");
                 if (eofTest && (std::strcmp(eofTest, "1") == 0 ||
-                    (std::strcmp(eofTest, "2") == 0 && desc.flags == NoBroadcastSignalHwQueueFlag))) {
+                    (std::strcmp(eofTest, "2") == 0 && desc.flags == NoBroadcastSignalHwQueueFlag) ||
+                    (std::strcmp(eofTest, "3") == 0 && desc.flags == InternalNoBroadcastHwQueueFlags))) {
                     std::fprintf(stderr, "LINUX_BRIDGE hwQueueEofTest=true exitingWithQueueOwned=true flags=%u\n", desc.flags);
                     _exit(1);
                 }

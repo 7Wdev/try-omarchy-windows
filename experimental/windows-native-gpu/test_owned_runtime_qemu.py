@@ -108,14 +108,16 @@ def clear_workload_complete(log):
     return tail.index('GPU_CLEAR_ROUND round=1') < tail.index('GPU_CLEAR_ROUND round=2') < tail.index('GPU_CLEAR_PIXEL_ROW') < tail.index('GPU_CLEAR_TEST_COMPLETE')
 
 
-def no_broadcast_queue_eof_complete(log, control, cleanup):
+def no_broadcast_queue_eof_complete(log, control, cleanup, target_flags=2):
     """Late EOF has acknowledged earlier teardown and retains the new queue.
 
     Keep early-EOF zero-ack rules separate. Count each successfully unmapped
     CPU span and fence rather than treating all created views as exit releases.
     This control cannot certify initialization or rendered pixels.
     """
-    marker = 'LINUX_BRIDGE hwQueueEofTest=true exitingWithQueueOwned=true flags=2'
+    if target_flags not in (2, 6):
+        return False
+    marker = f'LINUX_BRIDGE hwQueueEofTest=true exitingWithQueueOwned=true flags={target_flags}'
     if log.count(marker) != 1 or re.findall(r'^BRIDGE_RUNTIME_EXIT=(\d+)[ \t\r]*$', log, re.MULTILINE) != ['1']:
         return False
     if (log.count('GPU_CLEAR_TEST_BEGIN') != 1 or 'GPU_COPY_TEST_BEGIN' in log or 'gpuClearDirectQueue=' in log or
@@ -124,7 +126,11 @@ def no_broadcast_queue_eof_complete(log, control, cleanup):
     if any(re.findall(r'^' + prefix + r'=([0-9a-f]{8})[ \t\r]*$', log, re.MULTILINE) != ['00000000'] for prefix in ('device', 'copyQueue')):
         return False
     flags = re.findall(r'nativeHwQueueCreated=true privateBytes=\d+ progressFenceDirect=true flags=(\d+)', log)
-    if not flags or flags[-1] != '2' or flags.count('2') != 1 or cleanup.get('completedNoBroadcastSignalHwQueues') != 1:
+    if (not flags or flags[-1] != str(target_flags) or flags.count(str(target_flags)) != 1 or
+        any(f not in ('0','2','6') for f in flags) or
+        cleanup.get('completedNoBroadcastSignalHwQueues') != sum(bool(int(f) & 2) for f in flags) or
+        (target_flags == 2 and '6' in flags) or
+        (target_flags == 6 and cleanup.get('completedNoBroadcastWaitHwQueues') != 1)):
         return False
     if log.index('GPU_CLEAR_TEST_BEGIN') > log.index(marker) or cleanup.get('hwQueuesReleasedAfterVmExit', 0) < 1:
         return False
@@ -188,16 +194,18 @@ def main():
     parser.add_argument('--cpu-span-eof-test', action='store_true', help='Exit after a CPU view spanning multiple native slots is mapped')
     parser.add_argument('--hwqueue-eof-test', action='store_true', help='Exit the guest probe with its first hardware queue still owned')
     parser.add_argument('--hwqueue-no-broadcast-eof-test', action='store_true', help='Clear workload control: exit immediately after its first NoBroadcastSignal queue, before graphics startup fills the aperture')
+    parser.add_argument('--hwqueue-no-broadcast-wait-eof-test', action='store_true', help='Clear workload control: exit immediately after its first combined NoBroadcastSignal/NoBroadcastWait queue')
     parser.add_argument('--sync-eof-test', action='store_true', help='Exit the guest probe with its first NoGPUAccess fence still owned')
     parser.add_argument('--sync-no-max-eof-test', action='store_true', help='Exit with the first NoSignalMaxValueOnTdr fence still owned')
     parser.add_argument('--reservation-eof-test', action='store_true', help='Exit the guest probe with its first GPU address reservation still owned')
     parser.add_argument('--gpu-state-eof-test', action='store_true', help='Exit the guest after its first retired GPU Zero/NoAccess mapping')
     args = parser.parse_args()
     early_guest_eof = args.cpu_eof_test or args.hwqueue_eof_test or args.sync_eof_test or args.reservation_eof_test or args.gpu_state_eof_test or args.cpu_span_eof_test or args.sync_no_max_eof_test
-    late_guest_eof = args.hwqueue_no_broadcast_eof_test
+    late_guest_eof = args.hwqueue_no_broadcast_eof_test or args.hwqueue_no_broadcast_wait_eof_test
     guest_eof = early_guest_eof or late_guest_eof
-    if late_guest_eof and (args.runtime_workload != 'clear' or not args.driver_submit or not args.driver_retirement or args.cpu_store_test or early_guest_eof):
-        parser.error('NoBroadcastSignal EOF control requires the clear image with submission and retirement in a separate run')
+    if late_guest_eof and (args.runtime_workload != 'clear' or not args.driver_submit or not args.driver_retirement or args.cpu_store_test or early_guest_eof or
+                          (args.hwqueue_no_broadcast_eof_test and args.hwqueue_no_broadcast_wait_eof_test)):
+        parser.error('NoBroadcast queue EOF control requires the clear image with submission and retirement in a separate run')
     if args.runtime_workload != 'init' and (not args.driver_submit or not args.driver_retirement or args.cpu_store_test or early_guest_eof):
         parser.error('GPU workload requires submission and retirement in a separate run from CPU/EOF controls')
     if args.sync_no_max_eof_test and (not args.driver_syncs or args.cpu_store_test or args.cpu_eof_test or args.hwqueue_eof_test or args.sync_eof_test or args.reservation_eof_test or args.gpu_state_eof_test or args.cpu_span_eof_test):
@@ -285,7 +293,8 @@ def main():
                              (['--cpu-store-test'] if args.cpu_store_test else []) + (['--cpu-eof-test'] if args.cpu_eof_test else []) +
                              (['--cpu-span-eof-test'] if args.cpu_span_eof_test else []) +
                              (['--hwqueue-eof-test'] if args.hwqueue_eof_test else []) +
-                             (['--hwqueue-no-broadcast-eof-test'] if late_guest_eof else []) +
+                             (['--hwqueue-no-broadcast-eof-test'] if args.hwqueue_no_broadcast_eof_test else []) +
+                             (['--hwqueue-no-broadcast-wait-eof-test'] if args.hwqueue_no_broadcast_wait_eof_test else []) +
                              (['--sync-eof-test'] if args.sync_eof_test else []) +
                              (['--sync-no-max-eof-test'] if args.sync_no_max_eof_test else []) +
                              (['--reservation-eof-test'] if args.reservation_eof_test else []) +
@@ -621,7 +630,7 @@ def main():
                      (len(hwqueue_flag_checks) == len(hwqueue_flags) == cleanup.get('completedHwQueues') and
                       all(n['flags'] == g and n['unchanged'] is True and n['ntstatus'] == 0 for n,g in zip(hwqueue_flag_checks,hwqueue_flags)))))
         if late_guest_eof:
-            accepted = accepted and no_broadcast_queue_eof_complete(log, control, cleanup)
+            accepted = accepted and no_broadcast_queue_eof_complete(log, control, cleanup, 6 if args.hwqueue_no_broadcast_wait_eof_test else 2)
         elif args.runtime_workload == 'clear':
             accepted = accepted and no_broadcast_queues >= 1 and len(context_signals) == 2 and resources >= 2
         workload_matches = ((not clear_verified and not copy_verified and 'GPU_CLEAR_TEST_BEGIN' in log and 'GPU_COPY_TEST_BEGIN' not in log) if late_guest_eof else
@@ -644,7 +653,8 @@ def main():
                   'nativeNoBroadcastWaitHardwareQueues': no_broadcast_wait_queues,
                   'guestHardwareQueueFlags': hwqueue_flags, 'nativeHardwareQueueFlagChecks': hwqueue_flag_checks,
                   'd3d12DirectQueueHresult': next(iter(re.findall(r'^gpuClearDirectQueue=([0-9a-f]{8})[ \t\r]*$',log,re.MULTILINE)),None),
-                  'stage': 'owned VM exit with a NoBroadcastSignal hardware queue; graphics rendering unverified' if late_guest_eof else
+                  'stage': 'owned VM exit with a combined NoBroadcastSignal/NoBroadcastWait hardware queue; graphics rendering unverified' if args.hwqueue_no_broadcast_wait_eof_test else
+                           'owned VM exit with a NoBroadcastSignal hardware queue; graphics rendering unverified' if late_guest_eof else
                            'live NVIDIA D3D12 graphics queue render-target clears with verified pixels' if args.runtime_workload == 'clear' else
                            'live NVIDIA D3D12 GPU buffer copies with verified guest readback' if args.runtime_workload == 'copy' else
                            'owned VM exit with a NoSignalMaxValueOnTdr fence and standalone source allocation' if args.sync_no_max_eof_test else
@@ -719,7 +729,8 @@ def main():
                   'diagnosticCpuEofRequested': args.cpu_eof_test,
                   'diagnosticCpuSpanEofRequested': args.cpu_span_eof_test,
                   'diagnosticHardwareQueueEofRequested': args.hwqueue_eof_test,
-                  'diagnosticNoBroadcastSignalQueueEofRequested': late_guest_eof,
+                  'diagnosticNoBroadcastSignalQueueEofRequested': args.hwqueue_no_broadcast_eof_test,
+                  'diagnosticNoBroadcastWaitQueueEofRequested': args.hwqueue_no_broadcast_wait_eof_test,
                   'diagnosticSynchronizationEofRequested': args.sync_eof_test,
                   'diagnosticNoMaxSynchronizationEofRequested': args.sync_no_max_eof_test,
                   'diagnosticReservationEofRequested': args.reservation_eof_test,

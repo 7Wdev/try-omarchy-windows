@@ -58,6 +58,10 @@ int main(void) {
         (hwqueue_no_broadcast_option[hwqueue_no_broadcast_bytes] == 0 || hwqueue_no_broadcast_option[hwqueue_no_broadcast_bytes] == ' ' ||
          hwqueue_no_broadcast_option[hwqueue_no_broadcast_bytes] == '\n');
     const char* port = "/dev/vport0p1";
+    const char* hwqueue_wait_option = strstr(command, " wddm_hwqueue_no_broadcast_wait_eof_test=1");
+    const size_t hwqueue_wait_bytes = sizeof(" wddm_hwqueue_no_broadcast_wait_eof_test=1") - 1;
+    const int hwqueue_wait_eof_test = hwqueue_wait_option &&
+        (hwqueue_wait_option[hwqueue_wait_bytes] == 0 || hwqueue_wait_option[hwqueue_wait_bytes] == ' ' || hwqueue_wait_option[hwqueue_wait_bytes] == '\n');
     for (int i = 0; i < 200 && access(port, F_OK); ++i) usleep(50000);
     char module[130] = {0};
     FILE* name = fopen("/linux-umd-name", "rb");
@@ -87,6 +91,7 @@ int main(void) {
             if (gpu_state_eof_test) setenv("WDDM_BRIDGE_GPU_STATE_EOF_TEST", "1", 1);
             if (hwqueue_eof_test) setenv("WDDM_BRIDGE_HWQUEUE_EOF_TEST", "1", 1);
             if (hwqueue_no_broadcast_eof_test) setenv("WDDM_BRIDGE_HWQUEUE_EOF_TEST", "2", 1);
+            if (hwqueue_wait_eof_test) setenv("WDDM_BRIDGE_HWQUEUE_EOF_TEST", "3", 1);
             setenv("WDDM_BRIDGE_LINUX_UMD_NAME", module, 1);
             setenv("LD_PRELOAD", "/linux-ioctl-bridge.so", 1);
             setenv("LD_LIBRARY_PATH", "/usr/lib/wsl/lib:/usr/lib/x86_64-linux-gnu", 1);
