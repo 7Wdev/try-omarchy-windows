@@ -45,7 +45,9 @@ useradd --create-home canary
 cp -a /tmp/root/etc/skel/. /home/canary/
 mkdir -p /home/canary/.local/state/omarchy/current /tmp/canary-runtime
 ln -s /tmp/root/usr/share/omarchy/themes/tokyo-night /home/canary/.local/state/omarchy/current/theme
-chown -R canary:canary /home/canary /tmp/canary-runtime /results
+chown -R canary:canary /home/canary /tmp/canary-runtime
+# The unprivileged probe and host runner both write diagnostic files here.
+chmod 0777 /results
 chmod 700 /tmp/canary-runtime
 runuser -u canary -- env HOME=/home/canary XDG_RUNTIME_DIR=/tmp/canary-runtime \
   OMARCHY_PATH=/tmp/root/usr/share/omarchy QT_QPA_PLATFORM=wayland \

@@ -40,7 +40,8 @@ jobs:
           # Use the guest's bootstrap image, then fully upgrade it. No package lock.
           image=$(awk '$1 == "FROM" {print $2; exit}' "$RUNNER_TEMP/guest-source/guest/Containerfile")
           set -o pipefail
-          docker run --rm \
+          # Sway's packaged executable carries cap_sys_nice.
+          docker run --rm --cap-add SYS_NICE \
             -v "$GITHUB_WORKSPACE:/repo:ro" \
             -v "$RUNNER_TEMP/guest-source:/guest-source:ro" \
             -v "$GITHUB_WORKSPACE/canary-results:/results" \
