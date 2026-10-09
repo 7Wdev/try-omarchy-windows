@@ -29,6 +29,9 @@ int main(void) {
     const char* eof_option = strstr(command, " wddm_cpu_eof_test=1");
     const size_t eof_bytes = sizeof(" wddm_cpu_eof_test=1") - 1;
     const int cpu_eof_test = eof_option && (eof_option[eof_bytes] == 0 || eof_option[eof_bytes] == ' ' || eof_option[eof_bytes] == '\n');
+    const char* span_eof_option = strstr(command, " wddm_cpu_span_eof_test=1");
+    const size_t span_eof_bytes = sizeof(" wddm_cpu_span_eof_test=1") - 1;
+    const int cpu_span_eof_test = span_eof_option && (span_eof_option[span_eof_bytes] == 0 || span_eof_option[span_eof_bytes] == ' ' || span_eof_option[span_eof_bytes] == '\n');
     const char* sync_eof_option = strstr(command, " wddm_sync_eof_test=1");
     const size_t sync_eof_bytes = sizeof(" wddm_sync_eof_test=1") - 1;
     const int sync_eof_test = sync_eof_option && (sync_eof_option[sync_eof_bytes] == 0 ||
@@ -60,6 +63,7 @@ int main(void) {
                 setenv("WDDM_BRIDGE_CPU_REFERENCE_TEST", "1", 1);
             }
             if (cpu_eof_test) setenv("WDDM_BRIDGE_CPU_EOF_TEST", "1", 1);
+            if (cpu_span_eof_test) setenv("WDDM_BRIDGE_CPU_SPAN_EOF_TEST", "1", 1);
             if (sync_eof_test) setenv("WDDM_BRIDGE_SYNC_EOF_TEST", "1", 1);
             if (reservation_eof_test) setenv("WDDM_BRIDGE_RESERVATION_EOF_TEST", "1", 1);
             if (gpu_state_eof_test) setenv("WDDM_BRIDGE_GPU_STATE_EOF_TEST", "1", 1);

@@ -32,7 +32,7 @@ constexpr std::uint32_t VendorCpuCapability = 2048;
 constexpr std::uint32_t VendorTranslationCapability = 4096;
 constexpr std::uint32_t HwQueueCapability = 8192;
 constexpr std::uint32_t SyncCapability = 16384;
-constexpr std::size_t MaxSyncObjects = 32;
+constexpr std::size_t MaxSyncObjects = 64;
 constexpr std::uint32_t NoGpuAccessSyncFlag = 128;
 struct SyncDesc { std::uint32_t type, flags, affinity, reserved; std::uint64_t initial; };
 struct SyncReply { std::uint64_t offset, gpuAddress; };
@@ -51,14 +51,15 @@ inline bool validHwQueue(HwQueueDesc d) {
 struct VendorTranslationDesc { std::uint32_t device, adapter, reserved, reserved2; };
 static_assert(sizeof(VendorTranslationDesc) == 16, "fixed allocation translation layout");
 constexpr std::uint64_t VendorCpuSlotBytes = MaxAllocation;
+constexpr std::uint32_t MaxVendorCpuMappingBytes = 4 * MaxAllocation;
 constexpr std::uint64_t VendorCpuApertureBytes = MaxVendorCpuSlots * VendorCpuSlotBytes;
 constexpr std::uint64_t CpuStoreFirstMarker = 0x4350554649525354ull, CpuStoreLastMarker = 0x4350554c41535421ull;
 struct VendorCpuDesc { std::uint32_t device, flags; };
 struct VendorCpuReply { std::uint32_t bytes, reserved; std::uint64_t generation; };
 static_assert(sizeof(VendorCpuDesc) == 8 && sizeof(VendorCpuReply) == 16, "fixed CPU lock layouts");
 inline bool validVendorCpuReply(std::uint64_t offset, VendorCpuReply r) {
-    return r.bytes && r.bytes <= MaxAllocation && !(r.bytes % 4096) && !r.reserved && r.generation &&
-           !(offset % VendorCpuSlotBytes) && offset < VendorCpuApertureBytes;
+    return r.bytes && r.bytes <= MaxVendorCpuMappingBytes && !(r.bytes % 4096) && !r.reserved && r.generation &&
+           !(offset % VendorCpuSlotBytes) && offset < VendorCpuApertureBytes && r.bytes <= VendorCpuApertureBytes - offset;
 }
 constexpr std::uint32_t MaxVendorResidencyAttempts = 64;
 struct ResidentDesc { std::uint32_t count, flags, priorities, reserved; };
@@ -732,7 +733,8 @@ public:
                 (native.lock.ntstatus < 0 && (native.lock.value || native.output.bytes || native.output.reserved || native.output.generation)))
                 return reply(h, -5);
             if (native.lock.ntstatus >= 0) {
-                for (const auto& item : objects) if (item.second.cpuBytes && item.second.cpuOffset == native.lock.value)
+                for (const auto& item : objects) if (item.second.cpuBytes &&
+                    native.lock.value < item.second.cpuOffset + item.second.cpuBytes && item.second.cpuOffset < native.lock.value + native.output.bytes)
                     return reply(h, -5);
                 object.cpuBytes = native.output.bytes; object.cpuOffset = native.lock.value; vendorCpuBytes += object.cpuBytes;
             }

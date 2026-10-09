@@ -48,6 +48,9 @@ jobs:
           /tmp/native-wire-test
           c++ -std=c++17 -Wall -Wextra -Werror experimental/windows-native-gpu/driver_wire_test.cpp -o /tmp/driver-wire-test
           /tmp/driver-wire-test
+          c++ -std=c++17 -Wall -Wextra -Werror experimental/windows-native-gpu/cpu_aperture_test.cpp -o /tmp/cpu-aperture-test
+          /tmp/cpu-aperture-test
+          python3 -m unittest discover -s experimental/windows-native-gpu -p test_runtime_milestone.py
           c++ -std=c++17 -Wall -Wextra -Werror experimental/windows-native-gpu/qmp_protocol_test.cpp -o /tmp/qmp-protocol-test
           /tmp/qmp-protocol-test
           sh experimental/windows-native-gpu/build_guest.sh

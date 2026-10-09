@@ -8,9 +8,9 @@ also tested, including locally captured Linux NVIDIA initialization data.
 Live NVIDIA Linux runtime initialization now reaches native paging and graphics
 context creation, standalone video-memory allocation, GPU-address mapping,
 residency, direct CPU allocation access, hardware queues and synchronization
-objects through QEMU. Physical testing created ten monitored fences (including
-two [CPU-only fences](../../docs/LIVE-CPU-ONLY-FENCES.md)), eight
-mutexes, three hardware queues and 40 allocations. The
+objects through QEMU. The latest physical testing created 42 monitored fences
+(including 34 [CPU-only fences](../../docs/LIVE-CPU-ONLY-FENCES.md)), eight
+mutexes, three hardware queues and 42 allocations. The
 [allocation retirement route](../../docs/LIVE-ALLOCATION-RETIREMENT.md) reclaimed
 allocations with queues alive. The vendor allocation quota is 64 within 128
 total wire objects; the separate CPU
@@ -27,7 +27,12 @@ The [GPU address-state route](../../docs/LIVE-GPU-ADDRESS-STATE.md) also passes
 null-allocation Zero mappings of 4 MiB, 1 GiB and 128 KiB to Windows, verifies
 their paging fences and replaces fully covered allocation mappings after
 command retirement. This address-only state has a separate reservation budget;
-the physical mapping and CPU slot limits still apply.
+the physical mapping and CPU slot limits still apply. The
+[contiguous CPU view route](../../docs/LIVE-CPU-ALLOCATION-SPANS.md) maps a
+272-page native view across two slots, with direct reads and restored writes
+at both ends. Views are bounded to 4 MiB within the existing 16 MiB CPU-byte
+budget; the synchronization pool supports 64 objects. D3D12 device creation
+still returns `80070057`; copy queue creation has not been reached.
 General command submission remains unfinished. Direct guest fence reads,
 synchronous allocation destruction and acknowledged unmap passed physical testing. Omarchy
 desktop acceleration remains unimplemented. Read the

@@ -6,6 +6,7 @@
 #include <bcrypt.h>
 #include "qmp_protocol.h"
 #include "driver_wire.h"
+#include "cpu_aperture.h"
 #include "qemu_fence_test.h"
 #include <array>
 #include <memory>
@@ -140,25 +141,22 @@ public:
     }
 };
 struct FenceLease { std::uint32_t slot; std::uint64_t generation, offset; };
-struct AllocationLease { std::uint32_t slot, bytes; std::uint64_t generation, offset; };
+using AllocationLease = driver_cpu::Lease;
 class Runtime {
     Handle job;
     OwnedProcess process;
     std::unique_ptr<Qmp> qmp;
     std::array<std::optional<FenceLease>, 64> leases;
-    std::array<std::optional<AllocationLease>, driver_bridge::MaxVendorCpuSlots> allocationLeases;
     std::size_t allocationSlots = driver_bridge::DefaultVendorCpuSlots;
-    std::uint64_t allocationGeneration = 0;
-    unsigned allocationMapped = 0, allocationMappedTotal = 0, allocationUnmappedTotal = 0;
-    std::uint32_t allocationMappedBytes = 0;
+    driver_cpu::Aperture allocationAperture;
     bool allocationsEnabled = false;
     std::uint64_t generation = 0;
     unsigned mapped = 0, mappedTotal = 0, unmappedTotal = 0;
     bool stopped = false, failed = false;
     std::filesystem::path logfile;
 public:
-    Runtime(unsigned short driverPort, const qemu_fence::Paths& paths, bool enableCpu = false, bool cpuStoreTest = false, bool cpuEofTest = false, bool hwQueueEofTest = false, std::size_t cpuSlots = driver_bridge::DefaultVendorCpuSlots, bool syncEofTest = false, bool reservationEofTest = false, bool gpuStateEofTest = false)
-        : allocationSlots(cpuSlots), allocationsEnabled(enableCpu), logfile(std::filesystem::absolute(paths.log)) {
+    Runtime(unsigned short driverPort, const qemu_fence::Paths& paths, bool enableCpu = false, bool cpuStoreTest = false, bool cpuEofTest = false, bool hwQueueEofTest = false, std::size_t cpuSlots = driver_bridge::DefaultVendorCpuSlots, bool syncEofTest = false, bool reservationEofTest = false, bool gpuStateEofTest = false, bool cpuSpanEofTest = false)
+        : allocationSlots(cpuSlots), allocationAperture(cpuSlots), allocationsEnabled(enableCpu), logfile(std::filesystem::absolute(paths.log)) {
         if (!driver_bridge::validVendorCpuSlots(cpuSlots) || (!enableCpu && cpuSlots != driver_bridge::DefaultVendorCpuSlots))
             throw std::runtime_error("Invalid configured allocation aperture capacity");
         const auto executable = std::filesystem::absolute(paths.qemu).wstring();
@@ -194,6 +192,7 @@ public:
             syncEofTest ? L"console=ttyS0 rdinit=/init panic=1 wddm_sync_eof_test=1" :
             reservationEofTest ? L"console=ttyS0 rdinit=/init panic=1 wddm_reservation_eof_test=1" :
             gpuStateEofTest ? L"console=ttyS0 rdinit=/init panic=1 wddm_gpu_state_eof_test=1" :
+            cpuSpanEofTest ? L"console=ttyS0 rdinit=/init panic=1 wddm_cpu_span_eof_test=1" :
             hwQueueEofTest ? L"console=ttyS0 rdinit=/init panic=1 wddm_hwqueue_eof_test=1" :
             cpuEofTest ? L"console=ttyS0 rdinit=/init panic=1 wddm_cpu_eof_test=1" : L"console=ttyS0 rdinit=/init panic=1",
             L"-name", std::wstring(name.begin(), name.end()), L"-qmp", L"tcp:127.0.0.1:" + std::to_wstring(qmpPort) + L",server=on,wait=off",
@@ -252,37 +251,28 @@ public:
         process.stop(grace); // Every driver owner must outlive this step.
         qmp.reset();
         for (auto& lease : leases) lease.reset();
-        for (auto& lease : allocationLeases) lease.reset();
-        allocationMapped = allocationMappedBytes = 0;
+        allocationAperture.clearAfterVmExit();
         mapped = 0; stopped = true;
     }
     bool cleanExit() const { return stopped && !failed && !process.forced && process.exit == 0; }
     bool hasStopped() const { return stopped; }
     unsigned liveMappings() const { return mapped; }
     std::size_t allocationSlotLimit() const { return allocationSlots; }
+    bool canMapAllocation(std::uint32_t bytes) const { return allocationsEnabled && !stopped && allocationAperture.canMap(bytes); }
     AllocationLease mapAllocation(void* data, std::uint32_t bytes) {
         const auto source = reinterpret_cast<std::uintptr_t>(data);
-        if (!allocationsEnabled || stopped || !source || source % 4096 || !bytes || bytes % 4096 || bytes > 1024 * 1024 ||
-            source > (1ull << 47) - bytes || allocationGeneration == UINT64_MAX)
+        if (!canMapAllocation(bytes) || !source || source % 4096 || source > (1ull << 47) - bytes)
             throw std::runtime_error("Invalid owned allocation mapping");
-        std::uint32_t slot = 0;
-        for (; slot < allocationSlots; ++slot) if (!allocationLeases[slot]) break;
-        if (slot == allocationSlots) throw std::runtime_error("Allocation slot quota exceeded");
-        const AllocationLease lease{slot, bytes, ++allocationGeneration, slot * 1024ull * 1024};
-        try { qmp->allocationMapping("map:" + std::to_string(slot) + ':' + std::to_string(source) + ':' +
-                                     std::to_string(bytes) + ':' + std::to_string(lease.generation)); }
-        catch (...) { failed = true; stop(0); throw; }
-        allocationLeases[slot] = lease; ++allocationMapped; ++allocationMappedTotal; allocationMappedBytes += bytes;
-        return lease;
+        return allocationAperture.map(bytes, [this, source](std::uint32_t slot, std::uint64_t offset, std::uint32_t chunk, std::uint64_t chunkGeneration) {
+            qmp->allocationMapping("map:" + std::to_string(slot) + ':' + std::to_string(source + offset) + ':' +
+                                    std::to_string(chunk) + ':' + std::to_string(chunkGeneration));
+        }, [this] { failed = true; stop(0); });
     }
     void unmapAllocation(AllocationLease lease) {
         if (stopped) return; // VM exit was proved before its foreign pages were cleared.
-        if (lease.slot >= allocationLeases.size() || !allocationLeases[lease.slot] ||
-            allocationLeases[lease.slot]->generation != lease.generation || allocationLeases[lease.slot]->bytes != lease.bytes)
-            throw std::runtime_error("Native allocation lease ownership mismatch");
-        try { qmp->allocationMapping("unmap:" + std::to_string(lease.slot) + ':' + std::to_string(lease.generation)); }
-        catch (...) { failed = true; stop(0); throw; }
-        allocationLeases[lease.slot].reset(); --allocationMapped; ++allocationUnmappedTotal; allocationMappedBytes -= lease.bytes;
+        allocationAperture.release(lease, [this](std::uint32_t slot, std::uint64_t chunkGeneration) {
+            qmp->allocationMapping("unmap:" + std::to_string(slot) + ':' + std::to_string(chunkGeneration));
+        }, [this] { failed = true; stop(0); });
     }
     void report() const {
         std::cout << "{\"ownedQemuExited\":" << (stopped ? "true" : "false") << ",\"qemuExit\":" << process.exit
@@ -290,10 +280,13 @@ public:
                   << ",\"fenceControlFailed\":" << (failed ? "true" : "false")
                   << ",\"liveFenceMappings\":" << mapped << ",\"fenceMappingsCreated\":" << mappedTotal
                   << ",\"fenceUnmapAcknowledgements\":" << unmappedTotal
-                  << ",\"liveAllocationMappings\":" << allocationMapped << ",\"liveAllocationMappedBytes\":" << allocationMappedBytes
-                  << ",\"allocationMappingsCreated\":" << allocationMappedTotal
+                  << ",\"liveAllocationMappings\":" << allocationAperture.groups() << ",\"liveAllocationMappedBytes\":" << allocationAperture.bytes()
+                  << ",\"allocationMappingsCreated\":" << allocationAperture.maps()
+                  << ",\"liveAllocationSlotMappings\":" << allocationAperture.chunks()
+                  << ",\"allocationSlotMappingsCreated\":" << allocationAperture.chunkMaps()
+                  << ",\"allocationSlotUnmapAcknowledgements\":" << allocationAperture.chunkUnmaps()
                   << ",\"allocationApertureSlots\":" << allocationSlots
-                  << ",\"allocationUnmapAcknowledgements\":" << allocationUnmappedTotal << "}\n";
+                  << ",\"allocationUnmapAcknowledgements\":" << allocationAperture.unmaps() << "}\n";
     }
 };
 } // namespace driver_qemu

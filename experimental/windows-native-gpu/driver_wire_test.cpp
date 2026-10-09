@@ -133,7 +133,7 @@ struct Fake : Driver {
         if (fail) return {{-123, 0, 0}, {0, 0, 0}};
         return {{badCpuReply == 1 ? 259 : 0, badCpuReply == 2 ? 777u : 0u,
                  badCpuReply == 3 ? 1ull : badCpuReply == 4 ? VendorCpuApertureBytes : 0ull},
-                {badCpuReply == 5 ? 0u : badCpuReply == 6 ? 4097u : badCpuReply == 7 ? MaxAllocation + 4096u :
+                {badCpuReply == 5 ? 0u : badCpuReply == 6 ? 4097u : badCpuReply == 7 ? MaxVendorCpuMappingBytes + 4096u :
                  badCpuReply == 8 ? 8192u : 65536u, badCpuReply == 9 ? 1u : 0u, badCpuReply == 10 ? 0ull : 1ull}};
     }
     Result unlockVendorAllocation(std::uint32_t allocation, std::uint32_t device) override {

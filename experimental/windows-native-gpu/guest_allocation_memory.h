@@ -82,15 +82,19 @@ public:
     void* map(std::uint32_t allocation, std::uint64_t offset, driver_bridge::VendorCpuReply reply) {
         if (!allocation || !driver_bridge::validVendorCpuReply(offset, reply) || mappings.count(allocation))
             throw std::runtime_error("Invalid allocation CPU lease");
-        for (const auto& item : mappings) if (item.second.offset == offset) throw std::runtime_error("Duplicate allocation CPU slot");
+        for (const auto& item : mappings)
+            if (offset < item.second.offset + item.second.bytes && item.second.offset < offset + reply.bytes)
+                throw std::runtime_error("Overlapping allocation CPU views");
         if (resource.fd < 0) discover();
-        if (offset / driver_bridge::VendorCpuSlotBytes >= slotCount || mappings.size() >= slotCount)
+        const auto apertureBytes = slotCount * driver_bridge::VendorCpuSlotBytes;
+        if (offset >= apertureBytes || reply.bytes > apertureBytes - offset || mappings.size() >= slotCount)
             throw std::runtime_error("Allocation CPU lease exceeds configured aperture");
         const auto beforeRead = word(0x4c), beforeWrite = word(0x50);
         auto data = mmap(nullptr, reply.bytes, PROT_READ | PROT_WRITE, MAP_SHARED, resource.fd, static_cast<off_t>(offset));
         if (data == MAP_FAILED) throw std::runtime_error("Allocation CPU view failed");
         const auto first = static_cast<volatile const std::uint64_t*>(data);
-        for (unsigned n = 0; n < 10000; ++n) { const auto observed = *first; (void)observed; }
+        const auto last = reinterpret_cast<volatile const std::uint64_t*>(static_cast<const char*>(data) + reply.bytes - 8);
+        for (unsigned n = 0; n < 10000; ++n) { const auto observed = *(n % 2 ? last : first); (void)observed; }
         try {
             if (word(0x4c) != beforeRead || word(0x50) != beforeWrite) throw std::runtime_error("Allocation CPU reads were emulated");
             mappings.emplace(allocation, Mapping{data, reply.bytes, 1, offset, reply.generation});

@@ -1,6 +1,6 @@
 """Verify live paging in QEMU owned by the Windows KMT driver process.
 
-This expects incomplete D3D12 initialization; it never signifies a usable GPU.
+This records D3D12 initialization and strict cleanup; it does not signify a usable desktop GPU.
 The supplied runtime image is private and must never be uploaded.
 """
 import argparse
@@ -20,6 +20,20 @@ def sha256(path):
         return hashlib.file_digest(stream, 'sha256').hexdigest()
 
 
+def initialization_complete(log, owner_exit, control, cleanup):
+    """Require guest device AND queue success with the genuine bridged UMD."""
+    return (owner_exit == 0 and all(marker in log for marker in (
+        'factory=00000000', 'list=00000000', 'nvidia vendor=4318',
+        'nvidiaUmdPresentDuringPrivateQuery=true', 'LINUX_RUNTIME_NVIDIA_UMD_STILL_LOADED=true',
+        'transport=virtio-port', 'realDxgForwarding=false')) and
+        all(re.findall(r'^' + re.escape(prefix) + r'=([0-9a-f]{8})[ \t\r]*$', log, re.MULTILINE) == ['00000000']
+            for prefix in ('device', 'copyQueue')) and
+        re.findall(r'^BRIDGE_RUNTIME_EXIT=(\d+)[ \t\r]*$', log, re.MULTILINE) == ['0'] and
+        control.get('ownedQemuExited') is True and control.get('qemuExit') == 0 and
+        control.get('qemuForcedStop') is False and control.get('fenceControlFailed') is False and
+        cleanup.get('driverCleanupVerified') is True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('qemu', 'firmware', 'kernel', 'initramfs', 'bridge', 'report'):
@@ -36,6 +50,7 @@ def main():
     parser.add_argument('--minimum-expanded-cpu-mappings', type=int, default=0)
     parser.add_argument('--expected-cpu-slot-quota-rejections', type=int)
     parser.add_argument('--minimum-vendor-cpu-locks', type=int, default=0)
+    parser.add_argument('--minimum-spanning-cpu-mappings', type=int, default=0)
     parser.add_argument('--driver-translation', action='store_true')
     parser.add_argument('--minimum-allocation-translations', type=int, default=0)
     parser.add_argument('--driver-hwqueues', action='store_true')
@@ -55,12 +70,15 @@ def main():
     parser.add_argument('--expected-allocation-limit', type=int, default=0, help='Require the observed diagnostic allocation-count boundary')
     parser.add_argument('--cpu-store-test', action='store_true', help='Explicit first/last-word diagnostic stores, checked and restored by Windows')
     parser.add_argument('--cpu-eof-test', action='store_true', help='Exit the guest probe while it owns the CPU lock; require VM-exit-first native teardown')
+    parser.add_argument('--cpu-span-eof-test', action='store_true', help='Exit after a CPU view spanning multiple native slots is mapped')
     parser.add_argument('--hwqueue-eof-test', action='store_true', help='Exit the guest probe with its first hardware queue still owned')
     parser.add_argument('--sync-eof-test', action='store_true', help='Exit the guest probe with its first NoGPUAccess fence still owned')
     parser.add_argument('--reservation-eof-test', action='store_true', help='Exit the guest probe with its first GPU address reservation still owned')
     parser.add_argument('--gpu-state-eof-test', action='store_true', help='Exit the guest after its first retired GPU Zero/NoAccess mapping')
     args = parser.parse_args()
-    guest_eof = args.cpu_eof_test or args.hwqueue_eof_test or args.sync_eof_test or args.reservation_eof_test or args.gpu_state_eof_test
+    guest_eof = args.cpu_eof_test or args.hwqueue_eof_test or args.sync_eof_test or args.reservation_eof_test or args.gpu_state_eof_test or args.cpu_span_eof_test
+    if args.cpu_span_eof_test and (not args.driver_cpu or args.cpu_store_test or args.cpu_eof_test or args.hwqueue_eof_test or args.sync_eof_test or args.reservation_eof_test or args.gpu_state_eof_test):
+        parser.error('CPU span EOF control requires CPU locks and a separate diagnostic run')
     if args.minimum_gpu_state_maps < 0 or (args.driver_gpu_state and not args.driver_reservation) or (args.minimum_gpu_state_maps and not args.driver_gpu_state):
         parser.error('GPU address-state acceptance requires reservations and the explicit state opt-in')
     if args.gpu_state_eof_test and (not args.driver_gpu_state or args.cpu_store_test or args.cpu_eof_test or args.hwqueue_eof_test or args.sync_eof_test or args.reservation_eof_test):
@@ -77,6 +95,8 @@ def main():
         parser.error('Residency acceptance requires explicit allocation and residency opt-ins')
     if args.minimum_vendor_cpu_locks < 0 or (args.driver_cpu and not args.driver_gpuva) or (args.minimum_vendor_cpu_locks and not args.driver_cpu):
         parser.error('CPU-lock acceptance requires explicit CPU and GPU-address opt-ins')
+    if args.minimum_spanning_cpu_mappings < 0 or (args.minimum_spanning_cpu_mappings and not args.driver_cpu):
+        parser.error('Spanning CPU mapping acceptance requires CPU locks')
     if args.minimum_expanded_cpu_mappings < 0 or (args.driver_cpu_slots != 16 and not args.driver_cpu) or (args.minimum_expanded_cpu_mappings and args.driver_cpu_slots == 16):
         parser.error('Expanded CPU mappings require explicit CPU locks with 32 or 64 aperture slots')
     if args.expected_cpu_slot_quota_rejections is not None and (args.expected_cpu_slot_quota_rejections < 0 or not args.driver_cpu):
@@ -133,6 +153,7 @@ def main():
                              (['--driver-submit'] if args.driver_submit else []) +
                              (['--driver-retirement'] if args.driver_retirement else []) +
                              (['--cpu-store-test'] if args.cpu_store_test else []) + (['--cpu-eof-test'] if args.cpu_eof_test else []) +
+                             (['--cpu-span-eof-test'] if args.cpu_span_eof_test else []) +
                              (['--hwqueue-eof-test'] if args.hwqueue_eof_test else []) +
                              (['--sync-eof-test'] if args.sync_eof_test else []) +
                              (['--reservation-eof-test'] if args.reservation_eof_test else []) +
@@ -187,6 +208,8 @@ def main():
         completed = [{'type': int(t), 'bytes': int(b)} for t, b in re.findall(r'LINUX_BRIDGE queryCompleted type=(\d+) bytes=(\d+)', log)]
         fences = [{'offset': int(o), 'value': int(v)} for o, v in re.findall(r'pagingFenceMapped=true direct=true loads=10000 offset=(\d+) value=(\d+)', log)]
         result = re.search(r'^device=([0-9a-f]{8})\s*$', log, re.MULTILINE)
+        copy_queue_result = re.search(r'^copyQueue=([0-9a-f]{8})\s*$', log, re.MULTILINE)
+        initialized = initialization_complete(log, owner.returncode, control, cleanup)
         loaded = 'nvidiaUmdPresentDuringPrivateQuery=true' in log
         contexts = log.count('LINUX_BRIDGE nativeContextCreated=true')
         allocations = log.count('LINUX_BRIDGE nativeVendorAllocationCreated=true')
@@ -213,6 +236,8 @@ def main():
                re.findall(r'allocationCpuMapped=true direct=true loads=10000 bytes=(\d+) offset=(\d+) generation=(\d+)', log)]
         cpu_layouts = [{'slots': int(s), 'stride': int(b)} for s, b in re.findall(r'allocationCpuLayout=true slots=(\d+) stride=(\d+)', log)]
         expanded_cpu = [mapping for mapping in cpu if mapping['offset'] >= 16 * 1048576]
+        spanning_cpu = [mapping for mapping in cpu if mapping['bytes'] > 1048576]
+        cpu_slot_maps = sum((mapping['bytes'] + 1048575) // 1048576 for mapping in cpu)
         cpu_unlocks = log.count('nativeVendorCpuUnlocked=true')
         cpu_unmaps = log.count('allocationCpuUnmapped=true direct=true mmioReads=0 mmioWrites=0')
         cpu_released_after_exit = cleanup.get('cpuLocksReleasedAfterVmExit', 0)
@@ -249,9 +274,10 @@ def main():
                     control.get('fenceUnmapAcknowledgements') == (0 if guest_eof else total_fence_mappings) and
                     cleanup.get('driverCleanupVerified') is True and cleanup.get('failedAdapterQueries') == 0 and
                     cleanup.get('completedAdapterQueries') == len(completed) and
-                    'transport=virtio-port' in log and 'BRIDGE_RUNTIME_EXIT=1' in log and
-                    (guest_eof or first_unsupported_after_stage == args.expected_unimplemented_ioctl) and
-                    (guest_eof or (result is not None and int(result[1], 16) & 0x80000000)))
+                    'transport=virtio-port' in log and
+                    (initialized or ('BRIDGE_RUNTIME_EXIT=1' in log and
+                        (guest_eof or first_unsupported_after_stage == args.expected_unimplemented_ioctl) and
+                        (guest_eof or (result is not None and int(result[1], 16) & 0x80000000)))))
         if args.driver_allocations:
             accepted = (accepted and allocations >= args.minimum_vendor_allocations and
                         cleanup.get('liveVendorAllocations') == 0 and cleanup.get('failedVendorAllocations') == 0 and
@@ -280,7 +306,7 @@ def main():
                         cleanup.get('completedAllocationTranslations') == translations and
                         cleanup.get('failedAllocationTranslations') == 0 and cleanup.get('liveAllocationTranslations') == 0)
         if args.driver_hwqueues:
-            accepted = (accepted and hwqueues >= args.minimum_hwqueues and hwqueues == len(hwqueue_fences) and hwqueue_unmaps == (0 if args.hwqueue_eof_test or args.sync_eof_test or args.reservation_eof_test or args.gpu_state_eof_test else hwqueues) and
+            accepted = (accepted and hwqueues >= args.minimum_hwqueues and hwqueues == len(hwqueue_fences) and hwqueue_unmaps == (0 if args.hwqueue_eof_test or args.sync_eof_test or args.reservation_eof_test or args.gpu_state_eof_test or args.cpu_span_eof_test else hwqueues) and
                         cleanup.get('completedHwQueues') == hwqueues and cleanup.get('destroyedHwQueues') == hwqueues and
                         cleanup.get('failedHwQueues') == 0 and cleanup.get('liveHwQueues') == 0 and 24 not in unsupported and 27 not in unsupported)
         if args.driver_syncs:
@@ -289,7 +315,7 @@ def main():
                         cleanup.get('completedSyncObjects') == len(sync_types) and cleanup.get('destroyedSyncObjects') == len(sync_types) and
                         cleanup.get('completedMonitoredFences') == sync_types.count(5) and cleanup.get('completedSynchronizationMutexes') == sync_types.count(1) and
                         len(sync_descriptors) == len(sync_types) and len(no_gpu_fences) >= args.minimum_no_gpu_access_fences and
-                        cleanup.get('completedNoGpuAccessFences') == len(no_gpu_fences) and cleanup.get('syncObjectLimit') == 32 and
+                        cleanup.get('completedNoGpuAccessFences') == len(no_gpu_fences) and cleanup.get('syncObjectLimit') == 64 and
                         all(d['flags'] in (0, 128) and (d['type'] == 5 or not d['flags']) and
                             d['gpuMapped'] == (d['type'] == 5 and not d['flags']) for d in sync_descriptors) and
                         cleanup.get('failedSyncObjects') == 0 and cleanup.get('liveSyncObjects') == 0 and 16 not in unsupported and 29 not in unsupported and
@@ -342,12 +368,19 @@ def main():
                         cleanup.get('failedVendorCpuLocks') == 0 and cleanup.get('failedVendorCpuUnlocks') == 0 and
                         cleanup.get('liveVendorCpuBytes') == 0 and control.get('liveAllocationMappings') == 0 and
                         control.get('liveAllocationMappedBytes') == 0 and control.get('allocationMappingsCreated') == len(cpu) and
-                        control.get('allocationUnmapAcknowledgements') == cpu_unlocks)
+                        control.get('allocationUnmapAcknowledgements') == cpu_unlocks and
+                        len(spanning_cpu) >= args.minimum_spanning_cpu_mappings and control.get('liveAllocationSlotMappings') == 0 and
+                        control.get('allocationSlotMappingsCreated') == cpu_slot_maps and
+                        control.get('allocationSlotUnmapAcknowledgements') == (0 if guest_eof else cpu_slot_maps))
         if args.expected_cpu_slot_quota_rejections is not None:
             accepted = accepted and cleanup.get('vendorCpuSlotQuotaRejections') == args.expected_cpu_slot_quota_rejections
         if args.cpu_eof_test:
             accepted = (accepted and len(cpu) > 0 and 'allocationCpuEofTest=true exitingWithLockOwned=true' in log and
                         cleanup.get('cpuLocksReleasedAfterVmExit') == len(cpu) and result is None)
+        if args.cpu_span_eof_test:
+            accepted = (accepted and len(spanning_cpu) == 1 and 'allocationCpuSpanEofTest=true exitingWithSpanOwned=true' in log and
+                        cleanup.get('cpuLocksReleasedAfterVmExit') == len(cpu) and cleanup.get('hwQueuesReleasedAfterVmExit') == hwqueues and
+                        cleanup.get('gpuReservationsReleasedAfterVmExit') == len(reservations) and result is None)
         if args.hwqueue_eof_test:
             accepted = (accepted and hwqueues > 0 and 'hwQueueEofTest=true exitingWithQueueOwned=true' in log and
                         cleanup.get('hwQueuesReleasedAfterVmExit') == hwqueues and
@@ -370,8 +403,10 @@ def main():
                         cleanup.get('completedCpuStoreTests') == len(cpu) and cleanup.get('failedCpuStoreTests') == 0 and
                         log.count('allocationCpuStoreTest=true firstLastReadback=true') == len(cpu) and
                         log.count('allocationCpuReferenceTest=true sameGuestPointer=true intermediateUnlockRetained=true') == len(cpu))
-        report = {'schema': 1, 'diagnosticAccepted': bool(accepted), 'runtimeInitializationComplete': False,
-                  'stage': 'owned VM exit with a retired GPU address-state mapping' if args.gpu_state_eof_test else
+        report = {'schema': 1, 'diagnosticAccepted': bool(accepted), 'runtimeInitializationComplete': bool(initialized),
+                  'stage': 'owned VM exit with a spanning native CPU allocation view' if args.cpu_span_eof_test else
+                           'live NVIDIA runtime with spanning native CPU allocation views' if args.minimum_spanning_cpu_mappings else
+                           'owned VM exit with a retired GPU address-state mapping' if args.gpu_state_eof_test else
                            'live NVIDIA runtime with Windows GPU address-state mappings' if args.driver_gpu_state else
                            'owned VM exit before GPU reservation cleanup' if args.reservation_eof_test else
                            'live NVIDIA runtime with Windows GPU address reservation' if args.driver_reservation else
@@ -425,11 +460,13 @@ def main():
                   'minimumExpandedCpuMappingsRequired': args.minimum_expanded_cpu_mappings,
                   'expectedCpuSlotQuotaRejections': args.expected_cpu_slot_quota_rejections,
                   'minimumVendorCpuLocksRequired': args.minimum_vendor_cpu_locks,
+                  'spanningCpuMappings': spanning_cpu, 'minimumSpanningCpuMappingsRequired': args.minimum_spanning_cpu_mappings,
                   'guestCpuViewsUnmapped': cpu_unmaps, 'nativeVendorCpuLocksReleased': cpu_unlocks,
                   'cpuLocksRetainedUntilOwnedVmExit': cpu_released_after_exit,
                   'directGuestAllocationLoads': len(cpu) * 10000,
                   'diagnosticCpuStoresRequested': args.cpu_store_test,
                   'diagnosticCpuEofRequested': args.cpu_eof_test,
+                  'diagnosticCpuSpanEofRequested': args.cpu_span_eof_test,
                   'diagnosticHardwareQueueEofRequested': args.hwqueue_eof_test,
                   'diagnosticSynchronizationEofRequested': args.sync_eof_test,
                   'diagnosticReservationEofRequested': args.reservation_eof_test,
@@ -440,6 +477,7 @@ def main():
                   'firstUnsupportedIoctlAfterAcceptedStage': first_unsupported_after_stage,
                   'unsupportedIoctls': unsupported, 'completedNativeQueries': completed,
                   'd3d12DeviceHresult': result[1] if result else None, 'ownedQemuControl': control, 'disconnectCleanup': cleanup,
+                  'd3d12CopyQueueHresult': copy_queue_result[1] if copy_queue_result else None,
                   'realWslDxgForwarding': False, 'capturedPrivateFixturesUsed': False,
                   'privateRuntimeImageRedistributable': False, 'kernelSha256': sha256(args.kernel),
                   'initramfsSha256': sha256(args.initramfs), 'driverBridgeSha256': sha256(args.bridge), 'qemuSha256': sha256(args.qemu),

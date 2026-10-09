@@ -765,6 +765,10 @@ public:
                     std::fprintf(stderr, "LINUX_BRIDGE allocationCpuReferenceTest=true sameGuestPointer=true intermediateUnlockRetained=true\n");
                 }
                 std::fprintf(stderr, "LINUX_BRIDGE nativeVendorCpuLocked=true bytes=%u\n", output.bytes);
+                const auto spanEofTest = std::getenv("WDDM_BRIDGE_CPU_SPAN_EOF_TEST");
+                if (spanEofTest && !std::strcmp(spanEofTest, "1") && output.bytes > VendorCpuSlotBytes) {
+                    std::fprintf(stderr, "LINUX_BRIDGE allocationCpuSpanEofTest=true exitingWithSpanOwned=true\n"); _exit(1);
+                }
                 const auto eofTest = std::getenv("WDDM_BRIDGE_CPU_EOF_TEST");
                 if (eofTest && !std::strcmp(eofTest, "1")) {
                     std::fprintf(stderr, "LINUX_BRIDGE allocationCpuEofTest=true exitingWithLockOwned=true\n");
