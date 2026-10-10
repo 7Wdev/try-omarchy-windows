@@ -60,6 +60,8 @@ def main():
     for missing in ('--driver-submit','--driver-retirement'):
         cases.append(([o for o in no_broadcast if o not in (missing,'--hwqueue-no-broadcast-eof-test')] + ['--driver-async-submit'], 'Asynchronous submission requires'))
     cases += [(['--stdio','--driver-consume-shared'], 'Shared texture consumption requires shared resources, asynchronous submission and sync opt-ins')]
+    cases += [(['--stdio','--driver-present-shared'], 'Shared texture presentation requires explicit consumption opt-in')]
+    cases += [(['--stdio','--driver-shared-resources','--driver-present-shared'], 'Shared texture presentation requires explicit consumption opt-in')]
     cases += [(['--stdio','--driver-shared-resources','--driver-consume-shared'], 'Shared texture consumption requires shared resources, asynchronous submission and sync opt-ins')]
     cases += [(['--stdio','--driver-shared-resources'], 'Shared resources require explicit allocation opt-in')]
     cases += [(['--stdio','--driver-contexts','--driver-queries','--driver-allocations','--driver-shared-resources'],

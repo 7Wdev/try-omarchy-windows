@@ -4,7 +4,9 @@ import re
 from triangle_evidence import triangle_readback, checksum
 
 
-def shared_texture_consume_complete(guest, host, cleanup, shared_verified):
+def shared_texture_consume_complete(guest, host, cleanup, shared_verified, *, presentation=False):
+    if type(presentation) is not bool:
+        return False
     if shared_verified is not True:
         return False
     lines = guest.splitlines()
@@ -41,6 +43,14 @@ def shared_texture_consume_complete(guest, host, cleanup, shared_verified):
         records = [json.loads(line) for line in host.splitlines() if line.startswith('{') and 'nativeSharedTexture' in line]
     except ValueError:
         return False
+    present_records = [r for r in records if any(k in r for k in (
+        'nativeSharedTexturePresenterOpened', 'nativeSharedTexturePresented', 'nativeSharedTexturePresenterReleased'))]
+    if presentation:
+        if not _presentation_complete(frames, host, records, present_records):
+            return False
+        records = [r for r in records if r not in present_records]
+    elif present_records or 'NATIVE_SHARED_TEXTURE_BACKBUFFER_ROW' in host:
+        return False
     opened = [r for r in records if r.get('nativeSharedTextureConsumerOpened') is True]
     released = [r for r in records if r.get('nativeSharedTextureConsumerReleased') is True]
     copies = [r for r in records if r.get('nativeSharedTextureCopied') is True]
@@ -76,3 +86,45 @@ def shared_texture_consume_complete(guest, host, cleanup, shared_verified):
                                liveTextureConsumers=0, completedSharedTextureConsumes=2, failedSharedTextureConsumes=0,
                                pendingNativeSubmissions=0, acceptedHwQueueSignals=4, completedHwQueueSignals=4,
                                pendingHwQueueSignals=0, cleanupFailures=0)))
+
+
+def _presentation_complete(frames, host, all_records, records):
+    """Backbuffer bytes plus flip statistics; this is not a screen capture."""
+    if len(records) != 4 or len(all_records) != 10:
+        return False
+
+    def exact(record, values):
+        return all(type(record.get(k)) is type(v) and record[k] == v for k, v in values.items())
+
+    if not exact(records[0], dict(nativeSharedTexturePresenterOpened=True, width=130, height=73, bufferCount=2,
+                                 flipModel=True, clientWidth=780, clientHeight=438, windowVisible=True,
+                                 sameAdapter=True, cpuUpload=False)):
+        return False
+    if not exact(records[-1], dict(nativeSharedTexturePresenterReleased=True, gpuWorkRetired=True,
+                                  windowDestroyed=True, classUnregistered=True)):
+        return False
+    if [all_records.index(r) for r in records] != [1, 3, 6, 8]:
+        return False
+    rows = re.findall(r'^NATIVE_SHARED_TEXTURE_BACKBUFFER_ROW round=(\d+) y=(\d+) rgba=([0-9a-f]+)[ \t\r]*$', host, re.MULTILINE)
+    if len(rows) != 146 or sum(line.startswith('NATIVE_SHARED_TEXTURE_BACKBUFFER_ROW') for line in host.splitlines()) != 146:
+        return False
+    previous_index = None
+    previous_qpc = 0
+    for i, (record, frame) in enumerate(zip(records[1:3], frames), 1):
+        actual = bytearray()
+        for y, (round_, row, rgba) in enumerate(rows[(i - 1) * 73:i * 73]):
+            if (round_, row) != (str(i), str(y)) or len(rgba) != 1040:
+                return False
+            actual.extend(bytes.fromhex(rgba))
+        if actual != frame or not exact(record, dict(nativeSharedTexturePresented=True, round=i, width=130, height=73,
+                backBufferFnv1a=int(checksum(frame), 16), presentHresult=0, lastPresentCount=i, statisticsHresult=0,
+                statisticsPresentCount=i, dwmFlushHresult=0, windowVisible=True, presentQueueFenceTarget=i,
+                backBufferState='PRESENT', cpuUpload=False)):
+            return False
+        index, qpc, fence = (record.get(k) for k in ('backBufferIndex', 'syncQpc', 'presentQueueFenceObserved'))
+        if (type(index) is not int or index not in (0, 1) or index == previous_index or
+                type(qpc) is not int or not previous_qpc < qpc < (1 << 63) or
+                type(fence) is not int or not i <= fence < (1 << 64) - 1):
+            return False
+        previous_index, previous_qpc = index, qpc
+    return True

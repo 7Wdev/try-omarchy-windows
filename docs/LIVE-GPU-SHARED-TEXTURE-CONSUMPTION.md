@@ -8,8 +8,9 @@ readback byte matched the corresponding guest shader frame exactly.
 
 This extends the [shared resource import checkpoint](LIVE-GPU-SHARED-RESOURCE.md)
 with a completed resource-state/fence handoff and real Windows GPU consumption.
-The consumer has no swapchain or window yet, so presentation and accelerated
-Omarchy/Hyprland remain unfinished. The launcher does not select the bridge.
+This checkpoint uses consumption without a swapchain or window. The subsequent
+[presentation checkpoint](LIVE-GPU-PRESENTATION.md) adds a diagnostic DXGI window;
+accelerated Omarchy/Hyprland remains unfinished. The launcher does not select the bridge.
 
 [Hardware evidence](evidence/QEMU-LIVE-GPU-SHARED-CONSUMER-2026-10-10.json)
 records the accepted runs, controls, complete native ownership and retirement
@@ -108,8 +109,10 @@ recently signaled owned fence. It is not a general Linux sharing-FD or DRM API.
 Consumption is bounded to two 130×73 frames. It synchronizes on the CPU and
 waits for diagnostic readback, so this path makes no performance claim.
 
-The next step is swapchain presentation from the retained native GPU texture,
-then shared GPU fence scheduling, multiple frames in flight and general guest
+The subsequent [native presentation checkpoint](LIVE-GPU-PRESENTATION.md) verifies
+swapchain backbuffer pixels and completed presentation statistics. It also
+reproduces an intermittent import failure; stability remains unresolved.
+Further work includes shared GPU fence scheduling, multiple frames in flight and general guest
 kernel/DRM integration. Production display must avoid diagnostic readback and
 synchronous round trips per frame. CUDA, OpenGL, Vulkan, video, interactive
 Omarchy/Hyprland, recovery and the minimum 93% native performance requirement

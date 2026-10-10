@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Retained same-adapter GPU consumer. CPU readback is diagnostic verification.
 #pragma once
+#include "shared_texture_presenter.h"
 namespace driver_shared {
 class TextureConsumer {
     Microsoft::WRL::ComPtr<ID3D12Device> device;
@@ -11,8 +12,28 @@ class TextureConsumer {
     Microsoft::WRL::ComPtr<ID3D12Fence> fence;
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
     UINT64 totalBytes = 0, sequence = 0;
+    std::unique_ptr<TexturePresenter> presenter;
+    Microsoft::WRL::ComPtr<ID3D12Resource> backBufferReadback;
+    HRESULT exportPixels(ID3D12Resource* buffer, const char* prefix, std::uint64_t& hash) {
+        void* mapped = nullptr; const D3D12_RANGE range{static_cast<SIZE_T>(footprint.Offset), static_cast<SIZE_T>(totalBytes)};
+        const auto hr = buffer->Map(0, &range, &mapped); if (FAILED(hr)) return hr;
+        if (!mapped) { const D3D12_RANGE empty{}; buffer->Unmap(0, &empty); return E_FAIL; }
+        hash = UINT64_C(14695981039346656037);
+        const char hex[] = "0123456789abcdef";
+        for (unsigned y = 0; y < 73; ++y) {
+            const auto bytes = static_cast<const std::uint8_t*>(mapped) + footprint.Offset + y * footprint.Footprint.RowPitch;
+            std::string row; row.reserve(1040);
+            for (unsigned x = 0; x < 520; ++x) {
+                hash = (hash ^ bytes[x]) * UINT64_C(1099511628211);
+                row.push_back(hex[bytes[x] >> 4]); row.push_back(hex[bytes[x] & 15]);
+            }
+            std::cerr << prefix << " round=" << sequence << " y=" << y << " rgba=" << row << "\n";
+        }
+        const D3D12_RANGE empty{}; buffer->Unmap(0, &empty);
+        return S_OK;
+    }
 public:
-    HRESULT initialize(D3DKMT_HANDLE resource, LUID luid) {
+    HRESULT initialize(D3DKMT_HANDLE resource, LUID luid, bool present = false) {
         OBJECT_ATTRIBUTES attributes{}; attributes.Length = sizeof attributes;
         HANDLE handle = nullptr;
         const auto status = D3DKMTShareObjects(1, &resource, &attributes, GENERIC_ALL, &handle);
@@ -55,13 +76,23 @@ public:
         hr = device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &buffer, D3D12_RESOURCE_STATE_COPY_DEST,
                                              nullptr, IID_PPV_ARGS(&readback));
         if (FAILED(hr)) return hr;
+        if (present) {
+            hr = device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &buffer, D3D12_RESOURCE_STATE_COPY_DEST,
+                                                 nullptr, IID_PPV_ARGS(&backBufferReadback));
+            if (FAILED(hr)) return hr;
+        }
         D3D12_COMMAND_QUEUE_DESC q{}; q.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
         hr = device->CreateCommandQueue(&q, IID_PPV_ARGS(&queue)); if (FAILED(hr)) return hr;
         hr = device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocator)); if (FAILED(hr)) return hr;
         hr = device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.Get(), nullptr, IID_PPV_ARGS(&commands));
         if (FAILED(hr)) return hr;
         hr = commands->Close(); if (FAILED(hr)) return hr;
-        return device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence));
+        hr = device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence)); if (FAILED(hr)) return hr;
+        if (present) {
+            presenter = std::make_unique<TexturePresenter>();
+            hr = presenter->initialize(factory.Get(), device.Get(), queue.Get());
+        }
+        return hr;
     }
     HRESULT consume(std::uint64_t& hash) {
         if (!fence || sequence >= 2) return E_INVALIDARG;
@@ -81,6 +112,10 @@ public:
         D3D12_TEXTURE_COPY_LOCATION to{}; to.pResource = readback.Get(); to.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
         to.PlacedFootprint = footprint;
         commands->CopyTextureRegion(&to, 0, 0, 0, &from, nullptr);
+        if (presenter) {
+            hr = presenter->copy(commands.Get(), destination.Get(), backBufferReadback.Get(), footprint);
+            if (FAILED(hr)) return hr;
+        }
         barrier(destination.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON);
         hr = commands->Close(); if (FAILED(hr)) return hr;
         ID3D12CommandList* lists[]{commands.Get()}; queue->ExecuteCommandLists(1, lists);
@@ -94,24 +129,17 @@ public:
             std::cerr << "FAIL: Native shared texture copy did not retire; backing retained until process teardown\n" << std::flush;
             ExitProcess(3);
         }
-        void* mapped = nullptr; const D3D12_RANGE range{static_cast<SIZE_T>(footprint.Offset), static_cast<SIZE_T>(totalBytes)};
-        hr = readback->Map(0, &range, &mapped); if (FAILED(hr)) return hr;
-        if (!mapped) { const D3D12_RANGE empty{}; readback->Unmap(0, &empty); return E_FAIL; }
-        hash = UINT64_C(14695981039346656037);
-        const char hex[] = "0123456789abcdef";
-        for (unsigned y = 0; y < 73; ++y) {
-            const auto bytes = static_cast<const std::uint8_t*>(mapped) + footprint.Offset + y * footprint.Footprint.RowPitch;
-            std::string row; row.reserve(1040);
-            for (unsigned x = 0; x < 520; ++x) {
-                hash = (hash ^ bytes[x]) * UINT64_C(1099511628211);
-                row.push_back(hex[bytes[x] >> 4]); row.push_back(hex[bytes[x] & 15]);
-            }
-            std::cerr << "NATIVE_SHARED_TEXTURE_PIXEL_ROW round=" << target << " y=" << y << " rgba=" << row << "\n";
-        }
-        const D3D12_RANGE empty{}; readback->Unmap(0, &empty);
+        hr = exportPixels(readback.Get(), "NATIVE_SHARED_TEXTURE_PIXEL_ROW", hash); if (FAILED(hr)) return hr;
         std::cerr << "{\"nativeSharedTextureCopied\":true,\"round\":" << target << ",\"width\":130,\"height\":73"
                   << ",\"gpuFenceTarget\":" << target << ",\"gpuFenceObserved\":" << observed
                   << ",\"fnv1a\":" << hash << ",\"sourceReturnedToCommon\":true,\"cpuUpload\":false,\"presented\":false}\n";
+        if (presenter) {
+            std::uint64_t backHash = 0;
+            hr = exportPixels(backBufferReadback.Get(), "NATIVE_SHARED_TEXTURE_BACKBUFFER_ROW", backHash);
+            if (FAILED(hr) || backHash != hash) return E_FAIL;
+            hr = presenter->present(queue.Get(), target, backHash);
+            if (hr != S_OK) return E_FAIL;
+        }
         return S_OK;
     }
 };

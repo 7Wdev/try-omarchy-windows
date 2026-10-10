@@ -10,9 +10,9 @@ No current result proves this product or performance threshold. The launcher
 does not select the experimental backend. The current diagnostic supports
 separately negotiated asynchronous submission and directly shared native
 fences, with bounded native objects. It verifies [guest shader drawing](LIVE-GPU-SHADER-TRIANGLE.md),
-including [fenced handoff to a retained Windows GPU texture consumer](LIVE-GPU-SHARED-TEXTURE-CONSUMPTION.md),
-but remains a compatibility and ownership probe. Shared GPU scheduling,
-the production transport and desktop presentation still need implementation and validation.
+including [native DXGI presentation with verified backbuffer pixels](LIVE-GPU-PRESENTATION.md),
+but remains a compatibility and ownership probe. Import stability, shared GPU scheduling,
+the production transport and Omarchy desktop presentation still need implementation and validation.
 
 ## Functional acceptance
 

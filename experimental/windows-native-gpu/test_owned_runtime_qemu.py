@@ -207,6 +207,7 @@ def main():
         parser.add_argument('--' + name, type=pathlib.Path, required=True)
     parser.add_argument('--expected-unimplemented-ioctl', type=int, required=True)
     parser.add_argument('--driver-consume-shared', action='store_true', help='Opt into native GPU consumption after explicit COMMON/fence handoff')
+    parser.add_argument('--driver-present-shared', action='store_true', help='Present consumed guest frames in an owned diagnostic Windows window')
     parser.add_argument('--driver-shared-resources', action='store_true', help='Opt into bounded shareable NVIDIA resource creation and native import probing')
     parser.add_argument('--runtime-workload', choices=('init', 'copy', 'clear', 'triangle', 'shared', 'consume'), default='init', help='Require the workload selected when packing the private guest image')
     parser.add_argument('--driver-allocations', action='store_true', help='Explicitly enable diagnostic vendor video-memory allocations')
@@ -315,6 +316,8 @@ def main():
             args.driver_submit and (not args.driver_hwqueues or not args.driver_syncs or not args.driver_cpu or not args.driver_residency or
                                     args.cpu_store_test or early_guest_eof)):
         parser.error('Submission requires queues, syncs, CPU mappings and residency in a separate diagnostic run')
+    if args.driver_present_shared and not args.driver_consume_shared:
+        parser.error('Shared texture presentation requires explicit consumption opt-in')
     if args.driver_consume_shared and (not args.driver_shared_resources or not args.driver_async_submit or not args.driver_syncs):
         parser.error("Shared texture consumption requires shared resources, asynchronous submission and sync opt-ins")
     if args.driver_shared_resources and not args.driver_allocations:
@@ -353,6 +356,7 @@ def main():
                              (['--driver-async-submit'] if args.driver_async_submit else []) +
                              (['--driver-shared-resources'] if args.driver_shared_resources else []) +
                              (['--driver-consume-shared'] if args.driver_consume_shared else []) +
+                             (['--driver-present-shared'] if args.driver_present_shared else []) +
                              (['--cpu-store-test'] if args.cpu_store_test else []) + (['--cpu-eof-test'] if args.cpu_eof_test else []) +
                              (['--cpu-span-eof-test'] if args.cpu_span_eof_test else []) +
                              (['--hwqueue-eof-test'] if args.hwqueue_eof_test else []) +
@@ -706,7 +710,8 @@ def main():
         clear_verified = clear_workload_complete(log, args.driver_async_submit and async_verified)
         triangle_verified = triangle_workload_complete(log, args.driver_async_submit and async_verified)
         shared_verified = shared_resource_import_complete(log, shared_probes, cleanup, triangle_verified)
-        consume_verified = shared_texture_consume_complete(log, "\n".join(errors), cleanup, shared_verified)
+        consume_verified = shared_texture_consume_complete(log, "\n".join(errors), cleanup, shared_verified,
+                                                         presentation=args.driver_present_shared)
         hwqueue_flags = [int(flag or '0') for flag in re.findall(r'nativeHwQueueCreated=true privateBytes=\d+ progressFenceDirect=true(?: flags=(\d+))?',log)]
         hwqueue_flag_checks = [json.loads(line) for line in errors if line.startswith('{') and '"nativeHardwareQueueFlagsVerified"' in line]
         no_broadcast_queues = sum(bool(flag & 2) for flag in hwqueue_flags)
@@ -729,13 +734,15 @@ def main():
                             'GPU_COPY_TEST_BEGIN' not in log and 'GPU_CLEAR_TEST_BEGIN' not in log)
         if args.runtime_workload not in ('triangle', 'shared', 'consume'):
             workload_matches = workload_matches and 'GPU_TRIANGLE_TEST_BEGIN' not in log
-        accepted = accepted and workload_matches
+        accepted = accepted and workload_matches and (not args.driver_present_shared or
+                                                       (args.runtime_workload == 'consume' and consume_verified))
         report = {'schema': 1, 'diagnosticAccepted': bool(accepted), 'runtimeInitializationComplete': bool(initialized and accepted),
                   'runtimeInitializationResultsSucceeded': bool(initialized),
                   'runtimeWorkload': args.runtime_workload, 'guestGpuBufferCopyVerified': bool(copy_verified and accepted),
                   'guestSharedGpuTextureImportVerified': bool(shared_verified and accepted),
                   'nativeSharedResourceImportChecks': shared_probes,
                   'nativeSharedTextureConsumeVerified': bool(consume_verified and accepted),
+                  'nativeSharedTexturePresentationVerified': bool(args.driver_present_shared and consume_verified and accepted),
                   'nativeSharedTextureChecks': [json.loads(line) for line in errors if line.startswith('{') and 'nativeSharedTexture' in line],
                   'nativeVendorResourcesCreatedByLiveRuntime': resources, 'nativeVendorResourceChecks': resource_native,
                   'nativeVendorDriverProtectionMaps': driver_protection, 'directGuestCpuFenceWaits': cpu_waits,
@@ -756,7 +763,8 @@ def main():
                   'd3d12DirectQueueHresult': next(iter(re.findall(r'^gpu(?:Clear|Triangle)DirectQueue=([0-9a-f]{8})[ \t\r]*$',log,re.MULTILINE)),None),
                   'stage': 'owned VM exit with a combined NoBroadcastSignal/NoBroadcastWait hardware queue; graphics rendering unverified' if args.hwqueue_no_broadcast_wait_eof_test else
                            'owned VM exit with a NoBroadcastSignal hardware queue; graphics rendering unverified' if late_guest_eof else
-                           'guest shared shader texture copied on the Windows GPU with matching native readback; presentation unverified' if args.runtime_workload == 'consume' else
+                           ('guest shader frames copied into native DXGI backbuffers with matching pixels and completed presentation statistics; Omarchy display integration unverified' if args.driver_present_shared else
+                            'guest shared shader texture copied on the Windows GPU with matching native readback; presentation unverified') if args.runtime_workload == 'consume' else
                            'guest shader drawing in a shared texture and separate native Windows resource import; presentation unverified' if args.runtime_workload == 'shared' else
                            'live NVIDIA D3D12 shader triangle drawing with independently verified pixels' if args.runtime_workload == 'triangle' else
                            'live NVIDIA D3D12 graphics queue render-target clears with verified pixels' if args.runtime_workload == 'clear' else

@@ -20,8 +20,12 @@ in both the private-image packer and owned-runtime verifier, plus the separate
 [retained Windows GPU consumer](../../docs/LIVE-GPU-SHARED-TEXTURE-CONSUMPTION.md)
 passes two fresh runs with two distinct frames each. It requires an explicit
 COMMON/fence handoff, `--runtime-workload consume` and `--driver-consume-shared`;
-every native readback byte matches the guest shader output. Desktop presentation
-remains unfinished.
+every native readback byte matches the guest shader output. The subsequent
+[native DXGI presentation checkpoint](../../docs/LIVE-GPU-PRESENTATION.md) adds
+`--driver-present-shared`: actual backbuffer bytes and completed frame statistics
+pass for both guest frames in two fresh runs. An intermittent native import
+failure was reproduced in a separate control and remains unresolved. Import
+stability and Omarchy desktop presentation remain unfinished.
 
 The diagnostic adds owned, nonshared single-allocation resources, the observed
 NVIDIA DEFAULT-resource DriverProtection value, direct CPU fence waits and a

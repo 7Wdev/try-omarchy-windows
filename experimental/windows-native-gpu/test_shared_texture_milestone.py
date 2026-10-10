@@ -93,5 +93,74 @@ class TextureConsumeTests(unittest.TestCase):
         self.assertFalse(self.check(records=changed))
 
 
+class TexturePresentationTests(unittest.TestCase):
+    def setUp(self):
+        self.consume = TextureConsumeTests(); self.consume.setUp()
+        opened = dict(nativeSharedTexturePresenterOpened=True, width=130, height=73, bufferCount=2,
+                      flipModel=True, clientWidth=780, clientHeight=438, windowVisible=True, sameAdapter=True, cpuUpload=False)
+        released = dict(nativeSharedTexturePresenterReleased=True, gpuWorkRetired=True, windowDestroyed=True, classUnregistered=True)
+        self.records = copy.deepcopy(self.consume.records)
+        self.records.insert(1, opened)
+        for i in (1, 2):
+            self.records.insert(i * 3, dict(nativeSharedTexturePresented=True, round=i, width=130, height=73,
+                backBufferIndex=i - 1, backBufferFnv1a=int(checksum(self.consume.frames[i - 1]), 16),
+                presentHresult=0, lastPresentCount=i, statisticsHresult=0, statisticsPresentCount=i,
+                syncQpc=i * 100, dwmFlushHresult=0, windowVisible=True, presentQueueFenceTarget=i,
+                presentQueueFenceObserved=i, backBufferState='PRESENT', cpuUpload=False))
+        self.records.insert(-1, released)
+        self.rows = self.consume.rows.replace('NATIVE_SHARED_TEXTURE_PIXEL_ROW', 'NATIVE_SHARED_TEXTURE_BACKBUFFER_ROW')
+
+    def check(self, records=None, rows=None, presentation=True, cleanup=None):
+        host = self.consume.rows + '\n' + (self.rows if rows is None else rows) + '\n' + '\n'.join(
+            json.dumps(r) for r in (self.records if records is None else records))
+        return shared_texture_consume_complete(self.consume.guest, host,
+            self.consume.cleanup if cleanup is None else cleanup, True, presentation=presentation)
+
+    def test_presentation_and_consumption_are_separate(self):
+        self.assertTrue(self.check())
+        self.assertFalse(self.check(presentation=False))
+        self.assertFalse(self.check(presentation=1))
+        self.assertFalse(self.check(records=self.consume.records, rows=''))
+
+    def test_backbuffer_pixels_are_required(self):
+        for rows in ('', self.rows.replace('rgba=', 'rgba=ff', 1), self.rows + '\n' + self.rows.splitlines()[0],
+                     self.rows.replace('round=2', 'round=1')):
+            self.assertFalse(self.check(rows=rows))
+
+    def test_queued_or_occluded_is_not_complete(self):
+        for index in (3, 6):
+            for key, bad in (('presentHresult', 1), ('presentHresult', 142213121), ('statisticsHresult', -1),
+                             ('statisticsPresentCount', 0), ('lastPresentCount', 0), ('windowVisible', False),
+                             ('syncQpc', 0), ('syncQpc', True), ('nativeSharedTexturePresented', False),
+                             ('presentQueueFenceObserved', 0), ('backBufferState', 'COPY_DEST'), ('cpuUpload', True)):
+                records = copy.deepcopy(self.records); records[index][key] = bad
+                self.assertFalse(self.check(records=records), (index, key, bad))
+
+    def test_all_presentation_metadata_types(self):
+        for index in (1, 3, 6, 8):
+            for key, value in self.records[index].items():
+                for bad in (None, str(value), int(value) if type(value) is bool else True):
+                    if type(bad) is type(value) and bad == value:
+                        continue
+                    records = copy.deepcopy(self.records); records[index][key] = bad
+                    self.assertFalse(self.check(records=records), (index, key, bad))
+
+    def test_buffer_rotation_order_and_release(self):
+        for first, second in ((1, 2), (3, 4), (6, 7), (8, 9)):
+            records = copy.deepcopy(self.records); records[first], records[second] = records[second], records[first]
+            self.assertFalse(self.check(records=records))
+        records = copy.deepcopy(self.records); records[6]['backBufferIndex'] = records[3]['backBufferIndex']
+        self.assertFalse(self.check(records=records))
+        records = copy.deepcopy(self.records); records[6]['syncQpc'] = records[3]['syncQpc']
+        self.assertFalse(self.check(records=records))
+        self.assertFalse(self.check(records=self.records[:-2] + self.records[-1:]))
+
+    def test_guest_retirement_still_required(self):
+        cleanup = dict(self.consume.cleanup); cleanup['pendingHwQueueSignals'] = 1
+        self.assertFalse(self.check(cleanup=cleanup))
+        cleanup = dict(self.consume.cleanup); cleanup['driverCleanupVerified'] = False
+        self.assertFalse(self.check(cleanup=cleanup))
+
+
 if __name__ == '__main__':
     unittest.main()

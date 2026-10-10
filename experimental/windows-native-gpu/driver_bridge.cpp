@@ -177,6 +177,7 @@ class KmtDriver : public Driver {
     unsigned completedVendorDriverProtectionMaps = 0;
     ComPtr<IDXGIAdapter3> allocationBudgetAdapter;
     bool consumeSharedEnabled = false;
+    bool presentSharedEnabled = false;
     std::set<std::uint32_t> sharedResourceIds;
     struct ConsumerLease {
         std::unique_ptr<driver_shared::TextureConsumer> gpu;
@@ -293,7 +294,7 @@ class KmtDriver : public Driver {
     }
 public:
     KmtDriver(std::string sectionName, std::uint32_t sectionBytes, bool enableContexts, bool enableQueries,
-              driver_qemu::Runtime* ownedRuntime = nullptr, bool enableAllocations = false, bool enableGpuVa = false, bool enableResidency = false, bool enableCpu = false, bool testCpuStores = false, bool enableTranslation = false, bool enableHwQueues = false, bool enableSync = false, bool enableSubmit = false, bool enableRetirement = false, bool enableReservation = false, bool enableGpuState = false, bool enableAsyncSubmit = false, bool enableSharedResources = false, bool enableConsumeShared = false)
+              driver_qemu::Runtime* ownedRuntime = nullptr, bool enableAllocations = false, bool enableGpuVa = false, bool enableResidency = false, bool enableCpu = false, bool testCpuStores = false, bool enableTranslation = false, bool enableHwQueues = false, bool enableSync = false, bool enableSubmit = false, bool enableRetirement = false, bool enableReservation = false, bool enableGpuState = false, bool enableAsyncSubmit = false, bool enableSharedResources = false, bool enableConsumeShared = false, bool enablePresentShared = false)
         : runtime(ownedRuntime), allocationsEnabled(enableAllocations), gpuVaEnabled(enableGpuVa), residencyEnabled(enableResidency), cpuEnabled(enableCpu), cpuStoreTest(testCpuStores), contextsEnabled(enableContexts), queriesEnabled(enableQueries),
           guestSectionName(std::move(sectionName)), guestBytes(sectionBytes) {
         translationEnabled = enableTranslation;
@@ -303,6 +304,7 @@ public:
         asyncSubmitEnabled = enableAsyncSubmit;
         sharedResourcesEnabled = enableSharedResources;
         consumeSharedEnabled = enableConsumeShared;
+        presentSharedEnabled = enablePresentShared;
         pendingSubmissions.reserve(MaxHwSubmissions);
         pendingHwSignals.reserve(MaxHwQueueSignals);
         retirementEnabled = enableRetirement;
@@ -889,7 +891,7 @@ public:
         auto entry = textureConsumers.find(resource);
         if (entry == textureConsumers.end()) {
             auto consumer = std::make_unique<driver_shared::TextureConsumer>();
-            const auto hr = consumer->initialize(resource, luid);
+            const auto hr = consumer->initialize(resource, luid, presentSharedEnabled);
             if (FAILED(hr)) {
                 ++failedSharedConsumes;
                 std::cerr << "{\"nativeSharedTextureConsumeFailed\":true,\"stage\":\"initialize\",\"hresult\":" << hr << "}\n";
@@ -1598,8 +1600,8 @@ public:
     }
 };
 static void serve(Stream& stream, const std::string& sectionName = {}, std::uint32_t sectionBytes = 0,
-                  bool contexts = false, bool queries = false, driver_qemu::Runtime* runtime = nullptr, bool allocations = false, bool gpuVa = false, bool residency = false, bool cpu = false, bool cpuStoreTest = false, bool translation = false, bool hwQueues = false, bool sync = false, bool submit = false, bool retirement = false, bool reservation = false, bool gpuState = false, bool asyncSubmit = false, bool sharedResources = false, bool consumeShared = false) {
-    KmtDriver driver(sectionName, sectionBytes, contexts, queries, runtime, allocations, gpuVa, residency, cpu, cpuStoreTest, translation, hwQueues, sync, submit, retirement, reservation, gpuState, asyncSubmit, sharedResources, consumeShared);
+                  bool contexts = false, bool queries = false, driver_qemu::Runtime* runtime = nullptr, bool allocations = false, bool gpuVa = false, bool residency = false, bool cpu = false, bool cpuStoreTest = false, bool translation = false, bool hwQueues = false, bool sync = false, bool submit = false, bool retirement = false, bool reservation = false, bool gpuState = false, bool asyncSubmit = false, bool sharedResources = false, bool consumeShared = false, bool presentShared = false) {
+    KmtDriver driver(sectionName, sectionBytes, contexts, queries, runtime, allocations, gpuVa, residency, cpu, cpuStoreTest, translation, hwQueues, sync, submit, retirement, reservation, gpuState, asyncSubmit, sharedResources, consumeShared, presentShared);
     std::exception_ptr failure;
     {
       Session session(driver);
@@ -1649,7 +1651,7 @@ int main(int argc, char** argv) {
         bool cpuSlotsConfigured = false;
         bool hwQueueNoBroadcastEofTest = false;
         bool hwQueueNoBroadcastWaitEofTest = false;
-        bool asyncSubmit = false, sharedResources = false, consumeShared = false;
+        bool asyncSubmit = false, sharedResources = false, consumeShared = false, presentShared = false;
         while (argc > 1) {
             if (argc > 2 && std::string(argv[argc - 2]) == "--driver-cpu-slots") {
                 const auto value = std::string(argv[argc - 1]);
@@ -1679,6 +1681,7 @@ int main(int argc, char** argv) {
             else if (option == "--driver-submit" && !submit) submit = true;
             else if (option == "--driver-async-submit" && !asyncSubmit) asyncSubmit = true;
             else if (option == "--driver-consume-shared" && !consumeShared) consumeShared = true;
+            else if (option == "--driver-present-shared" && !presentShared) presentShared = true;
             else if (option == "--driver-shared-resources" && !sharedResources) sharedResources = true;
             else if (option == "--driver-retirement" && !retirement) retirement = true;
             else if (option == "--driver-reservation" && !reservation) reservation = true;
@@ -1689,6 +1692,7 @@ int main(int argc, char** argv) {
             --argc;
         }
         if (allocations && (!contexts || !queries)) throw std::runtime_error("Vendor allocations require explicit query/context opt-ins");
+        if (presentShared && !consumeShared) throw std::runtime_error("Shared texture presentation requires explicit consumption opt-in");
         if (consumeShared && (!sharedResources || !asyncSubmit || !sync)) throw std::runtime_error("Shared texture consumption requires shared resources, asynchronous submission and sync opt-ins");
         if (sharedResources && !allocations) throw std::runtime_error("Shared resources require explicit allocation opt-in");
         if (sharedResources && (argc != 7 || std::string(argv[1]) != "--run-qemu"))
@@ -1779,7 +1783,7 @@ int main(int argc, char** argv) {
         if (setsockopt(client.value, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&milliseconds), sizeof milliseconds) ||
             setsockopt(client.value, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&milliseconds), sizeof milliseconds))
             throw std::runtime_error("Cannot set socket timeouts");
-        Stream stream(client.value); serve(stream, sectionName, sectionBytes, contexts, queries, runtime.get(), allocations, gpuVa, residency, cpu, cpuStoreTest, translation, hwQueues, sync, submit, retirement, reservation, gpuState, asyncSubmit, sharedResources, consumeShared);
+        Stream stream(client.value); serve(stream, sectionName, sectionBytes, contexts, queries, runtime.get(), allocations, gpuVa, residency, cpu, cpuStoreTest, translation, hwQueues, sync, submit, retirement, reservation, gpuState, asyncSubmit, sharedResources, consumeShared, presentShared);
         if (runtime) {
             runtime->report();
             if (!runtime->cleanExit()) throw std::runtime_error("Owned QEMU runtime did not exit cleanly");
