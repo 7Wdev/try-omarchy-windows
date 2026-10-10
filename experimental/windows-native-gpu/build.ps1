@@ -16,14 +16,37 @@ $batch = Join-Path $output 'build-native-gpu.cmd'
 @"
 @echo off
 call "$dev" -arch=x64 -host_arch=x64 >nul
-if errorlevel 1 exit /b 1
+if not "%errorlevel%"=="0" exit /b %errorlevel%
 cd /d "$output"
 cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\wire_test.cpp" /Fe:wire-test.exe
-if errorlevel 1 exit /b 1
+if not "%errorlevel%"=="0" exit /b %errorlevel%
 wire-test.exe
-if errorlevel 1 exit /b 1
+if not "%errorlevel%"=="0" exit /b %errorlevel%
+cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\driver_wire_test.cpp" /Fe:driver-wire-test.exe
+if not "%errorlevel%"=="0" exit /b %errorlevel%
+driver-wire-test.exe
+if not "%errorlevel%"=="0" exit /b %errorlevel%
+cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\cpu_aperture_test.cpp" /Fe:cpu-aperture-test.exe
+if not "%errorlevel%"=="0" exit /b %errorlevel%
+cpu-aperture-test.exe
+if not "%errorlevel%"=="0" exit /b %errorlevel%
+cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\qmp_protocol_test.cpp" /Fe:qmp-protocol-test.exe
+if not "%errorlevel%"=="0" exit /b %errorlevel%
+qmp-protocol-test.exe
+if not "%errorlevel%"=="0" exit /b %errorlevel%
+cl /nologo /std:c++17 /EHsc /W4 /WX /O2 /DUNICODE /D_UNICODE "$PSScriptRoot\driver_bridge.cpp" /Fe:driver-bridge.exe /link d3d12.lib dxgi.lib gdi32.lib ws2_32.lib bcrypt.lib user32.lib dwmapi.lib
+if not "%errorlevel%"=="0" exit /b %errorlevel%
+cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\context_native_probe.cpp" /Fe:context-native-probe.exe /link dxgi.lib gdi32.lib
+if not "%errorlevel%"=="0" exit /b %errorlevel%
+cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\query_native_probe.cpp" /Fe:query-native-probe.exe /link dxgi.lib gdi32.lib
+if not "%errorlevel%"=="0" exit /b %errorlevel%
+cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\queue_dependency_probe.cpp" /Fe:queue-dependency-probe.exe /link dxgi.lib gdi32.lib WinHvPlatform.lib
+if not "%errorlevel%"=="0" exit /b %errorlevel%
+cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\vendor_lock_probe.cpp" /Fe:vendor-lock-probe.exe /link dxgi.lib gdi32.lib WinHvPlatform.lib
+if not "%errorlevel%"=="0" exit /b %errorlevel%
 cl /nologo /std:c++17 /EHsc /W4 /WX /O2 /DUNICODE /D_UNICODE "$PSScriptRoot\native_gpu.cpp" /Fe:native-gpu.exe /link d3d12.lib dxgi.lib user32.lib gdi32.lib
 exit /b %errorlevel%
 "@ | Set-Content -LiteralPath $batch -Encoding ascii
 & $env:ComSpec /d /c $batch
 if ($LASTEXITCODE -ne 0) { throw "Native GPU build failed ($LASTEXITCODE)." }
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'third_party/nlohmann-json/LICENSE.MIT') -Destination (Join-Path $output 'nlohmann-json-LICENSE.MIT') -Force

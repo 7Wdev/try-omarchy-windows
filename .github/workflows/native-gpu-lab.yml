@@ -19,18 +19,57 @@ jobs:
         run: |
           scripts/fork/build.ps1
           experimental/windows-native-gpu/build.ps1
+          python experimental/windows-native-gpu/test_driver_cli.py --bridge experimental/windows-native-gpu/build/driver-bridge.exe
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: native-gpu-experiment
           path: |
             experimental/windows-native-gpu/build/native-gpu.exe
+            experimental/windows-native-gpu/build/driver-bridge.exe
+            experimental/windows-native-gpu/build/nlohmann-json-LICENSE.MIT
             dist/TryOmarchy-7Wdev.exe
   portable-checks:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: microsoft/DirectX-Headers
+          ref: adbd6f3ba40795c46a8d0f33af00bcb57ff0f0a4
+          path: .runtime-headers
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: microsoft/libdxg
+          ref: 5c28ebb4ead460c23ec5e87decb7d1af7285bb59
+          path: .runtime-dxg
       - run: |
           c++ -std=c++17 -Wall -Wextra -Werror experimental/windows-native-gpu/wire_test.cpp -o /tmp/native-wire-test
           /tmp/native-wire-test
+          c++ -std=c++17 -Wall -Wextra -Werror experimental/windows-native-gpu/driver_wire_test.cpp -o /tmp/driver-wire-test
+          /tmp/driver-wire-test
+          c++ -std=c++17 -Wall -Wextra -Werror experimental/windows-native-gpu/cpu_aperture_test.cpp -o /tmp/cpu-aperture-test
+          /tmp/cpu-aperture-test
+          python3 -m unittest discover -s experimental/windows-native-gpu -p 'test_*milestone.py'
+          c++ -std=c++17 -Wall -Wextra -Werror experimental/windows-native-gpu/qmp_protocol_test.cpp -o /tmp/qmp-protocol-test
+          /tmp/qmp-protocol-test
+          sh experimental/windows-native-gpu/build_guest.sh
           python3 -m unittest discover -s scripts/fork -p 'test_*.py'
+          cc -std=c11 -Wall -Wextra -Werror experimental/qemu/fence_map_test.c -o /tmp/fence-map-test
+          /tmp/fence-map-test
+          cc -std=c11 -Wall -Wextra -Werror experimental/qemu/allocation_map_test.c -o /tmp/allocation-map-test
+          /tmp/allocation-map-test
+      - name: Linux runtime bridge fault tests (no vendor binaries or hardware)
+        run: |
+          c++ -std=c++17 -Wall -Wextra -Werror -isystem .runtime-headers/include -isystem .runtime-headers/include/wsl/stubs -isystem .runtime-dxg/include -shared -fPIC experimental/windows-native-gpu/linux_ioctl_bridge.cpp -pthread -o /tmp/linux-ioctl-bridge.so
+          c++ -std=c++17 -Wall -Wextra -Werror -isystem .runtime-headers/include -isystem .runtime-headers/include/wsl/stubs -isystem .runtime-dxg/include experimental/windows-native-gpu/linux_ioctl_bridge_test.cpp -ldl -o /tmp/linux-ioctl-bridge-test
+          c++ -std=c++17 -Wall -Wextra -Werror -isystem .runtime-headers/include -isystem .runtime-headers/include/wsl/stubs -c experimental/windows-native-gpu/umd_context_probe.cpp -o /tmp/runtime-probe.o
+          python3 experimental/windows-native-gpu/test_linux_ioctl_bridge.py --shim /tmp/linux-ioctl-bridge.so --probe /tmp/linux-ioctl-bridge-test
+          cc -static -std=c11 -Wall -Wextra -Werror -O2 experimental/windows-native-gpu/runtime_guest_init.c -o /tmp/runtime-init
+          python3 -m py_compile experimental/windows-native-gpu/make_runtime_initramfs.py experimental/windows-native-gpu/test_runtime_qemu.py experimental/windows-native-gpu/test_owned_runtime_qemu.py
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: wddm-bridge-guest-probe
+          path: |
+            experimental/windows-native-gpu/build/bridge-test.cpio
+            experimental/windows-native-gpu/build/fence-test.cpio
