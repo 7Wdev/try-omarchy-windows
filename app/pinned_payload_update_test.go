@@ -81,6 +81,11 @@ func TestPinnedPayloadStagesWithoutFeedAndAppliesOffline(t *testing.T) {
 				setFixtureSums(runtimeFiles)
 			}
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasPrefix(filepath.Base(r.URL.Path), "rootfs.") {
+					t.Errorf("update requested factory: %s %s", r.Method, r.URL.Path)
+					http.Error(w, "factory forbidden", 500)
+					return
+				}
 				if strings.Contains(r.URL.Path, "update.json") {
 					t.Error("requested an update feed")
 					http.Error(w, "offline", 503)
@@ -150,6 +155,11 @@ func TestPinnedPayloadAcceptsMatchingSignedStage(t *testing.T) {
 	files[stableLauncherName] = []byte("trusted launcher")
 	signFixtureUpdate(t, files, currentVersion, private)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(filepath.Base(r.URL.Path), "rootfs.") {
+			t.Errorf("update requested factory: %s %s", r.Method, r.URL.Path)
+			http.Error(w, "factory forbidden", 500)
+			return
+		}
 		http.ServeContent(w, r, "artifact", time.Time{}, bytes.NewReader(files[filepath.Base(r.URL.Path)]))
 	}))
 	defer server.Close()

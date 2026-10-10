@@ -11,18 +11,7 @@ import (
 
 func writePortableGuestReceipt(t *testing.T, guest string, rootfs []byte) string {
 	t.Helper()
-	if err := os.MkdirAll(guest, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(guest, "rootfs.ext4"), rootfs, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	digest := testSHA256(rootfs)
-	if err := writeInstallReceipt(guest, "https://example.invalid/v0.0.9-preview", testSHA256([]byte("manifest")),
-		[]string{"rootfs.ext4"}, map[string]string{"rootfs.ext4": digest}); err != nil {
-		t.Fatal(err)
-	}
-	return digest
+	return installFactoryFixture(t, guest, rootfs)
 }
 
 func TestCreateQcow2Overlay(t *testing.T) {

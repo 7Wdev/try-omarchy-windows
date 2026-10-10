@@ -12,10 +12,8 @@ func resetStandardDisk(cfg *config, expandedMiB int64) (string, error) {
 	if cfg.portable {
 		return "", uiError(uiText("error.reset.standard_only"), nil)
 	}
-	for _, name := range []string{payloadUpdateStateFilename, updateStateFilename} {
-		if _, err := os.Lstat(filepath.Join(cfg.dir, name)); !os.IsNotExist(err) {
-			return "", uiError(uiText("error.reset.pending_update"), nil)
-		}
+	if err := rejectPendingReset(cfg); err != nil {
+		return "", err
 	}
 	if info, err := os.Lstat(cfg.disk); os.IsNotExist(err) {
 		copy := *cfg
@@ -73,6 +71,20 @@ func publishResetDisk(current, staged, retained string, rename func(string, stri
 			return fmt.Errorf("reset failed: %v; previous disk remains at %s: %w", err, retained, rollbackErr)
 		}
 		return err
+	}
+	return nil
+}
+
+// A Start fresh launch preflights before it publishes any selected components.
+// Only that same launch may then finish its own payload transaction's reset.
+func rejectPendingReset(cfg *config) error {
+	for _, name := range []string{payloadUpdateStateFilename, updateStateFilename} {
+		if name == payloadUpdateStateFilename && cfg.resetPayloadPrepared {
+			continue
+		}
+		if _, err := os.Lstat(filepath.Join(cfg.dir, name)); !os.IsNotExist(err) {
+			return uiError(uiText("error.reset.pending_update"), nil)
+		}
 	}
 	return nil
 }

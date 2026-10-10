@@ -20,9 +20,10 @@ import (
 
 func updatePayloadFixture() map[string][]byte {
 	files := map[string][]byte{}
-	for _, name := range append(updatePayloadNames(), "rootfs.ext4") {
+	for _, name := range append(updatePayloadNames(), "rootfs.ext4", "rootfs.ext4.zst") {
 		files[name] = []byte("verified " + name)
 	}
+	files["build-spec.json"] = []byte(`{"image":{"architecture":"x86_64"},"runtime":{"storage":{"expandedSizeMiB":1}}}`)
 	files["guest-manifest.json"] = []byte(fmt.Sprintf(`{"schemaVersion":1,"artifacts":[{"path":"rootfs.ext4","bytes":%d,"sha256":"%s"},{"path":"rootfs.ext4.zst","bytes":%d,"sha256":"%s"}]}`, len(files["rootfs.ext4"]), testSHA256(files["rootfs.ext4"]), len(files["rootfs.ext4.zst"]), testSHA256(files["rootfs.ext4.zst"])))
 	setFixtureSums(files)
 	return files
@@ -79,6 +80,11 @@ func TestBootFirstSignedChannelUpgradeMatrix(t *testing.T) {
 			files[stableLauncherName] = []byte("candidate launcher")
 			signFixtureUpdate(t, files, "v0.10.0", private)
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasPrefix(filepath.Base(r.URL.Path), "rootfs.") {
+					t.Errorf("update requested factory: %s %s", r.Method, r.URL.Path)
+					http.Error(w, "factory forbidden", 500)
+					return
+				}
 				data, ok := files[strings.TrimPrefix(r.URL.Path, "/")]
 				if !ok {
 					http.NotFound(w, r)
@@ -139,12 +145,17 @@ func TestBootFirstSignedChannelUpgradeMatrix(t *testing.T) {
 func TestUpdatePayloadDownloadResumesAcrossCancellation(t *testing.T) {
 	configureSetupCancellation(false)
 	files := updatePayloadFixture()
-	files["rootfs.ext4.zst"] = bytes.Repeat([]byte("large transfer"), 200000)
+	files["vmlinuz-linux"] = bytes.Repeat([]byte("large transfer"), 200000)
 	files["guest-manifest.json"] = []byte(fmt.Sprintf(`{"schemaVersion":1,"artifacts":[{"path":"rootfs.ext4","bytes":%d,"sha256":"%s"},{"path":"rootfs.ext4.zst","bytes":%d,"sha256":"%s"}]}`, len(files["rootfs.ext4"]), testSHA256(files["rootfs.ext4"]), len(files["rootfs.ext4.zst"]), testSHA256(files["rootfs.ext4.zst"])))
 	setFixtureSums(files)
 	var resumed atomic.Bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if filepath.Base(r.URL.Path) == "rootfs.ext4.zst" && r.Header.Get("Range") != "" {
+		if strings.HasPrefix(filepath.Base(r.URL.Path), "rootfs.") {
+			t.Errorf("update requested factory: %s %s", r.Method, r.URL.Path)
+			http.Error(w, "factory forbidden", 500)
+			return
+		}
+		if filepath.Base(r.URL.Path) == "vmlinuz-linux" && r.Header.Get("Range") != "" {
 			resumed.Store(true)
 		}
 		data := files[strings.TrimPrefix(r.URL.Path, "/")]
@@ -155,14 +166,14 @@ func TestUpdatePayloadDownloadResumesAcrossCancellation(t *testing.T) {
 	root := t.TempDir()
 	digest := testSHA256(files["SHA256SUMS"])
 	err := stageUpdatePayload(ctx, root, server.URL, digest, server.Client(), func(phase string, done, total int64) {
-		if phase == downloadPhaseTransfer && total == int64(len(files["rootfs.ext4.zst"])) && done > 0 {
+		if phase == downloadPhaseTransfer && total == int64(len(files["vmlinuz-linux"])) && done > 0 {
 			cancel()
 		}
 	})
 	if err == nil {
 		t.Fatal("cancelled transfer was published")
 	}
-	part := filepath.Join(root, ".payload-staging-"+digest, "rootfs.ext4.zst.part")
+	part := filepath.Join(root, ".payload-staging-"+digest, "vmlinuz-linux.part")
 	info, err := os.Stat(part)
 	if err != nil || info.Size() == 0 {
 		t.Fatalf("partial transfer lost: %v", err)
@@ -177,7 +188,7 @@ func TestUpdatePayloadDownloadResumesAcrossCancellation(t *testing.T) {
 	if err := verifyUpdatePayload(context.Background(), payload, digest); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(payload, "rootfs.ext4.zst"), []byte("bad"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(payload, "vmlinuz-linux"), []byte("bad"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := stageUpdatePayload(context.Background(), root, server.URL, digest, server.Client(), nil); err == nil {
@@ -196,7 +207,12 @@ func TestUpdateSpacePreflightAndPruning(t *testing.T) {
 	files := updatePayloadFixture()
 	var large atomic.Bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet && filepath.Base(r.URL.Path) == "rootfs.ext4.zst" {
+		if strings.HasPrefix(filepath.Base(r.URL.Path), "rootfs.") {
+			t.Errorf("update requested factory: %s %s", r.Method, r.URL.Path)
+			http.Error(w, "factory forbidden", 500)
+			return
+		}
+		if r.Method == http.MethodGet && filepath.Base(r.URL.Path) == "vmlinuz-linux" {
 			large.Store(true)
 		}
 		http.ServeContent(w, r, "artifact", time.Time{}, bytes.NewReader(files[strings.TrimPrefix(r.URL.Path, "/")]))
@@ -289,6 +305,11 @@ func TestUpdateMetadataAndHeadersAreBounded(t *testing.T) {
 	for _, phase := range []string{"headers", "body"} {
 		t.Run(phase, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasPrefix(filepath.Base(r.URL.Path), "rootfs.") {
+					t.Errorf("update requested factory: %s %s", r.Method, r.URL.Path)
+					http.Error(w, "factory forbidden", 500)
+					return
+				}
 				if phase == "body" {
 					w.WriteHeader(200)
 					w.(http.Flusher).Flush()
@@ -323,7 +344,15 @@ func TestExplicitRuntimePinKeepsItsOwnTrustRoot(t *testing.T) {
 	data := []byte(testSHA256([]byte("custom runtime")) + "  " + runtimeZip + "\n")
 	sum := testSHA256(data)
 	var requested atomic.Bool
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { requested.Store(true); w.Write(data) }))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(filepath.Base(r.URL.Path), "rootfs.") {
+			t.Errorf("update requested factory: %s %s", r.Method, r.URL.Path)
+			http.Error(w, "factory forbidden", 500)
+			return
+		}
+		requested.Store(true)
+		w.Write(data)
+	}))
 	defer server.Close()
 	cfg := &config{localPayload: true, localPayloadSHA256: testSHA256([]byte("different guest update")), payloadDir: t.TempDir()}
 	sums, err := releaseSumsForConfig(cfg, server.Client(), server.URL, sum)

@@ -44,6 +44,13 @@ func readGuestArtifactSizes(path string, sums map[string]string) (map[string]int
 	if len(data) > maxGuestManifestBytes {
 		return nil, fmt.Errorf("guest artifact manifest is too large")
 	}
+	return parseGuestArtifactSizes(data, sums)
+}
+
+func parseGuestArtifactSizes(data []byte, sums map[string]string) (map[string]int64, error) {
+	if len(data) > maxGuestManifestBytes {
+		return nil, fmt.Errorf("guest artifact manifest is too large")
+	}
 	var manifest guestArtifactSizes
 	if err := json.Unmarshal(data, &manifest); err != nil {
 		return nil, fmt.Errorf("parsing guest artifact manifest: %w", err)

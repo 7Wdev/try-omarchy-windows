@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,24 +19,25 @@ func preparePortableRecoveryPayload(dir, sourcePayload string) ([]string, error)
 		return nil, fmt.Errorf("retained runtime receipt is missing")
 	}
 	payload := filepath.Join(filepath.Dir(dir), "payload")
-	for _, pin := range []string{guestPin, runtimePin} {
-		if err := validateMovePath(sourcePayload); err != nil {
+	for index, pin := range []string{guestPin, runtimePin} {
+		var data []byte
+		component := "guest"
+		if index == 1 {
+			component = "runtime"
+		}
+		source := filepath.Join(dir, component, "SHA256SUMS")
+		if _, err := os.Lstat(source); os.IsNotExist(err) {
+			if normalizedSHA256(pin) == normalizedSHA256(defaultSumsSHA256) {
+				data = defaultSums
+			} else {
+				source = filepath.Join(portablePayloadDirectory(sourcePayload, pin), "SHA256SUMS")
+			}
+		} else if err != nil {
 			return nil, err
 		}
-		var data []byte
-		if normalizedSHA256(pin) == normalizedSHA256(defaultSumsSHA256) {
-			data = defaultSums
-		} else {
-			source := filepath.Join(portablePayloadDirectory(sourcePayload, pin), "SHA256SUMS")
-			if err := validateMovePath(source); err != nil {
-				return nil, err
-			}
-			file, err := os.Open(source)
-			if err != nil {
-				return nil, err
-			}
-			data, err = io.ReadAll(io.LimitReader(file, maxSumsBytes+1))
-			file.Close()
+		if data == nil {
+			var err error
+			data, err = readVerifiedManifestData(source, pin)
 			if err != nil {
 				return nil, err
 			}

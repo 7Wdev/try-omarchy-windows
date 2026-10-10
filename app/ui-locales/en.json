@@ -1,8 +1,10 @@
 {
+  "error.factory.unavailable": "The factory image for {version} is unavailable. Connect to the internet and retry Start fresh, or restore the matching factory image.",
   "tray.menu.restart_update": "Restart to update",
   "update.notice.title": "Try Omarchy update",
   "update.notice.ready": "{version} is ready. Choose Restart to update, or it will be applied the next time you start Omarchy.",
   "update.notice.space": "Update download paused. Free some space and try again on your next launch.\n\n{error}",
+  "update.notice.download_failed": "Try Omarchy could not download the Omarchy system update. Check your connection to github.com; it will try again the next time Omarchy starts.",
   "update.restart.confirm": "Shut down Omarchy and restart to apply the verified update? Save your work first.",
   "about.title": "About Try Omarchy",
   "about.body": "Try Omarchy {version}\n\nRun the Omarchy desktop on Windows. Your files persist between sessions.\n\nOriginally created by @martiano. Maintained under Omacom.\n\nWebsite: {website}\nSource, help and issue reporting: {source}\n\nOpen source under the MIT License. Built with Omarchy, Arch Linux and QEMU.\n\nLauncher updates and Linux updates are separate. For Linux packages and Omarchy, use Update > Omarchy inside the desktop.",
@@ -680,5 +682,10 @@
   "tray.power.snapshot": "Choose Resume Omarchy from the tray menu to try again. Diagnostics saved to:\n{path}",
   "tray.power.snapshot_failed": "Choose Resume Omarchy from the tray menu to try again. Could not save automatic diagnostics: {error}",
   "shutdown.windows_reason": "Shutting down Omarchy safely",
-  "shutdown.unclean_recovery": "Omarchy did not shut down cleanly last time, for example because Windows restarted before it finished. Open the snapshot recovery tools before starting Omarchy? Choose No to start normally."
+  "shutdown.unclean_recovery": "Omarchy did not shut down cleanly last time, for example because Windows restarted before it finished. Open the snapshot recovery tools before starting Omarchy? Choose No to start normally.",
+  "tray.menu.install_update": "Install update from downloaded files...",
+  "update.folder.instructions": "Download these files for {version} into one folder using your browser:\n\n{files}\n\nRelease page: {url}\n\nThis installs only the system and runtime files pinned to this launcher. Choose OK to select the folder. After verification, use Restart to update.",
+  "update.folder.choose": "Choose the folder containing the release files",
+  "update.folder.failed": "Could not install the downloaded update.\n\n{error}",
+  "update.folder.separate_releases": "This launcher uses separate system and runtime releases. Folder installation is not supported for this build."
 }

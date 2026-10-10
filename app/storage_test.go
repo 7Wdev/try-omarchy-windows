@@ -101,6 +101,7 @@ func TestCapacityGrowthPreservesDataAndNeverShrinks(t *testing.T) {
 	if err := os.WriteFile(disk, content, 0600); err != nil {
 		t.Fatal(err)
 	}
+	installFactoryFixture(t, guest, []byte("factory"))
 	cfg := &config{dir: root, guestDir: guest, vmDir: vm, disk: disk, diskGiB: 24}
 	if err := prepareDisk(cfg, 1); err != nil {
 		t.Fatal(err)

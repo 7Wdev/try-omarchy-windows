@@ -33,6 +33,13 @@ func releaseSumsForConfig(cfg *config, client *http.Client, release, expectedSHA
 // limits as the online path. A manifest travelling beside the payload is not
 // trusted merely because both files are on the same USB.
 func readPortableManifest(path, expectedSHA256 string) (map[string]string, error) {
+	data, err := readVerifiedManifestData(path, expectedSHA256)
+	if err != nil {
+		return nil, err
+	}
+	return parseVerifiedSums(data, expectedSHA256)
+}
+func readVerifiedManifestData(path, expectedSHA256 string) ([]byte, error) {
 	if err := checkSetupCancelled(); err != nil {
 		return nil, err
 	}
@@ -66,7 +73,10 @@ func readPortableManifest(path, expectedSHA256 string) (map[string]string, error
 		after.ModTime().UnixNano() != before.ModTime().UnixNano() {
 		return nil, fmt.Errorf("portable SHA256SUMS changed while being read")
 	}
-	return parseVerifiedSums(data, expectedSHA256)
+	if _, err := parseVerifiedSums(data, expectedSHA256); err != nil {
+		return nil, err
+	}
+	return data, nil
 }
 
 // copyPortableArtifact verifies while copying into a sibling staging file,
