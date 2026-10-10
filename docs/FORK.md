@@ -19,6 +19,13 @@ GitHub Actions must be enabled. GitHub can suspend schedules after repository
 inactivity, so check the Actions page when returning after a long break.
 Graphics changes still require physical acceptance even when CI passes.
 
+GitHub's built-in Actions token cannot publish upstream changes to workflow
+files. Such updates stop the sync run before publication, preserving `master`.
+Apply those merges with authenticated Git credentials permitted to update
+workflows, then run the same validation before pushing. The 2026-10-09 run
+stopped for this reason; all 63 missing commits were merged manually on
+2026-10-10 without resetting fork or GPU development history.
+
 For a local merge (the script does not push):
 
 ```powershell
