@@ -56,6 +56,9 @@ def main():
               ('--hwqueue-eof-test','--cpu-eof-test','--cpu-store-test','--cpu-span-eof-test',
                '--sync-eof-test','--sync-no-max-eof-test','--reservation-eof-test','--gpu-state-eof-test',
                '--hwqueue-no-broadcast-eof-test')]
+    cases += [(['--stdio','--driver-async-submit'], 'Asynchronous submission requires')]
+    for missing in ('--driver-submit','--driver-retirement'):
+        cases.append(([o for o in no_broadcast if o not in (missing,'--hwqueue-no-broadcast-eof-test')] + ['--driver-async-submit'], 'Asynchronous submission requires'))
     for options, message in cases:
         result = subprocess.run([str(args.bridge.resolve()), *options], capture_output=True, text=True,
                                 timeout=5, creationflags=subprocess.CREATE_NO_WINDOW)

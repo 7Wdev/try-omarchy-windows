@@ -20,8 +20,9 @@ incorrect readback results and requires matching native resource/signal evidence
 The next [graphics queue control](../../docs/LIVE-GRAPHICS-QUEUE-CONTROL.md)
 forwards the runtime's documented `NoBroadcastSignal` flag unchanged. Two owned
 VM exit controls pass its native lifecycle. The explicit `clear` workload and
-pixel verifier are implemented, but graphics startup still exceeds the current
-diagnostic capacity and rendering remains unverified. Initialization and copy
+pixel verifier are implemented. The expanded asynchronous profile now creates a
+DIRECT queue and render/readback resources, but its hardware-queue signal
+operation remains unsupported and rendering is unverified. Initialization and copy
 controls cannot satisfy the clear workload verifier.
 
 The optional `--hwqueue-no-broadcast-wait-eof-test` stops the clear workload
@@ -36,11 +37,13 @@ subranges and verified in-process context priority. Those baseline GPU mappings 
 The [CPU aperture](../../docs/LIVE-CPU-APERTURE-CAPACITY.md) defaults to 16 slots
 and supports 32/64 slots. The optional 128-slot graphics startup profile
 negotiates a 32 MiB live vendor CPU-view budget and a separate 64 MiB GPU-map
-budget; other profiles retain 16 MiB CPU and 32 MiB GPU budgets.
+budget and a 128-allocation live-object limit; other profiles retain 16 MiB CPU,
+32 MiB GPU and 96 allocation objects. Per-request allocation lists remain bounded
+to 96 entries.
 It also selects 128 read-only fence pages; other profiles retain 64.
 Its rendering acceptance is pending. [Contiguous views](../../docs/LIVE-CPU-ALLOCATION-SPANS.md)
-span adjacent slots without a QEMU rebuild. Native pools allow 96 allocations,
-96 independent synchronization objects and 256 aggregate wire objects; the
+span adjacent slots without a QEMU rebuild. Native pools allow 96 independent
+synchronization objects and 256 aggregate wire objects; the
 default read-only fence BAR has 64 pages. Earlier hardware acceptance includes repeat, owned
 VM exit, old-guest, capacity-rejection and restored CPU write controls.
 
@@ -113,7 +116,12 @@ adds `--driver-syncs`, typed monitored-fence/mutex ownership, direct fence reads
 acknowledged destruction and native cleanup after abrupt guest exit.
 The separate `--driver-submit` route validates ownership, residency and a
 retained CPU command mapping before native submission. It synchronously waits
-for retirement as a diagnostic; production queues must preserve asynchronous
+for retirement as a diagnostic. The optional `--driver-async-submit` selects a
+separate negotiated queue operation, returning after KMT acceptance and recording
+actual hardware retirement independently. The verifier requires every accepted
+command to retire and complete native cleanup. This removes a demonstrated
+startup dependency stall; graphics rendering remains unverified. Production queues
+must also preserve asynchronous
 execution and overlap. General allocation layouts, broader synchronization operations,
 scanout and desktop integration remain unfinished.
 The separate `--driver-retirement` option uses documented VidMm destruction,

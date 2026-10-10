@@ -25,6 +25,11 @@ constexpr std::uint32_t VendorAllocationCapability = 256;
 constexpr std::uint32_t VendorResourceCapability = 524288;
 constexpr std::uint32_t MaxVendorPrivateBytes = 4000;
 constexpr std::size_t MaxVendorAllocations = 96;
+constexpr std::size_t ExpandedVendorAllocations = 128;
+constexpr std::uint32_t ExpandedVendorObjectsCapability = 67108864;
+inline std::size_t vendorAllocationObjectLimit(std::uint32_t capabilities) {
+    return capabilities & ExpandedVendorObjectsCapability ? ExpandedVendorAllocations : MaxVendorAllocations;
+}
 constexpr std::size_t DefaultVendorCpuSlots = 16;
 constexpr std::size_t MaxVendorCpuSlots = 128;
 inline bool validVendorCpuSlots(std::size_t slots) {
@@ -65,6 +70,7 @@ inline bool validSync(SyncDesc d) {
            (d.type == 5 && (d.flags == 0 || d.flags == NoSignalMaxValueOnTdrSyncFlag || d.flags == NoGpuAccessSyncFlag) && d.affinity <= 1));
 }
 constexpr std::size_t MaxHwQueues = 8;
+constexpr std::uint32_t AsyncHwSubmitCapability = 33554432;
 constexpr std::uint32_t NoBroadcastSignalHwQueueCapability = 2097152;
 constexpr std::uint32_t NoBroadcastSignalHwQueueFlag = 2;
 constexpr std::uint32_t NoBroadcastWaitHwQueueCapability = 16777216;
@@ -253,7 +259,7 @@ enum class Op : std::uint32_t {
     CreateVendorAllocation = 0x2050, DestroyVendorAllocations, MapVendorAllocation, MakeVendorResident,
     LockVendorAllocation, UnlockVendorAllocation, TranslateVendorAllocation,
     CreateVendorResourceAllocation, DestroyVendorResource,
-    CreateHwQueue = 0x2060, DestroyHwQueue, SubmitHwQueue,
+    CreateHwQueue = 0x2060, DestroyHwQueue, SubmitHwQueue, QueueHwCommand,
     CreateSync = 0x2070, DestroySync, SignalContextSync,
     ReserveGpuAddress = 0x2080, FreeGpuReservation, MapGpuState
 };
@@ -279,6 +285,11 @@ static_assert(sizeof(GuestRange) == 16, "fixed guest range layout");
 struct CopyRange { std::uint32_t source; std::uint32_t sourceOffset; std::uint32_t destinationOffset; std::uint32_t size; };
 static_assert(sizeof(CopyRange) == 16, "fixed GPU copy layout");
 struct Result { std::int32_t ntstatus; std::uint32_t nativeHandle; std::uint64_t value; };
+inline bool validHwSubmitReply(Result result, std::uint64_t target, std::uint32_t capabilities) {
+    return target && target != UINT64_MAX && !result.nativeHandle && result.ntstatus <= 0 &&
+           (result.ntstatus < 0 ? result.value == 0 : result.value != UINT64_MAX &&
+            ((capabilities & AsyncHwSubmitCapability) || result.value >= target));
+}
 struct GpuVaResult { Result map; std::uint64_t fence; };
 struct ResidentResult { Result residency; ResidentReply output; };
 struct VendorCpuResult { Result lock; VendorCpuReply output; };
@@ -347,6 +358,9 @@ public:
         return {static_cast<std::int32_t>(0xc00000bbu), 0, 0};
     }
     virtual Result submitHwQueue(std::uint32_t, HwSubmitDesc, const std::vector<std::uint8_t>&) {
+        return {static_cast<std::int32_t>(0xc00000bbu), 0, 0};
+    }
+    virtual Result queueHwCommand(std::uint32_t, HwSubmitDesc, const std::vector<std::uint8_t>&) {
         return {static_cast<std::int32_t>(0xc00000bbu), 0, 0};
     }
     virtual Result reserveGpuAddress(std::uint32_t, GpuReservationDesc) {
@@ -636,9 +650,11 @@ public:
                 throw;
             }
         }
-        if (op == Op::SubmitHwQueue) {
+        if (op == Op::SubmitHwQueue || op == Op::QueueHwCommand) {
             if (!negotiated) return reply(h, -71);
             if (!(driver.capabilities().flags & HwSubmitCapability)) return reply(h, -95);
+            const bool asynchronous = op == Op::QueueHwCommand;
+            if (asynchronous && !(driver.capabilities().flags & AsyncHwSubmitCapability)) return reply(h, -95);
             const auto queue = objects.find(h.handle);
             if (queue == objects.end() || queue->second.kind != Kind::HwQueue) return reply(h, -9);
             if (packet.size() < sizeof h + sizeof(HwSubmitDesc)) return reply(h, -22);
@@ -662,10 +678,9 @@ public:
             if (submissionAttempts >= MaxHwSubmissions) return reply(h, -24);
             ++submissionAttempts;
             const std::vector<std::uint8_t> data(packet.begin() + sizeof h + sizeof desc, packet.end());
-            const auto native = driver.submitHwQueue(queue->second.nativeHandle, desc, data);
-            if (native.nativeHandle || native.ntstatus > 0 ||
-                (native.ntstatus == 0 && (native.value < desc.fence || native.value == UINT64_MAX)) ||
-                (native.ntstatus < 0 && native.value)) return reply(h, -5);
+            const auto native = asynchronous ? driver.queueHwCommand(queue->second.nativeHandle, desc, data) :
+                                              driver.submitHwQueue(queue->second.nativeHandle, desc, data);
+            if (!validHwSubmitReply(native, desc.fence, asynchronous ? AsyncHwSubmitCapability : 0)) return reply(h, -5);
             if (native.ntstatus == 0) queue->second.submittedFence = desc.fence;
             return reply(h, 0, h.handle, &native);
         }
@@ -792,7 +807,7 @@ public:
             VendorAllocationDesc desc{}; std::memcpy(&desc, packet.data() + sizeof h, sizeof desc);
             if (!validVendorAllocation(desc) || packet.size() != sizeof h + sizeof desc + desc.privateBytes) return reply(h, -22);
             const auto count = std::count_if(objects.begin(), objects.end(), [](const auto& item) { return item.second.kind == Kind::VendorAllocation; });
-            if (objects.size() > MaxObjects - (withResource ? 2 : 1) || nextId >= UINT32_MAX - (withResource ? 1 : 0) || static_cast<std::size_t>(count) >= MaxVendorAllocations) return reply(h, -24);
+            if (objects.size() > MaxObjects - (withResource ? 2 : 1) || nextId >= UINT32_MAX - (withResource ? 1 : 0) || static_cast<std::size_t>(count) >= vendorAllocationObjectLimit(driver.capabilities().flags)) return reply(h, -24);
             std::vector<std::uint8_t> data(packet.begin() + sizeof h + sizeof desc, packet.end());
             const auto created = withResource ? driver.createVendorResourceAllocation(device->second.nativeHandle, desc, data) :
                                                VendorResourceResult{driver.createVendorAllocation(device->second.nativeHandle, desc, data), 0};

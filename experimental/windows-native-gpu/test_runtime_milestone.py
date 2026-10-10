@@ -1,6 +1,6 @@
 """Reject false D3D12 initialization milestone reports; no GPU is used."""
 import unittest
-from test_owned_runtime_qemu import initialization_complete, copy_workload_complete, clear_workload_complete, expected_clear_pixels, no_broadcast_queue_eof_complete
+from test_owned_runtime_qemu import initialization_complete, copy_workload_complete, clear_workload_complete, expected_clear_pixels, no_broadcast_queue_eof_complete, async_submissions_complete
 
 
 class MilestoneTests(unittest.TestCase):
@@ -160,6 +160,40 @@ class NoBroadcastQueueEofTests(unittest.TestCase):
         self.assertFalse(clear_workload_complete(log))
         self.assertFalse(copy_workload_complete(log))
         self.assertFalse(initialization_complete(log, 0, self.control, cleanup))
+
+
+class AsyncSubmissionTests(unittest.TestCase):
+    def setUp(self):
+        self.queued = [{'bytes':4096,'privateBytes':280,'target':5,'observedAtReturn':0},
+                       {'bytes':8192,'privateBytes':1880,'target':2,'observedAtReturn':1}]
+        self.accepted = [dict(index=i,bytes=q['bytes'],privateBytes=q['privateBytes'],target=q['target'],observed=q['observedAtReturn'])
+                         for i,q in enumerate(self.queued,1)]
+        self.retired = [dict(a,observed=a['target']) for a in reversed(self.accepted)]
+        self.cleanup = {'asynchronousSubmissionOptIn':True,'acceptedAsyncSubmissions':2,'completedNativeSubmissions':2,
+                        'pendingNativeSubmissions':0,'peakPendingNativeSubmissions':2}
+
+    def test_independent_fences_can_complete_out_of_order(self):
+        self.assertTrue(async_submissions_complete(self.queued,self.accepted,self.retired,self.cleanup))
+
+    def test_enqueue_is_not_completion(self):
+        for receipts in ([],self.retired[:1],[self.retired[0]]*2):
+            self.assertFalse(async_submissions_complete(self.queued,self.accepted,receipts,self.cleanup))
+        for key in self.cleanup:
+            cleanup = dict(self.cleanup); del cleanup[key]
+            self.assertFalse(async_submissions_complete(self.queued,self.accepted,self.retired,cleanup))
+        for key,value in (('pendingNativeSubmissions',1),('completedNativeSubmissions',1),('acceptedAsyncSubmissions',3),
+                          ('asynchronousSubmissionOptIn',False),('peakPendingNativeSubmissions',0)):
+            cleanup = dict(self.cleanup); cleanup[key] = value
+            self.assertFalse(async_submissions_complete(self.queued,self.accepted,self.retired,cleanup))
+
+    def test_wrong_stale_or_device_lost_receipts_rejected(self):
+        for key,value in (('bytes',4096),('privateBytes',280),('target',3),('observed',0),('observed',(1<<64)-1)):
+            receipts = [dict(r) for r in self.retired]; receipts[0][key] = value
+            self.assertFalse(async_submissions_complete(self.queued,self.accepted,receipts,self.cleanup))
+        self.assertFalse(async_submissions_complete(self.queued,list(reversed(self.accepted)),self.retired,self.cleanup))
+        receipts = [dict(a) for a in self.accepted]; receipts[0]['observed'] = 1
+        self.assertFalse(async_submissions_complete(self.queued,receipts,self.retired,self.cleanup))
+        self.assertFalse(async_submissions_complete([],[],[],{}))
 
 
 if __name__ == '__main__':

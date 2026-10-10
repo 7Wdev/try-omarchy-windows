@@ -150,6 +150,28 @@ def no_broadcast_queue_eof_complete(log, control, cleanup, target_flags=2):
             control.get('allocationSlotUnmapAcknowledgements') == slots)
 
 
+def async_submissions_complete(queued, accepted, retired, cleanup):
+    """Enqueue receipts alone never prove completion; correlate every fence."""
+    count = len(queued)
+    if not 0 < count <= 16 or len(accepted) != count or len(retired) != count:
+        return False
+    if (cleanup.get('asynchronousSubmissionOptIn') is not True or
+        cleanup.get('acceptedAsyncSubmissions') != count or cleanup.get('completedNativeSubmissions') != count or
+        cleanup.get('pendingNativeSubmissions') != 0 or not 0 < cleanup.get('peakPendingNativeSubmissions',0) <= count):
+        return False
+    if [a.get('index') for a in accepted] != list(range(1,count+1)) or sorted(r.get('index',0) for r in retired) != list(range(1,count+1)):
+        return False
+    by_index = {r['index']:r for r in retired}
+    for index,(q,a) in enumerate(zip(queued,accepted),1):
+        r = by_index[index]
+        if (any(q.get(k) != a.get(k) or q.get(k) != r.get(k) for k in ('bytes','privateBytes','target')) or
+            q.get('observedAtReturn') != a.get('observed') or
+            not 0 <= q.get('observedAtReturn',-1) < (1<<64)-1 or
+            not 0 < q.get('target',0) <= r.get('observed',0) < (1<<64)-1):
+            return False
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('qemu', 'firmware', 'kernel', 'initramfs', 'bridge', 'report'):
@@ -187,6 +209,7 @@ def main():
     parser.add_argument('--driver-submit', action='store_true')
     parser.add_argument('--minimum-submissions', type=int, default=0)
     parser.add_argument('--driver-retirement', action='store_true')
+    parser.add_argument('--driver-async-submit', action='store_true', help='Return after native queue acceptance; require independently correlated retirement for every command')
     parser.add_argument('--minimum-retirements-with-queues', type=int, default=0)
     parser.add_argument('--expected-allocation-limit', type=int, default=0, help='Require the observed diagnostic allocation-count boundary')
     parser.add_argument('--cpu-store-test', action='store_true', help='Explicit first/last-word diagnostic stores, checked and restored by Windows')
@@ -261,6 +284,8 @@ def main():
             args.driver_submit and (not args.driver_hwqueues or not args.driver_syncs or not args.driver_cpu or not args.driver_residency or
                                     args.cpu_store_test or early_guest_eof)):
         parser.error('Submission requires queues, syncs, CPU mappings and residency in a separate diagnostic run')
+    if args.driver_async_submit and (not args.driver_submit or not args.driver_retirement):
+        parser.error('Asynchronous submission requires submission and retirement')
     if sys.platform != 'win32':
         parser.error('Run on the Windows NVIDIA host')
     for path in (args.qemu, args.kernel, args.initramfs, args.bridge):
@@ -290,6 +315,7 @@ def main():
                              (['--driver-gpu-state'] if args.driver_gpu_state else []) +
                              (['--driver-submit'] if args.driver_submit else []) +
                              (['--driver-retirement'] if args.driver_retirement else []) +
+                             (['--driver-async-submit'] if args.driver_async_submit else []) +
                              (['--cpu-store-test'] if args.cpu_store_test else []) + (['--cpu-eof-test'] if args.cpu_eof_test else []) +
                              (['--cpu-span-eof-test'] if args.cpu_span_eof_test else []) +
                              (['--hwqueue-eof-test'] if args.hwqueue_eof_test else []) +
@@ -415,6 +441,17 @@ def main():
         submissions = [{'bytes': int(b), 'privateBytes': int(p), 'target': int(t), 'observed': int(o)} for b, p, t, o in
                        re.findall(r'nativeCommandSubmitted=true bytes=(\d+) privateBytes=(\d+) target=(\d+) observed=(\d+)', log)]
         submission_preflight = [json.loads(line) for line in errors if line.startswith('{') and 'nativeSubmissionPreflight' in line]
+        queued_submissions = [{'bytes':int(b),'privateBytes':int(p),'target':int(t),'observedAtReturn':int(o)} for b,p,t,o in
+                              re.findall(r'nativeCommandQueued=true bytes=(\d+) privateBytes=(\d+) target=(\d+) observedAtReturn=(\d+)',log)]
+        async_accepted = [json.loads(line) for line in errors if line.startswith('{') and 'nativeAsyncSubmissionAccepted' in line]
+        async_retired = [json.loads(line) for line in errors if line.startswith('{') and 'nativeAsyncSubmissionRetired' in line]
+        if args.driver_async_submit:
+            async_verified = not submissions and not command_retirements and async_submissions_complete(queued_submissions,async_accepted,async_retired,cleanup)
+            by_index = {r['index']:r for r in async_retired}
+            submissions = [{'bytes':q['bytes'],'privateBytes':q['privateBytes'],'target':q['target'],
+                            'observed':by_index.get(i,{}).get('observed',0)} for i,q in enumerate(queued_submissions,1)]
+        else:
+            async_verified = not queued_submissions and not async_accepted and not async_retired and not cleanup.get('asynchronousSubmissionOptIn',False)
         reservations = [int(n) for n in re.findall(r'nativeGpuReserved=true bytes=(\d+)', log)]
         reservations_freed = [int(n) for n in re.findall(r'nativeGpuReservationFreed=true bytes=(\d+)', log)]
         accepted_stage_marker = ('nativeGpuStateMapped=true' if args.driver_gpu_state else
@@ -500,15 +537,15 @@ def main():
                         len(sync_destroyed) + cleanup.get('syncObjectsReleasedAfterVmExit', 0) == len(sync_types) and
                         (guest_eof or sorted(sync_destroyed) == sorted(sync_types)))
         if args.driver_submit:
-            accepted = (accepted and len(submissions) >= args.minimum_submissions and 52 not in unsupported and
+            accepted = (accepted and async_verified and len(submissions) >= args.minimum_submissions and 52 not in unsupported and
                         cleanup.get('commandSubmissionOptIn') is True and cleanup.get('completedNativeSubmissions') == len(submissions) and
                         cleanup.get('nativeSubmissionAttempts') == len(submissions) and cleanup.get('failedNativeSubmissions') == 0 and
                         cleanup.get('nativeSubmissionTimeouts') == 0 and cleanup.get('submittedCommandBytes') == sum(s['bytes'] for s in submissions) and
                         len(submission_preflight) == len(submissions) and
                         all(p['initialFence'] < p['targetFence'] and p['targetFence'] == s['target'] for p, s in zip(submission_preflight, submissions)) and
-                        len(command_retirements) == len(submissions) and
+                        (args.driver_async_submit or (len(command_retirements) == len(submissions) and
                         all(s['observed'] >= s['target'] and r['observed'] >= r['target'] and s['target'] == r['target']
-                            for s, r in zip(submissions, command_retirements)))
+                            for s, r in zip(submissions, command_retirements)))))
         if args.driver_reservation:
             accepted = (accepted and len(reservations) >= args.minimum_gpu_reservations and 8 not in unsupported and
                         cleanup.get('completedGpuReservations') == len(reservations) and cleanup.get('freedGpuReservations') == len(reservations) and
@@ -705,6 +742,8 @@ def main():
                   'nativeSynchronizationTypesDestroyedByGuest': sync_destroyed, 'directMonitoredFences': monitored_fences,
                   'minimumMonitoredFencesRequired': args.minimum_monitored_fences, 'minimumSynchronizationMutexesRequired': args.minimum_sync_mutexes,
                   'commandSubmissionOptIn': args.driver_submit, 'nativeCommandSubmissions': submissions,
+                  'asynchronousSubmissionOptIn': args.driver_async_submit, 'guestCommandEnqueues': queued_submissions,
+                  'nativeAsyncSubmissionAcceptances': async_accepted, 'nativeAsyncSubmissionRetirements': async_retired,
                   'nativeCommandPreflightChecks': submission_preflight,
                   'minimumSubmissionsRequired': args.minimum_submissions, 'directCommandRetirementChecks': command_retirements,
                   'vendorGpuVaOptIn': args.driver_gpuva, 'nativeVendorGpuVaMappings': gpuva,

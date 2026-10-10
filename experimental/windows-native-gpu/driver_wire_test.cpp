@@ -21,6 +21,7 @@ struct Fake : Driver {
     bool guestPagingEnabled = false;
     int badPagingReply = 0;
     bool vendorEnabled = false;
+    bool expandedVendorObjectsEnabled = false;
     int badVendorDestroyReply = 0;
     bool gpuVaEnabled = false;
     bool residencyEnabled = false;
@@ -47,6 +48,7 @@ struct Fake : Driver {
     SyncDesc lastSyncDesc{};
     std::map<std::uint32_t, std::uint32_t> syncParents;
     bool submitEnabled = false;
+    bool asyncSubmitEnabled = false;
     int badSubmitReply = 0;
     unsigned submitCalls = 0;
     unsigned cpuLocks = 0, cpuUnlocks = 0;
@@ -69,6 +71,7 @@ struct Fake : Driver {
         return {1, 31u | (contextsEnabled ? ContextCapability : 0u) | (queriesEnabled ? QueryCapability : 0u) |
                 (guestPagingEnabled ? GuestPagingCapability : 0u) | (vendorEnabled ? VendorAllocationCapability : 0u) |
                 (resourceEnabled ? VendorResourceCapability : 0u) |
+                (expandedVendorObjectsEnabled ? ExpandedVendorObjectsCapability : 0u) |
                 (contextSignalEnabled ? ContextSignalCapability : 0u) |
                 (gpuVaEnabled ? VendorGpuVaCapability : 0u) | (residencyEnabled ? VendorResidencyCapability : 0u) |
                 (cpuEnabled ? VendorCpuCapability : 0u) | (translationEnabled ? VendorTranslationCapability : 0u) |
@@ -76,6 +79,7 @@ struct Fake : Driver {
                 (noBroadcastHwQueuesEnabled ? NoBroadcastSignalHwQueueCapability : 0u) |
                 (noBroadcastWaitHwQueuesEnabled ? NoBroadcastWaitHwQueueCapability : 0u) |
                 (submitEnabled ? HwSubmitCapability : 0u) | (retirementEnabled ? VendorRetirementCapability : 0u) |
+                (asyncSubmitEnabled ? AsyncHwSubmitCapability : 0u) |
                 (reservationEnabled ? GpuReservationCapability : 0u) | (gpuStateEnabled ? GpuStateCapability : 0u), 0x10de, 123};
     }
     GpuVaResult mapGpuState(std::uint32_t reservation, std::uint32_t queue, GpuVaDesc desc) override {
@@ -194,6 +198,9 @@ struct Fake : Driver {
         return {badSubmitReply == 1 ? 259 : 0, badSubmitReply == 2 ? 777u : 0u,
                 badSubmitReply == 3 ? desc.fence - 1 : badSubmitReply == 4 ? UINT64_MAX : desc.fence};
     }
+    Result queueHwCommand(std::uint32_t queue, HwSubmitDesc desc, const std::vector<std::uint8_t>& data) override {
+        require(asyncSubmitEnabled); return submitHwQueue(queue,desc,data);
+    }
     SyncResult createSync(std::uint32_t device, SyncDesc desc) override {
         require(device > 500 && validSync(desc)); ++calls; lastSyncDesc = desc;
         if (fail) return {{-123, 0, 0}, {badSyncReply == 10 ? 1ull : 0ull, 0}};
@@ -268,6 +275,19 @@ struct Fake : Driver {
     }
 };
 int main() {
+    for (const auto cap : {0u,AsyncHwSubmitCapability}) {
+        require(validHwSubmitReply({0,0,5},5,cap));
+        require(validHwSubmitReply({0,0,6},5,cap));
+        require(validHwSubmitReply({-123,0,0},5,cap));
+        require(!validHwSubmitReply({-123,0,1},5,cap));
+        require(!validHwSubmitReply({259,0,5},5,cap));
+        require(!validHwSubmitReply({0,99,5},5,cap));
+        require(!validHwSubmitReply({0,0,UINT64_MAX},5,cap));
+        require(!validHwSubmitReply({0,0,5},0,cap));
+        require(!validHwSubmitReply({0,0,5},UINT64_MAX,cap));
+        require(validHwSubmitReply({0,0,0},5,cap) == (cap != 0));
+        require(validHwSubmitReply({0,0,4},5,cap) == (cap != 0));
+    }
     {
         GpuStateRanges ranges; GpuStateRanges::Plan plan;
         const auto page = 4096ull, base = 67108864ull;
@@ -907,7 +927,23 @@ int main() {
         vendor.fail = false;
         require(header(s.dispatch(release(device, {first, second}))).status == 0 && vendor.vendorOwners.empty());
         require(header(s.dispatch(release(device, {first}))).status == -9);
-        for (std::size_t n = 0; n < MaxVendorAllocations; ++n) require(header(s.dispatch(create(device))).handle != 0);
+        std::vector<std::uint32_t> boundedObjects;
+        for (std::size_t n = 0; n < MaxVendorAllocations; ++n) {
+            const auto id = header(s.dispatch(create(device))).handle; require(id != 0); boundedObjects.push_back(id);
+        }
+        before = vendor.calls;
+        require(header(s.dispatch(create(device))).status == -24 && vendor.calls == before);
+        vendor.expandedVendorObjectsEnabled = true;
+        for (std::size_t n = MaxVendorAllocations; n < ExpandedVendorAllocations; ++n) {
+            const auto id = header(s.dispatch(create(device))).handle; require(id != 0); boundedObjects.push_back(id);
+        }
+        before = vendor.calls;
+        require(header(s.dispatch(create(device))).status == -24 && vendor.calls == before);
+        vendor.expandedVendorObjectsEnabled = false;
+        require(header(s.dispatch(create(device))).status == -24 && vendor.calls == before);
+        for (std::size_t n = 0; n <= ExpandedVendorAllocations - MaxVendorAllocations; ++n)
+            require(header(s.dispatch(release(device,{boundedObjects[n]}))).status == 0);
+        require(header(s.dispatch(create(device))).handle != 0);
         before = vendor.calls;
         require(header(s.dispatch(create(device))).status == -24 && vendor.calls == before);
     }
@@ -1472,6 +1508,9 @@ int main() {
         auto submitPacket = [&](std::uint32_t queue, HwSubmitDesc desc) {
             auto p = request(Op::SubmitHwQueue, queue, desc); p.insert(p.end(), {37, 38, 39, 40}); return p;
         };
+        auto queuedPacket = [&](std::uint32_t queue, HwSubmitDesc desc) {
+            auto p = request(Op::QueueHwCommand, queue, desc); p.insert(p.end(), {37, 38, 39, 40}); return p;
+        };
         auto submitBefore = submission.calls;
         submission.submitEnabled = false;
         require(header(s.dispatch(submitPacket(submitQueue, validSubmit))).status == -95);
@@ -1520,12 +1559,33 @@ int main() {
             require(header(s.dispatch(submitPacket(submitQueue, validSubmit))).status == -5);
         }
         submission.badSubmitReply = 0;
-        submitOut = s.dispatch(submitPacket(submitQueue, validSubmit));
+        // A negotiated queue submission may return before its GPU fence.
+        // Reject device loss and malformed status/handle even in that mode.
+        submission.asyncSubmitEnabled = true;
+        for (int malformedSubmit : {1,2,4}) {
+            submission.badSubmitReply = malformedSubmit;
+            require(header(s.dispatch(queuedPacket(submitQueue, validSubmit))).status == -5);
+        }
+        submission.badSubmitReply = 3;
+        // Advertising async does not change the legacy opcode's contract.
+        require(header(s.dispatch(submitPacket(submitQueue, validSubmit))).status == -5);
+        submitOut = s.dispatch(queuedPacket(submitQueue, validSubmit));
         std::memcpy(&submitNt, submitOut.data() + sizeof(Header), sizeof submitNt);
-        require(!header(submitOut).status && submitNt.ntstatus == 0 && submitNt.value == validSubmit.fence);
+        require(!header(submitOut).status && submitNt.ntstatus == 0 && submitNt.value == validSubmit.fence - 1);
         submitBefore = submission.calls;
         require(header(s.dispatch(submitPacket(submitQueue, validSubmit))).status == -22 && submission.calls == submitBefore);
-        auto submitNext = validSubmit;
+        auto synchronousNext = validSubmit; ++synchronousNext.fence;
+        submission.asyncSubmitEnabled = false;
+        submitBefore = submission.calls;
+        require(header(s.dispatch(queuedPacket(submitQueue, synchronousNext))).status == -95 && submission.calls == submitBefore);
+        require(header(s.dispatch(submitPacket(submitQueue, synchronousNext))).status == -5);
+        submission.badSubmitReply = 0;
+        submitOut = s.dispatch(submitPacket(submitQueue, synchronousNext));
+        std::memcpy(&submitNt, submitOut.data() + sizeof(Header), sizeof submitNt);
+        require(!header(submitOut).status && submitNt.ntstatus == 0 && submitNt.value == synchronousNext.fence);
+        submitBefore = submission.calls;
+        require(header(s.dispatch(submitPacket(submitQueue, validSubmit))).status == -22 && submission.calls == submitBefore);
+        auto submitNext = synchronousNext;
         while (submission.submitCalls < MaxHwSubmissions) {
             ++submitNext.fence; require(header(s.dispatch(submitPacket(submitQueue, submitNext))).status == 0);
         }

@@ -489,7 +489,7 @@ public:
                 const VendorAllocationDesc desc{item.Flags.Value, item.Priority, item.VidPnSourceId, item.PrivateDriverDataSize, 0, 0};
                 if (!validVendorAllocation(desc) || item.pSystemMem || !item.pPrivateDriverData ||
                     std::any_of(std::begin(item.Reserved), std::end(item.Reserved), [](auto value) { return value != 0; })) throw Error(EINVAL);
-                if (vendorOwners.size() >= MaxVendorAllocations) throw Error(EMFILE);
+                if (vendorOwners.size() >= vendorAllocationObjectLimit(caps.flags)) throw Error(EMFILE);
                 auto packet = request(withResource ? Op::CreateVendorResourceAllocation : Op::CreateVendorAllocation, a.hDevice, desc);
                 const auto begin = static_cast<const std::uint8_t*>(item.pPrivateDriverData);
                 packet.insert(packet.end(), begin, begin + desc.privateBytes);
@@ -1086,16 +1086,22 @@ public:
                 // it is never read or forwarded to the native process.
                 if (!validHwSubmit(desc) || (desc.privateBytes && !a.pPrivateDriverData)) throw Error(EINVAL);
                 if (queue == hwQueueContexts.end() || commandOwners != 1 || commandCpuLocked != 1) throw Error(EBADF);
-                auto packet = request(Op::SubmitHwQueue, a.hHwQueue, desc);
+                auto packet = request(caps.flags & AsyncHwSubmitCapability ? Op::QueueHwCommand : Op::SubmitHwQueue, a.hHwQueue, desc);
                 if (desc.privateBytes) {
                     const auto data = static_cast<const std::uint8_t*>(a.pPrivateDriverData);
                     packet.insert(packet.end(), data, data + desc.privateBytes);
                 }
                 const auto result = call(packet, 0, true);
-                if (result.header.handle != a.hHwQueue || result.result.ntstatus > 0 ||
-                    (result.result.ntstatus == 0 && (result.result.value < desc.fence || result.result.value == UINT64_MAX)) ||
-                    (result.result.ntstatus < 0 && result.result.value)) { transport.fail(); throw Error(EPROTO); }
+                if (result.header.handle != a.hHwQueue ||
+                    !validHwSubmitReply({result.result.ntstatus,0,result.result.value},desc.fence,caps.flags)) {
+                    transport.fail(); throw Error(EPROTO);
+                }
                 checkNt(result.result.ntstatus);
+                if (caps.flags & AsyncHwSubmitCapability) {
+                    std::fprintf(stderr, "LINUX_BRIDGE nativeCommandQueued=true bytes=%u privateBytes=%u target=%llu observedAtReturn=%llu\n",
+                                 desc.bytes, desc.privateBytes, static_cast<unsigned long long>(desc.fence), static_cast<unsigned long long>(result.result.value));
+                    return 0;
+                }
                 hwQueueFences.verifyRetired(a.hHwQueue, desc.fence, "command");
                 std::fprintf(stderr, "LINUX_BRIDGE nativeCommandSubmitted=true bytes=%u privateBytes=%u target=%llu observed=%llu\n",
                              desc.bytes, desc.privateBytes, static_cast<unsigned long long>(desc.fence), static_cast<unsigned long long>(result.result.value));
