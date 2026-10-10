@@ -251,6 +251,15 @@ func ensureRuntime(cfg *config, release, sumsSHA256 string) (string, error) {
 		return root, nil
 	}
 	if runtimeArchiveMatches(root, archiveSHA) {
+		sourceCfg := *cfg
+		sourceCfg.guestDir = filepath.Join(root, ".manifest-source")
+		data, _, err := resolveGuestManifest(&sourceCfg, client, release, sumsSHA256, !payloadIsLocal(cfg, sumsSHA256))
+		if err != nil {
+			return "", err
+		}
+		if err := writeUpdateFile(filepath.Join(root, "SHA256SUMS"), data); err != nil {
+			return "", err
+		}
 		// Same archive under a new release: adopt the new release identity
 		// instead of downloading and unpacking identical bytes.
 		if err := writeRuntimeReceipt(root, release, sumsSHA256, archiveSHA); err != nil {
@@ -307,6 +316,12 @@ func ensureRuntime(cfg *config, release, sumsSHA256 string) (string, error) {
 		// Keep the verified archive after cancellation, low space, or a file
 		// lock. The next attempt rechecks its hash and can unpack it locally.
 		return "", fmt.Errorf("unpacking %s: %w", runtimeZip, err)
+	}
+	runtimeCfg := *cfg
+	runtimeCfg.guestDir = tmp
+	if _, err := cacheGuestSums(&runtimeCfg, client, release, sumsSHA256, false); err != nil {
+		_ = os.RemoveAll(tmp)
+		return "", err
 	}
 	if err := writeRuntimeReceipt(tmp, release, sumsSHA256, archiveSHA); err != nil {
 		os.RemoveAll(tmp)

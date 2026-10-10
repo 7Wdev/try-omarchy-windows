@@ -1,5 +1,34 @@
 # Changelog
 
+## Unreleased
+
+- The cursor is drawn by Windows with Omarchy's shapes, so it moves as smoothly
+  as the Windows pointer even when the desktop is busy. Existing installs get it
+  after running Update > Omarchy once (#321).
+- System updates keep trying while Omarchy is running when the connection fails.
+- Update downloads give slow Windows name resolution more time.
+- Install the current launcher's system update from browser-downloaded release
+  files using the tray menu, then choose Restart to update.
+
+## v0.11.0 - 2026-10-09
+
+- Fix the top bar disappearing and Win+K / Win+Space opening black screens
+  after updating Omarchy (#336).
+
+- When the Omarchy system update can't be downloaded, the tray now says so
+  instead of failing silently (#277).
+- Choosing the raw VirtIO audio device in Omarchy's audio menu no longer turns
+  off volume sync; Omarchy switches back to the Windows device (#277).
+- Updates no longer download the full Omarchy system image (about 1.9 GB). It
+  is fetched only when you install or choose Start fresh. Updating to this
+  version still downloads it one last time (#312).
+- Typing and shortcuts reach Omarchy when a Windows input method such as
+  Microsoft Pinyin is in Chinese mode (#328).
+- Opening the sound menu no longer freezes Omarchy when Windows has no
+  microphone (#332).
+- The launcher is fully translated into Korean, and Simplified Chinese covers
+  the tray messages (#318, #327).
+
 ## v0.10.1 - 2026-10-06
 
 - Large images copied from Windows reach Omarchy without stalling.

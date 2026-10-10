@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 )
 
 // Versioned payloads allow the previous launcher to keep using its own manifest
@@ -24,7 +23,7 @@ func portablePayloadDirectory(root, digest string) string {
 }
 
 func updatePayloadNames() []string {
-	return append([]string{runtimeZip, "rootfs.ext4.zst"}, downloadedGuestArtifacts...)
+	return append([]string{runtimeZip}, downloadedGuestArtifacts...)
 }
 
 func verifyUpdatePayload(ctx context.Context, root, digest string) error {
@@ -182,7 +181,7 @@ func removeUpdateFile(path string) error {
 }
 
 func updateDownloadSize(ctx context.Context, client *http.Client, source string) (int64, error) {
-	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, downloadMetadataTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodHead, source, nil)
 	if err != nil {
@@ -193,7 +192,10 @@ func updateDownloadSize(ctx context.Context, client *http.Client, source string)
 		return 0, err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK || resp.ContentLength <= 0 || resp.ContentLength > maxGuestArtifactBytes {
+	if resp.StatusCode != http.StatusOK {
+		return 0, &downloadHTTPError{status: resp.StatusCode}
+	}
+	if resp.ContentLength <= 0 || resp.ContentLength > maxGuestArtifactBytes {
 		return 0, fmt.Errorf("server did not report a supported download size")
 	}
 	return resp.ContentLength, nil

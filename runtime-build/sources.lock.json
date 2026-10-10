@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "name": "winq-emu-alpha10-source-r22",
+  "name": "winq-emu-alpha10-source-r23",
   "sourceDateEpoch": 1777269494,
   "qemu": {
     "repository": "https://github.com/cmspam/winq-emu-qemu.git",
@@ -89,6 +89,18 @@
       {
         "file": "patches/qemu/0020-allow-external-sdl-keyboard-hook.patch",
         "sha256": "6040a630c9961a1c70c7686aa8bb943e4f1c1c4ed04f64e41d73e92882050788"
+      },
+      {
+        "file": "patches/qemu/0021-detach-windows-ime-from-graphic-consoles.patch",
+        "sha256": "5c7a87f18a40a7c22b58ba7e70918ae2b9f7f571400aff6bf3ad05119488bb4e"
+      },
+      {
+        "file": "patches/qemu/0022-keep-sdl-capture-running-without-a-microphone.patch",
+        "sha256": "94835ab3e9fe7bf348401ff5d50424f8c116511ef60c138e4de7e73fb4461cec"
+      },
+      {
+        "file": "patches/qemu/0023-show-guest-cursors-in-sdl-windows.patch",
+        "sha256": "1305bb5e384cba185b4259a2935b0528404c18ee38d10e9084d25cac346e4bde"
       }
     ]
   },

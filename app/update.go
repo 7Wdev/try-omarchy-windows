@@ -14,11 +14,10 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"time"
 )
 
 const (
-	currentVersion         = "v0.10.1"
+	currentVersion         = "v0.11.0"
 	defaultUpdateURL       = "https://github.com/omacom/try-omarchy-windows/releases/latest/download/update-v2.json"
 	legacyReleaseBase      = "https://github.com/tsouth89/try-omarchy-windows/releases/download/"
 	transferredReleaseBase = "https://github.com/omacom/try-omarchy-windows/releases/download/"
@@ -85,7 +84,7 @@ func fetchSmallFile(client *http.Client, source string, limit int64) ([]byte, er
 }
 
 func fetchSmallFileContext(ctx context.Context, client *http.Client, source string, limit int64) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, downloadMetadataTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, source, nil)
 	if err != nil {
@@ -97,11 +96,11 @@ func fetchSmallFileContext(ctx context.Context, client *http.Client, source stri
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+		return nil, &downloadHTTPError{status: resp.StatusCode}
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {
-		return nil, err
+		return nil, &downloadUnavailableError{err: err}
 	}
 	if int64(len(data)) > limit {
 		return nil, fmt.Errorf("response exceeds %d bytes", limit)

@@ -237,55 +237,48 @@ func prepareDisk(cfg *config, expandedMiB int64) error {
 	if cfg.portable {
 		return preparePortableDisk(cfg, expandedBytes)
 	}
-	if info, err := os.Stat(cfg.disk); err == nil {
+	if info, err := os.Lstat(cfg.disk); err == nil {
 		if !info.Mode().IsRegular() {
 			return fmt.Errorf("disk path is not a regular file: %s", cfg.disk)
 		}
 		if info.Size() >= expandedBytes {
 			return nil
 		}
-		factoryInfo, err := os.Stat(filepath.Join(cfg.guestDir, "rootfs.ext4"))
+		floor, err := installedFactoryFloor(cfg.guestDir)
 		if err != nil {
-			return fmt.Errorf("measuring the factory disk: %w", err)
+			return err
 		}
-		if !factoryInfo.Mode().IsRegular() {
-			return fmt.Errorf("factory disk is not a regular file")
+		if info.Size() < floor {
+			return fmt.Errorf("existing disk is below its verified factory size; your disk has been kept. Use Start fresh or restore a backup")
 		}
-		if info.Size() < factoryInfo.Size() {
-			// Older launchers copied directly to disk.raw. A setup interrupted
-			// during that copy left the partial file under its final name. Keep it
-			// for recovery or inspection, then build a complete disk atomically.
-			quarantine := fmt.Sprintf("%s.incomplete-%d", cfg.disk, time.Now().UnixNano())
-			if err := os.Rename(cfg.disk, quarantine); err != nil {
-				return fmt.Errorf("quarantining incomplete disk: %w", err)
-			}
-		} else {
-			// A smaller disk can be a complete guest from an older release whose
-			// expanded size has since increased. Grow it in place and let the existing
-			// systemd-growfs-root unit extend ext4 at boot. Replacing it with the
-			// factory image here would silently discard the user's system and files.
-			disk, err := os.OpenFile(cfg.disk, os.O_RDWR, 0)
-			if err != nil {
-				return fmt.Errorf("opening the existing writable disk: %w", err)
-			}
-			if err := setSparse(disk); err != nil {
-				disk.Close()
-				return fmt.Errorf("marking the existing writable disk sparse: %w", err)
-			}
-			if err := disk.Truncate(expandedBytes); err != nil {
-				disk.Close()
-				return fmt.Errorf("growing the existing writable disk: %w", err)
-			}
-			if err := disk.Sync(); err != nil {
-				disk.Close()
-				return fmt.Errorf("flushing the expanded writable disk: %w", err)
-			}
-			if err := disk.Close(); err != nil {
-				return fmt.Errorf("closing the expanded writable disk: %w", err)
-			}
-			return nil
+		// A smaller disk can be a complete guest from an older release whose
+		// expanded size has since increased. Grow it in place and let the existing
+		// systemd-growfs-root unit extend ext4 at boot. Replacing it with the
+		// factory image here would silently discard the user's system and files.
+		disk, err := os.OpenFile(cfg.disk, os.O_RDWR, 0)
+		if err != nil {
+			return fmt.Errorf("opening the existing writable disk: %w", err)
 		}
+		if err := setSparse(disk); err != nil {
+			disk.Close()
+			return fmt.Errorf("marking the existing writable disk sparse: %w", err)
+		}
+		if err := disk.Truncate(expandedBytes); err != nil {
+			disk.Close()
+			return fmt.Errorf("growing the existing writable disk: %w", err)
+		}
+		if err := disk.Sync(); err != nil {
+			disk.Close()
+			return fmt.Errorf("flushing the expanded writable disk: %w", err)
+		}
+		if err := disk.Close(); err != nil {
+			return fmt.Errorf("closing the expanded writable disk: %w", err)
+		}
+		return nil
 	} else if !os.IsNotExist(err) {
+		return err
+	}
+	if err := ensureInstalledFactory(cfg); err != nil {
 		return err
 	}
 	tmp := cfg.disk + ".part"
@@ -369,6 +362,9 @@ func preparePortableDisk(cfg *config, expandedBytes int64) error {
 		return err
 	}
 
+	if err := ensureInstalledFactory(cfg); err != nil {
+		return err
+	}
 	backing := filepath.ToSlash(filepath.Join("..", "guest", "rootfs.ext4"))
 	backingSHA256, ok := installReceiptArtifactSHA256(cfg.guestDir, "rootfs.ext4")
 	if !ok {

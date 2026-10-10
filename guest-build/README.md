@@ -10,6 +10,13 @@ scripts/release/build-guest.sh --contract-only
 scripts/release/build-guest.sh --output /path/to/artifacts
 ```
 
+Patch 0144 fixes provenance checks when reviewed backports touch the same file.
+The build still verifies each patch's before and after digests in order.
+Provenance keeps those intermediate digests, records the next backport as
+`supersededBy`, requires a continuous digest chain, and verifies the installed
+file against the last backport touching it. This unblocks the v0.11.0 guest
+build after the Qt 6.12 palette backport in #341.
+
 Patches 0121 and 0122 port the everyday guest fixes from Try Omarchy for Mac:
 screensaver text fits the terminal and tracks its effect PID; low disk space
 messages distinguish the guest disk from the PC and point to **Settings >
@@ -167,6 +174,15 @@ The receiver checks fixed-length slices for CR and frame prefixes, then streams
 base64 into the decoder. This integration file is delivered by the compatibility
 overlay and does not require a runtime package release bump.
 
+Patch 0141 keeps volume sync working when the raw QEMU transport device is
+chosen in Omarchy's audio panel. While the Windows endpoint mirror is active,
+the bridge switches a default sink or source that points at the raw VirtIO
+transport back to the mirror for the currently selected Windows device, and
+leaves other guest devices alone. Compatibility revision 59 delivers the bridge
+to existing disks before login, including revision-58 disks. This integration
+file is delivered by the compatibility overlay and does not require a runtime
+package release bump.
+
 Patch 0116 stops the launcher's initramfs from copying `vdso/` into
 `/usr/lib/modules/<version>` on the disk. `linux-headers` owns that directory,
 and an unowned copy made pacman refuse the next `linux-headers` upgrade, which
@@ -285,6 +301,20 @@ The `Refresh guest lock` workflow runs it every Monday and opens a draft pull re
 with the package changes. If GitHub policy blocks bot PRs, its run summary links
 to the generated branch for manual review; `--check` reports drift without writing a patch.
 
+The daily **Shell canary** installs current signed Arch and Omarchy packages,
+then loads the exact pinned and backported guest shell in a private headless
+Wayland session for about 30 seconds. It checks bar geometry, the Omarchy menu,
+and the Keybindings select menu with sample rows. `hyprctl` queries use
+recorded empty compositor data and neutral night-light fixtures under Sway;
+it does not test Windows GPU
+rendering or live Hyprland bindings. A failure fails the scheduled run, and
+GitHub emails the maintainer; the run summary lists package versions and first
+errors. Inspect its run artifact, reproduce with `workflow_dispatch`, and
+backport the smallest compatibility fix through the guest scripts. Only observed
+harmless container warnings belong in `scripts/shell-canary/warnings.allowlist`;
+QML errors always fail. Scheduled checks start after this workflow lands on
+master.
+
 ```bash
 scripts/release/refresh-guest-lock.sh
 ```
@@ -350,3 +380,27 @@ the routes exist, then continues the volume handshake. Compatibility revision
 56 delivers the corrected bridge to existing disks, including v0.3.0 through
 v0.9.0 guests and disks already at revision 55. Runtime `4.0.4-7` carries the
 matching package release for fresh installations and subsequent updates.
+
+Patch 0143 backports the [upstream Qt 6.12 palette fix](https://github.com/omacom/omarchy/pull/14553)
+to every affected QML file at the pinned Omarchy commit, retaining prior guest
+backports. Patch and target digests remain pinned in the backport registry.
+Compatibility revision 60 delivers the repair before login, after older QML
+installers, and replaces only reviewed old files. It keeps customized, missing,
+linked and already-fixed files, and preserves older supported shell logic.
+The notification and guest-default payloads also use the qualified palette.
+Runtime `4.0.4-9` carries the corrected shell for fresh images and subsequent
+updates. Rebuild the prepared v0.11.0 guest artifacts before release.
+
+Patch 0145 lays the guest groundwork for hardware cursor delivery. It builds
+checksummed aquamarine 0.15.1 with the cursor-hotspot capability/property patch
+as the managed Arch package `aquamarine 0.15.1-1.1`, retaining its SONAME provide
+and dependency metadata. Runtime `4.0.4-10` requests that minimum version from
+the authenticated local repository on existing disks. Arch stays ahead of the
+local repository: unchanged Arch packages keep the patch, and newer Arch builds
+replace it normally so aquamarine/Hyprland upgrades remain possible. Re-pin the
+new source, patch, build inputs and SONAME, then raise runtime/compat revisions
+after a bump; see [guest upgrades](../docs/GUEST-UPGRADES.md).
+Compatibility revision 61 delivers the QEMU CPU cursor-buffer profile while
+preserving user configurations. The matching host cursor work and Windows SDL
+acceptance remain separate. Real pacman transaction tests cover preservation,
+Arch release/version bumps and a coordinated Hyprland SONAME change.

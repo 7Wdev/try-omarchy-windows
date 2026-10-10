@@ -112,3 +112,24 @@ func TestPortableRecoveryCommandProtectsBatchArguments(t *testing.T) {
 		}
 	}
 }
+
+func TestPortableRecoveryUsesRestoredSeparateManifestsWithoutCache(t *testing.T) {
+	dir, source := portableRecoveryFixture(t)
+	for _, part := range []string{"guest", "runtime"} {
+		var pin string
+		if part == "guest" {
+			_, pin, _ = installReceiptIdentity(filepath.Join(dir, part))
+		} else {
+			_, pin, _ = runtimeReceiptIdentity(filepath.Join(dir, part))
+		}
+		data, err := os.ReadFile(filepath.Join(source, pin, "SHA256SUMS"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		os.WriteFile(filepath.Join(dir, part, "SHA256SUMS"), data, 0600)
+	}
+	os.RemoveAll(source)
+	if _, err := preparePortableRecoveryPayload(dir, source); err != nil {
+		t.Fatal("restored metadata did not support offline recovery", err)
+	}
+}

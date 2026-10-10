@@ -72,6 +72,47 @@ stalling in shell suffix matching. Fresh images carry the same bridge. The bridg
 is supplied by the compatibility overlay, so no runtime package bump or
 **Update > Omarchy** is required. Resetting the disk is not required.
 
+Compatibility revision 59 delivers the audio bridge that keeps volume sync
+working when the raw QEMU transport device is chosen in Omarchy's audio panel.
+Existing disks, including revision-58 installations, receive the corrected
+bridge before login. While the Windows endpoint mirror is active, a default
+sink or source that points at the raw VirtIO transport is switched back to the
+mirror for the Windows device that is currently selected; other guest devices
+are left alone. Fresh images carry the same bridge, which the compatibility
+overlay supplies without a runtime package bump or **Update > Omarchy**.
+
+Compatibility revision 60 repairs the shell palette before login after Qt 6.12
+is installed. It fixes the missing top bar and black Win+K / Win+Space menus on
+existing disks, including revision-59 installations. The repair runs after
+older shell repairs and rewrites only files matching reviewed old digests;
+customized, missing, linked and already-fixed files are kept. Older reviewed
+variants receive only the palette namespace change, keeping their shell logic.
+Fresh images carry the same qualified palette references. Runtime `4.0.4-9`
+packages the fix for subsequent **Update > Omarchy** transactions. The prepared
+v0.11.0 guest artifacts must be rebuilt from this fix before release.
+
+Compatibility revision 61 delivers the QEMU CPU cursor-buffer profile before
+login. Catch-up refreshes only an unchanged default monitor configuration and
+keeps user edits and symlinks. It also offers the patched aquamarine archive in
+the authenticated local repository. The next **Update > Omarchy** installs
+runtime `4.0.4-10` and its minimum `aquamarine>=0.15.1-1.1` dependency; no package
+transaction runs during boot publication.
+
+The managed rebuild keeps Arch's package name, dependencies and SONAME provide.
+The local repository is after Arch. An unchanged Arch `0.15.1-1` keeps the
+installed patched `0.15.1-1.1`. A newer Arch release or version replaces it in
+the ordinary update transaction, including a new SONAME required by Hyprland.
+No version hold or custom provider blocks the upgrade. Until we re-pin the new
+source, the cursor can return to being drawn within desktop frames. The host
+cursor presentation fix is separate from this guest groundwork.
+
+To re-pin, refresh the guest transaction lock, review the hotspot patch on the
+new upstream source, and update `supplyChain.aquamarine` source, patch and
+builder digests, Arch version, SONAME and provide. Use the new Arch version plus
+`.1` as the local package version, raise the runtime package release and compat
+revision, and repeat contract, real pacman transaction and image build/boot
+checks. The build fails if source, build-tool pins, metadata or SONAME drift.
+
 If repository publication fails, inspect:
 
 ```sh
@@ -186,3 +227,27 @@ before package writes, the orphaned-lock auto-recovery, and the following normal
 transaction. It does not cover power loss during extraction, a partially
 installed system update, Windows launcher rollback, or the original reporter's
 unknown interruption. Passing it does not establish those other cases.
+
+## On-demand factory images (unreleased)
+
+Feature-aware launchers stage kernel, initramfs, guest metadata and Windows
+runtime updates without requesting `rootfs.ext4` or `rootfs.ext4.zst`. Creation
+and explicit reset acquire the exact selected release's template, authenticated
+by the complete pinned SHA256SUMS. Standard raw disks are independent after
+creation. Portable disks retain their original backing until verified detachment
+succeeds before publishing any new runtime or guest payload.
+
+Component rollback restores the previous boot files, runtime and their recorded
+pins. An independent disk stays independent, and rollback needs no new factory
+image. This does not undo completed guest pacman transactions. The v0.9 portable
+launcher's first hop remains unchanged and still acquires a full payload. Its
+full previous installation is retained for automatic legacy-launcher recovery.
+Manual downgrade of a template-free installation to a mandatory-template
+launcher is unsupported; use its full compatible backup or distribution.
+
+Legacy full installations can grow using their verified original template and
+reset offline using the factory hash recorded in their receipt, even without
+cached SHA256SUMS. A small raw disk with uncertain completeness now stops with
+a recovery error instead of being automatically rebuilt. Its bytes are kept. Restore verified
+original metadata or a backup, or explicitly use Start fresh to retain the old
+disk while preparing a replacement.

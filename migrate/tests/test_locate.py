@@ -78,6 +78,22 @@ class FindTests(unittest.TestCase):
         self.assertEqual(installs[0].share, "C:\\Users\\Ada\\Work")
         self.assertEqual(installs[0].problems, [])
 
+    def test_template_free_standard_install_locates_and_attaches(self):
+        from omarchy_import import attach
+        data = self.c / "Users/Ada/AppData/Local/TryOmarchy"
+        ext4_image(data / "vm/disk.raw")
+        self.assertFalse((data / "guest/rootfs.ext4").exists())
+        installs = locate.find_installs(self.volumes)
+        self.assertEqual(len(installs), 1)
+        self.assertEqual(installs[0].problems, [])
+        runner = fixtures.FakeRunner({"losetup": "/dev/loop7"}, programs={"losetup", "mount", "umount"})
+        work = self.c / "scratch"
+        work.mkdir()
+        session = attach.Session(runner, work)
+        self.addCleanup(session.close)
+        session.attach_disk(data / "vm/disk.raw")
+        self.assertTrue(any("disk.raw" in command for command in runner.commands()))
+
     def test_moved_install_on_another_drive_with_different_case(self):
         default = self.c / "users/ada/appdata/local/tryomarchy"
         default.mkdir(parents=True)

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -23,6 +22,25 @@ const (
 	commitRenameAttempts  = 15
 	commitRenameDelay     = 500 * time.Millisecond
 )
+
+// downloadFailure marks an error from a download that exhausted its retries,
+// so callers can tell the user their connection is the likely cause. It keeps
+// the original message and unwrap chain.
+type downloadFailure struct{ err error }
+
+func (e downloadFailure) Error() string { return e.err.Error() }
+func (e downloadFailure) Unwrap() error { return e.err }
+
+// HTTP failures identify unavailable remote artifacts without hiding local
+// storage, authentication or publication errors behind a network hint.
+type downloadHTTPError struct{ status int }
+
+func (e *downloadHTTPError) Error() string { return fmt.Sprintf("HTTP %d", e.status) }
+
+type downloadUnavailableError struct{ err error }
+
+func (e *downloadUnavailableError) Error() string { return e.err.Error() }
+func (e *downloadUnavailableError) Unwrap() error { return e.err }
 
 type downloadProgress func(phase string, done, total int64)
 
@@ -48,7 +66,7 @@ func defaultDownloadOptions() downloadOptions {
 func newDownloadClient() *http.Client {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = downloadProxy
-	transport.DialContext = (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext
+	transport.DialContext = newDownloadDialer().DialContext
 	transport.ResponseHeaderTimeout = 15 * time.Second
 	transport.IdleConnTimeout = 30 * time.Second
 	transport.TLSHandshakeTimeout = 15 * time.Second
@@ -114,7 +132,7 @@ func downloadVerifiedWithOptions(client *http.Client, url, dest, wantSum string,
 			return nil
 		}
 	}
-	return fmt.Errorf("download failed after %d attempts: %w", opts.maxAttempts, lastErr)
+	return downloadFailure{fmt.Errorf("download failed after %d attempts: %w", opts.maxAttempts, lastErr)}
 }
 
 func downloadAttempt(client *http.Client, url, dest, wantSum string, progress downloadProgress, idleTimeout time.Duration) (retry, cleanRestart bool, resultErr error) {
@@ -184,7 +202,7 @@ func downloadAttemptContext(ctx context.Context, client *http.Client, url, dest,
 		appendPart = offset > 0
 	case http.StatusRequestedRangeNotSatisfiable:
 		if offset == 0 {
-			return false, false, fmt.Errorf("HTTP %d", resp.StatusCode)
+			return false, false, &downloadHTTPError{status: resp.StatusCode}
 		}
 		ok, err := verifyAndCommitPartContext(ctx, tmp, dest, wantSum, progress)
 		if err != nil {
@@ -213,7 +231,7 @@ func downloadAttemptContext(ctx context.Context, client *http.Client, url, dest,
 				return false, false, nil
 			}
 		}
-		return retry, false, fmt.Errorf("HTTP %d", resp.StatusCode)
+		return retry, false, &downloadHTTPError{status: resp.StatusCode}
 	}
 
 	flags := os.O_CREATE | os.O_WRONLY
@@ -250,10 +268,13 @@ func downloadAttemptContext(ctx context.Context, client *http.Client, url, dest,
 		return false, false, closeErr
 	}
 	if copyErr != nil {
+		if retry {
+			copyErr = &downloadUnavailableError{err: copyErr}
+		}
 		return retry, false, copyErr
 	}
 	if segmentLength >= 0 && written != segmentLength {
-		return true, false, fmt.Errorf("download ended after %d of %d response bytes", written, segmentLength)
+		return true, false, &downloadUnavailableError{err: fmt.Errorf("download ended after %d of %d response bytes", written, segmentLength)}
 	}
 	info, err := os.Stat(tmp)
 	if err != nil {

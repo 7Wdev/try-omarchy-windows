@@ -23,9 +23,7 @@ func resetFixture(t *testing.T) *config {
 	if err := os.WriteFile(cfg.disk, []byte("existing personal files"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(cfg.guestDir, "rootfs.ext4"), []byte("factory image"), 0600); err != nil {
-		t.Fatal(err)
-	}
+	installFactoryFixture(t, cfg.guestDir, []byte("factory image"))
 	return cfg
 }
 

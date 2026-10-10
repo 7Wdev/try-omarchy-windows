@@ -8,9 +8,10 @@ virglrenderer fork commits in `sources.lock.json`. It produces:
 - `SHA256SUMS`, hashes for both archives
 
 The portable archive includes source provenance, the MSYS2 package inventory,
-per-file hashes, and licenses. The Runtime workflow remains manual. Its r22
-output is published as `runtime-v1-r22` and is pinned from `v0.10.0`; r21
-shipped in `v0.9.0`, and r20c from `v0.3.0` through `v0.8.0`. Future runtime
+per-file hashes, and licenses. The Runtime workflow remains manual. Its r23
+output is published as `runtime-v1-r23` and is pinned from `v0.11.0`; r22
+shipped in `v0.10.0` and `v0.10.1`, r21 in `v0.9.0`, and r20c from `v0.3.0`
+through `v0.8.0`. Future runtime
 replacements stay test artifacts until they pass physical Windows validation.
 
 To build in an MSYS2 UCRT64 shell with the packages in `packages.txt` installed:
@@ -149,3 +150,38 @@ runtime provenance declares the patch, then chains host-owned Win events through
 fixture covers default behavior, the exact opt-out and hint priority.
 
 Neither candidate changes `guest-build/runtime.lock.json` or publishes a release.
+
+`0022-keep-sdl-capture-running-without-a-microphone.patch` skips Windows SDL capture
+opens when no recording endpoint is enumerated. Without an endpoint it keeps
+guest capture periods moving with format-aware silence paced by QEMU's virtual
+clock. Empty inventories are checked once per second so reconnecting a
+microphone can resume an active stream. Failed opens with listed endpoints wait
+ten seconds after the attempt before retrying, including live route changes.
+Stopped capture devices return to silence on the next get/read, after any
+outstanding buffer has been consumed. Playback retains its existing behavior.
+
+The build runs `test-sdl-capture.py <patched-qemu-directory>` against the actual
+capture functions with mocked SDL endpoints and deterministic clocks. It covers
+empty and failed inventories, silence pacing, repeated stream starts, failed
+opens, active hotplug, unplug and reacquisition between buffer get/put, live route
+failure backoff, idle gating, route fallback and unsigned PCM ring wrap. Windows
+no-microphone menu behavior and physical hotplug remain to verify.
+An endpoint disappearing between enumeration and open can still enter SDL's
+WASAPI retry; this patch avoids the stable empty-inventory case.
+
+The r23 engineering candidate adds
+`0023-show-guest-cursors-in-sdl-windows.patch`. With an absolute pointer and
+`show-cursor=off`, SDL hides the host cursor until the guest defines a sprite.
+It then uses that sprite and hotspot as the native cursor. Guest hide requests,
+transparent definitions and creation failures keep it hidden. Each console
+retains its own pixels and visibility; window entry selects that console's
+cursor, and leaving VM windows restores the native pointer. `show-cursor=on`
+keeps the diagnostic host arrow override.
+
+Sprites up to virtio's 64x64 limit scale with the displayed guest surface:
+letterboxed surfaces use the smaller window scale, and GL scanouts use both
+stretch factors. This uses shared SDL APIs and does not touch other displays.
+The build runs `test-sdl-cursor.py` against the real cursor, grab, fullscreen,
+window-event and window-destruction functions with mocked SDL. Windows motion,
+click alignment, mixed DPI and physical multi-monitor behavior remain to verify
+with the separate guest cursor fix and a built runtime.

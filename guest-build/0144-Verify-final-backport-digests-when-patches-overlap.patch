@@ -1,0 +1,182 @@
+From 6c44921e984b49e4d6bd4076f84f7924d97a0914 Mon Sep 17 00:00:00 2001
+From: Try Omarchy Release <actions@users.noreply.github.com>
+Date: Thu, 8 Oct 2026 23:36:06 -0400
+Subject: [PATCH] Verify final backport digests when patches overlap
+
+---
+ guest/README.md                      |   5 +-
+ guest/scripts/write-provenance.py    |  23 +++++-
+ guest/tests/test_write_provenance.py | 104 +++++++++++++++++++++++++++
+ 3 files changed, 128 insertions(+), 4 deletions(-)
+
+diff --git a/guest/README.md b/guest/README.md
+index 973e923..02edab5 100644
+--- a/guest/README.md
++++ b/guest/README.md
+@@ -32,7 +32,10 @@ The Omarchy shell includes two narrowly scoped fixes reviewed upstream after
+ 4.0.2: notification cards regain their hover-close control, and notification
+ contents stay hidden while the session is locked or showing the screensaver.
+ Each backport pins its patch plus the exact before and after file digests in
+-`spec.json`, and the generated provenance identifies the modified shell tree.
++`spec.json`. The build checks each intermediate file as it applies backports
++in order. Generated provenance retains those digests, marks superseded targets
++with the next backport ID, and checks installed files against their last
++backport. Consecutive targets for a path must form an unbroken digest chain.
+ The Qt 6.12 palette backport qualifies every affected shell QML reference as
+ `Commons.Color`, retaining the pinned shell and previous guest backports.
+ Compatibility revision 60 repairs only matching reviewed defaults before login;
+diff --git a/guest/scripts/write-provenance.py b/guest/scripts/write-provenance.py
+index 3a791b8..8320e8e 100755
+--- a/guest/scripts/write-provenance.py
++++ b/guest/scripts/write-provenance.py
+@@ -86,15 +86,32 @@ def main() -> None:
+     trees["themes"] = digest_path(omarchy / "themes")
+ 
+     backports = authenticity.get("backports", [])
++    final_targets = {}
+     for backport in backports:
+         patch = args.spec.parent / backport["patch"]
+         patch_digest = digest_file(patch)
+         if patch_digest != backport["patchSha256"]:
+             raise SystemExit(f"backport patch digest mismatch: {backport['id']}")
+         for target in backport["targets"]:
+-            installed = installed_target_file(root, omarchy, target["path"])
+-            if digest_file(installed) != target["afterSha256"]:
+-                raise SystemExit(f"backport target digest mismatch: {backport['id']} {target['path']}")
++            relative = target["path"]
++            previous = final_targets.get(relative)
++            if previous is not None:
++                previous_id, previous_target = previous
++                if previous_target["afterSha256"] != target["beforeSha256"]:
++                    raise SystemExit(
++                        f"backport target digest chain mismatch: {previous_id} -> "
++                        f"{backport['id']} {relative}"
++                    )
++                previous_target["supersededBy"] = backport["id"]
++            final_targets[relative] = (backport["id"], target)
++
++    # apply-omarchy-backports.py checks each intermediate before/after digest
++    # as it applies the ordered patches. Packaging sees only the final state;
++    # retain those intermediate digests and identify the next writer above.
++    for relative, (backport_id, target) in final_targets.items():
++        installed = installed_target_file(root, omarchy, relative)
++        if digest_file(installed) != target["afterSha256"]:
++            raise SystemExit(f"backport target digest mismatch: {backport_id} {relative}")
+ 
+     payload = {
+         "schemaVersion": 1,
+diff --git a/guest/tests/test_write_provenance.py b/guest/tests/test_write_provenance.py
+index 17ab34c..5c4523c 100644
+--- a/guest/tests/test_write_provenance.py
++++ b/guest/tests/test_write_provenance.py
+@@ -79,6 +79,110 @@ class WriteProvenanceTests(unittest.TestCase):
+             check=False,
+         )
+ 
++    def stacked_fixture(self, temporary: str, count: int = 2) -> tuple[Path, Path, Path, Path]:
++        root, spec, target, output = self.fixture(temporary)
++        payload = json.loads(spec.read_text(encoding="utf-8"))
++        backports = []
++        states = ["upstream", "patched", "palette", "third"]
++        for index in range(count):
++            before, after = states[index:index + 2]
++            patch = spec.parent / f"stack-{index}.patch"
++            patch.write_text(
++                "diff --git a/shell/example.qml b/shell/example.qml\n"
++                "--- a/shell/example.qml\n+++ b/shell/example.qml\n"
++                f"@@ -1 +1 @@\n-{before}\n+{after}\n",
++                encoding="utf-8",
++            )
++            backports.append({
++                "id": f"stack-{index}",
++                "patch": patch.name,
++                "patchSha256": digest(patch.read_bytes()),
++                "targets": [{
++                    "path": "shell/example.qml",
++                    "beforeSha256": digest((before + "\n").encode()),
++                    "afterSha256": digest((after + "\n").encode()),
++                }],
++            })
++        payload["authenticity"]["backports"] = backports
++        spec.write_text(json.dumps(payload), encoding="utf-8")
++        target.write_bytes(b"upstream\n")
++        return root, spec, target, output
++
++    def apply_backports(self, root: Path, spec: Path) -> subprocess.CompletedProcess[str]:
++        return subprocess.run(
++            ["python3", str(GUEST / "scripts/apply-omarchy-backports.py"),
++             "--root", str(root), "--spec", str(spec)],
++            text=True, capture_output=True, check=False,
++        )
++
++    def test_stacked_backports_record_intermediate_and_final_digests(self) -> None:
++        for count in (2, 3):
++            with self.subTest(count=count), tempfile.TemporaryDirectory() as temporary:
++                root, spec, target, output = self.stacked_fixture(temporary, count)
++                original = spec.read_bytes()
++                applied = self.apply_backports(root, spec)
++                self.assertEqual(applied.returncode, 0, applied.stderr)
++                result = self.run_writer(root, spec, output)
++                self.assertEqual(result.returncode, 0, result.stderr)
++                recorded = json.loads(output.read_text())["backports"]
++                declared = json.loads(original)["authenticity"]["backports"]
++                for index, backport in enumerate(recorded):
++                    expected = dict(declared[index]["targets"][0])
++                    if index + 1 < count:
++                        expected["supersededBy"] = declared[index + 1]["id"]
++                    self.assertEqual(backport["targets"][0], expected)
++                    self.assertEqual(backport["patchSha256"], declared[index]["patchSha256"])
++                self.assertEqual(recorded[-1]["targets"][0]["afterSha256"], digest(target.read_bytes()))
++                self.assertEqual(spec.read_bytes(), original)
++
++    def test_stacked_backports_reject_broken_intermediate_digest_chain(self) -> None:
++        with tempfile.TemporaryDirectory() as temporary:
++            root, spec, target, output = self.stacked_fixture(temporary)
++            target.write_bytes(b"palette\n")
++            payload = json.loads(spec.read_text())
++            payload["authenticity"]["backports"][1]["targets"][0]["beforeSha256"] = digest(b"wrong\n")
++            spec.write_text(json.dumps(payload), encoding="utf-8")
++            result = self.run_writer(root, spec, output)
++            self.assertNotEqual(result.returncode, 0)
++            self.assertIn("backport target digest chain mismatch", result.stderr)
++            self.assertFalse(output.exists())
++
++    def test_stacked_backports_still_verify_superseded_patch(self) -> None:
++        with tempfile.TemporaryDirectory() as temporary:
++            root, spec, _, output = self.stacked_fixture(temporary)
++            applied = self.apply_backports(root, spec)
++            self.assertEqual(applied.returncode, 0, applied.stderr)
++            (spec.parent / "stack-0.patch").write_bytes(b"changed patch\n")
++            result = self.run_writer(root, spec, output)
++            self.assertNotEqual(result.returncode, 0)
++            self.assertIn("backport patch digest mismatch: stack-0", result.stderr)
++            self.assertFalse(output.exists())
++
++    def test_stacked_backports_reject_final_target_tampering(self) -> None:
++        with tempfile.TemporaryDirectory() as temporary:
++            root, spec, target, output = self.stacked_fixture(temporary)
++            applied = self.apply_backports(root, spec)
++            self.assertEqual(applied.returncode, 0, applied.stderr)
++            target.write_bytes(b"patched\n")
++            result = self.run_writer(root, spec, output)
++            self.assertNotEqual(result.returncode, 0)
++            self.assertIn("backport target digest mismatch: stack-1 shell/example.qml", result.stderr)
++            self.assertFalse(output.exists())
++
++    def test_stacked_backports_check_actual_intermediate_postimage(self) -> None:
++        with tempfile.TemporaryDirectory() as temporary:
++            root, spec, target, output = self.stacked_fixture(temporary)
++            payload = json.loads(spec.read_text())
++            backports = payload["authenticity"]["backports"]
++            backports[0]["targets"][0]["afterSha256"] = digest(b"wrong\n")
++            backports[1]["targets"][0]["beforeSha256"] = digest(b"wrong\n")
++            spec.write_text(json.dumps(payload), encoding="utf-8")
++            result = self.apply_backports(root, spec)
++            self.assertNotEqual(result.returncode, 0)
++            self.assertIn("afterSha256 mismatch", result.stderr)
++            self.assertEqual(target.read_bytes(), b"upstream\n")
++            self.assertFalse(output.exists())
++
+     def test_records_verbatim_trees_and_reviewed_backports_separately(self) -> None:
+         with tempfile.TemporaryDirectory() as temporary:
+             root, spec, _, output = self.fixture(temporary)
