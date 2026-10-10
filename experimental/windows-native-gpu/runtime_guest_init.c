@@ -72,10 +72,11 @@ int main(void) {
         if (child == 0) {
             FILE* workload_file = fopen("/runtime-workload", "rb");
             if (workload_file) {
-                char workload[8] = {0}; const size_t count = fread(workload, 1, sizeof(workload), workload_file);
+                char workload[9] = {0}; const size_t count = fread(workload, 1, sizeof(workload), workload_file);
                 fclose(workload_file);
                 if (count == 4 && !memcmp(workload, "copy", 4)) setenv("WDDM_BRIDGE_RUNTIME_WORKLOAD", "copy", 1);
                 else if (count == 5 && !memcmp(workload, "clear", 5)) setenv("WDDM_BRIDGE_RUNTIME_WORKLOAD", "clear", 1);
+                else if (count == 8 && !memcmp(workload, "triangle", 8)) setenv("WDDM_BRIDGE_RUNTIME_WORKLOAD", "triangle", 1);
                 else if (count != 4 || memcmp(workload, "init", 4)) _exit(126);
             }
             setenv("WDDM_BRIDGE_PORT", port, 1);

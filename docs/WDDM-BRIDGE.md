@@ -7,14 +7,14 @@ GPU. The current code additionally implements shared guest RAM registration and
 a bounded NVIDIA GPU buffer copy through a Windows section-backed D3D12 heap.
 The integrated QEMU shared-memory GPU copy passed six hardware cycles on
 2026-10-08, with all objects released after disconnect. The later genuine Linux
-runtime route now passes [guest graphics clears with verified pixels](LIVE-GPU-CLEAR.md).
+runtime route now passes [guest shader drawing with verified pixels](LIVE-GPU-SHADER-TRIANGLE.md).
 This remains a **partial driver bridge**. Opt-in virtual context lifecycle
 support also passed QEMU acceptance on 2026-10-08; see the
 [Linux UMD compatibility experiment](UMD-CONTEXT-COMPATIBILITY.md).
 The Omarchy launcher does not select this backend yet.
 The [live NVIDIA runtime diagnostic](LIVE-NVIDIA-RUNTIME.md) loads the local
 Linux UMD inside QEMU through device initialization, GPU buffer copies and
-bounded render-target clears. The
+bounded render-target clears and vertex/pixel shader drawing. The
 [dynamic paging bridge](LIVE-PAGING-BRIDGE.md) directly maps queue fences and
 acknowledges unmapping before releasing native pages. Historical paging-only
 controls predate the separate [full D3D12 initialization milestone](LIVE-D3D12-INITIALIZATION.md).

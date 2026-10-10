@@ -1,5 +1,10 @@
 # Live NVIDIA Linux runtime in QEMU
 
+Historical initialization checkpoint: subsequent work passes
+[full D3D12 initialization](LIVE-D3D12-INITIALIZATION.md) and
+[verified guest shader rendering](LIVE-GPU-SHADER-TRIANGLE.md). The results and
+incomplete initialization boundary below describe the earlier test.
+
 The disk-free QEMU/WHPX guest now loads this machine's installed NVIDIA Linux
 user-mode driver and routes its actual initialization calls through virtio
 serial to the native Windows worker. On the RTX 5090 Laptop GPU, it completed

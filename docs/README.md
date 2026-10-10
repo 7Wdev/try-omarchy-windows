@@ -26,6 +26,7 @@ These guides describe their own limits and validation status. They are not a pro
 - [Portable USB installations](PORTABLE_USB.md)
 - [Nested virtualization](NESTED-VIRTUALIZATION.md)
 - [GPU application profiles](GPU-APPLICATIONS.md)
+- [Windows NVIDIA bridge shader diagnostic](LIVE-GPU-SHADER-TRIANGLE.md): verified guest drawing; desktop integration remains unfinished
 
 ## Development and testing
 

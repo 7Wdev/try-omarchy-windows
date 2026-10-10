@@ -1,5 +1,8 @@
 # NVIDIA guest graphics pixels through QEMU
 
+The subsequent [shader rendering checkpoint](LIVE-GPU-SHADER-TRIANGLE.md) verifies
+vertex/pixel shader drawing. This page records the earlier clear diagnostic.
+
 Two owned QEMU/WHPX runs on 2026-10-10 rendered and verified two distinct
 130-by-73 RGBA8 images on the physical NVIDIA RTX 5090 Laptop GPU. All 9,490
 pixels in each round matched an independent reference. The genuine NVIDIA
@@ -68,7 +71,7 @@ missing retirement, changed pixels, duplicate or stale results, failed API
 statuses, device loss and incomplete cleanup. The copy regression checks both
 64 KiB patterns through GPU DEFAULT memory; initialization remains a separate gate.
 
-This is a bounded graphics diagnostic. Shader drawing, presentation, a guest
+This is a bounded graphics diagnostic. Presentation, a guest
 kernel/DRM backend, Omarchy/Hyprland integration, CUDA, OpenGL, Vulkan, video,
 reset recovery and the minimum 93% native performance target remain unfinished.
 Earlier rejected synchronous/capacity runs have unknown cleanup and are not

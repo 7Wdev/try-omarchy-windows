@@ -7,9 +7,11 @@ least 93% of native performance. Initialization diagnostics, host rendering and
 a single guest GPU command do not satisfy these requirements.
 
 No current result proves this product or performance threshold. The launcher
-does not select the experimental backend. The current diagnostic synchronously
-waits for every submitted command and limits native objects; that path is a
-compatibility and ownership probe, not the production transport.
+does not select the experimental backend. The current diagnostic supports
+separately negotiated asynchronous submission and directly shared native
+fences, with bounded native objects. It verifies [guest shader drawing](LIVE-GPU-SHADER-TRIANGLE.md),
+but remains a compatibility and ownership probe. The production transport and
+desktop presentation path still need implementation and validation.
 
 ## Functional acceptance
 

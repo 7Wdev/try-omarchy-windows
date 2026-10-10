@@ -13,6 +13,7 @@
 #include <thread>
 #include <string>
 #include <link.h>
+#include "triangle_workload.h"
 using Microsoft::WRL::ComPtr;
 static constexpr std::size_t CopyBytes = 65536;
 static constexpr unsigned CopyRounds = 2;
@@ -232,6 +233,7 @@ int main() {
         ComPtr<ID3D12CommandQueue> queue; hr=device->CreateCommandQueue(&q,IID_PPV_ARGS(&queue));
         std::printf("copyQueue=%08x\n",static_cast<unsigned>(hr)); if (FAILED(hr)) return 1;
         const char* workload = std::getenv("WDDM_BRIDGE_RUNTIME_WORKLOAD");
+        if (workload && !std::strcmp(workload, "triangle")) { queue.Reset(); return gpu_triangle::run(device.Get()); }
         if (workload && !std::strcmp(workload, "clear")) { queue.Reset(); return clearWorkload(device.Get()); }
         return workload && !std::strcmp(workload, "copy") ? copyWorkload(device.Get(), queue.Get()) : 0;
     }

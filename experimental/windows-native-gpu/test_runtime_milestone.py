@@ -1,6 +1,7 @@
 """Reject false D3D12 initialization milestone reports; no GPU is used."""
 import unittest
 from test_owned_runtime_qemu import initialization_complete, copy_workload_complete, clear_workload_complete, expected_clear_pixels, no_broadcast_queue_eof_complete, async_submissions_complete, hw_queue_signals_complete
+from triangle_evidence import triangle_workload_complete, triangle_reference, checksum, SHADERS
 
 
 class MilestoneTests(unittest.TestCase):
@@ -118,6 +119,91 @@ class ClearEvidenceTests(unittest.TestCase):
                 self.assertFalse(clear_workload_complete(self.log + '\n' + line))
         self.assertFalse(clear_workload_complete(self.log.replace('round=1 verifiedPixels','round=2 verifiedPixels')))
         self.assertFalse(clear_workload_complete(self.log.replace('GPU_CLEAR_PIXEL_ROW round=2','GPU_CLEAR_PIXEL_ROW round=1')))
+
+
+class TriangleEvidenceTests(unittest.TestCase):
+    """Synthetic evidence tests only; passing these never certifies a GPU run."""
+    def setUp(self):
+        self.frames = [triangle_reference(r)[0] for r in (1,2)]
+        self.log = self.make_log(self.frames)
+
+    @staticmethod
+    def make_log(frames):
+        lines = ['GPU_TRIANGLE_TEST_BEGIN width=130 height=73 format=R8G8B8A8_UNORM rounds=2 vertices=3 tolerance=2',
+                 'GPU_TRIANGLE_SHADERS vertexBytes={} pixelBytes={} vertexHash={} pixelHash={}'.format(*SHADERS),
+                 'GPU_TRIANGLE_FOOTPRINT width=130 height=73 offset=512 rowPitch=768 rowBytes=520 rows=73 totalBytes=56328',
+                 'nativeCommandSubmitted=true', 'nativeCommandSubmitted=true']
+        for stage, count in (('DirectQueue',1), ('SerializeRootSignature',1), ('RootSignature',1), ('Pipeline',1),
+                             ('RenderTarget',1), ('Readback',1), ('RtvHeap',1), ('Allocator',1), ('CommandList',1),
+                             ('Fence',1), ('Close',2), ('Signal',2), ('ReadbackMap',2), ('AllocatorReset',1), ('CommandListReset',1)):
+            lines.extend([f'gpuTriangle{stage}=00000000'] * count)
+        for r, actual in enumerate(frames, 1):
+            expected, coverage = triangle_reference(r)
+            maximum = max(abs(a-b) for a,b in zip(expected,actual))
+            lines.append(f'GPU_TRIANGLE_DRAW round={r} vertices=3 startVertex=0 instances=1 colorRotation={r-1}')
+            lines.append(f'GPU_TRIANGLE_ROUND round={r} verifiedPixels=9490 trianglePixels={sum(coverage)} backgroundPixels={9490-sum(coverage)} maxChannelError={maximum} referenceHash={checksum(expected)} observedHash={checksum(actual)} fenceTarget={r} fenceObserved={r}')
+            lines.extend(f'GPU_TRIANGLE_PIXEL_ROW round={r} y={y} rgba={actual[y*520:(y+1)*520].hex()}' for y in range(73))
+        lines.append('GPU_TRIANGLE_TEST_COMPLETE verified=true width=130 height=73 rounds=2')
+        return '\n'.join(lines)
+
+    def test_shader_pipeline_every_row_and_both_rounds_required(self):
+        self.assertTrue(triangle_workload_complete(self.log))
+        self.assertFalse(clear_workload_complete(self.log))
+        self.assertFalse(copy_workload_complete(self.log))
+        for line in self.log.splitlines():
+            with self.subTest(missing=line[:75]):
+                self.assertFalse(triangle_workload_complete(self.log.replace(line, '', 1)))
+
+    def test_only_interpolated_rgb_has_bounded_tolerance(self):
+        _, coverage = triangle_reference(1)
+        inside = coverage.index(True) * 4
+        for difference, accepted in ((1,True), (2,True), (3,False)):
+            frames = [bytearray(f) for f in self.frames]
+            frames[0][inside] += difference
+            self.assertEqual(triangle_workload_complete(self.make_log(frames)), accepted)
+        for offset in (0, 3, inside + 3):
+            frames = [bytearray(f) for f in self.frames]
+            frames[0][offset] ^= 1
+            self.assertFalse(triangle_workload_complete(self.make_log(frames)))
+
+    def test_stale_cleared_or_flipped_frames_rejected_even_with_valid_hashes(self):
+        for first in (self.frames[1], expected_clear_pixels(1),
+                      b''.join(self.frames[0][y*520:(y+1)*520] for y in reversed(range(73)))):
+            self.assertFalse(triangle_workload_complete(self.make_log([first,self.frames[1]])))
+        frames = list(self.frames)
+        frames[1] = frames[0]
+        self.assertFalse(triangle_workload_complete(self.make_log(frames)))
+
+    def test_wrong_shader_status_layout_or_fence_rejected(self):
+        for old,new in (('gpuTrianglePipeline=00000000','gpuTrianglePipeline=80004001'),
+                        (f'vertexHash={SHADERS[2]}','vertexHash=0000000000000000'),
+                        (f'pixelBytes={SHADERS[1]}',f'pixelBytes={SHADERS[0]}'), ('colorRotation=1','colorRotation=0'),
+                        ('rowPitch=768','rowPitch=520'), ('offset=512','offset=0'),
+                        ('totalBytes=56328','totalBytes=4096'), ('fenceObserved=2','fenceObserved=1'),
+                        ('fenceObserved=2','fenceObserved=18446744073709551615'),
+                        ('maxChannelError=0','maxChannelError=2'), ('tolerance=2','tolerance=255'),
+                        ('verifiedPixels=9490','verifiedPixels=9489')):
+            self.assertFalse(triangle_workload_complete(self.log.replace(old,new)))
+        for extra in ('GPU_TRIANGLE_TIMEOUT round=2', 'gpuTriangleDeviceRemoved=887a0005',
+                      'GPU_TRIANGLE_PIXEL_ROW round=2 y=1 rgba=INVALID'):
+            self.assertFalse(triangle_workload_complete(self.log+'\n'+extra))
+
+    def test_duplicates_out_of_order_and_forged_hashes_rejected(self):
+        for line in self.log.splitlines():
+            if line.startswith(('GPU_TRIANGLE','gpuTriangle')):
+                self.assertFalse(triangle_workload_complete(self.log+'\n'+line))
+        self.assertFalse(triangle_workload_complete(self.log.replace('GPU_TRIANGLE_PIXEL_ROW round=2','GPU_TRIANGLE_PIXEL_ROW round=1')))
+        self.assertFalse(triangle_workload_complete(self.log.replace('y=72 rgba=', 'y=71 rgba=')))
+        self.assertFalse(triangle_workload_complete(self.log.replace('observedHash='+checksum(self.frames[0]), 'observedHash=0000000000000000')))
+        self.assertFalse(triangle_workload_complete(self.log.replace('referenceHash='+checksum(self.frames[0]), 'referenceHash=0000000000000000')))
+        stage = 'gpuTrianglePipeline=00000000'
+        self.assertFalse(triangle_workload_complete(stage+'\n'+self.log.replace(stage+'\n','')))
+
+    def test_async_acceptance_requires_separate_retirement_proof(self):
+        log = self.log.replace('nativeCommandSubmitted=true','nativeCommandQueued=true')
+        self.assertFalse(triangle_workload_complete(log))
+        self.assertTrue(triangle_workload_complete(log,True))
+        self.assertFalse(triangle_workload_complete(log.replace('nativeCommandQueued=true','missing=true'),True))
 
 
 class NoBroadcastQueueEofTests(unittest.TestCase):

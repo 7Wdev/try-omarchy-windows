@@ -13,6 +13,7 @@ import re
 import subprocess
 import sys
 import threading
+from triangle_evidence import triangle_workload_complete
 
 
 def sha256(path):
@@ -203,7 +204,7 @@ def main():
     for name in ('qemu', 'firmware', 'kernel', 'initramfs', 'bridge', 'report'):
         parser.add_argument('--' + name, type=pathlib.Path, required=True)
     parser.add_argument('--expected-unimplemented-ioctl', type=int, required=True)
-    parser.add_argument('--runtime-workload', choices=('init', 'copy', 'clear'), default='init', help='Require the workload selected when packing the private guest image')
+    parser.add_argument('--runtime-workload', choices=('init', 'copy', 'clear', 'triangle'), default='init', help='Require the workload selected when packing the private guest image')
     parser.add_argument('--driver-allocations', action='store_true', help='Explicitly enable diagnostic vendor video-memory allocations')
     parser.add_argument('--minimum-vendor-allocations', type=int, default=0)
     parser.add_argument('--minimum-uninitialized-source-allocations', type=int, default=0)
@@ -689,6 +690,7 @@ def main():
                         for g,n,s,r in zip(context_signals,context_signal_native,context_signal_status,context_signal_retirements)))
         copy_verified = copy_workload_complete(log, args.driver_async_submit and async_verified)
         clear_verified = clear_workload_complete(log, args.driver_async_submit and async_verified)
+        triangle_verified = triangle_workload_complete(log, args.driver_async_submit and async_verified)
         hwqueue_flags = [int(flag or '0') for flag in re.findall(r'nativeHwQueueCreated=true privateBytes=\d+ progressFenceDirect=true(?: flags=(\d+))?',log)]
         hwqueue_flag_checks = [json.loads(line) for line in errors if line.startswith('{') and '"nativeHardwareQueueFlagsVerified"' in line]
         no_broadcast_queues = sum(bool(flag & 2) for flag in hwqueue_flags)
@@ -701,12 +703,15 @@ def main():
                       all(n['flags'] == g and n['unchanged'] is True and n['ntstatus'] == 0 for n,g in zip(hwqueue_flag_checks,hwqueue_flags)))))
         if late_guest_eof:
             accepted = accepted and no_broadcast_queue_eof_complete(log, control, cleanup, 6 if args.hwqueue_no_broadcast_wait_eof_test else 2)
-        elif args.runtime_workload == 'clear':
+        elif args.runtime_workload in ('clear', 'triangle'):
             accepted = accepted and no_broadcast_queues >= 1 and len(context_signals) + len(hw_queue_signals) == 2 and resources >= 2
         workload_matches = ((not clear_verified and not copy_verified and 'GPU_CLEAR_TEST_BEGIN' in log and 'GPU_COPY_TEST_BEGIN' not in log) if late_guest_eof else
                             (copy_verified and 'GPU_CLEAR_TEST_BEGIN' not in log) if args.runtime_workload == 'copy' else
                             (clear_verified and 'GPU_COPY_TEST_BEGIN' not in log) if args.runtime_workload == 'clear' else
+                            (triangle_verified and 'GPU_COPY_TEST_BEGIN' not in log and 'GPU_CLEAR_TEST_BEGIN' not in log) if args.runtime_workload == 'triangle' else
                             'GPU_COPY_TEST_BEGIN' not in log and 'GPU_CLEAR_TEST_BEGIN' not in log)
+        if args.runtime_workload != 'triangle':
+            workload_matches = workload_matches and 'GPU_TRIANGLE_TEST_BEGIN' not in log
         accepted = accepted and workload_matches
         report = {'schema': 1, 'diagnosticAccepted': bool(accepted), 'runtimeInitializationComplete': bool(initialized and accepted),
                   'runtimeInitializationResultsSucceeded': bool(initialized),
@@ -721,12 +726,16 @@ def main():
                   'guestGpuRenderTargetClearVerified': bool(clear_verified and accepted),
                   'guestGpuRenderTargetClearPixelsPerRound': 9490 if clear_verified and accepted else 0,
                   'guestGpuRenderTargetClearRounds': 2 if clear_verified and accepted else 0,
+                  'guestGpuShaderTriangleVerified': bool(triangle_verified and accepted),
+                  'guestGpuShaderTrianglePixelsPerRound': 9490 if triangle_verified and accepted else 0,
+                  'guestGpuShaderTriangleRounds': 2 if triangle_verified and accepted else 0,
                   'nativeNoBroadcastSignalHardwareQueues': no_broadcast_queues,
                   'nativeNoBroadcastWaitHardwareQueues': no_broadcast_wait_queues,
                   'guestHardwareQueueFlags': hwqueue_flags, 'nativeHardwareQueueFlagChecks': hwqueue_flag_checks,
-                  'd3d12DirectQueueHresult': next(iter(re.findall(r'^gpuClearDirectQueue=([0-9a-f]{8})[ \t\r]*$',log,re.MULTILINE)),None),
+                  'd3d12DirectQueueHresult': next(iter(re.findall(r'^gpu(?:Clear|Triangle)DirectQueue=([0-9a-f]{8})[ \t\r]*$',log,re.MULTILINE)),None),
                   'stage': 'owned VM exit with a combined NoBroadcastSignal/NoBroadcastWait hardware queue; graphics rendering unverified' if args.hwqueue_no_broadcast_wait_eof_test else
                            'owned VM exit with a NoBroadcastSignal hardware queue; graphics rendering unverified' if late_guest_eof else
+                           'live NVIDIA D3D12 shader triangle drawing with independently verified pixels' if args.runtime_workload == 'triangle' else
                            'live NVIDIA D3D12 graphics queue render-target clears with verified pixels' if args.runtime_workload == 'clear' else
                            'live NVIDIA D3D12 GPU buffer copies with verified guest readback' if args.runtime_workload == 'copy' else
                            'owned VM exit with a NoSignalMaxValueOnTdr fence and standalone source allocation' if args.sync_no_max_eof_test else
@@ -834,7 +843,7 @@ def main():
             def last_metadata(lines, marker):
                 return next((json.loads(line) for line in reversed(lines) if line.startswith('{') and marker in line), {})
             failure = {'schema':1, 'diagnosticAccepted':False, 'runtimeInitializationComplete':False,
-                       'guestGpuBufferCopyVerified':False, 'guestGpuRenderTargetClearVerified':False,
+                       'guestGpuBufferCopyVerified':False, 'guestGpuRenderTargetClearVerified':False, 'guestGpuShaderTriangleVerified':False,
                        'runtimeWorkload':args.runtime_workload, 'fatalDiagnosticError':str(error),
                        'hostBridgeExit':owner.poll(), 'observerErrors':list(observer_errors),
                        'ownedQemuControl':last_metadata(output,'ownedQemuExited'),
