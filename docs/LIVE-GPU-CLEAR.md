@@ -7,6 +7,13 @@ Linux D3D12 runtime creates a DIRECT queue, render target, RTV heap and readback
 buffer through the Windows KMT bridge. Both runs exit normally with all native
 commands retired and all bridge-owned objects released.
 
+![Actual NVIDIA guest GPU readback, round two](images/nvidia-guest-clear-2026-10-10.png)
+
+Actual final-round GPU readback, enlarged 6× with nearest-neighbor sampling.
+The source is 130×73 RGBA8 pixels; its dense RGBA SHA-256 is
+`74cc6245fb970e1bf884f875d9b27633946552b9f879b33dde0fe9c0468e381e`.
+This frame demonstrates the bounded render-target clear diagnostic.
+
 [Hardware evidence](evidence/QEMU-LIVE-GPU-CLEAR-2026-10-10.json) records both
 repeats, copy and initialization regressions, a combined internal-queue VM exit
 control, and a rejected copy-image/clear-verifier mismatch. The prior
