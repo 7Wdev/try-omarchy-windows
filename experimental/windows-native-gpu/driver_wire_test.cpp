@@ -64,6 +64,8 @@ struct Fake : Driver {
     bool consumeSharedEnabled = false;
     int badConsumeReply = 0;
     std::vector<std::uint8_t> lastSharedRuntime;
+    bool nativeTextureEnabled = false;
+    unsigned nativeTextureCalls = 0;
     int badResourceReply = 0;
     bool contextSignalEnabled = false;
     int badContextSignalReply = 0;
@@ -80,6 +82,7 @@ struct Fake : Driver {
                 (guestPagingEnabled ? GuestPagingCapability : 0u) | (vendorEnabled ? VendorAllocationCapability : 0u) |
                 (resourceEnabled ? VendorResourceCapability : 0u) |
                 (sharedResourceEnabled ? SharedVendorResourceCapability : 0u) |
+                (nativeTextureEnabled ? NativeSharedTextureCapability : 0u) |
                 (consumeSharedEnabled ? SharedTextureConsumeCapability : 0u) |
                 (expandedVendorObjectsEnabled ? ExpandedVendorObjectsCapability : 0u) |
                 (contextSignalEnabled ? ContextSignalCapability : 0u) |
@@ -167,6 +170,10 @@ struct Fake : Driver {
         const auto result = createVendorResourceAllocation(device, desc.allocation, allocation);
         data = allocation; data.insert(data.end(), lastSharedRuntime.begin(), lastSharedRuntime.end());
         return result;
+    }
+    VendorResourceResult createNativeSharedVendorResourceAllocation(std::uint32_t device, NativeSharedVendorAllocationDesc desc, std::vector<std::uint8_t>& data) override {
+        require(nativeTextureEnabled && validNativeSharedVendorAllocation(desc)); ++nativeTextureCalls;
+        return createSharedVendorResourceAllocation(device, desc.shared, data);
     }
     GpuVaResult mapVendorAllocation(std::uint32_t allocation, std::uint32_t queue, GpuVaDesc desc) override {
         require(vendorOwners.count(allocation) && queue > 500 && validGpuVa(desc)); ++calls;
@@ -1906,6 +1913,53 @@ int main() {
         require(!header(session.dispatch(request(Op::DestroyVendorResource,resource.resource,device))).status);
         require(shared.vendorOwners.empty() && shared.vendorResources.empty());
         require(header(session.dispatch(request(Op::DestroyVendorResource,resource.resource,device))).status == -9);
+    }
+    Fake native; native.vendorEnabled = native.resourceEnabled = native.sharedResourceEnabled = true;
+    {
+        Session session(native);
+        NativeSharedVendorAllocationDesc desc{{{4,0x78100000,0,4,0,0},4,0},{130,73,28,1}};
+        auto create = [&](std::uint32_t device, NativeSharedVendorAllocationDesc d) {
+            auto p = request(Op::CreateNativeSharedVendorResourceAllocation,device,d);
+            p.insert(p.end(),{37,38,39,40,5,6,7,8}); return p;
+        };
+        require(header(session.dispatch(create(1,desc))).status == -71);
+        session.dispatch(hello());
+        const auto adapter = header(session.dispatch(request(Op::OpenAdapter))).handle;
+        const auto device = header(session.dispatch(request(Op::CreateDevice,adapter))).handle;
+        require(header(session.dispatch(create(device,desc))).status == -95 && !native.nativeTextureCalls);
+        native.nativeTextureEnabled = true;
+        require(header(session.dispatch(create(adapter,desc))).status == -9 && !native.nativeTextureCalls);
+        for (unsigned n=0;n<10;++n) {
+            auto d = desc;
+            if (n==0) d.texture.width=0;
+            if (n==1) d.texture.height=74;
+            if (n==2) d.texture.format=87;
+            if (n==3) d.texture.flags=3;
+            if (n==4) d.shared.reserved=1;
+            if (n==5) d.shared.runtimeBytes=0;
+            if (n==6) d.shared.allocation.flags=0;
+            if (n==7) d.shared.allocation.privateBytes=UINT32_MAX;
+            auto p=create(device,d);
+            if (n==8) p.pop_back();
+            if (n==9) p.push_back(0);
+            require(header(session.dispatch(p)).status == -22 && !native.nativeTextureCalls);
+        }
+        auto maximum=desc; maximum.shared.runtimeBytes=1024; maximum.shared.allocation.privateBytes=3008;
+        require(validNativeSharedVendorAllocation(maximum)); ++maximum.shared.allocation.privateBytes;
+        require(!validNativeSharedVendorAllocation(maximum));
+        native.fail=true;
+        auto out=session.dispatch(create(device,desc));
+        require(!header(out).status && !header(out).handle && native.vendorOwners.empty() && out.back()==8);
+        native.fail=false; native.badResourceReply=1;
+        require(header(session.dispatch(create(device,desc))).status==-5 && native.vendorOwners.empty());
+        native.badResourceReply=0;
+        out=session.dispatch(create(device,desc)); VendorResourceReply resource{};
+        std::memcpy(&resource,out.data()+sizeof(Header)+sizeof(Reply),sizeof resource);
+        require(!header(out).status && header(out).handle && resource.resource && native.nativeTextureCalls==3);
+        require(native.lastSharedRuntime==std::vector<std::uint8_t>({5,6,7,8}));
+        require(out[out.size()-8]==(37^255) && out.back()==8);
+        require(!header(session.dispatch(request(Op::DestroyVendorResource,resource.resource,device))).status);
+        require(native.vendorOwners.empty() && native.vendorResources.empty());
     }
     Fake consumer; consumer.vendorEnabled = consumer.resourceEnabled = consumer.sharedResourceEnabled = consumer.syncEnabled = true;
     {

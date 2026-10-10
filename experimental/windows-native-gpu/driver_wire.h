@@ -25,6 +25,7 @@ constexpr std::uint32_t VendorAllocationCapability = 256;
 constexpr std::uint32_t VendorResourceCapability = 524288;
 constexpr std::uint32_t SharedVendorResourceCapability = 268435456;
 constexpr std::uint32_t SharedTextureConsumeCapability = 536870912;
+constexpr std::uint32_t NativeSharedTextureCapability = 1073741824;
 struct SharedTextureConsumeDesc { std::uint32_t sync, reserved; std::uint64_t fence; };
 static_assert(sizeof(SharedTextureConsumeDesc) == 16, "fixed shared texture handoff layout");
 inline bool validSharedTextureConsume(SharedTextureConsumeDesc d) { return d.sync && !d.reserved && d.fence && d.fence != UINT64_MAX; }
@@ -243,6 +244,22 @@ inline bool validSharedVendorAllocation(SharedVendorAllocationDesc d) {
            d.runtimeBytes && d.runtimeBytes <= 1024 && !d.reserved &&
            d.allocation.privateBytes + d.runtimeBytes <= native_gpu::MaxPacket - sizeof(Header) - sizeof(d);
 }
+struct NativeTextureDesc { std::uint32_t width, height, format, flags; };
+static_assert(sizeof(NativeTextureDesc) == 16, "fixed public texture profile");
+inline bool validNativeTexture(NativeTextureDesc d) {
+    // Initial diagnostic profile: TEX2D, RGBA8, one mip/array/sample,
+    // ALLOW_RENDER_TARGET, DEFAULT/SHARED heap, UNKNOWN layout, no clear value.
+    return d.width == 130 && d.height == 73 && d.format == 28 && d.flags == 1;
+}
+struct NativeSharedVendorAllocationDesc {
+    SharedVendorAllocationDesc shared;
+    NativeTextureDesc texture;
+};
+static_assert(sizeof(NativeSharedVendorAllocationDesc) == 48, "fixed typed shared resource layout");
+inline bool validNativeSharedVendorAllocation(NativeSharedVendorAllocationDesc d) {
+    return validSharedVendorAllocation(d.shared) && validNativeTexture(d.texture) &&
+           d.shared.allocation.privateBytes + d.shared.runtimeBytes <= native_gpu::MaxPacket - sizeof(Header) - sizeof(d);
+}
 constexpr std::uint32_t DefaultFenceSlots = 64, MaxFenceSlots = 128;
 inline bool validFenceSlots(std::uint32_t slots) { return slots == DefaultFenceSlots || slots == MaxFenceSlots; }
 constexpr std::uint64_t FenceApertureBytes = MaxFenceSlots * 4096;
@@ -281,6 +298,7 @@ enum class Op : std::uint32_t {
     CreateVendorAllocation = 0x2050, DestroyVendorAllocations, MapVendorAllocation, MakeVendorResident,
     LockVendorAllocation, UnlockVendorAllocation, TranslateVendorAllocation,
     CreateVendorResourceAllocation, DestroyVendorResource, CreateSharedVendorResourceAllocation, ConsumeSharedTexture,
+    CreateNativeSharedVendorResourceAllocation,
     CreateHwQueue = 0x2060, DestroyHwQueue, SubmitHwQueue, QueueHwCommand,
     CreateSync = 0x2070, DestroySync, SignalContextSync, QueueHwQueueSignal,
     ReserveGpuAddress = 0x2080, FreeGpuReservation, MapGpuState
@@ -349,6 +367,9 @@ public:
         return {{static_cast<std::int32_t>(0xc00000bbu), 0, 0}, 0};
     }
     virtual VendorResourceResult createSharedVendorResourceAllocation(std::uint32_t, SharedVendorAllocationDesc, std::vector<std::uint8_t>&) {
+        return {{static_cast<std::int32_t>(0xc00000bbu), 0, 0}, 0};
+    }
+    virtual VendorResourceResult createNativeSharedVendorResourceAllocation(std::uint32_t, NativeSharedVendorAllocationDesc, std::vector<std::uint8_t>&) {
         return {{static_cast<std::int32_t>(0xc00000bbu), 0, 0}, 0};
     }
     virtual Result consumeSharedTexture(std::uint32_t, std::uint32_t, SharedTextureConsumeDesc) {
@@ -827,13 +848,15 @@ public:
             std::memcpy(out.data(), &response, sizeof response); return out;
         }
         if (op == Op::CreateVendorAllocation || op == Op::CreateVendorResourceAllocation ||
-            op == Op::CreateSharedVendorResourceAllocation || op == Op::DestroyVendorAllocations) {
+            op == Op::CreateSharedVendorResourceAllocation || op == Op::CreateNativeSharedVendorResourceAllocation || op == Op::DestroyVendorAllocations) {
             if (!negotiated) return reply(h, -71);
             if (!(driver.capabilities().flags & VendorAllocationCapability)) return reply(h, -95);
-            const bool sharedResource = op == Op::CreateSharedVendorResourceAllocation;
+            const bool nativeTexture = op == Op::CreateNativeSharedVendorResourceAllocation;
+            const bool sharedResource = op == Op::CreateSharedVendorResourceAllocation || nativeTexture;
             const bool withResource = op == Op::CreateVendorResourceAllocation || sharedResource;
             if (withResource && !(driver.capabilities().flags & VendorResourceCapability)) return reply(h, -95);
             if (sharedResource && !(driver.capabilities().flags & SharedVendorResourceCapability)) return reply(h, -95);
+            if (nativeTexture && !(driver.capabilities().flags & NativeSharedTextureCapability)) return reply(h, -95);
             const auto device = objects.find(h.handle);
             if (device == objects.end() || device->second.kind != Kind::Device) return reply(h, -9);
             if (op == Op::DestroyVendorAllocations) {
@@ -868,18 +891,25 @@ public:
             if (packet.size() < sizeof h + sizeof(VendorAllocationDesc)) return reply(h, -22);
             VendorAllocationDesc desc{}; std::memcpy(&desc, packet.data() + sizeof h, sizeof desc);
             SharedVendorAllocationDesc sharedDesc{};
-            const auto descriptorBytes = sharedResource ? sizeof sharedDesc : sizeof desc;
+            NativeSharedVendorAllocationDesc nativeDesc{};
+            const auto descriptorBytes = nativeTexture ? sizeof nativeDesc : sharedResource ? sizeof sharedDesc : sizeof desc;
             if (sharedResource) {
                 if (packet.size() < sizeof h + sizeof sharedDesc) return reply(h, -22);
                 std::memcpy(&sharedDesc, packet.data() + sizeof h, sizeof sharedDesc);
                 if (!validSharedVendorAllocation(sharedDesc)) return reply(h, -22);
+            }
+            if (nativeTexture) {
+                if (packet.size() < sizeof h + sizeof nativeDesc) return reply(h, -22);
+                std::memcpy(&nativeDesc, packet.data() + sizeof h, sizeof nativeDesc);
+                if (!validNativeSharedVendorAllocation(nativeDesc)) return reply(h, -22);
             }
             const auto dataBytes = desc.privateBytes + (sharedResource ? sharedDesc.runtimeBytes : 0);
             if (!validVendorAllocation(desc) || packet.size() != sizeof h + descriptorBytes + dataBytes) return reply(h, -22);
             const auto count = std::count_if(objects.begin(), objects.end(), [](const auto& item) { return item.second.kind == Kind::VendorAllocation; });
             if (objects.size() > MaxObjects - (withResource ? 2 : 1) || nextId >= UINT32_MAX - (withResource ? 1 : 0) || static_cast<std::size_t>(count) >= vendorAllocationObjectLimit(driver.capabilities().flags)) return reply(h, -24);
             std::vector<std::uint8_t> data(packet.begin() + sizeof h + descriptorBytes, packet.end());
-            const auto created = sharedResource ? driver.createSharedVendorResourceAllocation(device->second.nativeHandle, sharedDesc, data) :
+            const auto created = nativeTexture ? driver.createNativeSharedVendorResourceAllocation(device->second.nativeHandle, nativeDesc, data) :
+                                sharedResource ? driver.createSharedVendorResourceAllocation(device->second.nativeHandle, sharedDesc, data) :
                                 withResource ? driver.createVendorResourceAllocation(device->second.nativeHandle, desc, data) :
                                                VendorResourceResult{driver.createVendorAllocation(device->second.nativeHandle, desc, data), 0};
             const auto result = created.allocation;

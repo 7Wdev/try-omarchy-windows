@@ -232,6 +232,9 @@ class Bridge {
     std::map<std::uint32_t, std::uint32_t> hwQueueContexts;
     std::map<std::uint32_t, std::uint32_t> vendorResources; // typed resource ID -> its sole allocation alias
     std::set<std::uint32_t> sharedResources;
+    NativeTextureDesc pendingNativeTexture{};
+    std::uint32_t pendingNativeDevice = 0;
+    pthread_t pendingNativeThread{};
     std::uint32_t lastHwSignalSync = 0;
     struct BorrowedFence { std::uint32_t owner, device; bool hardware; };
     std::map<std::uint32_t, BorrowedFence> borrowedFences;
@@ -417,7 +420,7 @@ public:
                 a.AllocationListSize = 0; a.pPatchLocationList = nullptr; a.PatchLocationListSize = 0;
                 std::fprintf(stderr, "LINUX_BRIDGE deviceCreated=true\n"); return 0;
             }
-            case 25: { auto& a = args<D3DKMT_DESTROYDEVICE>(requestNumber, pointer); destroy(Op::DestroyDevice, a.hDevice); deviceAdapters.erase(a.hDevice); return 0; }
+            case 25: { auto& a = args<D3DKMT_DESTROYDEVICE>(requestNumber, pointer); destroy(Op::DestroyDevice, a.hDevice); deviceAdapters.erase(a.hDevice); if (pendingNativeDevice == a.hDevice) pendingNativeDevice = 0; return 0; }
             case 7: {
                 auto& a = args<D3DKMT_CREATEPAGINGQUEUE>(requestNumber, pointer);
                 if (!(caps.flags & GuestPagingCapability) || a.Priority != D3DDDI_PAGINGQUEUE_PRIORITY_NORMAL || a.PhysicalAdapterIndex) {
@@ -483,6 +486,12 @@ public:
                     }
                 const bool sharedResource = flags == 71; // CreateResource | CreateShared | NonSecure | NtSecuritySharing
                 const bool withResource = flags == 1 || sharedResource;
+                const bool nativeTexture = sharedResource && pendingNativeDevice;
+                const auto profile = pendingNativeTexture;
+                if (nativeTexture) {
+                    const auto preparedDevice = pendingNativeDevice; pendingNativeDevice = 0;
+                    if (a.hDevice != preparedDevice || !pthread_equal(pendingNativeThread, pthread_self())) throw Error(EBADF);
+                }
                 if (!(caps.flags & VendorAllocationCapability) || (flags != 0 && !withResource) ||
                     (withResource && !(caps.flags & VendorResourceCapability)) ||
                     (sharedResource && !(caps.flags & SharedVendorResourceCapability)) || a.hResource ||
@@ -497,7 +506,10 @@ public:
                 if (vendorOwners.size() >= vendorAllocationObjectLimit(caps.flags)) throw Error(EMFILE);
                 const SharedVendorAllocationDesc sharedDesc{desc, a.PrivateRuntimeDataSize, 0};
                 if (sharedResource && (!validSharedVendorAllocation(sharedDesc) || !a.pPrivateRuntimeData)) throw Error(EINVAL);
-                auto packet = sharedResource ? request(Op::CreateSharedVendorResourceAllocation, a.hDevice, sharedDesc) :
+                const NativeSharedVendorAllocationDesc nativeDesc{sharedDesc, profile};
+                if (nativeTexture && !validNativeSharedVendorAllocation(nativeDesc)) throw Error(EINVAL);
+                auto packet = nativeTexture ? request(Op::CreateNativeSharedVendorResourceAllocation, a.hDevice, nativeDesc) :
+                    sharedResource ? request(Op::CreateSharedVendorResourceAllocation, a.hDevice, sharedDesc) :
                     request(withResource ? Op::CreateVendorResourceAllocation : Op::CreateVendorAllocation, a.hDevice, desc);
                 const auto begin = static_cast<const std::uint8_t*>(item.pPrivateDriverData);
                 packet.insert(packet.end(), begin, begin + desc.privateBytes);
@@ -548,6 +560,8 @@ public:
                 item.hAllocation = alias; item.GpuVirtualAddress = result.result.value;
                 a.hResource = resource.resource; a.hGlobalShare = 0;
                 if (sharedResource) sharedResources.insert(resource.resource);
+                if (nativeTexture) std::fprintf(stderr, "LINUX_BRIDGE nativeTextureDeclared=true width=%u height=%u format=%u flags=%u guestRuntimePreserved=true\n",
+                                               profile.width, profile.height, profile.format, profile.flags);
                 if (withResource) std::fprintf(stderr, "LINUX_BRIDGE nativeVendorResourceCreated=true allocationCount=1 shared=%s systemMemory=false\n", sharedResource ? "true" : "false");
                 if (desc.source == UninitializedDisplaySource)
                     std::fprintf(stderr, "LINUX_BRIDGE standaloneSourceUninitializedAccepted=true primary=false privateDataPreserved=true\n");
@@ -1177,6 +1191,12 @@ public:
                 throw Error(ENOSYS);
         }
     }
+    void prepareNativeTexture(NativeTextureDesc profile) {
+        if (!(caps.flags & NativeSharedTextureCapability) || !(caps.flags & SharedVendorResourceCapability)) throw Error(ENOSYS);
+        if (!validNativeTexture(profile)) throw Error(EINVAL);
+        if (pendingNativeDevice || !sharedResources.empty() || deviceAdapters.size() != 1) throw Error(EBUSY);
+        pendingNativeTexture = profile; pendingNativeDevice = deviceAdapters.begin()->first; pendingNativeThread = pthread_self();
+    }
     std::uint64_t consumeSharedTexture(std::uint64_t target) {
         if (!(caps.flags & SharedTextureConsumeCapability)) throw Error(ENOSYS);
         if (sharedResources.size() != 1 || !lastHwSignalSync) throw Error(EINVAL);
@@ -1222,6 +1242,16 @@ int deviceOpen(const char* path, int flags) {
     std::fprintf(stderr, "LINUX_BRIDGE openFailed errno=%d\n", errno); return -1;
 }
 bool modeArgument(int flags) { return (flags & O_CREAT) || (flags & O_TMPFILE) == O_TMPFILE; }
+}
+// Explicit diagnostic declaration for the next shared allocation on this thread.
+// The sole owned device binds the declaration; a failed attempt consumes it.
+extern "C" int wddm_bridge_prepare_native_texture(std::uint32_t width, std::uint32_t height, std::uint32_t format, std::uint32_t flags) {
+    if (bridgeStopped) { errno = ESHUTDOWN; return -1; }
+    auto& state = bridge(); std::lock_guard<std::mutex> lock(state.guard);
+    try { state.prepareNativeTexture({width,height,format,flags}); return 0; }
+    catch (const Error& error) { errno = error.number; }
+    catch (...) { state.protocolFailed(); errno = EIO; }
+    return -1;
 }
 // Lab handoff hook; it chooses only the unique owned shared resource and the
 // most recently signaled owned workload fence. No host pointer/handle is exposed.

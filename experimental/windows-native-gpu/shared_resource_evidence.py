@@ -6,7 +6,9 @@ BEGIN = 'GPU_SHARED_RESOURCE_TEST_BEGIN width=130 height=73 format=R8G8B8A8_UNOR
 END = 'GPU_SHARED_RESOURCE_TEST_COMPLETE verified=true width=130 height=73 rounds=2'
 
 
-def shared_resource_import_complete(log, probes, cleanup, triangle_verified):
+def shared_resource_import_complete(log, probes, cleanup, triangle_verified, *, runtime_bytes=264):
+    if type(runtime_bytes) is not int or not 0 < runtime_bytes <= 1024:
+        return False
     lines = log.splitlines()
     records = [line for line in lines if line.startswith('GPU_SHARED_RESOURCE_')]
     if not triangle_verified or records != [BEGIN, END] or len(probes) != 1:
@@ -18,7 +20,7 @@ def shared_resource_import_complete(log, probes, cleanup, triangle_verified):
     if not (lines.index(BEGIN) < lines.index(triangle_begin) < lines.index(triangle_end) < lines.index(END)):
         return False
     expected = {'nativeSharedResourceImportProbe': True, 'verified': True, 'ntstatus': 0,
-                'deviceHresult': 0, 'importHresult': 0, 'runtimeBytes': 264,
+                'deviceHresult': 0, 'importHresult': 0, 'runtimeBytes': runtime_bytes,
                 'width': 130, 'height': 73, 'format': 28, 'dimension': 3, 'flags': 1,
                 'sharedNtHandleClosed': True, 'importedResourceReleased': True,
                 'gpuCopy': False, 'presented': False}

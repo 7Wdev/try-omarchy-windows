@@ -1,5 +1,10 @@
 # Native presentation of QEMU guest shader frames
 
+Later [typed texture tests](LIVE-GPU-NATIVE-METADATA.md) reproduced zero DXGI
+frame statistics in two fresh presentation attempts despite successful imports
+and correct first-frame backbuffer pixels. Those runs are rejected. The accepted
+runs below are historical evidence and do not establish display stability.
+
 Two fresh owned QEMU/WHPX runs on 2026-10-10 copied two distinct guest-rendered
 NVIDIA frames into a native Windows DXGI swapchain. Every backbuffer RGBA byte
 matched the corresponding guest frame. `Present(1, 0)`, the presentation queue

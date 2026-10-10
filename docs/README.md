@@ -30,6 +30,7 @@ These guides describe their own limits and validation status. They are not a pro
 - [Guest shared texture and Windows resource import](LIVE-GPU-SHARED-RESOURCE.md): presentation prerequisite verified separately from drawing
 - [Windows GPU consumption of guest textures](LIVE-GPU-SHARED-TEXTURE-CONSUMPTION.md): fenced handoff and native GPU copies verified separately from presentation
 - [Native DXGI presentation of guest shader frames](LIVE-GPU-PRESENTATION.md): backbuffer bytes and presentation statistics verified; import stability and Omarchy display integration unfinished
+- [Typed textures with Windows-generated metadata](LIVE-GPU-NATIVE-METADATA.md): three repeated GPU consumption runs pass; two newer presentation-statistics failures preserved
 
 ## Development and testing
 

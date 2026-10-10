@@ -12,6 +12,7 @@
 #include <cstdio>
 #include <cstring>
 #include <dlfcn.h>
+#include <pthread.h>
 static int failed(const char* message) { std::fprintf(stderr, "FAIL: %s errno=%d\n", message, errno); return 1; }
 int main(int argc, char** argv) {
     if (argc != 2) return 2;
@@ -112,6 +113,65 @@ int main(int argc, char** argv) {
             }
         } else if (ioctl(fd, _IOWR('G', 58, D3DKMT_WAITFORSYNCHRONIZATIONOBJECTFROMCPU), &wait) != -1 || errno != EBADF)
             return failed("CPU wait accepted unowned fence");
+        close(fd); return 0;
+    }
+    if (!std::strncmp(mode, "native-resource-", 16)) {
+        using Prepare = int (*)(std::uint32_t,std::uint32_t,std::uint32_t,std::uint32_t);
+        const auto prepare = reinterpret_cast<Prepare>(dlsym(RTLD_DEFAULT,"wddm_bridge_prepare_native_texture"));
+        if (!prepare) return failed("native declaration hook absent");
+        if (!std::strcmp(mode,"native-resource-unowned")) {
+            if (prepare(130,73,28,1) != -1 || errno != EBUSY) return failed("unowned native declaration accepted");
+            close(fd); return 0;
+        }
+        D3DKMT_OPENADAPTERFROMLUID adapter{}; adapter.AdapterLuid.LowPart = 0x57475055;
+        if (ioctl(fd, _IOWR('G', 1, D3DKMT_OPENADAPTERFROMLUID), &adapter)) return failed("shared adapter");
+        D3DKMT_CREATEDEVICE device{}; device.hAdapter = adapter.hAdapter; device.Flags.RequestVSync = 1;
+        if (ioctl(fd, _IOWR('G', 2, D3DKMT_CREATEDEVICE), &device)) return failed("shared device");
+        unsigned char data[]{37,38,39,40}, runtime[]{5,6,7,8};
+        D3DDDI_ALLOCATIONINFO2 info{}; info.Flags.Value = 4; info.Priority = 0x78100000;
+        info.pPrivateDriverData = data; info.PrivateDriverDataSize = sizeof data;
+        D3DKMT_CREATEALLOCATION allocation{}; allocation.hDevice = device.hDevice;
+        allocation.Flags.CreateResource = 1; allocation.Flags.CreateShared = 1;
+        allocation.Flags.NonSecure = 1; allocation.Flags.NtSecuritySharing = 1;
+        allocation.NumAllocations = 1; allocation.pAllocationInfo2 = &info;
+        allocation.pPrivateRuntimeData = runtime; allocation.PrivateRuntimeDataSize = sizeof runtime;
+        if (!std::strcmp(mode,"native-resource-disabled")) {
+            if (prepare(130,73,28,1) != -1 || errno != ENOSYS) return failed("native capability bypass");
+            close(fd); return 0;
+        }
+        if (!std::strcmp(mode,"native-resource-invalid")) {
+            for (unsigned n=0;n<4;++n) {
+                const unsigned profile[]{n==0?0u:130u,n==1?74u:73u,n==2?87u:28u,n==3?3u:1u};
+                if (prepare(profile[0],profile[1],profile[2],profile[3]) != -1 || errno != EINVAL)
+                    return failed("invalid native profile accepted");
+            }
+            close(fd); return 0;
+        }
+        if (prepare(130,73,28,1)) return failed("prepare native texture");
+        if (!std::strcmp(mode,"native-resource-duplicate") && (prepare(130,73,28,1) != -1 || errno != EBUSY))
+            return failed("duplicate native declaration accepted");
+        if (!std::strcmp(mode,"native-resource-retry")) {
+            info.pSystemMem=runtime;
+            if (ioctl(fd,_IOWR('G',6,D3DKMT_CREATEALLOCATION),&allocation) != -1 || errno != EINVAL)
+                return failed("invalid native allocation accepted");
+            info.pSystemMem=nullptr;
+            if (prepare(130,73,28,1)) return failed("failed native attempt left stale declaration");
+        }
+        if (!std::strcmp(mode,"native-resource-thread")) {
+            struct Attempt { int fd; D3DKMT_CREATEALLOCATION* allocation; bool rejected=false; } attempt{fd,&allocation};
+            pthread_t thread;
+            if (pthread_create(&thread,nullptr,[](void* raw)->void* {
+                auto& a=*static_cast<Attempt*>(raw);
+                a.rejected=ioctl(a.fd,_IOWR('G',6,D3DKMT_CREATEALLOCATION),a.allocation)==-1 && errno==EBADF;
+                return nullptr;
+            },&attempt) || pthread_join(thread,nullptr) || !attempt.rejected) return failed("cross-thread native declaration accepted");
+            if (prepare(130,73,28,1)) return failed("cross-thread attempt left stale declaration");
+        }
+        const int result = ioctl(fd, _IOWR('G', 6, D3DKMT_CREATEALLOCATION), &allocation);
+        if (result || info.hAllocation != 3 || allocation.hResource != 4 || allocation.hGlobalShare ||
+            data[0] != (37 ^ 255) || runtime[0] != 5 || runtime[3] != 8) return failed("native shared result changed");
+        D3DKMT_DESTROYALLOCATION2 release{}; release.hDevice = device.hDevice; release.hResource = allocation.hResource;
+        if (ioctl(fd, _IOWR('G', 19, D3DKMT_DESTROYALLOCATION2), &release)) return failed("native shared resource destruction");
         close(fd); return 0;
     }
     if (!std::strncmp(mode, "shared-resource-", 16)) {

@@ -8,7 +8,9 @@
 [Windows NVIDIA investigation](docs/WINDOWS-NVIDIA-BACKEND.md).
 The GPU experiment now verifies [NVIDIA guest shader rendering through QEMU/WHPX](docs/LIVE-GPU-SHADER-TRIANGLE.md),
 including [native DXGI presentation of shared guest textures](docs/LIVE-GPU-PRESENTATION.md).
-Import stability and Omarchy desktop integration remain unfinished.
+The newer [typed texture metadata tests](docs/LIVE-GPU-NATIVE-METADATA.md) pass
+three GPU consumption repeats but reject two presentation attempts with zero
+DXGI statistics. Import/display stability and Omarchy desktop integration remain unfinished.
 Download links below refer to official upstream releases.
 
 <p align="center">The full Omarchy desktop, running in a window on your Windows PC.</p>

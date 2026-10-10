@@ -16,6 +16,7 @@ import threading
 from triangle_evidence import triangle_workload_complete
 from shared_resource_evidence import shared_resource_import_complete
 from shared_texture_evidence import shared_texture_consume_complete
+from native_metadata_evidence import native_texture_runtime_bytes
 
 
 def sha256(path):
@@ -207,9 +208,10 @@ def main():
         parser.add_argument('--' + name, type=pathlib.Path, required=True)
     parser.add_argument('--expected-unimplemented-ioctl', type=int, required=True)
     parser.add_argument('--driver-consume-shared', action='store_true', help='Opt into native GPU consumption after explicit COMMON/fence handoff')
+    parser.add_argument('--driver-native-metadata', action='store_true', help='Enable typed texture allocation with Windows-generated runtime metadata')
     parser.add_argument('--driver-present-shared', action='store_true', help='Present consumed guest frames in an owned diagnostic Windows window')
     parser.add_argument('--driver-shared-resources', action='store_true', help='Opt into bounded shareable NVIDIA resource creation and native import probing')
-    parser.add_argument('--runtime-workload', choices=('init', 'copy', 'clear', 'triangle', 'shared', 'consume'), default='init', help='Require the workload selected when packing the private guest image')
+    parser.add_argument('--runtime-workload', choices=('init', 'copy', 'clear', 'triangle', 'shared', 'consume', 'native'), default='init', help='Require the workload selected when packing the private guest image')
     parser.add_argument('--driver-allocations', action='store_true', help='Explicitly enable diagnostic vendor video-memory allocations')
     parser.add_argument('--minimum-vendor-allocations', type=int, default=0)
     parser.add_argument('--minimum-uninitialized-source-allocations', type=int, default=0)
@@ -316,6 +318,8 @@ def main():
             args.driver_submit and (not args.driver_hwqueues or not args.driver_syncs or not args.driver_cpu or not args.driver_residency or
                                     args.cpu_store_test or early_guest_eof)):
         parser.error('Submission requires queues, syncs, CPU mappings and residency in a separate diagnostic run')
+    if args.driver_native_metadata and not args.driver_shared_resources:
+        parser.error('Native texture metadata requires explicit shared resource opt-in')
     if args.driver_present_shared and not args.driver_consume_shared:
         parser.error('Shared texture presentation requires explicit consumption opt-in')
     if args.driver_consume_shared and (not args.driver_shared_resources or not args.driver_async_submit or not args.driver_syncs):
@@ -357,6 +361,7 @@ def main():
                              (['--driver-shared-resources'] if args.driver_shared_resources else []) +
                              (['--driver-consume-shared'] if args.driver_consume_shared else []) +
                              (['--driver-present-shared'] if args.driver_present_shared else []) +
+                             (['--driver-native-metadata'] if args.driver_native_metadata else []) +
                              (['--cpu-store-test'] if args.cpu_store_test else []) + (['--cpu-eof-test'] if args.cpu_eof_test else []) +
                              (['--cpu-span-eof-test'] if args.cpu_span_eof_test else []) +
                              (['--hwqueue-eof-test'] if args.hwqueue_eof_test else []) +
@@ -709,7 +714,9 @@ def main():
         copy_verified = copy_workload_complete(log, args.driver_async_submit and async_verified)
         clear_verified = clear_workload_complete(log, args.driver_async_submit and async_verified)
         triangle_verified = triangle_workload_complete(log, args.driver_async_submit and async_verified)
-        shared_verified = shared_resource_import_complete(log, shared_probes, cleanup, triangle_verified)
+        native_requested = args.runtime_workload == 'native'
+        metadata_bytes = native_texture_runtime_bytes(log, "\n".join(errors), requested=native_requested)
+        shared_verified = shared_resource_import_complete(log, shared_probes, cleanup, triangle_verified, runtime_bytes=metadata_bytes)
         consume_verified = shared_texture_consume_complete(log, "\n".join(errors), cleanup, shared_verified,
                                                          presentation=args.driver_present_shared)
         hwqueue_flags = [int(flag or '0') for flag in re.findall(r'nativeHwQueueCreated=true privateBytes=\d+ progressFenceDirect=true(?: flags=(\d+))?',log)]
@@ -724,23 +731,26 @@ def main():
                       all(n['flags'] == g and n['unchanged'] is True and n['ntstatus'] == 0 for n,g in zip(hwqueue_flag_checks,hwqueue_flags)))))
         if late_guest_eof:
             accepted = accepted and no_broadcast_queue_eof_complete(log, control, cleanup, 6 if args.hwqueue_no_broadcast_wait_eof_test else 2)
-        elif args.runtime_workload in ('clear', 'triangle', 'shared', 'consume'):
-            accepted = accepted and no_broadcast_queues >= 1 and len(context_signals) + len(hw_queue_signals) == (4 if args.runtime_workload == 'consume' else 2) and resources >= 2
+        elif args.runtime_workload in ('clear', 'triangle', 'shared', 'consume', 'native'):
+            accepted = accepted and no_broadcast_queues >= 1 and len(context_signals) + len(hw_queue_signals) == (4 if args.runtime_workload in ('consume', 'native') else 2) and resources >= 2
         workload_matches = ((not clear_verified and not copy_verified and 'GPU_CLEAR_TEST_BEGIN' in log and 'GPU_COPY_TEST_BEGIN' not in log) if late_guest_eof else
                             (copy_verified and 'GPU_CLEAR_TEST_BEGIN' not in log) if args.runtime_workload == 'copy' else
                             (clear_verified and 'GPU_COPY_TEST_BEGIN' not in log) if args.runtime_workload == 'clear' else
-                            (triangle_verified and ((consume_verified if args.runtime_workload == 'consume' else shared_verified and 'GPU_SHARED_CONSUME_TEST_BEGIN' not in log) if args.runtime_workload in ('shared', 'consume') else 'GPU_SHARED_RESOURCE_TEST_BEGIN' not in log) and
-                             'GPU_COPY_TEST_BEGIN' not in log and 'GPU_CLEAR_TEST_BEGIN' not in log) if args.runtime_workload in ('triangle', 'shared', 'consume') else
+                            (triangle_verified and ((consume_verified if args.runtime_workload in ('consume', 'native') else shared_verified and 'GPU_SHARED_CONSUME_TEST_BEGIN' not in log) if args.runtime_workload in ('shared', 'consume', 'native') else 'GPU_SHARED_RESOURCE_TEST_BEGIN' not in log) and
+                             'GPU_COPY_TEST_BEGIN' not in log and 'GPU_CLEAR_TEST_BEGIN' not in log) if args.runtime_workload in ('triangle', 'shared', 'consume', 'native') else
                             'GPU_COPY_TEST_BEGIN' not in log and 'GPU_CLEAR_TEST_BEGIN' not in log)
-        if args.runtime_workload not in ('triangle', 'shared', 'consume'):
+        if args.runtime_workload not in ('triangle', 'shared', 'consume', 'native'):
             workload_matches = workload_matches and 'GPU_TRIANGLE_TEST_BEGIN' not in log
-        accepted = accepted and workload_matches and (not args.driver_present_shared or
-                                                       (args.runtime_workload == 'consume' and consume_verified))
+        accepted = (accepted and workload_matches and bool(metadata_bytes) and
+                    (not native_requested or args.driver_native_metadata) and
+                    (not args.driver_present_shared or (args.runtime_workload in ('consume', 'native') and consume_verified)))
         report = {'schema': 1, 'diagnosticAccepted': bool(accepted), 'runtimeInitializationComplete': bool(initialized and accepted),
                   'runtimeInitializationResultsSucceeded': bool(initialized),
                   'runtimeWorkload': args.runtime_workload, 'guestGpuBufferCopyVerified': bool(copy_verified and accepted),
                   'guestSharedGpuTextureImportVerified': bool(shared_verified and accepted),
                   'nativeSharedResourceImportChecks': shared_probes,
+                  'nativeTextureMetadataVerified': bool(native_requested and metadata_bytes and consume_verified and accepted),
+                  'nativeTextureMetadataChecks': [json.loads(line) for line in errors if line.startswith('{') and 'nativeTextureMetadata' in line],
                   'nativeSharedTextureConsumeVerified': bool(consume_verified and accepted),
                   'nativeSharedTexturePresentationVerified': bool(args.driver_present_shared and consume_verified and accepted),
                   'nativeSharedTextureChecks': [json.loads(line) for line in errors if line.startswith('{') and 'nativeSharedTexture' in line],
@@ -764,7 +774,7 @@ def main():
                   'stage': 'owned VM exit with a combined NoBroadcastSignal/NoBroadcastWait hardware queue; graphics rendering unverified' if args.hwqueue_no_broadcast_wait_eof_test else
                            'owned VM exit with a NoBroadcastSignal hardware queue; graphics rendering unverified' if late_guest_eof else
                            ('guest shader frames copied into native DXGI backbuffers with matching pixels and completed presentation statistics; Omarchy display integration unverified' if args.driver_present_shared else
-                            'guest shared shader texture copied on the Windows GPU with matching native readback; presentation unverified') if args.runtime_workload == 'consume' else
+                            'guest shared shader texture copied on the Windows GPU with matching native readback; presentation unverified') if args.runtime_workload in ('consume', 'native') else
                            'guest shader drawing in a shared texture and separate native Windows resource import; presentation unverified' if args.runtime_workload == 'shared' else
                            'live NVIDIA D3D12 shader triangle drawing with independently verified pixels' if args.runtime_workload == 'triangle' else
                            'live NVIDIA D3D12 graphics queue render-target clears with verified pixels' if args.runtime_workload == 'clear' else

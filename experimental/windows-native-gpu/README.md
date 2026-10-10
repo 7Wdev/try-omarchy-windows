@@ -27,6 +27,17 @@ pass for both guest frames in two fresh runs. An intermittent native import
 failure was reproduced in a separate control and remains unresolved. Import
 stability and Omarchy desktop presentation remain unfinished.
 
+The newer [typed texture metadata experiment](../../docs/LIVE-GPU-NATIVE-METADATA.md)
+adds capability bit 30 and `CreateNativeSharedVendorResourceAllocation` (`0x205b`).
+Select `--runtime-workload native` when packing/verifying the private image and
+enable `--driver-native-metadata` alongside the shared-resource/consumption gates.
+A one-use declaration binds the diagnostic texture profile to an owned device
+and calling thread. Windows generates its own sharing metadata through a native
+template; guest metadata stays unchanged. Three fresh two-frame consumption runs
+pass. Both newer presentation attempts fail DXGI statistics despite successful
+imports and matching first-frame backbuffers; the evidence preserves their
+rejections. Opaque metadata reuse is experimental and not a documented ABI.
+
 The diagnostic adds owned, nonshared single-allocation resources, the observed
 NVIDIA DEFAULT-resource DriverProtection value, direct CPU fence waits and a
 bounded GPU2 context-signal route. `--runtime-workload copy` must be selected

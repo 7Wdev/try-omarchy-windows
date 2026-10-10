@@ -14,6 +14,11 @@ including [native DXGI presentation with verified backbuffer pixels](LIVE-GPU-PR
 but remains a compatibility and ownership probe. Import stability, shared GPU scheduling,
 the production transport and Omarchy desktop presentation still need implementation and validation.
 
+The newer [typed texture metadata experiment](LIVE-GPU-NATIVE-METADATA.md)
+passes three repeated two-frame native GPU consumption runs, while both new
+presentation attempts fail DXGI statistics. These results advance resource
+interoperability without proving import or display stability.
+
 ## Functional acceptance
 
 | Requirement | Evidence required before completion |

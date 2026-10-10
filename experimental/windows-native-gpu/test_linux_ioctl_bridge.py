@@ -21,6 +21,8 @@ def send(op, handle, value=0, data=b'', padding=0, hello=False, ntstatus=0):
     caps |= 256 if mode.startswith('allocation-') and mode != 'allocation-disabled' else 0
     caps |= 256 if mode.startswith('resource-') else 0
     caps |= 524288 if mode.startswith('resource-') and mode != 'resource-disabled' else 0
+    caps |= 256 | 524288 | 268435456 if mode.startswith('native-resource-') else 0
+    caps |= 1073741824 if mode.startswith('native-resource-') and mode != 'native-resource-disabled' else 0
     caps |= 256 | 524288 if mode.startswith('shared-resource-') else 0
     caps |= 268435456 if mode.startswith('shared-resource-') and mode != 'shared-resource-disabled' else 0
     caps |= 1048576 if mode.startswith('context-signal-') and mode != 'context-signal-disabled' else 0
@@ -149,9 +151,12 @@ try:
             if mode == 'paging-short': data = data[:-1]
             send(op,3,value=1 if mode == 'paging-bad-value' else 0,data=data)
         elif op == 0x2008: send(op,handle)
-        elif op == 0x2059:
+        elif op in (0x2059, 0x205b):
             assert handle == 2 and struct.unpack_from('<8I',packet,16) == (4,0x78100000,0,4,0,0,4,0)
-            assert packet[48:] == bytes([37,38,39,40,5,6,7,8])
+            if op == 0x205b:
+                assert mode.startswith('native-resource-')
+                assert struct.unpack_from('<4I',packet,48) == (130,73,28,1)
+            assert packet[64 if op == 0x205b else 48:] == bytes([37,38,39,40,5,6,7,8])
             failed = mode == 'shared-resource-nt-failure'
             data = struct.pack('<II',0 if failed else 4,0) + bytes([37 ^ 255,38,39,40,5,6,7,8])
             if mode == 'shared-resource-short': data = data[:-1]
@@ -230,6 +235,8 @@ if mode.startswith('cpu-wait-'): assert operations == [0x2000], operations
 if mode.startswith('context-signal-'): assert operations == [0x2000], operations
 if mode in ('resource-disabled','resource-invalid'): assert 0x2057 not in operations, operations
 if mode in ('shared-resource-disabled','shared-resource-invalid'): assert 0x2059 not in operations, operations
+if mode in ('native-resource-disabled','native-resource-invalid','native-resource-unowned'): assert 0x205b not in operations, operations
+if mode in ('native-resource-normal','native-resource-duplicate','native-resource-retry','native-resource-thread'): assert operations.count(0x205b) == operations.count(0x2058) == 1 and 0x2059 not in operations, operations
 if mode == 'shared-resource-normal': assert operations.count(0x2059) == operations.count(0x2058) == 1, operations
 if mode == 'resource-normal' or mode.startswith('resource-destroy-'): assert operations.count(0x2058) == 1, operations
 if mode == 'resource-failed-destroy': assert operations.count(0x2058) == 2, operations
@@ -268,7 +275,8 @@ def main():
     with tempfile.TemporaryDirectory(prefix='wddm-ioctl-fault-') as directory:
         worker = pathlib.Path(directory) / 'owned-worker'
         worker.write_text(WORKER, encoding='utf-8'); worker.chmod(0o700)
-        for mode in ('consume-disabled', 'consume-unowned', 'consume-null', 'no-worker', 'wrong-version', 'reuse', 'bad-reply', 'closed-worker', 'normal',
+        for mode in ('native-resource-normal', 'native-resource-disabled', 'native-resource-invalid',
+                     'native-resource-unowned', 'native-resource-duplicate', 'native-resource-retry', 'native-resource-thread', 'consume-disabled', 'consume-unowned', 'consume-null', 'no-worker', 'wrong-version', 'reuse', 'bad-reply', 'closed-worker', 'normal',
                      'cpu-wait-invalid', 'cpu-wait-unowned',
                      'shared-resource-normal', 'shared-resource-disabled', 'shared-resource-invalid',
                      'shared-resource-nt-failure', 'shared-resource-short', 'shared-resource-runtime-changed',
