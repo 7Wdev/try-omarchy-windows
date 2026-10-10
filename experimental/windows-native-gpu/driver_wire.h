@@ -70,6 +70,13 @@ inline bool validSync(SyncDesc d) {
            (d.type == 5 && (d.flags == 0 || d.flags == NoSignalMaxValueOnTdrSyncFlag || d.flags == NoGpuAccessSyncFlag) && d.affinity <= 1));
 }
 constexpr std::size_t MaxHwQueues = 8;
+constexpr std::uint32_t HwQueueSignalCapability = 134217728;
+constexpr std::uint32_t MaxHwQueueSignals = 16;
+struct HwQueueSignalDesc { std::uint32_t flags, count; std::uint64_t fence; };
+static_assert(sizeof(HwQueueSignalDesc) == 16, "fixed hardware queue signal layout");
+inline bool validHwQueueSignal(HwQueueSignalDesc d) {
+    return (d.flags == 0 || d.flags == 4) && d.count && d.count <= MaxHwQueues && d.fence && d.fence != UINT64_MAX;
+}
 constexpr std::uint32_t AsyncHwSubmitCapability = 33554432;
 constexpr std::uint32_t NoBroadcastSignalHwQueueCapability = 2097152;
 constexpr std::uint32_t NoBroadcastSignalHwQueueFlag = 2;
@@ -260,7 +267,7 @@ enum class Op : std::uint32_t {
     LockVendorAllocation, UnlockVendorAllocation, TranslateVendorAllocation,
     CreateVendorResourceAllocation, DestroyVendorResource,
     CreateHwQueue = 0x2060, DestroyHwQueue, SubmitHwQueue, QueueHwCommand,
-    CreateSync = 0x2070, DestroySync, SignalContextSync,
+    CreateSync = 0x2070, DestroySync, SignalContextSync, QueueHwQueueSignal,
     ReserveGpuAddress = 0x2080, FreeGpuReservation, MapGpuState
 };
 enum class Kind { Adapter, Device, PagingQueue, Allocation, Context, PagingSync, VendorAllocation, HwQueue, HwQueueSync, Sync, GpuReservation, VendorResource };
@@ -363,6 +370,9 @@ public:
     virtual Result queueHwCommand(std::uint32_t, HwSubmitDesc, const std::vector<std::uint8_t>&) {
         return {static_cast<std::int32_t>(0xc00000bbu), 0, 0};
     }
+    virtual Result queueHwQueueSignal(std::uint32_t, const std::vector<std::uint32_t>&, HwQueueSignalDesc) {
+        return {static_cast<std::int32_t>(0xc00000bbu), 0, 0};
+    }
     virtual Result reserveGpuAddress(std::uint32_t, GpuReservationDesc) {
         return {static_cast<std::int32_t>(0xc00000bbu), 0, 0};
     }
@@ -412,6 +422,7 @@ class Session {
     std::uint32_t vendorCpuBytes = 0;
     std::uint32_t submissionAttempts = 0;
     std::uint32_t contextSignalAttempts = 0;
+    std::uint32_t hwQueueSignalAttempts = 0;
     std::uint64_t gpuReservedBytes = 0;
     GpuStateRanges gpuStates;
     bool negotiated = false;
@@ -725,6 +736,33 @@ public:
                 if (native.object.nativeHandle) driver.destroy(Kind::Sync, native.object.nativeHandle);
                 throw;
             }
+        }
+        if (op == Op::QueueHwQueueSignal) {
+            if (!negotiated) return reply(h,-71);
+            if (!(driver.capabilities().flags & HwQueueSignalCapability)) return reply(h,-95);
+            if (packet.size() < sizeof h + sizeof(HwQueueSignalDesc)) return reply(h,-22);
+            HwQueueSignalDesc desc{}; std::memcpy(&desc,packet.data()+sizeof h,sizeof desc);
+            if (!validHwQueueSignal(desc) || packet.size() != sizeof h + sizeof desc + desc.count * sizeof(std::uint32_t))
+                return reply(h,-22);
+            const auto sync = objects.find(h.handle);
+            if (sync == objects.end() || sync->second.kind != Kind::Sync || sync->second.syncType != 5 ||
+                sync->second.syncFlags != NoGpuAccessSyncFlag) return reply(h,-9);
+            if (desc.fence <= sync->second.submittedFence) return reply(h,-22);
+            std::vector<std::uint32_t> ids(desc.count), nativeQueues;
+            std::memcpy(ids.data(),packet.data()+sizeof h+sizeof desc,desc.count*sizeof(std::uint32_t));
+            for (std::size_t n=0;n<ids.size();++n) {
+                const auto queue = objects.find(ids[n]);
+                if (queue == objects.end() || queue->second.kind != Kind::HwQueue ||
+                    objects.at(queue->second.parent).parent != sync->second.parent ||
+                    std::find(ids.begin(),ids.begin()+n,ids[n]) != ids.begin()+n) return reply(h,-9);
+                nativeQueues.push_back(queue->second.nativeHandle);
+            }
+            if (hwQueueSignalAttempts >= MaxHwQueueSignals) return reply(h,-24);
+            ++hwQueueSignalAttempts;
+            const auto result = driver.queueHwQueueSignal(sync->second.nativeHandle,nativeQueues,desc);
+            if (!validHwSubmitReply(result,desc.fence,AsyncHwSubmitCapability)) return reply(h,-5);
+            if (result.ntstatus == 0) sync->second.submittedFence = desc.fence;
+            return reply(h,0,h.handle,&result);
         }
         if (op == Op::SignalContextSync) {
             if (!negotiated) return reply(h, -71);

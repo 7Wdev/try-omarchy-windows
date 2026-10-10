@@ -1056,6 +1056,38 @@ public:
                 std::fprintf(stderr, "LINUX_BRIDGE nativeSynchronizationDestroyed=true type=%u\n", owned->second.type);
                 syncObjects.erase(owned); return 0;
             }
+            case 53: {
+                const auto& a=args<D3DKMT_SUBMITSIGNALSYNCOBJECTSTOHWQUEUE>(requestNumber,pointer);
+                std::fprintf(stderr,"LINUX_BRIDGE hwQueueSignalInput objects=%u flags=%u queues=%u hasObjects=%u hasQueues=%u hasValues=%u\n",
+                    a.ObjectCount,a.Flags.Value,a.BroadcastHwQueueCount,a.ObjectHandleArray?1u:0u,
+                    a.BroadcastHwQueueArray?1u:0u,a.FenceValueArray?1u:0u);
+                if (!(caps.flags & HwQueueSignalCapability)) throw Error(ENOSYS);
+                if (a.ObjectCount != 1 || !a.BroadcastHwQueueCount || a.BroadcastHwQueueCount > MaxHwQueues ||
+                    !a.ObjectHandleArray || !a.BroadcastHwQueueArray || !a.FenceValueArray) throw Error(EINVAL);
+                const HwQueueSignalDesc desc{a.Flags.Value,a.BroadcastHwQueueCount,a.FenceValueArray[0]};
+                if (!validHwQueueSignal(desc)) throw Error(EINVAL);
+                const auto sync=syncObjects.find(a.ObjectHandleArray[0]);
+                if (sync == syncObjects.end() || sync->second.type != 5 || sync->second.flags != NoGpuAccessSyncFlag) throw Error(EBADF);
+                if (desc.fence <= sync->second.lastSignal) throw Error(EINVAL);
+                std::vector<std::uint32_t> queues(a.BroadcastHwQueueArray,a.BroadcastHwQueueArray+desc.count);
+                for (std::size_t n=0;n<queues.size();++n) {
+                    const auto queue=hwQueueContexts.find(queues[n]);
+                    if (queue == hwQueueContexts.end() || !contextOwners.count(queue->second) ||
+                        contextOwners.at(queue->second).device != sync->second.device ||
+                        std::find(queues.begin(),queues.begin()+n,queues[n]) != queues.begin()+n) throw Error(EBADF);
+                }
+                auto packet=request(Op::QueueHwQueueSignal,sync->first,desc);
+                const auto data=reinterpret_cast<const std::uint8_t*>(queues.data());
+                packet.insert(packet.end(),data,data+queues.size()*sizeof(queues[0]));
+                const auto result=call(packet,0,true);
+                if (result.header.handle != sync->first || !validHwSubmitReply({result.result.ntstatus,0,result.result.value},desc.fence,AsyncHwSubmitCapability)) {
+                    transport.fail(); throw Error(EPROTO);
+                }
+                checkNt(result.result.ntstatus); sync->second.lastSignal=desc.fence;
+                std::fprintf(stderr,"LINUX_BRIDGE nativeHwQueueSignalQueued=true flags=%u queues=%u target=%llu observedAtReturn=%llu noGpuAccess=true\n",
+                    desc.flags,desc.count,static_cast<unsigned long long>(desc.fence),static_cast<unsigned long long>(result.result.value));
+                return 0;
+            }
             case 52: {
                 auto& a = args<D3DKMT_SUBMITCOMMANDTOHWQUEUE>(requestNumber, pointer);
                 unsigned commandOwners = 0, commandCpuLocked = 0;

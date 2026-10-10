@@ -21,6 +21,35 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (fd < 0) return failed("open");
+    if (!std::strncmp(mode,"hw-signal-",10)) {
+        D3DKMT_HANDLE queue=99,sync=98; UINT64 value=1;
+        D3DKMT_SUBMITSIGNALSYNCOBJECTSTOHWQUEUE signal{};
+        signal.ObjectCount=1; signal.ObjectHandleArray=&sync; signal.BroadcastHwQueueCount=1;
+        signal.BroadcastHwQueueArray=&queue; signal.FenceValueArray=&value;
+        if (!std::strcmp(mode,"hw-signal-invalid")) {
+            for (unsigned n=0;n<12;++n) {
+                auto bad=signal; value=1;
+                switch (n) {
+                    case 0: bad.ObjectCount=0; break;
+                    case 1: bad.ObjectCount=2; break;
+                    case 2: bad.BroadcastHwQueueCount=0; break;
+                    case 3: bad.BroadcastHwQueueCount=9; break;
+                    case 4: bad.ObjectHandleArray=nullptr; break;
+                    case 5: bad.BroadcastHwQueueArray=nullptr; break;
+                    case 6: bad.FenceValueArray=nullptr; break;
+                    case 7: bad.Flags.Value=1; break;
+                    case 8: bad.Flags.Value=2; break;
+                    case 9: bad.Flags.Value=8; break;
+                    case 10: value=0; break;
+                    default: value=UINT64_MAX; break;
+                }
+                if (ioctl(fd,_IOWR('G',53,D3DKMT_SUBMITSIGNALSYNCOBJECTSTOHWQUEUE),&bad) != -1 || errno != EINVAL)
+                    return failed("invalid hardware queue signal forwarded");
+            }
+        } else if (ioctl(fd,_IOWR('G',53,D3DKMT_SUBMITSIGNALSYNCOBJECTSTOHWQUEUE),&signal) != -1 ||
+                   errno != (!std::strcmp(mode,"hw-signal-disabled")?ENOSYS:EBADF)) return failed("unowned hardware queue signal forwarded");
+        close(fd); return 0;
+    }
     if (!std::strncmp(mode,"context-signal-",15)) {
         D3DKMT_HANDLE context = 99, sync = 98; UINT64 value = 1;
         D3DKMT_SIGNALSYNCHRONIZATIONOBJECTFROMGPU2 signal{};

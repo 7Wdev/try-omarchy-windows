@@ -34,6 +34,7 @@ def send(op, handle, value=0, data=b'', padding=0, hello=False, ntstatus=0):
     caps |= 16777216 if mode.startswith('hwqueue-internal-') and mode != 'hwqueue-internal-disabled' else 0
     caps |= 16384 if mode.startswith('sync-') and mode != 'sync-disabled' else 0
     caps |= 32768 if mode.startswith('submit-') and mode != 'submit-disabled' else 0
+    caps |= 134217728 if mode.startswith('hw-signal-') and mode != 'hw-signal-disabled' else 0
     caps |= 131072 if mode.startswith('reservation-') and mode != 'reservation-disabled' else 0
     caps |= 512 if mode.startswith('gpu-state-') else 0
     caps |= 262144 if mode.startswith('gpu-state-') and mode != 'gpu-state-disabled' else 0
@@ -235,6 +236,7 @@ if mode in ('sync-no-hub','sync-nogpu-no-hub'): assert operations[-2:] == [0x207
 if mode == 'sync-mutex' or mode.startswith('sync-destroy-'): assert operations.count(0x2071) == 1, operations
 if mode == 'sync-failed-destroy': assert operations.count(0x2071) == 2, operations
 if mode.startswith('submit-'): assert 0x2062 not in operations, operations
+if mode.startswith('hw-signal-'): assert 0x2073 not in operations, operations
 if mode in ('reservation-disabled','reservation-invalid'): assert 0x2080 not in operations and 0x2081 not in operations, operations
 if mode in ('reservation-normal','reservation-overlap') or mode.startswith('reservation-free-'): assert operations.count(0x2080) == operations.count(0x2081) == 1, operations
 if mode == 'reservation-failed-free': assert operations.count(0x2081) == 2, operations
@@ -256,6 +258,7 @@ def main():
         for mode in ('no-worker', 'wrong-version', 'reuse', 'bad-reply', 'closed-worker', 'normal',
                      'cpu-wait-invalid', 'cpu-wait-unowned',
                      'context-signal-invalid', 'context-signal-disabled', 'context-signal-unowned',
+                     'hw-signal-invalid', 'hw-signal-disabled', 'hw-signal-unowned',
                      'resource-normal', 'resource-disabled', 'resource-invalid', 'resource-nt-failure', 'resource-bad-failure',
                      'resource-zero', 'resource-same-id', 'resource-reserved', 'resource-short', 'resource-no-allocation',
                      'resource-bad-va', 'resource-bad-status', 'resource-failed-destroy', 'resource-list-destroy',

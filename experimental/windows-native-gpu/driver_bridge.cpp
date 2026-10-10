@@ -17,6 +17,7 @@
 #include <stdexcept>
 #include <string>
 #include <set>
+#include <array>
 #include "driver_wire.h"
 #include "qemu_runtime_host.h"
 using Microsoft::WRL::ComPtr;
@@ -46,6 +47,13 @@ class KmtDriver : public Driver {
     struct PendingSubmission { unsigned index; std::uint32_t queue, bytes, privateBytes; std::uint64_t target; };
     std::vector<PendingSubmission> pendingSubmissions;
     unsigned acceptedAsyncSubmissions = 0, peakPendingSubmissions = 0;
+    struct PendingHwSignal {
+        unsigned index; std::uint32_t sync, flags, count; std::uint64_t target;
+        std::array<std::uint32_t,MaxHwQueues> queues;
+    };
+    std::vector<PendingHwSignal> pendingHwSignals;
+    unsigned hwQueueSignalAttempts = 0, acceptedHwQueueSignals = 0, completedHwQueueSignals = 0, failedHwQueueSignals = 0;
+    unsigned peakPendingHwQueueSignals = 0;
     bool asyncRetirementFailed = false;
     unsigned submissionAttempts = 0, completedSubmissions = 0, failedSubmissions = 0;
     unsigned submissionTimeouts = 0;
@@ -71,6 +79,26 @@ class KmtDriver : public Driver {
                       << ",\"bytes\":" << it->bytes << ",\"privateBytes\":" << it->privateBytes
                       << ",\"target\":" << it->target << ",\"observed\":" << observed << "}\n";
             it = pendingSubmissions.erase(it);
+        }
+        for (auto it = pendingHwSignals.begin(); it != pendingHwSignals.end();) {
+            const auto sync = syncObjects.find(it->sync);
+            if (sync == syncObjects.end() || !sync->second.fence) {
+                asyncRetirementFailed = true; ++failedHwQueueSignals;
+                std::cerr << "{\"nativeHwQueueSignalRetirementFailed\":true,\"reason\":\"owned sync absent\"}\n";
+                return false;
+            }
+            MemoryBarrier(); const auto observed = *sync->second.fence;
+            if (observed == UINT64_MAX) {
+                asyncRetirementFailed = true; ++failedHwQueueSignals;
+                std::cerr << "{\"nativeHwQueueSignalRetirementFailed\":true,\"reason\":\"device loss\"}\n";
+                return false;
+            }
+            if (observed < it->target) { ++it; continue; }
+            ++completedHwQueueSignals;
+            std::cerr << "{\"nativeHwQueueSignalRetired\":true,\"index\":" << it->index << ",\"flags\":" << it->flags
+                      << ",\"queues\":" << it->count << ",\"target\":" << it->target << ",\"observed\":" << observed
+                      << ",\"noGpuAccess\":true,\"cpuValueWrittenByBridge\":false}\n";
+            it = pendingHwSignals.erase(it);
         }
         return true;
     }
@@ -241,6 +269,7 @@ public:
         submitEnabled = enableSubmit;
         asyncSubmitEnabled = enableAsyncSubmit;
         pendingSubmissions.reserve(MaxHwSubmissions);
+        pendingHwSignals.reserve(MaxHwQueueSignals);
         retirementEnabled = enableRetirement;
         reservationEnabled = enableReservation;
         gpuStateEnabled = enableGpuState;
@@ -296,6 +325,7 @@ public:
                 (hwQueuesEnabled ? NoBroadcastWaitHwQueueCapability : 0u) |
                 (syncEnabled ? SyncCapability : 0u) | (submitEnabled ? HwSubmitCapability : 0u) |
                 (asyncSubmitEnabled ? AsyncHwSubmitCapability : 0u) |
+                (asyncSubmitEnabled && syncEnabled ? HwQueueSignalCapability : 0u) |
                 (allocationsEnabled ? VendorResourceCapability : 0u) |
                 (submitEnabled && syncEnabled ? ContextSignalCapability : 0u) |
                 (retirementEnabled ? VendorRetirementCapability : 0u) | (reservationEnabled ? GpuReservationCapability : 0u) |
@@ -508,6 +538,41 @@ public:
         // Keep the queue, all allocations and sync objects owned. The outer
         // server reaps its VM before attempting native queue destruction.
         throw std::runtime_error("Native command progress fence deadline exceeded");
+    }
+    Result queueHwQueueSignal(std::uint32_t sync, const std::vector<std::uint32_t>& queues, HwQueueSignalDesc desc) override {
+        if (!collectRetiredSubmissions()) return {Invalid,0,0};
+        const auto object = syncObjects.find(sync);
+        if (!asyncSubmitEnabled || !syncEnabled || !runtime || runtime->hasStopped() || !validHwQueueSignal(desc) ||
+            queues.size() != desc.count || object == syncObjects.end() || object->second.type != 5 ||
+            object->second.flags != NoGpuAccessSyncFlag || !object->second.lease || !object->second.fence ||
+            desc.fence <= object->second.lastSignal || hwQueueSignalAttempts >= MaxHwQueueSignals) return {Invalid,0,0};
+        PendingHwSignal pending{}; pending.sync=sync; pending.flags=desc.flags; pending.count=desc.count; pending.target=desc.fence;
+        for (std::size_t n=0;n<queues.size();++n) {
+            const auto queue = hwQueues.find(queues[n]);
+            if (queue == hwQueues.end() || queue->second.device != object->second.device || !queue->second.lease ||
+                std::find(queues.begin(),queues.begin()+n,queues[n]) != queues.begin()+n) return {Invalid,0,0};
+            pending.queues[n]=queues[n];
+        }
+        D3DDDICB_SIGNALFLAGS rewind{}; rewind.AllowFenceRewind=1;
+        if (rewind.Value != 4) throw std::runtime_error("Native signal flag layout changed");
+        D3DKMT_SUBMITSIGNALSYNCOBJECTSTOHWQUEUE a{};
+        a.Flags.Value=desc.flags; a.BroadcastHwQueueCount=desc.count; a.BroadcastHwQueueArray=queues.data();
+        a.ObjectCount=1; a.ObjectHandleArray=&sync; a.FenceValueArray=&desc.fence;
+        ++hwQueueSignalAttempts;
+        const auto status=D3DKMTSubmitSignalSyncObjectsToHwQueue(&a);
+        MemoryBarrier(); const auto observed=*object->second.fence;
+        std::cerr << "{\"nativeHwQueueSignalReturned\":true,\"flags\":" << desc.flags << ",\"queues\":" << desc.count
+                  << ",\"target\":" << desc.fence << ",\"observed\":" << observed << ",\"ntstatus\":" << status << "}\n";
+        if (status < 0) { ++failedHwQueueSignals; return {status,0,0}; }
+        if (status != 0) { ++failedHwQueueSignals; throw std::runtime_error("Unexpected native hardware queue signal status"); }
+        object->second.lastSignal=desc.fence;
+        pending.index=++acceptedHwQueueSignals; pendingHwSignals.push_back(pending);
+        std::cerr << "{\"nativeHwQueueSignalAccepted\":true,\"index\":" << pending.index << ",\"flags\":" << desc.flags
+                  << ",\"queues\":" << desc.count << ",\"target\":" << desc.fence << ",\"observed\":" << observed
+                  << ",\"noGpuAccess\":true,\"cpuValueWrittenByBridge\":false}\n";
+        peakPendingHwQueueSignals=(std::max)(peakPendingHwQueueSignals,static_cast<unsigned>(pendingHwSignals.size()));
+        if (!collectRetiredSubmissions()) throw std::runtime_error("Native hardware queue signal retirement failed");
+        return {status,0,observed};
     }
     Result reserveGpuAddress(std::uint32_t adapter, GpuReservationDesc desc) override {
         if (!reservationEnabled || !runtime || !ownedAdapters.count(adapter) || !validGpuReservation(desc) ||
@@ -1156,7 +1221,7 @@ public:
             if (!collectRetiredSubmissions()) return {Invalid,0,0};
             // A failed/abrupt guest must not free a dependency of queued work.
             // Queue destruction below separately requires its own retirement.
-            if (!pendingSubmissions.empty() && kind != Kind::HwQueue && kind != Kind::HwQueueSync)
+            if ((!pendingSubmissions.empty() || !pendingHwSignals.empty()) && kind != Kind::HwQueue && kind != Kind::HwQueueSync)
                 return {Invalid,0,0};
         }
         NTSTATUS status{};
@@ -1203,6 +1268,9 @@ public:
             if (!collectRetiredSubmissions()) return {Invalid,0,0};
             if (std::any_of(pendingSubmissions.begin(), pendingSubmissions.end(), [handle](const PendingSubmission& p) { return p.queue == handle; }))
                 return {Invalid, 0, 0}; // Keep its fence and allocations owned.
+            if (std::any_of(pendingHwSignals.begin(),pendingHwSignals.end(),[handle](const PendingHwSignal& p) {
+                return std::find(p.queues.begin(),p.queues.begin()+p.count,handle) != p.queues.begin()+p.count;
+            })) return {Invalid,0,0};
             const bool afterVmExit = runtime->hasStopped();
             if (queue->second.lease) {
                 try { runtime->unmap(*queue->second.lease); }
@@ -1298,7 +1366,7 @@ public:
         }
     }
     bool clean() const {
-        return !asyncRetirementFailed && pendingSubmissions.empty() && !activeAdapters && !activeDevices && !activeContexts && pagingFences.empty() && allocations.empty() && vendorAllocations.empty() &&
+        return !asyncRetirementFailed && pendingSubmissions.empty() && pendingHwSignals.empty() && !activeAdapters && !activeDevices && !activeContexts && pagingFences.empty() && allocations.empty() && vendorAllocations.empty() &&
                !vendorMappedPages && !vendorResidencyAttempts && !vendorCpuBytes && deviceAdapters.empty() && translatedAllocations.empty() &&
                contextOwners.empty() && hwQueues.empty() && syncObjects.empty() && gpuReservations.empty() && !gpuReservedBytes && gpuStates.empty() && ownedAdapters.empty() &&
                !guestMemory && !guestSection && !copyDevice && !copyHeap && !copyQueue && !copyFence && !copyEvent && !cleanupFailures;
@@ -1338,6 +1406,9 @@ public:
                   << ",\"acceptedAsyncSubmissions\":" << acceptedAsyncSubmissions
                   << ",\"pendingNativeSubmissions\":" << pendingSubmissions.size()
                   << ",\"peakPendingNativeSubmissions\":" << peakPendingSubmissions
+                  << ",\"nativeHwQueueSignalAttempts\":" << hwQueueSignalAttempts << ",\"acceptedHwQueueSignals\":" << acceptedHwQueueSignals
+                  << ",\"completedHwQueueSignals\":" << completedHwQueueSignals << ",\"failedHwQueueSignals\":" << failedHwQueueSignals
+                  << ",\"pendingHwQueueSignals\":" << pendingHwSignals.size() << ",\"peakPendingHwQueueSignals\":" << peakPendingHwQueueSignals
                   << ",\"nativeSubmissionAttempts\":" << submissionAttempts << ",\"completedNativeSubmissions\":" << completedSubmissions
                   << ",\"failedNativeSubmissions\":" << failedSubmissions << ",\"nativeSubmissionTimeouts\":" << submissionTimeouts
                   << ",\"submittedCommandBytes\":" << submittedCommandBytes

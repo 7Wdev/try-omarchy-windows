@@ -17,13 +17,13 @@ both when packing the private guest image and when verifying it. The default
 remains initialization only. The copy guard rejects incomplete, duplicated or
 incorrect readback results and requires matching native resource/signal evidence.
 
-The next [graphics queue control](../../docs/LIVE-GRAPHICS-QUEUE-CONTROL.md)
-forwards the runtime's documented `NoBroadcastSignal` flag unchanged. Two owned
-VM exit controls pass its native lifecycle. The explicit `clear` workload and
-pixel verifier are implemented. The expanded asynchronous profile now creates a
-DIRECT queue and render/readback resources, but its hardware-queue signal
-operation remains unsupported and rendering is unverified. Initialization and copy
-controls cannot satisfy the clear workload verifier.
+The [graphics clear workload](../../docs/LIVE-GPU-CLEAR.md) now passes two
+physical runs: a DIRECT queue renders two distinct RGBA8 images, with every
+pixel verified after GPU readback. Separate asynchronous command acceptance and
+hardware-queue signaling preserve ownership until actual native retirement.
+The earlier [graphics queue controls](../../docs/LIVE-GRAPHICS-QUEUE-CONTROL.md)
+remain lifecycle tests. Initialization and copy controls cannot satisfy the
+clear workload verifier. Shader drawing and desktop presentation remain unfinished.
 
 The optional `--hwqueue-no-broadcast-wait-eof-test` stops the clear workload
 after its first combined `NoBroadcastSignal | NoBroadcastWait` queue (flags 6).
@@ -41,7 +41,7 @@ budget and a 128-allocation live-object limit; other profiles retain 16 MiB CPU,
 32 MiB GPU and 96 allocation objects. Per-request allocation lists remain bounded
 to 96 entries.
 It also selects 128 read-only fence pages; other profiles retain 64.
-Its rendering acceptance is pending. [Contiguous views](../../docs/LIVE-CPU-ALLOCATION-SPANS.md)
+This profile passes the bounded clear diagnostic. [Contiguous views](../../docs/LIVE-CPU-ALLOCATION-SPANS.md)
 span adjacent slots without a QEMU rebuild. Native pools allow 96 independent
 synchronization objects and 256 aggregate wire objects; the
 default read-only fence BAR has 64 pages. Earlier hardware acceptance includes repeat, owned
@@ -51,7 +51,7 @@ VM exit, old-guest, capacity-rejection and restored CPU write controls.
 [bounded command submission](../../docs/LIVE-COMMAND-SUBMISSION.md),
 [GPU reservations](../../docs/LIVE-GPU-RESERVATION.md) and
 [Zero address state](../../docs/LIVE-GPU-ADDRESS-STATE.md) preserve ownership and
-verify native progress. General submission, asynchronous queues and signal/wait,
+verify native progress. General submission, production asynchronous transport and signal/wait,
 eviction, guest kernel/DRM support and presentation remain unfinished. The
 launcher does not select the experiment. Read the
 [investigation](../../docs/WINDOWS-NVIDIA-BACKEND.md) and

@@ -34,14 +34,14 @@ def initialization_complete(log, owner_exit, control, cleanup):
         cleanup.get('driverCleanupVerified') is True)
 
 
-def copy_workload_complete(log):
+def copy_workload_complete(log, asynchronous_commands_verified=False):
     """Require two independently checked patterns after guest GPU submission."""
     if re.findall(r'^GPU_COPY_TEST_BEGIN bytes=(\d+) rounds=(\d+)[ \t\r]*$', log, re.MULTILINE) != [('65536', '2')]:
         return False
     if re.findall(r'^GPU_COPY_TEST_COMPLETE verified=true bytes=(\d+) rounds=(\d+)[ \t\r]*$', log, re.MULTILINE) != [('65536', '2')]:
         return False
     tail = log.split('GPU_COPY_TEST_BEGIN', 1)[1]
-    if tail.count('nativeCommandSubmitted=true') < 2:
+    if tail.count('nativeCommandSubmitted=true') < 2 and not (asynchronous_commands_verified and tail.count('nativeCommandQueued=true') >= 2):
         return False
     for stage, count in (('Upload', 1), ('Default', 1), ('Readback', 1), ('Allocator', 1), ('CommandList', 1),
                          ('Fence', 1), ('UploadMap', 2), ('ReadbackMap', 2), ('Close', 2), ('Signal', 2),
@@ -68,14 +68,16 @@ def expected_clear_pixels(round_):
     return b''.join(inner if 11 <= x < 119 and 7 <= y < 65 else background for y in range(73) for x in range(130))
 
 
-def clear_workload_complete(log):
+def clear_workload_complete(log, asynchronous_commands_verified=False):
     """Check graphics queue execution, both hashes and every final exported pixel."""
     if re.findall(r'^GPU_CLEAR_TEST_BEGIN width=(\d+) height=(\d+) format=(\w+) rounds=(\d+)[ \t\r]*$', log, re.MULTILINE) != [('130', '73', 'R8G8B8A8_UNORM', '2')]:
         return False
     if re.findall(r'^GPU_CLEAR_TEST_COMPLETE verified=true width=(\d+) height=(\d+) rounds=(\d+)[ \t\r]*$', log, re.MULTILINE) != [('130', '73', '2')]:
         return False
     tail = log.split('GPU_CLEAR_TEST_BEGIN', 1)[1]
-    if tail.count('nativeCommandSubmitted=true') < 2 or 'GPU_CLEAR_TIMEOUT' in tail or 'gpuClearDeviceRemoved=' in tail:
+    commands_verified = (tail.count('nativeCommandSubmitted=true') >= 2 or
+                         (asynchronous_commands_verified and tail.count('nativeCommandQueued=true') >= 2))
+    if not commands_verified or 'GPU_CLEAR_TIMEOUT' in tail or 'gpuClearDeviceRemoved=' in tail:
         return False
     for stage, count in (('DirectQueue', 1), ('RenderTarget', 1), ('Readback', 1), ('RtvHeap', 1), ('Allocator', 1),
                          ('CommandList', 1), ('Fence', 1), ('Close', 2), ('Signal', 2), ('ReadbackMap', 2),
@@ -169,6 +171,30 @@ def async_submissions_complete(queued, accepted, retired, cleanup):
             not 0 <= q.get('observedAtReturn',-1) < (1<<64)-1 or
             not 0 < q.get('target',0) <= r.get('observed',0) < (1<<64)-1):
             return False
+    return True
+
+
+def hw_queue_signals_complete(queued, returned, accepted, retired, cleanup):
+    count=len(queued)
+    if count == 0:
+        return not returned and not accepted and not retired and all(cleanup.get(k,0) == 0 for k in
+            ('nativeHwQueueSignalAttempts','acceptedHwQueueSignals','completedHwQueueSignals','failedHwQueueSignals','pendingHwQueueSignals','peakPendingHwQueueSignals'))
+    if not 0 < count <= 16 or len(returned) != count or len(accepted) != count or len(retired) != count:
+        return False
+    if (any(cleanup.get(k) != count for k in ('nativeHwQueueSignalAttempts','acceptedHwQueueSignals','completedHwQueueSignals')) or
+        cleanup.get('failedHwQueueSignals') != 0 or cleanup.get('pendingHwQueueSignals') != 0 or
+        not 0 < cleanup.get('peakPendingHwQueueSignals',0) <= count): return False
+    if [a.get('index') for a in accepted] != list(range(1,count+1)) or sorted(r.get('index',0) for r in retired) != list(range(1,count+1)):
+        return False
+    by_index={r['index']:r for r in retired}
+    for index,(q,n,a) in enumerate(zip(queued,returned,accepted),1):
+        r=by_index[index]
+        if (q.get('flags') not in (0,4) or not 0 < q.get('queues',0) <= 8 or n.get('ntstatus') != 0 or
+            any(q.get(k) != n.get(k) or q.get(k) != a.get(k) or q.get(k) != r.get(k) for k in ('flags','queues','target')) or
+            q.get('observedAtReturn') != n.get('observed') or q.get('observedAtReturn') != a.get('observed') or
+            not 0 <= q.get('observedAtReturn',-1) < (1<<64)-1 or
+            not 0 < q.get('target',0) <= r.get('observed',0) < (1<<64)-1 or
+            any(v.get('noGpuAccess') is not True or v.get('cpuValueWrittenByBridge') is not False for v in (a,r))): return False
     return True
 
 
@@ -640,6 +666,13 @@ def main():
         context_signal_native = [json.loads(line) for line in errors if line.startswith('{') and '"nativeContextSignalRetired"' in line]
         context_signal_status = [json.loads(line) for line in errors if line.startswith('{') and '"nativeContextSignalStatus"' in line]
         context_signal_retirements = [r for r in retirements if r['operation'] == 'context-signal']
+        hw_queue_signals=[{'flags':int(f),'queues':int(q),'target':int(t),'observedAtReturn':int(o)} for f,q,t,o in re.findall(
+            r'nativeHwQueueSignalQueued=true flags=(\d+) queues=(\d+) target=(\d+) observedAtReturn=(\d+) noGpuAccess=true',log)]
+        hw_signal_returned=[json.loads(line) for line in errors if line.startswith('{') and 'nativeHwQueueSignalReturned' in line]
+        hw_signal_accepted=[json.loads(line) for line in errors if line.startswith('{') and 'nativeHwQueueSignalAccepted' in line]
+        hw_signal_retired=[json.loads(line) for line in errors if line.startswith('{') and 'nativeHwQueueSignalRetired' in line]
+        accepted = accepted and hw_queue_signals_complete(hw_queue_signals,hw_signal_returned,hw_signal_accepted,hw_signal_retired,cleanup)
+        if hw_queue_signals: accepted = accepted and args.driver_async_submit and 53 not in unsupported
         accepted = (accepted and cleanup.get('completedVendorResources',0) == cleanup.get('destroyedVendorResources',0) == resources == len(resource_native) and
                     cleanup.get('liveVendorResources',0) == 0 and
                     all(r['allocationCount'] == 1 and r['shared'] is False and r['systemMemory'] is False and r['ntstatus'] == 0 for r in resource_native) and
@@ -654,8 +687,8 @@ def main():
                         s['ntstatus'] == 0 and 0 < g['target'] <= g['observed'] < (1<<64)-1 and
                         g['observed'] == n['observed'] and r['observed'] >= r['target'] and n['noGpuAccess'] is True and n['cpuValueWrittenByBridge'] is False
                         for g,n,s,r in zip(context_signals,context_signal_native,context_signal_status,context_signal_retirements)))
-        copy_verified = copy_workload_complete(log)
-        clear_verified = clear_workload_complete(log)
+        copy_verified = copy_workload_complete(log, args.driver_async_submit and async_verified)
+        clear_verified = clear_workload_complete(log, args.driver_async_submit and async_verified)
         hwqueue_flags = [int(flag or '0') for flag in re.findall(r'nativeHwQueueCreated=true privateBytes=\d+ progressFenceDirect=true(?: flags=(\d+))?',log)]
         hwqueue_flag_checks = [json.loads(line) for line in errors if line.startswith('{') and '"nativeHardwareQueueFlagsVerified"' in line]
         no_broadcast_queues = sum(bool(flag & 2) for flag in hwqueue_flags)
@@ -669,7 +702,7 @@ def main():
         if late_guest_eof:
             accepted = accepted and no_broadcast_queue_eof_complete(log, control, cleanup, 6 if args.hwqueue_no_broadcast_wait_eof_test else 2)
         elif args.runtime_workload == 'clear':
-            accepted = accepted and no_broadcast_queues >= 1 and len(context_signals) == 2 and resources >= 2
+            accepted = accepted and no_broadcast_queues >= 1 and len(context_signals) + len(hw_queue_signals) == 2 and resources >= 2
         workload_matches = ((not clear_verified and not copy_verified and 'GPU_CLEAR_TEST_BEGIN' in log and 'GPU_COPY_TEST_BEGIN' not in log) if late_guest_eof else
                             (copy_verified and 'GPU_CLEAR_TEST_BEGIN' not in log) if args.runtime_workload == 'copy' else
                             (clear_verified and 'GPU_COPY_TEST_BEGIN' not in log) if args.runtime_workload == 'clear' else
@@ -681,6 +714,8 @@ def main():
                   'nativeVendorResourcesCreatedByLiveRuntime': resources, 'nativeVendorResourceChecks': resource_native,
                   'nativeVendorDriverProtectionMaps': driver_protection, 'directGuestCpuFenceWaits': cpu_waits,
                   'nativeContextSignals': context_signals, 'nativeContextSignalRetirementChecks': context_signal_native,
+                  'guestHwQueueSignals':hw_queue_signals,'nativeHwQueueSignalReturns':hw_signal_returned,
+                  'nativeHwQueueSignalAcceptances':hw_signal_accepted,'nativeHwQueueSignalRetirements':hw_signal_retired,
                   'guestGpuBufferCopyBytesPerRound': 65536 if copy_verified and accepted else 0,
                   'guestGpuBufferCopyRounds': 2 if copy_verified and accepted else 0,
                   'guestGpuRenderTargetClearVerified': bool(clear_verified and accepted),

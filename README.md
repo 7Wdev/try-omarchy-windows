@@ -6,8 +6,8 @@
 
 **7Wdev development fork:** [build and upstream sync](docs/FORK.md) ·
 [Windows NVIDIA investigation](docs/WINDOWS-NVIDIA-BACKEND.md).
-The GPU experiment includes [tested shared guest RAM and NVIDIA GPU buffer copies through QEMU/WHPX](docs/WDDM-BRIDGE.md).
-Guest rendering and desktop acceleration through it are not implemented.
+The GPU experiment now verifies [NVIDIA guest graphics pixels through QEMU/WHPX](docs/LIVE-GPU-CLEAR.md),
+alongside shared guest RAM and GPU buffer copies. Omarchy desktop integration remains unfinished.
 Download links below refer to official upstream releases.
 
 <p align="center">The full Omarchy desktop, running in a window on your Windows PC.</p>

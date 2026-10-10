@@ -1,5 +1,8 @@
 # NVIDIA graphics queue control through QEMU
 
+Historical checkpoint: the later [GPU clear milestone](LIVE-GPU-CLEAR.md) now
+passes rendered-pixel verification. The controls below deliberately stop earlier.
+
 The genuine NVIDIA Linux runtime can now create a Windows hardware queue with
 `NoBroadcastSignal` through the QEMU/WHPX bridge. Two physical RTX 5090 Laptop
 controls on 2026-10-09 accepted the flag unchanged and reclaimed every native

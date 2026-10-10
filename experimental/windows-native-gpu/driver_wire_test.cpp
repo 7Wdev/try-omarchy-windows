@@ -64,6 +64,10 @@ struct Fake : Driver {
     bool contextSignalEnabled = false;
     int badContextSignalReply = 0;
     unsigned contextSignalCalls = 0;
+    bool hwQueueSignalEnabled = false;
+    int badHwQueueSignalReply = 0;
+    unsigned hwQueueSignalCalls = 0;
+    std::vector<std::uint32_t> lastSignalQueues;
     std::map<std::uint32_t, std::uint32_t> vendorResources;
     std::map<std::uint32_t, std::vector<std::uint8_t>> buffers;
     std::vector<Kind> destroyed;
@@ -73,6 +77,7 @@ struct Fake : Driver {
                 (resourceEnabled ? VendorResourceCapability : 0u) |
                 (expandedVendorObjectsEnabled ? ExpandedVendorObjectsCapability : 0u) |
                 (contextSignalEnabled ? ContextSignalCapability : 0u) |
+                (hwQueueSignalEnabled ? HwQueueSignalCapability : 0u) |
                 (gpuVaEnabled ? VendorGpuVaCapability : 0u) | (residencyEnabled ? VendorResidencyCapability : 0u) |
                 (cpuEnabled ? VendorCpuCapability : 0u) | (translationEnabled ? VendorTranslationCapability : 0u) |
                 (hwQueuesEnabled ? HwQueueCapability : 0u) | (syncEnabled ? SyncCapability : 0u) |
@@ -200,6 +205,13 @@ struct Fake : Driver {
     }
     Result queueHwCommand(std::uint32_t queue, HwSubmitDesc desc, const std::vector<std::uint8_t>& data) override {
         require(asyncSubmitEnabled); return submitHwQueue(queue,desc,data);
+    }
+    Result queueHwQueueSignal(std::uint32_t sync, const std::vector<std::uint32_t>& queues, HwQueueSignalDesc desc) override {
+        require(syncParents.count(sync) && validHwQueueSignal(desc) && queues.size() == desc.count);
+        for (auto queue : queues) require(hwQueueParents.count(queue));
+        lastSignalQueues=queues; ++calls; ++hwQueueSignalCalls;
+        return {fail ? -123 : badHwQueueSignalReply == 1 ? 259 : 0, badHwQueueSignalReply == 2 ? 777u : 0u,
+                badHwQueueSignalReply == 3 ? UINT64_MAX : badHwQueueSignalReply == 4 ? 1ull : 0ull};
     }
     SyncResult createSync(std::uint32_t device, SyncDesc desc) override {
         require(device > 500 && validSync(desc)); ++calls; lastSyncDesc = desc;
@@ -1702,6 +1714,55 @@ int main() {
         require(header(signalSession.dispatch(request(Op::SignalContextSync,contextId,ContextSignalDesc{fenceId,4,target}))).status == -9);
     }
     require(contextSignals.syncParents.empty());
+    Fake hwSignals; hwSignals.hwQueueSignalEnabled=hwSignals.hwQueuesEnabled=hwSignals.syncEnabled=hwSignals.guestPagingEnabled=true;
+    {
+        Session session(hwSignals);
+        auto signal=[&](std::uint32_t sync, std::vector<std::uint32_t> queues, std::uint64_t value, std::uint32_t flags=0) {
+            auto packet=request(Op::QueueHwQueueSignal,sync,HwQueueSignalDesc{flags,static_cast<std::uint32_t>(queues.size()),value});
+            const auto data=reinterpret_cast<const std::uint8_t*>(queues.data());
+            if (!queues.empty()) packet.insert(packet.end(),data,data+queues.size()*sizeof(queues[0]));
+            return session.dispatch(packet);
+        };
+        require(header(signal(1,{2},1)).status == -71); session.dispatch(hello());
+        const auto adapter=header(session.dispatch(request(Op::OpenAdapter))).handle;
+        const auto device=header(session.dispatch(request(Op::CreateDevice,adapter))).handle;
+        const auto other=header(session.dispatch(request(Op::CreateDevice,adapter))).handle;
+        auto contextPacket=request(Op::CreateContext,device,ContextDesc{0,1,16,12,4,0});
+        contextPacket.insert(contextPacket.end(),{1,2,3,4});
+        const auto context=header(session.dispatch(contextPacket)).handle;
+        auto queuePacket=request(Op::CreateHwQueue,context,HwQueueDesc{0,4,0,0}); queuePacket.insert(queuePacket.end(),{37,38,39,40});
+        const auto q1=header(session.dispatch(queuePacket)).handle, q2=header(session.dispatch(queuePacket)).handle;
+        const auto fence=header(session.dispatch(request(Op::CreateSync,device,SyncDesc{5,NoGpuAccessSyncFlag,1,0,0}))).handle;
+        const auto foreign=header(session.dispatch(request(Op::CreateSync,other,SyncDesc{5,NoGpuAccessSyncFlag,1,0,0}))).handle;
+        const auto gpuFence=header(session.dispatch(request(Op::CreateSync,device,SyncDesc{5,0,1,0,0}))).handle;
+        auto before=hwSignals.calls;
+        hwSignals.hwQueueSignalEnabled=false;
+        require(header(signal(fence,{q1},1)).status == -95); hwSignals.hwQueueSignalEnabled=true;
+        for (const auto flags : {1u,2u,5u,8u,UINT32_MAX}) require(header(signal(fence,{q1},1,flags)).status == -22);
+        require(header(signal(fence,{},1)).status == -22);
+        require(header(signal(fence,std::vector<std::uint32_t>(MaxHwQueues+1,q1),1)).status == -22);
+        require(header(signal(fence,{q1},0)).status == -22);
+        require(header(signal(fence,{q1},UINT64_MAX)).status == -22);
+        require(header(signal(fence,{q1,q1},1)).status == -9);
+        for (auto bad : {0u,device,context,999u}) require(header(signal(fence,{bad},1)).status == -9);
+        for (auto bad : {foreign,gpuFence,q1,999u}) require(header(signal(bad,{q1},1)).status == -9);
+        require(hwSignals.calls == before);
+        for (int bad : {1,2,3}) { hwSignals.badHwQueueSignalReply=bad; require(header(signal(fence,{q1},1)).status == -5); }
+        hwSignals.fail=true; hwSignals.badHwQueueSignalReply=4;
+        require(header(signal(fence,{q1},1)).status == -5);
+        hwSignals.badHwQueueSignalReply=0;
+        auto out=signal(fence,{q1},1); Reply failure{}; std::memcpy(&failure,out.data()+sizeof(Header),sizeof failure);
+        require(!header(out).status && failure.ntstatus == -123 && !failure.value);
+        hwSignals.fail=false;
+        out=signal(fence,{q2,q1},1,4); Reply queued{}; std::memcpy(&queued,out.data()+sizeof(Header),sizeof queued);
+        require(!header(out).status && !queued.ntstatus && !queued.value && hwSignals.lastSignalQueues.size() == 2 &&
+                hwSignals.lastSignalQueues[0] != hwSignals.lastSignalQueues[1]);
+        before=hwSignals.calls; require(header(signal(fence,{q1},1)).status == -22 && hwSignals.calls == before);
+        std::uint64_t value=2;
+        while (hwSignals.hwQueueSignalCalls < MaxHwQueueSignals) require(!header(signal(fence,{q1},value++)).status);
+        before=hwSignals.calls; require(header(signal(fence,{q1},value)).status == -24 && hwSignals.calls == before);
+    }
+    require(hwSignals.hwQueueParents.empty() && hwSignals.syncParents.empty());
     Fake resources; resources.vendorEnabled = true; resources.resourceEnabled = true;
     {
         Session session(resources);

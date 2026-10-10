@@ -1,6 +1,6 @@
 """Reject false D3D12 initialization milestone reports; no GPU is used."""
 import unittest
-from test_owned_runtime_qemu import initialization_complete, copy_workload_complete, clear_workload_complete, expected_clear_pixels, no_broadcast_queue_eof_complete, async_submissions_complete
+from test_owned_runtime_qemu import initialization_complete, copy_workload_complete, clear_workload_complete, expected_clear_pixels, no_broadcast_queue_eof_complete, async_submissions_complete, hw_queue_signals_complete
 
 
 class MilestoneTests(unittest.TestCase):
@@ -42,6 +42,15 @@ class CopyEvidenceTests(unittest.TestCase):
         lines.append('GPU_COPY_TEST_COMPLETE verified=true bytes=65536 rounds=2')
         self.log = '\n'.join(lines)
 
+    def test_async_commands_require_separately_verified_retirement(self):
+        log = self.log.replace('nativeCommandSubmitted=true', 'nativeCommandQueued=true')
+        self.assertFalse(copy_workload_complete(log))
+        self.assertTrue(copy_workload_complete(log, True))
+        for old, new in (('observedHash=28e3f2dd58641325', 'observedHash=0000000000000000'),
+                         ('gpuCopySignal=00000000', 'gpuCopySignal=80004001'),
+                         ('nativeCommandQueued=true', 'missingCommand=true')):
+            self.assertFalse(copy_workload_complete(log.replace(old, new), True))
+
     def test_no_cpu_only_or_partial_success(self):
         self.assertTrue(copy_workload_complete(self.log))
         for line in self.log.splitlines():
@@ -78,6 +87,14 @@ class ClearEvidenceTests(unittest.TestCase):
         lines.extend(f'GPU_CLEAR_PIXEL_ROW round=2 y={y} rgba={pixels[y*520:(y+1)*520].hex()}' for y in range(73))
         lines.append('GPU_CLEAR_TEST_COMPLETE verified=true width=130 height=73 rounds=2')
         self.log = '\n'.join(lines)
+
+    def test_async_commands_require_separately_verified_retirement(self):
+        log=self.log.replace('nativeCommandSubmitted=true','nativeCommandQueued=true')
+        self.assertFalse(clear_workload_complete(log))
+        self.assertTrue(clear_workload_complete(log,True))
+        self.assertFalse(clear_workload_complete(log.replace('rgba=0000ffff','rgba=ffffffff'),True))
+        self.assertFalse(clear_workload_complete(log.replace('gpuClearSignal=00000000','gpuClearSignal=80004001'),True))
+        self.assertFalse(clear_workload_complete(log.replace('nativeCommandQueued=true','missingCommand=true'),True))
 
     def test_complete_graphics_evidence_required(self):
         self.assertTrue(clear_workload_complete(self.log))
@@ -194,6 +211,39 @@ class AsyncSubmissionTests(unittest.TestCase):
         receipts = [dict(a) for a in self.accepted]; receipts[0]['observed'] = 1
         self.assertFalse(async_submissions_complete(self.queued,receipts,self.retired,self.cleanup))
         self.assertFalse(async_submissions_complete([],[],[],{}))
+
+
+class HwQueueSignalTests(unittest.TestCase):
+    def setUp(self):
+        self.queued=[{'flags':4,'queues':3,'target':n,'observedAtReturn':n-1} for n in (1,2)]
+        self.returned=[dict(flags=q['flags'],queues=q['queues'],target=q['target'],observed=q['observedAtReturn'],ntstatus=0) for q in self.queued]
+        self.accepted=[dict(index=i,flags=q['flags'],queues=q['queues'],target=q['target'],observed=q['observedAtReturn'],
+                            noGpuAccess=True,cpuValueWrittenByBridge=False) for i,q in enumerate(self.queued,1)]
+        self.retired=[dict(a,observed=a['target']) for a in reversed(self.accepted)]
+        self.cleanup={'nativeHwQueueSignalAttempts':2,'acceptedHwQueueSignals':2,'completedHwQueueSignals':2,
+                      'failedHwQueueSignals':0,'pendingHwQueueSignals':0,'peakPendingHwQueueSignals':1}
+
+    def test_requires_actual_retirement_without_cpu_fence_writes(self):
+        self.assertTrue(hw_queue_signals_complete(self.queued,self.returned,self.accepted,self.retired,self.cleanup))
+        for receipts in ([],self.retired[:1],[self.retired[0]]*2):
+            self.assertFalse(hw_queue_signals_complete(self.queued,self.returned,self.accepted,receipts,self.cleanup))
+        for key,value in (('observed',1),('observed',(1<<64)-1),('target',3),('flags',0),('queues',2),
+                          ('noGpuAccess',False),('cpuValueWrittenByBridge',True)):
+            receipts=[dict(r) for r in self.retired]; receipts[0][key]=value
+            self.assertFalse(hw_queue_signals_complete(self.queued,self.returned,self.accepted,receipts,self.cleanup))
+        for key in self.cleanup:
+            cleanup=dict(self.cleanup); del cleanup[key]
+            self.assertFalse(hw_queue_signals_complete(self.queued,self.returned,self.accepted,self.retired,cleanup))
+        for status in (-123,259):
+            returned=[dict(r) for r in self.returned]; returned[0]['ntstatus']=status
+            self.assertFalse(hw_queue_signals_complete(self.queued,returned,self.accepted,self.retired,self.cleanup))
+
+    def test_empty_and_partial_signal_evidence(self):
+        self.assertTrue(hw_queue_signals_complete([],[],[],[],{}))
+        self.assertFalse(hw_queue_signals_complete([],self.returned,[],[],{}))
+        self.assertFalse(hw_queue_signals_complete([],[],[],[],{'pendingHwQueueSignals':1}))
+        self.assertFalse(hw_queue_signals_complete(self.queued,[],self.accepted,self.retired,self.cleanup))
+        self.assertFalse(hw_queue_signals_complete(self.queued,self.returned,list(reversed(self.accepted)),self.retired,self.cleanup))
 
 
 if __name__ == '__main__':
