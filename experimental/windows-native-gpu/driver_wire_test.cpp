@@ -60,6 +60,8 @@ struct Fake : Driver {
     int badVendorReply = 0;
     std::map<std::uint32_t, std::uint32_t> vendorOwners;
     bool resourceEnabled = false;
+    bool sharedResourceEnabled = false;
+    std::vector<std::uint8_t> lastSharedRuntime;
     int badResourceReply = 0;
     bool contextSignalEnabled = false;
     int badContextSignalReply = 0;
@@ -75,6 +77,7 @@ struct Fake : Driver {
         return {1, 31u | (contextsEnabled ? ContextCapability : 0u) | (queriesEnabled ? QueryCapability : 0u) |
                 (guestPagingEnabled ? GuestPagingCapability : 0u) | (vendorEnabled ? VendorAllocationCapability : 0u) |
                 (resourceEnabled ? VendorResourceCapability : 0u) |
+                (sharedResourceEnabled ? SharedVendorResourceCapability : 0u) |
                 (expandedVendorObjectsEnabled ? ExpandedVendorObjectsCapability : 0u) |
                 (contextSignalEnabled ? ContextSignalCapability : 0u) |
                 (hwQueueSignalEnabled ? HwQueueSignalCapability : 0u) |
@@ -146,6 +149,14 @@ struct Fake : Driver {
         const auto resource = ++next;
         vendorResources.emplace(result.nativeHandle, resource);
         return {result, badResourceReply == 1 ? 0u : badResourceReply == 2 ? result.nativeHandle : resource};
+    }
+    VendorResourceResult createSharedVendorResourceAllocation(std::uint32_t device, SharedVendorAllocationDesc desc, std::vector<std::uint8_t>& data) override {
+        require(sharedResourceEnabled && validSharedVendorAllocation(desc) && data.size() == desc.allocation.privateBytes + desc.runtimeBytes);
+        lastSharedRuntime.assign(data.begin() + desc.allocation.privateBytes, data.end());
+        std::vector<std::uint8_t> allocation(data.begin(), data.begin() + desc.allocation.privateBytes);
+        const auto result = createVendorResourceAllocation(device, desc.allocation, allocation);
+        data = allocation; data.insert(data.end(), lastSharedRuntime.begin(), lastSharedRuntime.end());
+        return result;
     }
     GpuVaResult mapVendorAllocation(std::uint32_t allocation, std::uint32_t queue, GpuVaDesc desc) override {
         require(vendorOwners.count(allocation) && queue > 500 && validGpuVa(desc)); ++calls;
@@ -1832,6 +1843,59 @@ int main() {
         auto packet = request(Op::CreateVendorResourceAllocation, device, VendorAllocationDesc{0,0,0,1,0,0}); packet.push_back(37);
         const auto before = resources.calls;
         require(session.objectCount() == MaxObjects - 1 && header(session.dispatch(packet)).status == -24 && resources.calls == before);
+    }
+    Fake shared; shared.vendorEnabled = shared.resourceEnabled = true;
+    {
+        Session session(shared);
+        SharedVendorAllocationDesc desc{{4,0x78100000,UninitializedDisplaySource,4,0,0},4,0};
+        auto create = [&](std::uint32_t device, SharedVendorAllocationDesc d) {
+            auto packet = request(Op::CreateSharedVendorResourceAllocation,device,d);
+            packet.insert(packet.end(),{37,38,39,40,5,6,7,8}); return packet;
+        };
+        require(header(session.dispatch(create(1,desc))).status == -71);
+        session.dispatch(hello());
+        const auto adapter = header(session.dispatch(request(Op::OpenAdapter))).handle;
+        const auto device = header(session.dispatch(request(Op::CreateDevice,adapter))).handle;
+        const auto other = header(session.dispatch(request(Op::CreateDevice,adapter))).handle;
+        const auto before = shared.calls;
+        require(header(session.dispatch(create(device,desc))).status == -95 && shared.calls == before);
+        shared.sharedResourceEnabled = true;
+        require(header(session.dispatch(create(adapter,desc))).status == -9 && shared.calls == before);
+        for (int mode = 0; mode < 8; ++mode) {
+            auto invalid = desc;
+            if (mode == 0) invalid.runtimeBytes = 0;
+            if (mode == 1) invalid.runtimeBytes = 1025;
+            if (mode == 2) invalid.reserved = 1;
+            if (mode == 3) invalid.allocation.reserved2 = 1;
+            if (mode == 4) invalid.allocation.flags = 0;
+            if (mode == 5) invalid.allocation.privateBytes = 4001;
+            auto packet = create(device,invalid);
+            if (mode == 6) packet.pop_back();
+            if (mode == 7) packet.push_back(0);
+            require(header(session.dispatch(packet)).status == -22 && shared.calls == before);
+        }
+        auto maximum = desc; maximum.runtimeBytes = 1024; maximum.allocation.privateBytes = 3024;
+        require(validSharedVendorAllocation(maximum)); ++maximum.allocation.privateBytes;
+        require(!validSharedVendorAllocation(maximum));
+        shared.fail = true;
+        auto out = session.dispatch(create(device,desc)); Reply failure{}; VendorResourceReply absent{};
+        std::memcpy(&failure,out.data()+sizeof(Header),sizeof failure);
+        std::memcpy(&absent,out.data()+sizeof(Header)+sizeof failure,sizeof absent);
+        require(!header(out).status && !header(out).handle && failure.ntstatus == -123 && !absent.resource);
+        require(out.back() == 8 && shared.vendorOwners.empty());
+        shared.fail = false;
+        shared.badVendorReply = 1;
+        require(header(session.dispatch(create(device,desc))).status == -5 && shared.vendorOwners.empty());
+        shared.badVendorReply = 0;
+        out = session.dispatch(create(device,desc)); VendorResourceReply resource{};
+        std::memcpy(&resource,out.data()+sizeof(Header)+sizeof(Reply),sizeof resource);
+        require(!header(out).status && header(out).handle && resource.resource);
+        require(shared.lastSharedRuntime == std::vector<std::uint8_t>({5,6,7,8}));
+        require(out[out.size()-8] == (37 ^ 255) && out.back() == 8);
+        require(header(session.dispatch(request(Op::DestroyVendorResource,resource.resource,other))).status == -9);
+        require(!header(session.dispatch(request(Op::DestroyVendorResource,resource.resource,device))).status);
+        require(shared.vendorOwners.empty() && shared.vendorResources.empty());
+        require(header(session.dispatch(request(Op::DestroyVendorResource,resource.resource,device))).status == -9);
     }
     Fake malformed; Session s(malformed); s.dispatch(hello());
     auto p = request(Op::OpenAdapter); p.push_back(0);

@@ -23,6 +23,7 @@ constexpr std::uint32_t QueryCapability = 64;
 constexpr std::uint32_t GuestPagingCapability = 128;
 constexpr std::uint32_t VendorAllocationCapability = 256;
 constexpr std::uint32_t VendorResourceCapability = 524288;
+constexpr std::uint32_t SharedVendorResourceCapability = 268435456;
 constexpr std::uint32_t MaxVendorPrivateBytes = 4000;
 constexpr std::size_t MaxVendorAllocations = 96;
 constexpr std::size_t ExpandedVendorAllocations = 128;
@@ -228,6 +229,16 @@ struct DestroyVendorDesc { std::uint32_t count, reserved; };
 static_assert(sizeof(DestroyVendorDesc) == 8, "fixed vendor destruction layout");
 struct VendorResourceReply { std::uint32_t resource, reserved; };
 static_assert(sizeof(VendorResourceReply) == 8, "fixed resource ownership reply");
+struct SharedVendorAllocationDesc {
+    VendorAllocationDesc allocation;
+    std::uint32_t runtimeBytes, reserved;
+};
+static_assert(sizeof(SharedVendorAllocationDesc) == 32, "fixed shared resource layout");
+inline bool validSharedVendorAllocation(SharedVendorAllocationDesc d) {
+    return validVendorAllocation(d.allocation) && d.allocation.flags == 4 &&
+           d.runtimeBytes && d.runtimeBytes <= 1024 && !d.reserved &&
+           d.allocation.privateBytes + d.runtimeBytes <= native_gpu::MaxPacket - sizeof(Header) - sizeof(d);
+}
 constexpr std::uint32_t DefaultFenceSlots = 64, MaxFenceSlots = 128;
 inline bool validFenceSlots(std::uint32_t slots) { return slots == DefaultFenceSlots || slots == MaxFenceSlots; }
 constexpr std::uint64_t FenceApertureBytes = MaxFenceSlots * 4096;
@@ -265,7 +276,7 @@ enum class Op : std::uint32_t {
     CreateGuestPagingQueue = 0x2040,
     CreateVendorAllocation = 0x2050, DestroyVendorAllocations, MapVendorAllocation, MakeVendorResident,
     LockVendorAllocation, UnlockVendorAllocation, TranslateVendorAllocation,
-    CreateVendorResourceAllocation, DestroyVendorResource,
+    CreateVendorResourceAllocation, DestroyVendorResource, CreateSharedVendorResourceAllocation,
     CreateHwQueue = 0x2060, DestroyHwQueue, SubmitHwQueue, QueueHwCommand,
     CreateSync = 0x2070, DestroySync, SignalContextSync, QueueHwQueueSignal,
     ReserveGpuAddress = 0x2080, FreeGpuReservation, MapGpuState
@@ -331,6 +342,9 @@ public:
         return {static_cast<std::int32_t>(0xc00000bbu), 0, 0};
     }
     virtual VendorResourceResult createVendorResourceAllocation(std::uint32_t, VendorAllocationDesc, std::vector<std::uint8_t>&) {
+        return {{static_cast<std::int32_t>(0xc00000bbu), 0, 0}, 0};
+    }
+    virtual VendorResourceResult createSharedVendorResourceAllocation(std::uint32_t, SharedVendorAllocationDesc, std::vector<std::uint8_t>&) {
         return {{static_cast<std::int32_t>(0xc00000bbu), 0, 0}, 0};
     }
     virtual Result destroyVendorAllocations(std::uint32_t, const std::vector<std::uint32_t>&) {
@@ -805,11 +819,14 @@ public:
             response.type = h.type; response.handle = response.status ? 0 : h.handle;
             std::memcpy(out.data(), &response, sizeof response); return out;
         }
-        if (op == Op::CreateVendorAllocation || op == Op::CreateVendorResourceAllocation || op == Op::DestroyVendorAllocations) {
+        if (op == Op::CreateVendorAllocation || op == Op::CreateVendorResourceAllocation ||
+            op == Op::CreateSharedVendorResourceAllocation || op == Op::DestroyVendorAllocations) {
             if (!negotiated) return reply(h, -71);
             if (!(driver.capabilities().flags & VendorAllocationCapability)) return reply(h, -95);
-            const bool withResource = op == Op::CreateVendorResourceAllocation;
+            const bool sharedResource = op == Op::CreateSharedVendorResourceAllocation;
+            const bool withResource = op == Op::CreateVendorResourceAllocation || sharedResource;
             if (withResource && !(driver.capabilities().flags & VendorResourceCapability)) return reply(h, -95);
+            if (sharedResource && !(driver.capabilities().flags & SharedVendorResourceCapability)) return reply(h, -95);
             const auto device = objects.find(h.handle);
             if (device == objects.end() || device->second.kind != Kind::Device) return reply(h, -9);
             if (op == Op::DestroyVendorAllocations) {
@@ -843,14 +860,23 @@ public:
             }
             if (packet.size() < sizeof h + sizeof(VendorAllocationDesc)) return reply(h, -22);
             VendorAllocationDesc desc{}; std::memcpy(&desc, packet.data() + sizeof h, sizeof desc);
-            if (!validVendorAllocation(desc) || packet.size() != sizeof h + sizeof desc + desc.privateBytes) return reply(h, -22);
+            SharedVendorAllocationDesc sharedDesc{};
+            const auto descriptorBytes = sharedResource ? sizeof sharedDesc : sizeof desc;
+            if (sharedResource) {
+                if (packet.size() < sizeof h + sizeof sharedDesc) return reply(h, -22);
+                std::memcpy(&sharedDesc, packet.data() + sizeof h, sizeof sharedDesc);
+                if (!validSharedVendorAllocation(sharedDesc)) return reply(h, -22);
+            }
+            const auto dataBytes = desc.privateBytes + (sharedResource ? sharedDesc.runtimeBytes : 0);
+            if (!validVendorAllocation(desc) || packet.size() != sizeof h + descriptorBytes + dataBytes) return reply(h, -22);
             const auto count = std::count_if(objects.begin(), objects.end(), [](const auto& item) { return item.second.kind == Kind::VendorAllocation; });
             if (objects.size() > MaxObjects - (withResource ? 2 : 1) || nextId >= UINT32_MAX - (withResource ? 1 : 0) || static_cast<std::size_t>(count) >= vendorAllocationObjectLimit(driver.capabilities().flags)) return reply(h, -24);
-            std::vector<std::uint8_t> data(packet.begin() + sizeof h + sizeof desc, packet.end());
-            const auto created = withResource ? driver.createVendorResourceAllocation(device->second.nativeHandle, desc, data) :
+            std::vector<std::uint8_t> data(packet.begin() + sizeof h + descriptorBytes, packet.end());
+            const auto created = sharedResource ? driver.createSharedVendorResourceAllocation(device->second.nativeHandle, sharedDesc, data) :
+                                withResource ? driver.createVendorResourceAllocation(device->second.nativeHandle, desc, data) :
                                                VendorResourceResult{driver.createVendorAllocation(device->second.nativeHandle, desc, data), 0};
             const auto result = created.allocation;
-            if (data.size() != desc.privateBytes || (result.ntstatus >= 0 && (!result.nativeHandle || result.value % 4096)) ||
+            if (data.size() != dataBytes || (result.ntstatus >= 0 && (!result.nativeHandle || result.value % 4096)) ||
                 (result.ntstatus >= 0 && withResource && (!created.resource || created.resource == result.nativeHandle)) ||
                 (result.ntstatus < 0 && (result.nativeHandle || result.value || created.resource))) {
                 if (result.nativeHandle) driver.destroy(Kind::VendorAllocation, result.nativeHandle);

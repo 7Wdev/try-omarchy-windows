@@ -27,6 +27,7 @@ These guides describe their own limits and validation status. They are not a pro
 - [Nested virtualization](NESTED-VIRTUALIZATION.md)
 - [GPU application profiles](GPU-APPLICATIONS.md)
 - [Windows NVIDIA bridge shader diagnostic](LIVE-GPU-SHADER-TRIANGLE.md): verified guest drawing; desktop integration remains unfinished
+- [Guest shared texture and Windows resource import](LIVE-GPU-SHARED-RESOURCE.md): presentation prerequisite verified separately from drawing
 
 ## Development and testing
 

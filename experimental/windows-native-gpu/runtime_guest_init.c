@@ -77,6 +77,7 @@ int main(void) {
                 if (count == 4 && !memcmp(workload, "copy", 4)) setenv("WDDM_BRIDGE_RUNTIME_WORKLOAD", "copy", 1);
                 else if (count == 5 && !memcmp(workload, "clear", 5)) setenv("WDDM_BRIDGE_RUNTIME_WORKLOAD", "clear", 1);
                 else if (count == 8 && !memcmp(workload, "triangle", 8)) setenv("WDDM_BRIDGE_RUNTIME_WORKLOAD", "triangle", 1);
+                else if (count == 6 && !memcmp(workload, "shared", 6)) setenv("WDDM_BRIDGE_RUNTIME_WORKLOAD", "shared", 1);
                 else if (count != 4 || memcmp(workload, "init", 4)) _exit(126);
             }
             setenv("WDDM_BRIDGE_PORT", port, 1);

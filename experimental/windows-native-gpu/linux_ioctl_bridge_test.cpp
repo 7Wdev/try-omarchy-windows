@@ -103,6 +103,50 @@ int main(int argc, char** argv) {
             return failed("CPU wait accepted unowned fence");
         close(fd); return 0;
     }
+    if (!std::strncmp(mode, "shared-resource-", 16)) {
+        D3DKMT_OPENADAPTERFROMLUID adapter{}; adapter.AdapterLuid.LowPart = 0x57475055;
+        if (ioctl(fd, _IOWR('G', 1, D3DKMT_OPENADAPTERFROMLUID), &adapter)) return failed("shared adapter");
+        D3DKMT_CREATEDEVICE device{}; device.hAdapter = adapter.hAdapter; device.Flags.RequestVSync = 1;
+        if (ioctl(fd, _IOWR('G', 2, D3DKMT_CREATEDEVICE), &device)) return failed("shared device");
+        unsigned char data[]{37,38,39,40}, runtime[]{5,6,7,8};
+        D3DDDI_ALLOCATIONINFO2 info{}; info.Flags.Value = 4; info.Priority = 0x78100000;
+        info.pPrivateDriverData = data; info.PrivateDriverDataSize = sizeof data;
+        D3DKMT_CREATEALLOCATION allocation{}; allocation.hDevice = device.hDevice;
+        allocation.Flags.CreateResource = 1; allocation.Flags.CreateShared = 1;
+        allocation.Flags.NonSecure = 1; allocation.Flags.NtSecuritySharing = 1;
+        allocation.NumAllocations = 1; allocation.pAllocationInfo2 = &info;
+        allocation.pPrivateRuntimeData = runtime; allocation.PrivateRuntimeDataSize = sizeof runtime;
+        if (!std::strcmp(mode, "shared-resource-invalid")) {
+            for (unsigned n = 0; n < 7; ++n) {
+                auto invalid = allocation;
+                if (n == 0) invalid.PrivateRuntimeDataSize = 0;
+                if (n == 1) invalid.PrivateRuntimeDataSize = 1025;
+                if (n == 2) invalid.pPrivateRuntimeData = nullptr;
+                if (n == 3) invalid.PrivateDriverDataSize = 1;
+                if (n == 4) invalid.hResource = 1;
+                if (n == 5) info.pSystemMem = runtime;
+                if (n == 6) info.Reserved[0] = 1;
+                const auto expected = n == 3 || n == 4 ? ENOSYS : EINVAL;
+                if (ioctl(fd, _IOWR('G', 6, D3DKMT_CREATEALLOCATION), &invalid) != -1 || errno != expected)
+                    return failed("invalid shared allocation reached backend");
+                info.pSystemMem = nullptr; info.Reserved[0] = 0;
+            }
+        } else {
+            const int result = ioctl(fd, _IOWR('G', 6, D3DKMT_CREATEALLOCATION), &allocation);
+            if (!std::strcmp(mode, "shared-resource-normal")) {
+                if (result || info.hAllocation != 3 || allocation.hResource != 4 || allocation.hGlobalShare ||
+                    data[0] != (37 ^ 255) || runtime[0] != 5 || runtime[3] != 8) return failed("shared result changed");
+                D3DKMT_DESTROYALLOCATION2 release{}; release.hDevice = device.hDevice; release.hResource = allocation.hResource;
+                if (ioctl(fd, _IOWR('G', 19, D3DKMT_DESTROYALLOCATION2), &release)) return failed("shared resource destruction");
+            } else {
+                const int expected = !std::strcmp(mode, "shared-resource-disabled") ? ENOSYS :
+                    !std::strcmp(mode, "shared-resource-nt-failure") ? EINVAL : EPROTO;
+                if (result != -1 || errno != expected || allocation.hResource || info.hAllocation)
+                    return failed("shared failure accepted");
+            }
+        }
+        close(fd); return 0;
+    }
     if (!std::strncmp(mode, "resource-", 9)) {
         D3DKMT_OPENADAPTERFROMLUID adapter{}; adapter.AdapterLuid.LowPart = 0x57475055;
         if (ioctl(fd, _IOWR('G', 1, D3DKMT_OPENADAPTERFROMLUID), &adapter)) return failed("resource adapter");

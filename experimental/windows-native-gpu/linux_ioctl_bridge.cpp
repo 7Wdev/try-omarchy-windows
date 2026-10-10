@@ -479,9 +479,12 @@ public:
                         std::fprintf(stderr, "LINUX_BRIDGE allocationItem index=%u flags=%u privateBytes=%u hasSystemMemory=%u priority=%u source=%u\n",
                                      n, item.Flags.Value, item.PrivateDriverDataSize, item.pSystemMem ? 1u : 0u, item.Priority, item.VidPnSourceId);
                     }
-                const bool withResource = flags == 1;
+                const bool sharedResource = flags == 71; // CreateResource | CreateShared | NonSecure | NtSecuritySharing
+                const bool withResource = flags == 1 || sharedResource;
                 if (!(caps.flags & VendorAllocationCapability) || (flags != 0 && !withResource) ||
-                    (withResource && !(caps.flags & VendorResourceCapability)) || a.hResource || a.PrivateRuntimeDataSize ||
+                    (withResource && !(caps.flags & VendorResourceCapability)) ||
+                    (sharedResource && !(caps.flags & SharedVendorResourceCapability)) || a.hResource ||
+                    (!sharedResource && a.PrivateRuntimeDataSize) ||
                     a.PrivateDriverDataSize || a.NumAllocations != 1 || !a.pAllocationInfo2) {
                     std::fprintf(stderr, "LINUX_BRIDGE unsupported nr=6 bytes=%zu\n", sizeof a); throw Error(ENOSYS);
                 }
@@ -490,10 +493,22 @@ public:
                 if (!validVendorAllocation(desc) || item.pSystemMem || !item.pPrivateDriverData ||
                     std::any_of(std::begin(item.Reserved), std::end(item.Reserved), [](auto value) { return value != 0; })) throw Error(EINVAL);
                 if (vendorOwners.size() >= vendorAllocationObjectLimit(caps.flags)) throw Error(EMFILE);
-                auto packet = request(withResource ? Op::CreateVendorResourceAllocation : Op::CreateVendorAllocation, a.hDevice, desc);
+                const SharedVendorAllocationDesc sharedDesc{desc, a.PrivateRuntimeDataSize, 0};
+                if (sharedResource && (!validSharedVendorAllocation(sharedDesc) || !a.pPrivateRuntimeData)) throw Error(EINVAL);
+                auto packet = sharedResource ? request(Op::CreateSharedVendorResourceAllocation, a.hDevice, sharedDesc) :
+                    request(withResource ? Op::CreateVendorResourceAllocation : Op::CreateVendorAllocation, a.hDevice, desc);
                 const auto begin = static_cast<const std::uint8_t*>(item.pPrivateDriverData);
                 packet.insert(packet.end(), begin, begin + desc.privateBytes);
-                const auto result = call(packet, desc.privateBytes + (withResource ? sizeof(VendorResourceReply) : 0), true);
+                if (sharedResource) {
+                    const auto runtime = static_cast<const std::uint8_t*>(a.pPrivateRuntimeData);
+                    packet.insert(packet.end(), runtime, runtime + sharedDesc.runtimeBytes);
+                }
+                const auto result = call(packet, desc.privateBytes + (sharedResource ? sharedDesc.runtimeBytes : 0) +
+                                         (withResource ? sizeof(VendorResourceReply) : 0), true);
+                if (sharedResource && std::memcmp(static_cast<const std::uint8_t*>(a.pPrivateRuntimeData),
+                        result.data.data() + sizeof(VendorResourceReply) + desc.privateBytes, sharedDesc.runtimeBytes)) {
+                    transport.fail(); throw Error(EPROTO);
+                }
                 VendorResourceReply resource{};
                 if (withResource) std::memcpy(&resource, result.data.data(), sizeof resource);
                 const bool reusedWireId = std::any_of(vendorWireIds.begin(), vendorWireIds.end(), [&](const auto& owned) {
@@ -530,7 +545,7 @@ public:
                 if (withResource && !vendorResources.emplace(resource.resource, alias).second) { transport.fail(); throw Error(EPROTO); }
                 item.hAllocation = alias; item.GpuVirtualAddress = result.result.value;
                 a.hResource = resource.resource; a.hGlobalShare = 0;
-                if (withResource) std::fprintf(stderr, "LINUX_BRIDGE nativeVendorResourceCreated=true allocationCount=1 shared=false systemMemory=false\n");
+                if (withResource) std::fprintf(stderr, "LINUX_BRIDGE nativeVendorResourceCreated=true allocationCount=1 shared=%s systemMemory=false\n", sharedResource ? "true" : "false");
                 if (desc.source == UninitializedDisplaySource)
                     std::fprintf(stderr, "LINUX_BRIDGE standaloneSourceUninitializedAccepted=true primary=false privateDataPreserved=true\n");
                 std::fprintf(stderr, "LINUX_BRIDGE nativeVendorAllocationCreated=true privateBytes=%u\n", desc.privateBytes); return 0;

@@ -10,6 +10,15 @@ queue-signal fences retire, with normal probe/VM exit and verified cleanup.
 This does not establish accelerated Omarchy, the requested APIs or the minimum
 93% native performance.
 
+The [shader diagnostic](../../docs/LIVE-GPU-SHADER-TRIANGLE.md) passes two fresh
+physical runs with every pixel checked in two distinct rounds. A separate
+[shared-texture route](../../docs/LIVE-GPU-SHARED-RESOURCE.md) also passes two
+fresh runs: the guest draws into a shared texture and Windows independently
+imports and releases that resource before drawing. Select `--runtime-workload shared`
+in both the private-image packer and owned-runtime verifier, plus the separate
+`--driver-shared-resources` native opt-in. Native GPU consumption and desktop
+presentation remain unfinished.
+
 The diagnostic adds owned, nonshared single-allocation resources, the observed
 NVIDIA DEFAULT-resource DriverProtection value, direct CPU fence waits and a
 bounded GPU2 context-signal route. `--runtime-workload copy` must be selected
@@ -23,7 +32,8 @@ pixel verified after GPU readback. Separate asynchronous command acceptance and
 hardware-queue signaling preserve ownership until actual native retirement.
 The earlier [graphics queue controls](../../docs/LIVE-GRAPHICS-QUEUE-CONTROL.md)
 remain lifecycle tests. Initialization and copy controls cannot satisfy the
-clear workload verifier. Shader drawing and desktop presentation remain unfinished.
+clear workload verifier. The separate shader and shared-resource guards require
+their own drawing/import evidence; desktop presentation remains unfinished.
 
 The optional `--hwqueue-no-broadcast-wait-eof-test` stops the clear workload
 after its first combined `NoBroadcastSignal | NoBroadcastWait` queue (flags 6).
@@ -120,7 +130,7 @@ for retirement as a diagnostic. The optional `--driver-async-submit` selects a
 separate negotiated queue operation, returning after KMT acceptance and recording
 actual hardware retirement independently. The verifier requires every accepted
 command to retire and complete native cleanup. This removes a demonstrated
-startup dependency stall; graphics rendering remains unverified. Production queues
+startup dependency stall and supports the verified graphics diagnostics. Production queues
 must also preserve asynchronous
 execution and overlap. General allocation layouts, broader synchronization operations,
 scanout and desktop integration remain unfinished.

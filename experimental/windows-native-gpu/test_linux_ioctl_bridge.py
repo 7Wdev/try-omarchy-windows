@@ -20,6 +20,8 @@ def send(op, handle, value=0, data=b'', padding=0, hello=False, ntstatus=0):
     caps |= 256 if mode.startswith('allocation-') and mode != 'allocation-disabled' else 0
     caps |= 256 if mode.startswith('resource-') else 0
     caps |= 524288 if mode.startswith('resource-') and mode != 'resource-disabled' else 0
+    caps |= 256 | 524288 if mode.startswith('shared-resource-') else 0
+    caps |= 268435456 if mode.startswith('shared-resource-') and mode != 'shared-resource-disabled' else 0
     caps |= 1048576 if mode.startswith('context-signal-') and mode != 'context-signal-disabled' else 0
     caps |= 256 if mode.startswith('gpuva-') else 0
     caps |= 512 if mode == 'gpuva-invalid' else 0
@@ -146,6 +148,14 @@ try:
             if mode == 'paging-short': data = data[:-1]
             send(op,3,value=1 if mode == 'paging-bad-value' else 0,data=data)
         elif op == 0x2008: send(op,handle)
+        elif op == 0x2059:
+            assert handle == 2 and struct.unpack_from('<8I',packet,16) == (4,0x78100000,0,4,0,0,4,0)
+            assert packet[48:] == bytes([37,38,39,40,5,6,7,8])
+            failed = mode == 'shared-resource-nt-failure'
+            data = struct.pack('<II',0 if failed else 4,0) + bytes([37 ^ 255,38,39,40,5,6,7,8])
+            if mode == 'shared-resource-short': data = data[:-1]
+            if mode == 'shared-resource-runtime-changed': data = data[:-1] + b'X'
+            send(op,0 if failed else 3,data=data,ntstatus=-1073741811 if failed else 0)
         elif op == 0x2057:
             assert handle == 2 and struct.unpack_from('<6I',packet,16) == (4,0x78100000,0,4,0,0)
             assert packet[40:] == bytes([37,38,39,40])
@@ -218,6 +228,8 @@ if mode.startswith('gpuva-'): assert operations == [0x2000], operations
 if mode.startswith('cpu-wait-'): assert operations == [0x2000], operations
 if mode.startswith('context-signal-'): assert operations == [0x2000], operations
 if mode in ('resource-disabled','resource-invalid'): assert 0x2057 not in operations, operations
+if mode in ('shared-resource-disabled','shared-resource-invalid'): assert 0x2059 not in operations, operations
+if mode == 'shared-resource-normal': assert operations.count(0x2059) == operations.count(0x2058) == 1, operations
 if mode == 'resource-normal' or mode.startswith('resource-destroy-'): assert operations.count(0x2058) == 1, operations
 if mode == 'resource-failed-destroy': assert operations.count(0x2058) == 2, operations
 if mode == 'resource-list-destroy': assert operations.count(0x2051) == 1, operations
@@ -257,6 +269,8 @@ def main():
         worker.write_text(WORKER, encoding='utf-8'); worker.chmod(0o700)
         for mode in ('no-worker', 'wrong-version', 'reuse', 'bad-reply', 'closed-worker', 'normal',
                      'cpu-wait-invalid', 'cpu-wait-unowned',
+                     'shared-resource-normal', 'shared-resource-disabled', 'shared-resource-invalid',
+                     'shared-resource-nt-failure', 'shared-resource-short', 'shared-resource-runtime-changed',
                      'context-signal-invalid', 'context-signal-disabled', 'context-signal-unowned',
                      'hw-signal-invalid', 'hw-signal-disabled', 'hw-signal-unowned',
                      'resource-normal', 'resource-disabled', 'resource-invalid', 'resource-nt-failure', 'resource-bad-failure',

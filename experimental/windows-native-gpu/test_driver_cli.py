@@ -59,6 +59,9 @@ def main():
     cases += [(['--stdio','--driver-async-submit'], 'Asynchronous submission requires')]
     for missing in ('--driver-submit','--driver-retirement'):
         cases.append(([o for o in no_broadcast if o not in (missing,'--hwqueue-no-broadcast-eof-test')] + ['--driver-async-submit'], 'Asynchronous submission requires'))
+    cases += [(['--stdio','--driver-shared-resources'], 'Shared resources require explicit allocation opt-in')]
+    cases += [(['--stdio','--driver-contexts','--driver-queries','--driver-allocations','--driver-shared-resources'],
+               'Shared resources require an owned QEMU runtime')]
     for options, message in cases:
         result = subprocess.run([str(args.bridge.resolve()), *options], capture_output=True, text=True,
                                 timeout=5, creationflags=subprocess.CREATE_NO_WINDOW)

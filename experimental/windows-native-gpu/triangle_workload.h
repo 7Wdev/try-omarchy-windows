@@ -45,7 +45,8 @@ inline bool reference(unsigned x, unsigned y, unsigned round, std::uint8_t* rgba
     return inside;
 }
 
-inline int run(ID3D12Device* device) {
+inline int run(ID3D12Device* device, bool shared = false) {
+    if (shared) std::printf("GPU_SHARED_RESOURCE_TEST_BEGIN width=130 height=73 format=R8G8B8A8_UNORM\n");
     std::printf("GPU_TRIANGLE_TEST_BEGIN width=%u height=%u format=R8G8B8A8_UNORM rounds=%u vertices=3 tolerance=%u\n", Width, Height, Rounds, Tolerance);
     std::printf("GPU_TRIANGLE_SHADERS vertexBytes=%zu pixelBytes=%zu vertexHash=%016llx pixelHash=%016llx\n",
         sizeof(TriangleVertexShader), sizeof(TrianglePixelShader),
@@ -93,7 +94,7 @@ inline int run(ID3D12Device* device) {
     desc.SampleDesc.Count = 1; desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN; desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
     D3D12_HEAP_PROPERTIES heap{}; heap.Type = D3D12_HEAP_TYPE_DEFAULT; heap.CreationNodeMask = 1; heap.VisibleNodeMask = 1;
     ComPtr<ID3D12Resource> target, readback;
-    if (!succeeded("RenderTarget", device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
+    if (!succeeded("RenderTarget", device->CreateCommittedResource(&heap, shared ? D3D12_HEAP_FLAG_SHARED : D3D12_HEAP_FLAG_NONE, &desc,
             D3D12_RESOURCE_STATE_RENDER_TARGET, nullptr, IID_PPV_ARGS(&target)))) return 5;
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{}; UINT rows = 0; UINT64 rowBytes = 0, requiredBytes = 0;
     device->GetCopyableFootprints(&desc, 0, 1, 512, &footprint, &rows, &rowBytes, &requiredBytes);
@@ -199,6 +200,7 @@ inline int run(ID3D12Device* device) {
         if (verified != Width * Height) return 5;
     }
     std::printf("GPU_TRIANGLE_TEST_COMPLETE verified=true width=%u height=%u rounds=%u\n", Width, Height, Rounds);
+    if (shared) std::printf("GPU_SHARED_RESOURCE_TEST_COMPLETE verified=true width=130 height=73 rounds=2\n");
     return 0;
 }
 } // namespace gpu_triangle
