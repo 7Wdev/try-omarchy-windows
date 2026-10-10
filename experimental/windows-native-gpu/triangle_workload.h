@@ -11,6 +11,7 @@
 #include <cstring>
 #include <string>
 #include <thread>
+#include <dlfcn.h>
 #include "triangle_shaders.h"
 
 namespace gpu_triangle {
@@ -45,7 +46,11 @@ inline bool reference(unsigned x, unsigned y, unsigned round, std::uint8_t* rgba
     return inside;
 }
 
-inline int run(ID3D12Device* device, bool shared = false) {
+inline int run(ID3D12Device* device, bool shared = false, bool consume = false) {
+    using Consume = int (*)(std::uint64_t, std::uint64_t*);
+    const auto consumeTexture = consume ? reinterpret_cast<Consume>(dlsym(RTLD_DEFAULT, "wddm_bridge_consume_shared_texture")) : nullptr;
+    if (consume && (!shared || !consumeTexture)) return 5;
+    if (consume) std::printf("GPU_SHARED_CONSUME_TEST_BEGIN rounds=2 state=COMMON\n");
     if (shared) std::printf("GPU_SHARED_RESOURCE_TEST_BEGIN width=130 height=73 format=R8G8B8A8_UNORM\n");
     std::printf("GPU_TRIANGLE_TEST_BEGIN width=%u height=%u format=R8G8B8A8_UNORM rounds=%u vertices=3 tolerance=%u\n", Width, Height, Rounds, Tolerance);
     std::printf("GPU_TRIANGLE_SHADERS vertexBytes=%zu pixelBytes=%zu vertexHash=%016llx pixelHash=%016llx\n",
@@ -123,6 +128,8 @@ inline int run(ID3D12Device* device, bool shared = false) {
     if (!succeeded("CommandList", device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.Get(), pipeline.Get(), IID_PPV_ARGS(&commands)))) return 5;
     ComPtr<ID3D12Fence> fence;
     if (!succeeded("Fence", device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence)))) return 5;
+    ComPtr<ID3D12Fence> handoffFence;
+    if (consume && FAILED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&handoffFence)))) return 5;
     const FLOAT backgrounds[2][4]{{0, 0, 1, 1}, {0, 0, 0, 1}};
     const D3D12_VIEWPORT viewport{0, 0, static_cast<FLOAT>(Width), static_cast<FLOAT>(Height), 0, 1};
     const D3D12_RECT scissor{0, 0, Width, Height};
@@ -130,6 +137,12 @@ inline int run(ID3D12Device* device, bool shared = false) {
     for (unsigned round = 1; round <= Rounds; ++round) {
         if (round > 1 && (!succeeded("AllocatorReset", allocator->Reset()) ||
                          !succeeded("CommandListReset", commands->Reset(allocator.Get(), pipeline.Get())))) return 5;
+        if (consume && round > 1) {
+            D3D12_RESOURCE_BARRIER b{}; b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            b.Transition.pResource = target.Get(); b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+            b.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON; b.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+            commands->ResourceBarrier(1, &b);
+        }
         commands->SetGraphicsRootSignature(root.Get());
         commands->SetGraphicsRoot32BitConstant(0, round - 1, 0);
         commands->RSSetViewports(1, &viewport); commands->RSSetScissorRects(1, &scissor);
@@ -198,9 +211,34 @@ inline int run(ID3D12Device* device, bool shared = false) {
             std::printf("GPU_TRIANGLE_PIXEL_ROW round=%u y=%u rgba=%s\n", round, y, row.c_str());
         }
         if (verified != Width * Height) return 5;
+        if (consume) {
+            if (FAILED(allocator->Reset()) || FAILED(commands->Reset(allocator.Get(), nullptr))) return 5;
+            barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+            barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COMMON;
+            commands->ResourceBarrier(1, &barrier);
+            if (FAILED(commands->Close())) return 5;
+            queue->ExecuteCommandLists(1, lists);
+            if (FAILED(queue->Signal(handoffFence.Get(), round))) return 5;
+            const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+            std::uint64_t retired = 0;
+            do {
+                retired = handoffFence->GetCompletedValue();
+                if (retired == UINT64_MAX) return 5;
+                if (retired >= round) break;
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            } while (std::chrono::steady_clock::now() < end);
+            if (retired < round) return 5;
+            std::printf("GPU_SHARED_CONSUME_HANDOFF round=%u state=COMMON fenceTarget=%u fenceObserved=%llu\n",
+                        round, round, static_cast<unsigned long long>(retired));
+            std::uint64_t hostHash = 0;
+            if (consumeTexture(round, &hostHash) || hostHash != hash(actual, Bytes)) return 5;
+            std::printf("GPU_SHARED_CONSUME_HOST round=%u hash=%016llx returnedState=COMMON\n",
+                        round, static_cast<unsigned long long>(hostHash));
+        }
     }
     std::printf("GPU_TRIANGLE_TEST_COMPLETE verified=true width=%u height=%u rounds=%u\n", Width, Height, Rounds);
     if (shared) std::printf("GPU_SHARED_RESOURCE_TEST_COMPLETE verified=true width=130 height=73 rounds=2\n");
+    if (consume) std::printf("GPU_SHARED_CONSUME_TEST_COMPLETE verified=true rounds=2\n");
     return 0;
 }
 } // namespace gpu_triangle

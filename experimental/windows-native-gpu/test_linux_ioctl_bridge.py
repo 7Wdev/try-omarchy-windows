@@ -17,6 +17,7 @@ def send(op, handle, value=0, data=b'', padding=0, hello=False, ntstatus=0):
     packet = struct.pack('<IIiI',op,handle,0,padding)
     caps = 103 | (128 if mode.startswith('paging-') and mode != 'paging-disabled' else 0)
     if mode == 'priority-disabled': caps &= ~32
+    caps |= 536870912 if mode.startswith('consume-') and mode != 'consume-disabled' else 0
     caps |= 256 if mode.startswith('allocation-') and mode != 'allocation-disabled' else 0
     caps |= 256 if mode.startswith('resource-') else 0
     caps |= 524288 if mode.startswith('resource-') and mode != 'resource-disabled' else 0
@@ -267,7 +268,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix='wddm-ioctl-fault-') as directory:
         worker = pathlib.Path(directory) / 'owned-worker'
         worker.write_text(WORKER, encoding='utf-8'); worker.chmod(0o700)
-        for mode in ('no-worker', 'wrong-version', 'reuse', 'bad-reply', 'closed-worker', 'normal',
+        for mode in ('consume-disabled', 'consume-unowned', 'consume-null', 'no-worker', 'wrong-version', 'reuse', 'bad-reply', 'closed-worker', 'normal',
                      'cpu-wait-invalid', 'cpu-wait-unowned',
                      'shared-resource-normal', 'shared-resource-disabled', 'shared-resource-invalid',
                      'shared-resource-nt-failure', 'shared-resource-short', 'shared-resource-runtime-changed',

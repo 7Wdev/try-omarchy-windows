@@ -16,5 +16,5 @@ output=$(CDPATH= cd -- "$3" && pwd)
 "${CXX:-c++}" -std=c++17 -Wall -Wextra -Werror \
     -isystem "$headers/include" -isystem "$headers/include/wsl/stubs" \
     "$base/umd_context_probe.cpp" "$headers/src/dxguids.cpp" \
-    -L/usr/lib/wsl/lib -Wl,-rpath,/usr/lib/wsl/lib -ld3d12 -ldxcore -o "$output/runtime-probe"
+    -L/usr/lib/wsl/lib -Wl,-rpath,/usr/lib/wsl/lib -ld3d12 -ldxcore -ldl -o "$output/runtime-probe"
 "${CC:-cc}" -static -std=c11 -Wall -Wextra -Werror -O2 "$base/runtime_guest_init.c" -o "$output/runtime-init"

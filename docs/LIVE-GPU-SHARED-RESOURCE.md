@@ -6,6 +6,11 @@ verified both 130×73 RGBA8 shader rounds, retired all 13 native commands and
 two hardware queue signals, exited normally and released every bridge-owned
 object. This clears a prerequisite for a Windows GPU presentation path.
 
+The subsequent [Windows GPU consumer checkpoint](LIVE-GPU-SHARED-TEXTURE-CONSUMPTION.md)
+adds an explicit COMMON/fence handoff and verifies native GPU copies of two
+different guest frames. The import-only workload described here retains its
+original scope and resource-state behavior.
+
 The native import occurs during allocation creation and is released before
 guest drawing. These tests establish resource compatibility and guest shader
 correctness separately. They do not establish that a Windows GPU consumer sees
@@ -108,8 +113,8 @@ milestone guard groups pass. The shared guards require exact API results,
 resource metadata, close/release receipts, workload markers and independent
 shader verification; plain shader drawing cannot satisfy shared acceptance.
 
-The next graphics step needs an explicit resource-state and fence handoff,
-followed by a retained Windows GPU consumer and swapchain presentation. The
+The subsequent consumer checkpoint verifies a resource-state/fence handoff and
+a retained Windows GPU consumer. Swapchain presentation remains unfinished. The
 current guest leaves the target in `RENDER_TARGET` state after verification;
 no cross-device consumption is attempted. A production guest kernel/DRM
 transport, Linux sharing semantics, Omarchy/Hyprland integration, the requested

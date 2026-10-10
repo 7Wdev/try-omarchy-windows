@@ -24,7 +24,7 @@ def main():
     parser.add_argument('--strace', type=pathlib.Path, help='Optional locally supplied syscall tracer; failed calls only')
     parser.add_argument('--dependency-directory', type=pathlib.Path, action='append', default=[], help='Optional local ELF dependencies; mapped to the guest library directory')
     parser.add_argument('--extra-runtime', type=pathlib.Path, action='append', default=[], help='Installed library loaded dynamically; preserves its absolute guest path')
-    parser.add_argument('--runtime-workload', choices=('init', 'copy', 'clear', 'triangle', 'shared'), default='init', help='Explicit guest D3D12 workload; shared draws shaders in a shareable resource')
+    parser.add_argument('--runtime-workload', choices=('init', 'copy', 'clear', 'triangle', 'shared', 'consume'), default='init', help='Explicit guest D3D12 workload; consume hands completed shared textures to a native GPU consumer')
     args = parser.parse_args()
     if sys.platform != 'linux':
         parser.error('Run in Linux/WSL with locally installed runtime libraries')

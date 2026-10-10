@@ -231,6 +231,8 @@ class Bridge {
     std::map<std::uint32_t, Context> contextOwners;
     std::map<std::uint32_t, std::uint32_t> hwQueueContexts;
     std::map<std::uint32_t, std::uint32_t> vendorResources; // typed resource ID -> its sole allocation alias
+    std::set<std::uint32_t> sharedResources;
+    std::uint32_t lastHwSignalSync = 0;
     struct BorrowedFence { std::uint32_t owner, device; bool hardware; };
     std::map<std::uint32_t, BorrowedFence> borrowedFences;
     struct Synchronization { std::uint32_t device, type, flags; std::uint64_t lastSignal = 0; };
@@ -545,6 +547,7 @@ public:
                 if (withResource && !vendorResources.emplace(resource.resource, alias).second) { transport.fail(); throw Error(EPROTO); }
                 item.hAllocation = alias; item.GpuVirtualAddress = result.result.value;
                 a.hResource = resource.resource; a.hGlobalShare = 0;
+                if (sharedResource) sharedResources.insert(resource.resource);
                 if (withResource) std::fprintf(stderr, "LINUX_BRIDGE nativeVendorResourceCreated=true allocationCount=1 shared=%s systemMemory=false\n", sharedResource ? "true" : "false");
                 if (desc.source == UninitializedDisplaySource)
                     std::fprintf(stderr, "LINUX_BRIDGE standaloneSourceUninitializedAccepted=true primary=false privateDataPreserved=true\n");
@@ -570,7 +573,7 @@ public:
                     const auto result = call(request(Op::DestroyVendorResource, a.hResource, a.hDevice), 0, true);
                     if (result.header.handle != a.hResource || result.result.value || result.result.ntstatus > 0) { transport.fail(); throw Error(EPROTO); }
                     checkNt(result.result.ntstatus);
-                    vendorResources.erase(resource); vendorOwners.erase(alias); vendorWireIds.erase(alias); vendorGpuRanges.erase(alias);
+                    sharedResources.erase(a.hResource); vendorResources.erase(resource); vendorOwners.erase(alias); vendorWireIds.erase(alias); vendorGpuRanges.erase(alias);
                     std::fprintf(stderr, "LINUX_BRIDGE nativeVendorResourceDestroyed=true allocationCount=1 hardwareQueuesAlive=%u\n", ownedQueues);
                     std::fprintf(stderr, "LINUX_BRIDGE nativeVendorAllocationsDestroyed=true count=1 hardwareQueuesAlive=%u\n", ownedQueues); return 0;
                 }
@@ -598,7 +601,7 @@ public:
                 checkNt(result.result.ntstatus);
                 for (unsigned n = 0; n < a.AllocationCount; ++n) {
                     for (auto resource = vendorResources.begin(); resource != vendorResources.end();) {
-                        if (resource->second == a.phAllocationList[n]) resource = vendorResources.erase(resource); else ++resource;
+                        if (resource->second == a.phAllocationList[n]) { sharedResources.erase(resource->first); resource = vendorResources.erase(resource); } else ++resource;
                     }
                     vendorOwners.erase(a.phAllocationList[n]); vendorWireIds.erase(a.phAllocationList[n]); vendorGpuRanges.erase(a.phAllocationList[n]);
                 }
@@ -1098,7 +1101,7 @@ public:
                 if (result.header.handle != sync->first || !validHwSubmitReply({result.result.ntstatus,0,result.result.value},desc.fence,AsyncHwSubmitCapability)) {
                     transport.fail(); throw Error(EPROTO);
                 }
-                checkNt(result.result.ntstatus); sync->second.lastSignal=desc.fence;
+                checkNt(result.result.ntstatus); sync->second.lastSignal=desc.fence; lastHwSignalSync=sync->first;
                 std::fprintf(stderr,"LINUX_BRIDGE nativeHwQueueSignalQueued=true flags=%u queues=%u target=%llu observedAtReturn=%llu noGpuAccess=true\n",
                     desc.flags,desc.count,static_cast<unsigned long long>(desc.fence),static_cast<unsigned long long>(result.result.value));
                 return 0;
@@ -1174,6 +1177,22 @@ public:
                 throw Error(ENOSYS);
         }
     }
+    std::uint64_t consumeSharedTexture(std::uint64_t target) {
+        if (!(caps.flags & SharedTextureConsumeCapability)) throw Error(ENOSYS);
+        if (sharedResources.size() != 1 || !lastHwSignalSync) throw Error(EINVAL);
+        const auto resource = *sharedResources.begin();
+        const auto allocation = vendorResources.find(resource); const auto sync = syncObjects.find(lastHwSignalSync);
+        if (allocation == vendorResources.end() || sync == syncObjects.end() || sync->second.type != 5 ||
+            sync->second.flags != NoGpuAccessSyncFlag || sync->second.lastSignal != target ||
+            !vendorOwners.count(allocation->second) || vendorOwners.at(allocation->second) != sync->second.device) throw Error(EBADF);
+        const SharedTextureConsumeDesc desc{sync->first,0,target};
+        if (!validSharedTextureConsume(desc)) throw Error(EINVAL);
+        const auto result = call(request(Op::ConsumeSharedTexture,resource,desc),0,true);
+        if (result.header.handle != resource || result.result.ntstatus > 0 ||
+            (result.result.ntstatus < 0 && result.result.value)) { transport.fail(); throw Error(EPROTO); }
+        checkNt(result.result.ntstatus);
+        return result.result.value;
+    }
     void protocolFailed() { transport.fail(); }
 };
 // Some runtime DSO finalizers close descriptors after C++ exit handlers have
@@ -1203,6 +1222,16 @@ int deviceOpen(const char* path, int flags) {
     std::fprintf(stderr, "LINUX_BRIDGE openFailed errno=%d\n", errno); return -1;
 }
 bool modeArgument(int flags) { return (flags & O_CREAT) || (flags & O_TMPFILE) == O_TMPFILE; }
+}
+// Lab handoff hook; it chooses only the unique owned shared resource and the
+// most recently signaled owned workload fence. No host pointer/handle is exposed.
+extern "C" int wddm_bridge_consume_shared_texture(std::uint64_t target, std::uint64_t* hash) {
+    if (bridgeStopped || !hash) { errno = EINVAL; return -1; }
+    auto& state = bridge(); std::lock_guard<std::mutex> lock(state.guard);
+    try { *hash = state.consumeSharedTexture(target); return 0; }
+    catch (const Error& error) { errno = error.number; }
+    catch (...) { state.protocolFailed(); errno = EIO; }
+    return -1;
 }
 extern "C" int open(const char* path, int flags, ...) {
     const auto result = deviceOpen(path, flags); if (result != -2) return result;

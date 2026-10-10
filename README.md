@@ -7,7 +7,7 @@
 **7Wdev development fork:** [build and upstream sync](docs/FORK.md) ·
 [Windows NVIDIA investigation](docs/WINDOWS-NVIDIA-BACKEND.md).
 The GPU experiment now verifies [NVIDIA guest shader rendering through QEMU/WHPX](docs/LIVE-GPU-SHADER-TRIANGLE.md),
-including [drawing in a shared texture and separate Windows resource import](docs/LIVE-GPU-SHARED-RESOURCE.md).
+including [Windows GPU consumption of shared guest textures](docs/LIVE-GPU-SHARED-TEXTURE-CONSUMPTION.md).
 Omarchy desktop integration remains unfinished.
 Download links below refer to official upstream releases.
 

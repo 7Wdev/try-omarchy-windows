@@ -20,6 +20,7 @@
 #include <array>
 #include "driver_wire.h"
 #include "shared_resource_probe.h"
+#include "shared_texture_consumer.h"
 #include "qemu_runtime_host.h"
 using Microsoft::WRL::ComPtr;
 using namespace driver_bridge;
@@ -175,6 +176,14 @@ class KmtDriver : public Driver {
     }
     unsigned completedVendorDriverProtectionMaps = 0;
     ComPtr<IDXGIAdapter3> allocationBudgetAdapter;
+    bool consumeSharedEnabled = false;
+    std::set<std::uint32_t> sharedResourceIds;
+    struct ConsumerLease {
+        std::unique_ptr<driver_shared::TextureConsumer> gpu;
+        std::uint32_t sync; std::uint64_t lastFence = 0;
+    };
+    std::map<std::uint32_t, ConsumerLease> textureConsumers;
+    unsigned completedSharedConsumes = 0, failedSharedConsumes = 0, openedTextureConsumers = 0, releasedTextureConsumers = 0;
     bool sharedResourcesEnabled = false;
     bool allocationsEnabled = false;
     bool gpuVaEnabled = false;
@@ -284,7 +293,7 @@ class KmtDriver : public Driver {
     }
 public:
     KmtDriver(std::string sectionName, std::uint32_t sectionBytes, bool enableContexts, bool enableQueries,
-              driver_qemu::Runtime* ownedRuntime = nullptr, bool enableAllocations = false, bool enableGpuVa = false, bool enableResidency = false, bool enableCpu = false, bool testCpuStores = false, bool enableTranslation = false, bool enableHwQueues = false, bool enableSync = false, bool enableSubmit = false, bool enableRetirement = false, bool enableReservation = false, bool enableGpuState = false, bool enableAsyncSubmit = false, bool enableSharedResources = false)
+              driver_qemu::Runtime* ownedRuntime = nullptr, bool enableAllocations = false, bool enableGpuVa = false, bool enableResidency = false, bool enableCpu = false, bool testCpuStores = false, bool enableTranslation = false, bool enableHwQueues = false, bool enableSync = false, bool enableSubmit = false, bool enableRetirement = false, bool enableReservation = false, bool enableGpuState = false, bool enableAsyncSubmit = false, bool enableSharedResources = false, bool enableConsumeShared = false)
         : runtime(ownedRuntime), allocationsEnabled(enableAllocations), gpuVaEnabled(enableGpuVa), residencyEnabled(enableResidency), cpuEnabled(enableCpu), cpuStoreTest(testCpuStores), contextsEnabled(enableContexts), queriesEnabled(enableQueries),
           guestSectionName(std::move(sectionName)), guestBytes(sectionBytes) {
         translationEnabled = enableTranslation;
@@ -293,6 +302,7 @@ public:
         submitEnabled = enableSubmit;
         asyncSubmitEnabled = enableAsyncSubmit;
         sharedResourcesEnabled = enableSharedResources;
+        consumeSharedEnabled = enableConsumeShared;
         pendingSubmissions.reserve(MaxHwSubmissions);
         pendingHwSignals.reserve(MaxHwQueueSignals);
         retirementEnabled = enableRetirement;
@@ -353,6 +363,7 @@ public:
                 (asyncSubmitEnabled && syncEnabled ? HwQueueSignalCapability : 0u) |
                 (allocationsEnabled ? VendorResourceCapability : 0u) |
                 (sharedResourcesEnabled ? SharedVendorResourceCapability : 0u) |
+                (consumeSharedEnabled ? SharedTextureConsumeCapability : 0u) |
                 (submitEnabled && syncEnabled ? ContextSignalCapability : 0u) |
                 (retirementEnabled ? VendorRetirementCapability : 0u) | (reservationEnabled ? GpuReservationCapability : 0u) |
                 (gpuStateEnabled ? GpuStateCapability : 0u),
@@ -803,7 +814,7 @@ public:
         ++completedVendorAllocations;
         if (withResource) {
             ++completedVendorResources;
-            if (runtimeBytes) probeSharedResource(a.hResource, runtimeBytes);
+            if (runtimeBytes) { sharedResourceIds.insert(a.hResource); probeSharedResource(a.hResource, runtimeBytes); }
             std::cerr << "{\"nativeVendorResourceCreated\":true,\"allocationCount\":1,\"shared\":" << (runtimeBytes ? "true" : "false")
                       << ",\"systemMemory\":false,\"ntstatus\":" << status << "}\n";
         }
@@ -844,10 +855,14 @@ public:
         a.AllocationCount = static_cast<UINT>(handles.size()); a.Flags.SynchronousDestroy = 1;
         const auto resource = vendorAllocations.at(handles.front()).resource;
         if (resource) { a.hResource = resource; a.phAllocationList = nullptr; a.AllocationCount = 0; }
+        if (resource && textureConsumers.erase(resource)) {
+            ++releasedTextureConsumers;
+            std::cerr << "{\"nativeSharedTextureConsumerReleased\":true,\"gpuWorkRetired\":true}\n";
+        }
         const auto status = D3DKMTDestroyAllocation2(&a);
         if (status > 0) throw std::runtime_error("Unexpected native allocation-destruction status");
         if (status == 0) {
-            if (resource) ++destroyedVendorResources;
+            if (resource) { ++destroyedVendorResources; sharedResourceIds.erase(resource); }
             for (const auto handle : handles) {
                 vendorMappedPages -= static_cast<std::uint32_t>(vendorAllocations.at(handle).pages);
                 vendorResidencyAttempts -= vendorAllocations.at(handle).residencyAttempts;
@@ -858,6 +873,38 @@ public:
             if (ownedQueues) vendorDestructionsWithHwQueues += static_cast<unsigned>(handles.size());
         } else ++cleanupFailures;
         return {status, 0, 0};
+    }
+    Result consumeSharedTexture(std::uint32_t resource, std::uint32_t sync, SharedTextureConsumeDesc desc) override {
+        if (!collectRetiredSubmissions()) return {Invalid,0,0};
+        const auto signal = syncObjects.find(sync);
+        const auto allocation = std::find_if(vendorAllocations.begin(), vendorAllocations.end(),
+            [&](const auto& item) { return item.second.resource == resource; });
+        if (!consumeSharedEnabled || !runtime || runtime->hasStopped() || !validSharedTextureConsume(desc) || desc.sync != sync ||
+            !sharedResourceIds.count(resource) || allocation == vendorAllocations.end() || signal == syncObjects.end() ||
+            signal->second.device != allocation->second.device || signal->second.type != 5 ||
+            signal->second.flags != NoGpuAccessSyncFlag || !signal->second.fence || signal->second.lastSignal != desc.fence ||
+            !pendingSubmissions.empty() || !pendingHwSignals.empty() || completedSharedConsumes >= 2) return {Invalid,0,0};
+        MemoryBarrier(); const auto observed = *signal->second.fence;
+        if (observed < desc.fence || observed == UINT64_MAX) return {Invalid,0,0};
+        auto entry = textureConsumers.find(resource);
+        if (entry == textureConsumers.end()) {
+            auto consumer = std::make_unique<driver_shared::TextureConsumer>();
+            const auto hr = consumer->initialize(resource, luid);
+            if (FAILED(hr)) {
+                ++failedSharedConsumes;
+                std::cerr << "{\"nativeSharedTextureConsumeFailed\":true,\"stage\":\"initialize\",\"hresult\":" << hr << "}\n";
+                return {static_cast<std::int32_t>(0xc0000001u),0,0};
+            }
+            entry = textureConsumers.emplace(resource, ConsumerLease{std::move(consumer),sync,0}).first;
+            ++openedTextureConsumers;
+        }
+        if (entry->second.sync != sync || desc.fence <= entry->second.lastFence) return {Invalid,0,0};
+        std::uint64_t hash = 0; const auto hr = entry->second.gpu->consume(hash);
+        if (FAILED(hr)) { ++failedSharedConsumes; return {static_cast<std::int32_t>(0xc0000001u),0,0}; }
+        entry->second.lastFence = desc.fence; ++completedSharedConsumes;
+        std::cerr << "{\"nativeSharedTextureHandoff\":true,\"target\":" << desc.fence << ",\"observed\":" << observed
+                  << ",\"nativeSignalAccepted\":true,\"sourceState\":\"COMMON\",\"returnedState\":\"COMMON\",\"pendingGuestCommands\":0}\n";
+        return {0,0,hash};
     }
     ResidentResult makeVendorResident(std::uint32_t queue, ResidentDesc desc, const std::vector<std::uint32_t>& handles,
                                      const std::vector<std::uint32_t>& priorities) override {
@@ -1406,13 +1453,18 @@ public:
     bool clean() const {
         return !asyncRetirementFailed && pendingSubmissions.empty() && pendingHwSignals.empty() && !activeAdapters && !activeDevices && !activeContexts && pagingFences.empty() && allocations.empty() && vendorAllocations.empty() &&
                !vendorMappedPages && !vendorResidencyAttempts && !vendorCpuBytes && deviceAdapters.empty() && translatedAllocations.empty() &&
-               contextOwners.empty() && hwQueues.empty() && syncObjects.empty() && gpuReservations.empty() && !gpuReservedBytes && gpuStates.empty() && ownedAdapters.empty() &&
+               sharedResourceIds.empty() && textureConsumers.empty() && contextOwners.empty() && hwQueues.empty() && syncObjects.empty() && gpuReservations.empty() && !gpuReservedBytes && gpuStates.empty() && ownedAdapters.empty() &&
                !guestMemory && !guestSection && !copyDevice && !copyHeap && !copyQueue && !copyFence && !copyEvent && !cleanupFailures;
     }
     void reportCleanup() const {
         std::cerr << "{\"driverCleanupVerified\":" << (clean() ? "true" : "false")
                   << ",\"liveAdapters\":" << activeAdapters << ",\"liveDevices\":" << activeDevices
                   << ",\"liveContexts\":" << activeContexts
+                  << ",\"liveTextureConsumers\":" << textureConsumers.size()
+                  << ",\"openedTextureConsumers\":" << openedTextureConsumers
+                  << ",\"releasedTextureConsumers\":" << releasedTextureConsumers
+                  << ",\"completedSharedTextureConsumes\":" << completedSharedConsumes
+                  << ",\"failedSharedTextureConsumes\":" << failedSharedConsumes
                   << ",\"sharedResourceProbes\":" << sharedResourceProbes
                   << ",\"importedSharedResources\":" << importedSharedResources
                   << ",\"failedSharedResourceProbes\":" << failedSharedResourceProbes
@@ -1546,8 +1598,8 @@ public:
     }
 };
 static void serve(Stream& stream, const std::string& sectionName = {}, std::uint32_t sectionBytes = 0,
-                  bool contexts = false, bool queries = false, driver_qemu::Runtime* runtime = nullptr, bool allocations = false, bool gpuVa = false, bool residency = false, bool cpu = false, bool cpuStoreTest = false, bool translation = false, bool hwQueues = false, bool sync = false, bool submit = false, bool retirement = false, bool reservation = false, bool gpuState = false, bool asyncSubmit = false, bool sharedResources = false) {
-    KmtDriver driver(sectionName, sectionBytes, contexts, queries, runtime, allocations, gpuVa, residency, cpu, cpuStoreTest, translation, hwQueues, sync, submit, retirement, reservation, gpuState, asyncSubmit, sharedResources);
+                  bool contexts = false, bool queries = false, driver_qemu::Runtime* runtime = nullptr, bool allocations = false, bool gpuVa = false, bool residency = false, bool cpu = false, bool cpuStoreTest = false, bool translation = false, bool hwQueues = false, bool sync = false, bool submit = false, bool retirement = false, bool reservation = false, bool gpuState = false, bool asyncSubmit = false, bool sharedResources = false, bool consumeShared = false) {
+    KmtDriver driver(sectionName, sectionBytes, contexts, queries, runtime, allocations, gpuVa, residency, cpu, cpuStoreTest, translation, hwQueues, sync, submit, retirement, reservation, gpuState, asyncSubmit, sharedResources, consumeShared);
     std::exception_ptr failure;
     {
       Session session(driver);
@@ -1597,7 +1649,7 @@ int main(int argc, char** argv) {
         bool cpuSlotsConfigured = false;
         bool hwQueueNoBroadcastEofTest = false;
         bool hwQueueNoBroadcastWaitEofTest = false;
-        bool asyncSubmit = false, sharedResources = false;
+        bool asyncSubmit = false, sharedResources = false, consumeShared = false;
         while (argc > 1) {
             if (argc > 2 && std::string(argv[argc - 2]) == "--driver-cpu-slots") {
                 const auto value = std::string(argv[argc - 1]);
@@ -1626,6 +1678,7 @@ int main(int argc, char** argv) {
             else if (option == "--driver-syncs" && !sync) sync = true;
             else if (option == "--driver-submit" && !submit) submit = true;
             else if (option == "--driver-async-submit" && !asyncSubmit) asyncSubmit = true;
+            else if (option == "--driver-consume-shared" && !consumeShared) consumeShared = true;
             else if (option == "--driver-shared-resources" && !sharedResources) sharedResources = true;
             else if (option == "--driver-retirement" && !retirement) retirement = true;
             else if (option == "--driver-reservation" && !reservation) reservation = true;
@@ -1636,6 +1689,7 @@ int main(int argc, char** argv) {
             --argc;
         }
         if (allocations && (!contexts || !queries)) throw std::runtime_error("Vendor allocations require explicit query/context opt-ins");
+        if (consumeShared && (!sharedResources || !asyncSubmit || !sync)) throw std::runtime_error("Shared texture consumption requires shared resources, asynchronous submission and sync opt-ins");
         if (sharedResources && !allocations) throw std::runtime_error("Shared resources require explicit allocation opt-in");
         if (sharedResources && (argc != 7 || std::string(argv[1]) != "--run-qemu"))
             throw std::runtime_error("Shared resources require an owned QEMU runtime");
@@ -1725,7 +1779,7 @@ int main(int argc, char** argv) {
         if (setsockopt(client.value, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&milliseconds), sizeof milliseconds) ||
             setsockopt(client.value, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&milliseconds), sizeof milliseconds))
             throw std::runtime_error("Cannot set socket timeouts");
-        Stream stream(client.value); serve(stream, sectionName, sectionBytes, contexts, queries, runtime.get(), allocations, gpuVa, residency, cpu, cpuStoreTest, translation, hwQueues, sync, submit, retirement, reservation, gpuState, asyncSubmit, sharedResources);
+        Stream stream(client.value); serve(stream, sectionName, sectionBytes, contexts, queries, runtime.get(), allocations, gpuVa, residency, cpu, cpuStoreTest, translation, hwQueues, sync, submit, retirement, reservation, gpuState, asyncSubmit, sharedResources, consumeShared);
         if (runtime) {
             runtime->report();
             if (!runtime->cleanExit()) throw std::runtime_error("Owned QEMU runtime did not exit cleanly");

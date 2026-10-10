@@ -16,8 +16,12 @@ physical runs with every pixel checked in two distinct rounds. A separate
 fresh runs: the guest draws into a shared texture and Windows independently
 imports and releases that resource before drawing. Select `--runtime-workload shared`
 in both the private-image packer and owned-runtime verifier, plus the separate
-`--driver-shared-resources` native opt-in. Native GPU consumption and desktop
-presentation remain unfinished.
+`--driver-shared-resources` native opt-in. A subsequent
+[retained Windows GPU consumer](../../docs/LIVE-GPU-SHARED-TEXTURE-CONSUMPTION.md)
+passes two fresh runs with two distinct frames each. It requires an explicit
+COMMON/fence handoff, `--runtime-workload consume` and `--driver-consume-shared`;
+every native readback byte matches the guest shader output. Desktop presentation
+remains unfinished.
 
 The diagnostic adds owned, nonshared single-allocation resources, the observed
 NVIDIA DEFAULT-resource DriverProtection value, direct CPU fence waits and a

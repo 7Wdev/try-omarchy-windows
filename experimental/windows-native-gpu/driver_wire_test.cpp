@@ -61,6 +61,8 @@ struct Fake : Driver {
     std::map<std::uint32_t, std::uint32_t> vendorOwners;
     bool resourceEnabled = false;
     bool sharedResourceEnabled = false;
+    bool consumeSharedEnabled = false;
+    int badConsumeReply = 0;
     std::vector<std::uint8_t> lastSharedRuntime;
     int badResourceReply = 0;
     bool contextSignalEnabled = false;
@@ -78,6 +80,7 @@ struct Fake : Driver {
                 (guestPagingEnabled ? GuestPagingCapability : 0u) | (vendorEnabled ? VendorAllocationCapability : 0u) |
                 (resourceEnabled ? VendorResourceCapability : 0u) |
                 (sharedResourceEnabled ? SharedVendorResourceCapability : 0u) |
+                (consumeSharedEnabled ? SharedTextureConsumeCapability : 0u) |
                 (expandedVendorObjectsEnabled ? ExpandedVendorObjectsCapability : 0u) |
                 (contextSignalEnabled ? ContextSignalCapability : 0u) |
                 (hwQueueSignalEnabled ? HwQueueSignalCapability : 0u) |
@@ -98,6 +101,13 @@ struct Fake : Driver {
                  badGpuStateReply == 3 ? 0ull : badGpuStateReply == 4 ? desc.base + 4096 : desc.base}, 7019};
     }
     Result created() { ++calls; return {fail ? -123 : 0, ++next, 0}; }
+    Result consumeSharedTexture(std::uint32_t resource, std::uint32_t sync, SharedTextureConsumeDesc desc) override {
+        require(std::any_of(vendorResources.begin(),vendorResources.end(),[&](const auto& item) { return item.second == resource; }) &&
+                syncParents.count(sync) && desc.sync == sync && validSharedTextureConsume(desc));
+        ++calls;
+        return {fail ? -123 : badConsumeReply == 1 ? 259 : 0,
+                badConsumeReply == 2 ? 700u : 0u, fail ? (badConsumeReply == 3 ? 42ull : 0ull) : 42ull};
+    }
     Result reserveGpuAddress(std::uint32_t adapter, GpuReservationDesc desc) override {
         require(adapter > 500 && validGpuReservation(desc)); ++calls;
         if (fail && badReservationReply != 10) return {-123, 0, badReservationReply == 9 ? 65536ull : 0ull};
@@ -1896,6 +1906,66 @@ int main() {
         require(!header(session.dispatch(request(Op::DestroyVendorResource,resource.resource,device))).status);
         require(shared.vendorOwners.empty() && shared.vendorResources.empty());
         require(header(session.dispatch(request(Op::DestroyVendorResource,resource.resource,device))).status == -9);
+    }
+    Fake consumer; consumer.vendorEnabled = consumer.resourceEnabled = consumer.sharedResourceEnabled = consumer.syncEnabled = true;
+    {
+        Session session(consumer);
+        const SharedTextureConsumeDesc desc{1,0,1};
+        require(header(session.dispatch(request(Op::ConsumeSharedTexture,1,desc))).status == -71);
+        session.dispatch(hello());
+        const auto adapter = header(session.dispatch(request(Op::OpenAdapter))).handle;
+        const auto device = header(session.dispatch(request(Op::CreateDevice,adapter))).handle;
+        const auto other = header(session.dispatch(request(Op::CreateDevice,adapter))).handle;
+        auto packet = request(Op::CreateSharedVendorResourceAllocation,device,SharedVendorAllocationDesc{{4,0x78100000,0,4,0,0},4,0});
+        packet.insert(packet.end(),{37,38,39,40,5,6,7,8});
+        const auto out = session.dispatch(packet); VendorResourceReply resource{};
+        std::memcpy(&resource,out.data()+sizeof(Header)+sizeof(Reply),sizeof resource);
+        const auto sync = header(session.dispatch(request(Op::CreateSync,device,SyncDesc{5,NoGpuAccessSyncFlag,0,0,0}))).handle;
+        const SharedTextureConsumeDesc handoff{sync,0,1};
+        auto before = consumer.calls;
+        require(header(session.dispatch(request(Op::ConsumeSharedTexture,resource.resource,handoff))).status == -95 && consumer.calls == before);
+        consumer.consumeSharedEnabled = true;
+        for (int mode=0;mode<6;++mode) {
+            auto d = handoff;
+            if (mode==0) d.sync=0;
+            if (mode==1) d.reserved=1;
+            if (mode==2) d.fence=0;
+            if (mode==3) d.fence=UINT64_MAX;
+            auto p = request(Op::ConsumeSharedTexture,resource.resource,d);
+            if (mode==4) p.pop_back();
+            if (mode==5) p.push_back(0);
+            require(header(session.dispatch(p)).status == -22 && consumer.calls == before);
+        }
+        for (const auto wrongResource : {adapter,device,header(out).handle})
+            require(header(session.dispatch(request(Op::ConsumeSharedTexture,wrongResource,handoff))).status == -9 && consumer.calls == before);
+        const auto wrongDeviceSync = header(session.dispatch(request(Op::CreateSync,other,SyncDesc{5,NoGpuAccessSyncFlag,0,0,0}))).handle;
+        const auto gpuSync = header(session.dispatch(request(Op::CreateSync,device,SyncDesc{5,0,0,0,0}))).handle;
+        const auto mutex = header(session.dispatch(request(Op::CreateSync,device,SyncDesc{1,0,0,0,0}))).handle;
+        before = consumer.calls;
+        for (const auto wrongSync : {device,wrongDeviceSync,gpuSync,mutex})
+            require(header(session.dispatch(request(Op::ConsumeSharedTexture,resource.resource,SharedTextureConsumeDesc{wrongSync,0,1}))).status == -9 && consumer.calls == before);
+        auto nonshared = request(Op::CreateVendorResourceAllocation,device,VendorAllocationDesc{0,0,0,1,0,0}); nonshared.push_back(37);
+        const auto output = session.dispatch(nonshared); VendorResourceReply notShared{};
+        std::memcpy(&notShared,output.data()+sizeof(Header)+sizeof(Reply),sizeof notShared);
+        before = consumer.calls;
+        require(header(session.dispatch(request(Op::ConsumeSharedTexture,notShared.resource,handoff))).status == -9 && consumer.calls == before);
+        for (const auto bad : {1,2}) {
+            consumer.badConsumeReply=bad;
+            require(header(session.dispatch(request(Op::ConsumeSharedTexture,resource.resource,handoff))).status == -5);
+        }
+        consumer.fail=true; consumer.badConsumeReply=3;
+        require(header(session.dispatch(request(Op::ConsumeSharedTexture,resource.resource,handoff))).status == -5);
+        consumer.badConsumeReply=0;
+        auto response=session.dispatch(request(Op::ConsumeSharedTexture,resource.resource,handoff)); Reply r{};
+        std::memcpy(&r,response.data()+sizeof(Header),sizeof r);
+        require(!header(response).status && r.ntstatus == -123 && !r.value);
+        consumer.fail=false;
+        response=session.dispatch(request(Op::ConsumeSharedTexture,resource.resource,handoff));
+        std::memcpy(&r,response.data()+sizeof(Header),sizeof r);
+        require(!header(response).status && header(response).handle==resource.resource && r.ntstatus==0 && r.value==42);
+        require(!header(session.dispatch(request(Op::DestroyVendorResource,resource.resource,device))).status);
+        before=consumer.calls;
+        require(header(session.dispatch(request(Op::ConsumeSharedTexture,resource.resource,handoff))).status == -9 && consumer.calls == before);
     }
     Fake malformed; Session s(malformed); s.dispatch(hello());
     auto p = request(Op::OpenAdapter); p.push_back(0);

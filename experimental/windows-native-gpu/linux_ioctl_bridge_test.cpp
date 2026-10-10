@@ -11,6 +11,7 @@
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
+#include <dlfcn.h>
 static int failed(const char* message) { std::fprintf(stderr, "FAIL: %s errno=%d\n", message, errno); return 1; }
 int main(int argc, char** argv) {
     if (argc != 2) return 2;
@@ -21,6 +22,16 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (fd < 0) return failed("open");
+    if (!std::strncmp(mode,"consume-",8)) {
+        using Consume = int (*)(std::uint64_t,std::uint64_t*);
+        const auto consume = reinterpret_cast<Consume>(dlsym(RTLD_DEFAULT,"wddm_bridge_consume_shared_texture"));
+        if (!consume) return failed("handoff hook absent");
+        std::uint64_t hash = 42;
+        const bool nullOutput = !std::strcmp(mode,"consume-null");
+        if (consume(1,nullOutput?nullptr:&hash) != -1 || hash != 42 ||
+            errno != (!std::strcmp(mode,"consume-disabled")?ENOSYS:EINVAL)) return failed("invalid handoff reached native consumer");
+        close(fd); return 0;
+    }
     if (!std::strncmp(mode,"hw-signal-",10)) {
         D3DKMT_HANDLE queue=99,sync=98; UINT64 value=1;
         D3DKMT_SUBMITSIGNALSYNCOBJECTSTOHWQUEUE signal{};

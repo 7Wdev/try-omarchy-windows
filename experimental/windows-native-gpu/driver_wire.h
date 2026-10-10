@@ -24,6 +24,10 @@ constexpr std::uint32_t GuestPagingCapability = 128;
 constexpr std::uint32_t VendorAllocationCapability = 256;
 constexpr std::uint32_t VendorResourceCapability = 524288;
 constexpr std::uint32_t SharedVendorResourceCapability = 268435456;
+constexpr std::uint32_t SharedTextureConsumeCapability = 536870912;
+struct SharedTextureConsumeDesc { std::uint32_t sync, reserved; std::uint64_t fence; };
+static_assert(sizeof(SharedTextureConsumeDesc) == 16, "fixed shared texture handoff layout");
+inline bool validSharedTextureConsume(SharedTextureConsumeDesc d) { return d.sync && !d.reserved && d.fence && d.fence != UINT64_MAX; }
 constexpr std::uint32_t MaxVendorPrivateBytes = 4000;
 constexpr std::size_t MaxVendorAllocations = 96;
 constexpr std::size_t ExpandedVendorAllocations = 128;
@@ -276,7 +280,7 @@ enum class Op : std::uint32_t {
     CreateGuestPagingQueue = 0x2040,
     CreateVendorAllocation = 0x2050, DestroyVendorAllocations, MapVendorAllocation, MakeVendorResident,
     LockVendorAllocation, UnlockVendorAllocation, TranslateVendorAllocation,
-    CreateVendorResourceAllocation, DestroyVendorResource, CreateSharedVendorResourceAllocation,
+    CreateVendorResourceAllocation, DestroyVendorResource, CreateSharedVendorResourceAllocation, ConsumeSharedTexture,
     CreateHwQueue = 0x2060, DestroyHwQueue, SubmitHwQueue, QueueHwCommand,
     CreateSync = 0x2070, DestroySync, SignalContextSync, QueueHwQueueSignal,
     ReserveGpuAddress = 0x2080, FreeGpuReservation, MapGpuState
@@ -346,6 +350,9 @@ public:
     }
     virtual VendorResourceResult createSharedVendorResourceAllocation(std::uint32_t, SharedVendorAllocationDesc, std::vector<std::uint8_t>&) {
         return {{static_cast<std::int32_t>(0xc00000bbu), 0, 0}, 0};
+    }
+    virtual Result consumeSharedTexture(std::uint32_t, std::uint32_t, SharedTextureConsumeDesc) {
+        return {static_cast<std::int32_t>(0xc00000bbu), 0, 0};
     }
     virtual Result destroyVendorAllocations(std::uint32_t, const std::vector<std::uint32_t>&) {
         return {static_cast<std::int32_t>(0xc00000bbu), 0, 0};
@@ -895,7 +902,7 @@ public:
                 if (id) {
                     Object allocation{Kind::VendorAllocation, h.handle, result.nativeHandle, 0, 0, false}; allocation.vendorResource = resourceId;
                     objects.emplace(id, allocation);
-                    if (resourceId) objects.emplace(resourceId, Object{Kind::VendorResource, id, created.resource, 0, 0, false});
+                    if (resourceId) objects.emplace(resourceId, Object{Kind::VendorResource, id, created.resource, 0, 0, sharedResource});
                 }
                 return out;
             } catch (...) {
@@ -903,6 +910,24 @@ public:
                 if (result.nativeHandle) driver.destroy(Kind::VendorAllocation, result.nativeHandle);
                 throw;
             }
+        }
+        if (op == Op::ConsumeSharedTexture) {
+            if (!negotiated) return reply(h, -71);
+            if (!(driver.capabilities().flags & SharedTextureConsumeCapability)) return reply(h, -95);
+            if (packet.size() != sizeof h + sizeof(SharedTextureConsumeDesc)) return reply(h, -22);
+            SharedTextureConsumeDesc desc{}; std::memcpy(&desc, packet.data() + sizeof h, sizeof desc);
+            if (!validSharedTextureConsume(desc)) return reply(h, -22);
+            const auto resource = objects.find(h.handle), sync = objects.find(desc.sync);
+            if (resource == objects.end() || resource->second.kind != Kind::VendorResource || !resource->second.shared ||
+                sync == objects.end() || sync->second.kind != Kind::Sync || sync->second.syncType != 5 ||
+                sync->second.syncFlags != NoGpuAccessSyncFlag) return reply(h, -9);
+            const auto allocation = objects.find(resource->second.parent);
+            if (allocation == objects.end() || allocation->second.kind != Kind::VendorAllocation ||
+                allocation->second.parent != sync->second.parent) return reply(h, -9);
+            auto nativeDesc = desc; nativeDesc.sync = sync->second.nativeHandle;
+            const auto result = driver.consumeSharedTexture(resource->second.nativeHandle, sync->second.nativeHandle, nativeDesc);
+            if (result.nativeHandle || result.ntstatus > 0 || (result.ntstatus < 0 && result.value)) return reply(h, -5);
+            return reply(h, 0, h.handle, &result);
         }
         if (op == Op::TranslateVendorAllocation) {
             if (!negotiated) return reply(h, -71);
