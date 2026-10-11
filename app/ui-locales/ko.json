@@ -296,6 +296,7 @@
   "status.preparing_disk": "Omarchy 디스크를 준비하는 중...",
   "status.preparing_image_update": "Omarchy 이미지 업데이트를 준비하는 중...",
   "status.downloading_omarchy": "Omarchy 다운로드 중({part}/{total})...",
+  "status.downloading_system": "Omarchy 시스템 이미지를 다운로드하는 중...",
   "status.checking_cached_system": "캐시된 Omarchy 시스템을 확인하는 중...",
   "status.checking_portable_system": "휴대용 Omarchy 시스템을 확인하는 중...",
   "status.unpacking_system": "Omarchy 시스템 압축을 푸는 중...",
