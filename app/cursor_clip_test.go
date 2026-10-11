@@ -125,16 +125,20 @@ func TestFullscreenCursorClipInternalTaskbarEdgeFallsBackToMonitor(t *testing.T)
 	}
 }
 
-func TestWindowFillsMonitor(t *testing.T) {
+func TestWindowIsFullscreen(t *testing.T) {
 	monitor := screenRect{Left: 0, Top: 0, Right: 1920, Bottom: 1080}
 	tests := []struct {
-		name    string
-		window  screenRect
-		monitor screenRect
-		want    bool
+		name      string
+		window    screenRect
+		monitor   screenRect
+		maximized bool
+		captioned bool
+		want      bool
 	}{
 		{name: "exact fullscreen", window: monitor, monitor: monitor, want: true},
 		{name: "fullscreen with border overshoot", window: screenRect{Left: -8, Top: -8, Right: 1928, Bottom: 1088}, monitor: monitor, want: true},
+		{name: "maximized over an auto-hidden taskbar", window: screenRect{Left: -8, Top: -8, Right: 1928, Bottom: 1088}, monitor: monitor, maximized: true, captioned: true, want: false},
+		{name: "captioned window covering the monitor", window: monitor, monitor: monitor, captioned: true, want: false},
 		{name: "maximized windowed leaves the taskbar", window: screenRect{Left: 0, Top: 0, Right: 1920, Bottom: 1040}, monitor: monitor, want: false},
 		{name: "floating window", window: screenRect{Left: 100, Top: 100, Right: 900, Bottom: 700}, monitor: monitor, want: false},
 		{name: "empty window", window: screenRect{}, monitor: monitor, want: false},
@@ -142,8 +146,29 @@ func TestWindowFillsMonitor(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := windowFillsMonitor(tt.window, tt.monitor); got != tt.want {
-				t.Fatalf("windowFillsMonitor(%#v, %#v) = %t; want %t", tt.window, tt.monitor, got, tt.want)
+			if got := windowIsFullscreen(tt.window, tt.monitor, tt.maximized, tt.captioned); got != tt.want {
+				t.Fatalf("windowIsFullscreen(%#v, %#v, %t, %t) = %t; want %t", tt.window, tt.monitor, tt.maximized, tt.captioned, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCursorReleaseChord(t *testing.T) {
+	tests := []struct {
+		name                                           string
+		down, alreadyHeld, control, alt, focused, want bool
+	}{
+		{name: "first press while focused", down: true, control: true, alt: true, focused: true, want: true},
+		{name: "auto-repeat", down: true, alreadyHeld: true, control: true, alt: true, focused: true},
+		{name: "release", control: true, alt: true, focused: true},
+		{name: "without Ctrl", down: true, alt: true, focused: true},
+		{name: "AltGr only", down: true, control: true, focused: true},
+		{name: "another window focused", down: true, control: true, alt: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isCursorReleaseChord(tt.down, tt.alreadyHeld, tt.control, tt.alt, tt.focused); got != tt.want {
+				t.Fatalf("isCursorReleaseChord = %t; want %t", got, tt.want)
 			}
 		})
 	}

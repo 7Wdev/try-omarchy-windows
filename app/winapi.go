@@ -60,6 +60,9 @@ const (
 	vkControl        = 0x11
 	vkMenu           = 0x12
 	vkEnd            = 0x23
+	vkG              = 0x47
+	vkLControl       = 0xA2
+	vkLMenu          = 0xA4
 	vkLwin           = 0x5B
 	vkRwin           = 0x5C
 	vkSnapshot       = 0x2C

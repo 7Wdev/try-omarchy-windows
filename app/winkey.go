@@ -157,6 +157,16 @@ func hookCallback(nCode, wParam, lParam uintptr) uintptr {
 				return 1
 			}
 		}
+		if vk == vkG {
+			pid := qemuPid.Load()
+			held, _, _ := procGetAsyncKeyState.Call(vkG) // state before this change
+			control, _, _ := procGetAsyncKeyState.Call(vkLControl)
+			alt, _, _ := procGetAsyncKeyState.Call(vkLMenu)
+			if isCursorReleaseChord(wParam == wmKeydown || wParam == wmSyskeydown, held&0x8000 != 0, control&0x8000 != 0, alt&0x8000 != 0, pid != 0 && foregroundPid() == pid) {
+				// QEMU still sees the chord: it ends a windowed grab itself.
+				fullscreenCursorReleased.Store(!fullscreenCursorReleased.Load())
+			}
+		}
 	}
 	chaining := hookChaining
 	hookChaining = true

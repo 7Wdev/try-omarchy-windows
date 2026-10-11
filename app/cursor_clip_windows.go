@@ -3,11 +3,23 @@
 package main
 
 import (
+	"sync/atomic"
 	"syscall"
 	"unsafe"
 )
 
-var procShAppBarMessage = syscall.NewLazyDLL("shell32.dll").NewProc("SHAppBarMessage")
+var (
+	procShAppBarMessage = syscall.NewLazyDLL("shell32.dll").NewProc("SHAppBarMessage")
+	procIsZoomed        = user32.NewProc("IsZoomed")
+
+	// fullscreenCursorReleased is set by Ctrl+Alt+G in fullscreen. QEMU keeps
+	// its grab in fullscreen and ignores the chord there, so the launcher
+	// honors it by lifting the clip until the chord is pressed again, the VM
+	// loses focus or it leaves fullscreen.
+	fullscreenCursorReleased atomic.Bool
+)
+
+const gwlStyle = ^uintptr(15) // GWL_STYLE (-16)
 
 const (
 	abmGetAutoHideBarEx = 0x0000000B
@@ -80,14 +92,13 @@ func virtualScreenRect() (screenRect, bool) {
 
 // updateQemuCursorClip gives a fullscreen VM an edge-aware clip only while SDL
 // reports that its grab is active; windowed mode keeps the plain release
-// behavior. Fullscreen is decided from the window's own rectangle every tick
-// so a runtime Ctrl+Alt+F toggle takes effect without relaunching, including
-// the return to windowed use. QEMU's Ctrl+Alt+G changes the window title
-// without the exit-grab suffix, which lets the guard honor the documented
-// release chord instead of immediately re-confining the pointer.
+// behavior. Fullscreen is decided from the window itself every tick so a
+// runtime Ctrl+Alt+F toggle takes effect without relaunching, including the
+// return to windowed use.
 func updateQemuCursorClip() {
 	pid := qemuPid.Load()
 	if pid == 0 || foregroundPid() != pid {
+		fullscreenCursorReleased.Store(false)
 		return
 	}
 	hwnd, _, _ := procGetForegroundWindow.Call()
@@ -105,7 +116,14 @@ func updateQemuCursorClip() {
 		procClipCursor.Call(0)
 		return
 	}
-	if !windowFillsMonitor(window, monitor.Bounds) {
+	maximized, _, _ := procIsZoomed.Call(hwnd)
+	style, _, _ := procGetWindowLongW.Call(hwnd, gwlStyle)
+	if !windowIsFullscreen(window, monitor.Bounds, maximized != 0, style&wsCaption == wsCaption) {
+		fullscreenCursorReleased.Store(false)
+		procClipCursor.Call(0)
+		return
+	}
+	if fullscreenCursorReleased.Load() {
 		procClipCursor.Call(0)
 		return
 	}

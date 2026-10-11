@@ -53,16 +53,24 @@ func fullscreenCursorClip(fullscreen bool, virtual, monitor, taskbar screenRect)
 	return clip, true
 }
 
-// windowFillsMonitor reports whether a window rectangle covers its monitor's
-// full bounds. SDL's borderless fullscreen fills the monitor, while an
-// ordinary windowed window (or a maximized one, which stops at the work area
-// above a visible taskbar) does not.
-func windowFillsMonitor(window, monitor screenRect) bool {
-	if window.width() <= 0 || window.height() <= 0 || monitor.width() <= 0 || monitor.height() <= 0 {
+// windowIsFullscreen reports whether a window is SDL's borderless fullscreen:
+// it covers the monitor's full bounds and has neither a caption nor the
+// maximized state. A maximized window also covers the whole monitor when the
+// taskbar auto-hides, but it is windowed use and must keep the taskbar
+// reachable.
+func windowIsFullscreen(window, monitor screenRect, maximized, captioned bool) bool {
+	if maximized || captioned || window.width() <= 0 || window.height() <= 0 || monitor.width() <= 0 || monitor.height() <= 0 {
 		return false
 	}
 	return window.Left <= monitor.Left && window.Top <= monitor.Top &&
 		window.Right >= monitor.Right && window.Bottom >= monitor.Bottom
+}
+
+// isCursorReleaseChord reports the first press of QEMU's release chord, Left
+// Ctrl+Left Alt+G, while the VM is focused. Right Alt is AltGr on many layouts
+// and does not release, as in QEMU. Auto-repeat does not toggle again.
+func isCursorReleaseChord(down, alreadyHeld, leftControl, leftAlt, focused bool) bool {
+	return down && !alreadyHeld && leftControl && leftAlt && focused
 }
 
 func overlaps(a, b screenRect) bool {
