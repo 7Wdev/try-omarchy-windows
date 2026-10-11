@@ -180,6 +180,7 @@ class KmtDriver : public Driver {
     bool consumeSharedEnabled = false;
     bool presentSharedEnabled = false;
     bool nativeMetadataEnabled = false;
+    bool streamingEnabled = false;
     std::set<std::uint32_t> sharedResourceIds;
     struct ConsumerLease {
         std::unique_ptr<driver_shared::TextureConsumer> gpu;
@@ -514,6 +515,14 @@ public:
         if (!asyncSubmitEnabled) return {Invalid,0,0};
         return submitNativeHwCommand(handle,desc,data,true);
     }
+    StreamProfile beginStreaming() override {
+        if (!collectRetiredSubmissions()) return {};
+        if (!gpu_diagnostic::Streaming || streamingEnabled || !nativeMetadataEnabled || !consumeSharedEnabled || !asyncSubmitEnabled ||
+            !runtime || runtime->hasStopped() || !pendingSubmissions.empty() || !pendingHwSignals.empty() || !sharedResourceIds.empty()) return {};
+        streamingEnabled = true;
+        std::cerr << "{\"guestStreamNegotiated\":true,\"version\":1,\"frames\":64,\"pendingCommands\":16,\"pendingSignals\":16,\"totalCommands\":1024,\"totalSignals\":256,\"requestLimit\":50000}\n";
+        return GuestStreamProfile;
+    }
     Result submitNativeHwCommand(std::uint32_t handle, HwSubmitDesc desc, const std::vector<std::uint8_t>& data, bool asynchronous) {
         if (!collectRetiredSubmissions()) throw std::runtime_error("Native asynchronous retirement failed");
         const auto queue = hwQueues.find(handle);
@@ -523,7 +532,8 @@ public:
         };
         if (!submitEnabled || !runtime || runtime->hasStopped() || !validHwSubmit(desc) || data.size() != desc.privateBytes ||
             queue == hwQueues.end() || !queue->second.lease || desc.fence <= queue->second.submittedFence ||
-            submissionAttempts >= MaxHwSubmissions) return reject(1);
+            submissionAttempts >= (streamingEnabled ? GuestStreamProfile.totalCommands : MaxHwSubmissions) ||
+            pendingSubmissions.size() >= MaxHwSubmissions) return reject(1);
         unsigned owners = 0;
         for (const auto& item : vendorAllocations) {
             const auto& allocation = item.second;
@@ -588,7 +598,9 @@ public:
         if (!asyncSubmitEnabled || !syncEnabled || !runtime || runtime->hasStopped() || !validHwQueueSignal(desc) ||
             queues.size() != desc.count || object == syncObjects.end() || object->second.type != 5 ||
             object->second.flags != NoGpuAccessSyncFlag || !object->second.lease || !object->second.fence ||
-            desc.fence <= object->second.lastSignal || hwQueueSignalAttempts >= MaxHwQueueSignals) return {Invalid,0,0};
+            desc.fence <= object->second.lastSignal || (streamingEnabled ? hwQueueSignalAttempts + contextSignalAttempts >= GuestStreamProfile.totalSignals :
+                                                                        hwQueueSignalAttempts >= MaxHwQueueSignals) ||
+            pendingHwSignals.size() >= MaxHwQueueSignals) return {Invalid,0,0};
         PendingHwSignal pending{}; pending.sync=sync; pending.flags=desc.flags; pending.count=desc.count; pending.target=desc.fence;
         for (std::size_t n=0;n<queues.size();++n) {
             const auto queue = hwQueues.find(queues[n]);
@@ -730,7 +742,9 @@ public:
         if (!submitEnabled || !syncEnabled || !runtime || runtime->hasStopped() || !validContextSignal(desc) ||
             owner == contextOwners.end() || owner->second.flags != 16 || object == syncObjects.end() ||
             object->second.device != owner->second.device || object->second.type != 5 || object->second.flags != NoGpuAccessSyncFlag ||
-            !object->second.lease || !object->second.fence || desc.fence <= object->second.lastSignal || contextSignalAttempts >= MaxContextSignals)
+            !object->second.lease || !object->second.fence || desc.fence <= object->second.lastSignal ||
+            (streamingEnabled ? contextSignalAttempts + hwQueueSignalAttempts >= GuestStreamProfile.totalSignals :
+                                contextSignalAttempts >= MaxContextSignals))
             return {Invalid,0,0};
         D3DKMT_SIGNALSYNCHRONIZATIONOBJECTFROMGPU2 a{};
         a.ObjectCount = 1; a.ObjectHandleArray = &sync; a.Flags.Value = desc.flags;
@@ -894,6 +908,14 @@ public:
         return {status, 0, 0};
     }
     Result consumeSharedTexture(std::uint32_t resource, std::uint32_t sync, SharedTextureConsumeDesc desc) override {
+        if (streamingEnabled) return {Invalid,0,0};
+        return consumeTexture(resource, sync, desc, false);
+    }
+    Result consumeStreamingTexture(std::uint32_t resource, std::uint32_t sync, SharedTextureConsumeDesc desc) override {
+        if (!streamingEnabled || desc.fence != completedSharedConsumes + 1) return {Invalid,0,0};
+        return consumeTexture(resource, sync, desc, true);
+    }
+    Result consumeTexture(std::uint32_t resource, std::uint32_t sync, SharedTextureConsumeDesc desc, bool streaming) {
         if (!collectRetiredSubmissions()) return {Invalid,0,0};
         const auto signal = syncObjects.find(sync);
         const auto allocation = std::find_if(vendorAllocations.begin(), vendorAllocations.end(),
@@ -902,7 +924,7 @@ public:
             !sharedResourceIds.count(resource) || allocation == vendorAllocations.end() || signal == syncObjects.end() ||
             signal->second.device != allocation->second.device || signal->second.type != 5 ||
             signal->second.flags != NoGpuAccessSyncFlag || !signal->second.fence || signal->second.lastSignal != desc.fence ||
-            !pendingSubmissions.empty() || !pendingHwSignals.empty() || completedSharedConsumes >= 2) return {Invalid,0,0};
+            !pendingSubmissions.empty() || !pendingHwSignals.empty() || completedSharedConsumes >= (streaming ? GuestStreamProfile.frames : 2)) return {Invalid,0,0};
         MemoryBarrier(); const auto observed = *signal->second.fence;
         if (observed < desc.fence || observed == UINT64_MAX) return {Invalid,0,0};
         auto entry = textureConsumers.find(resource);
@@ -918,7 +940,7 @@ public:
             ++openedTextureConsumers;
         }
         if (entry->second.sync != sync || desc.fence <= entry->second.lastFence) return {Invalid,0,0};
-        std::uint64_t hash = 0; const auto hr = entry->second.gpu->consume(hash);
+        std::uint64_t hash = 0; const auto hr = entry->second.gpu->consume(hash, streaming);
         if (FAILED(hr)) { ++failedSharedConsumes; return {static_cast<std::int32_t>(0xc0000001u),0,0}; }
         entry->second.lastFence = desc.fence; ++completedSharedConsumes;
         std::cerr << "{\"nativeSharedTextureHandoff\":true,\"target\":" << desc.fence << ",\"observed\":" << observed
@@ -1626,7 +1648,7 @@ static void serve(Stream& stream, const std::string& sectionName = {}, std::uint
       try {
       unsigned count = 0;
       const auto deadline = GetTickCount64() + 60000;
-      for (; count < 10000; ++count) {
+      for (; count < session.requestLimit(); ++count) {
         if (runtime && GetTickCount64() >= deadline) throw std::runtime_error("Owned runtime diagnostic deadline exceeded");
         // A byte stream needs a length prefix outside the borrowed 16-byte
         // descriptor header. Both are little endian; target host/guest are x64.
@@ -1646,7 +1668,7 @@ static void serve(Stream& stream, const std::string& sectionName = {}, std::uint
         size = static_cast<std::uint32_t>(reply.size()); stream.write(&size, sizeof size);
         stream.write(reply.data(), reply.size());
       }
-      if (count == 10000) throw std::runtime_error("Session request quota exceeded");
+      if (count == session.requestLimit()) throw std::runtime_error("Session request quota exceeded");
       } catch (...) { failure = std::current_exception(); }
       std::cerr << "{\"wireObjectSummary\":true,\"peakLiveObjects\":" << peakWireObjects
                 << ",\"liveObjectsBeforeDisconnect\":" << session.objectCount()

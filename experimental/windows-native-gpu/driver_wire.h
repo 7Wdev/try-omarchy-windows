@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Independent, deliberately small WDDM experiment, not the /dev/dxg or RM ABI.
 #pragma once
+#include "stream_profile.h"
 #include "wire.h"
 #include "diagnostic_profile.h"
 #include "gpu_state_ranges.h"
@@ -300,6 +301,7 @@ enum class Op : std::uint32_t {
     LockVendorAllocation, UnlockVendorAllocation, TranslateVendorAllocation,
     CreateVendorResourceAllocation, DestroyVendorResource, CreateSharedVendorResourceAllocation, ConsumeSharedTexture,
     CreateNativeSharedVendorResourceAllocation,
+    BeginStreaming, ConsumeStreamingTexture,
     CreateHwQueue = 0x2060, DestroyHwQueue, SubmitHwQueue, QueueHwCommand,
     CreateSync = 0x2070, DestroySync, SignalContextSync, QueueHwQueueSignal,
     ReserveGpuAddress = 0x2080, FreeGpuReservation, MapGpuState
@@ -352,6 +354,10 @@ class Driver {
 public:
     virtual ~Driver() = default;
     virtual native_gpu::Capabilities capabilities() const = 0;
+    virtual StreamProfile beginStreaming() { return {}; }
+    virtual Result consumeStreamingTexture(std::uint32_t, std::uint32_t, SharedTextureConsumeDesc) {
+        return {static_cast<std::int32_t>(0xc00000bbu), 0, 0};
+    }
     virtual Result openAdapter() = 0;
     virtual Result queryVersion(std::uint32_t adapter) = 0;
     virtual Result queryAdapter(std::uint32_t adapter, QueryDesc desc, std::vector<std::uint8_t>& data) = 0;
@@ -469,6 +475,7 @@ class Session {
     std::uint64_t gpuReservedBytes = 0;
     GpuStateRanges gpuStates;
     bool negotiated = false;
+    bool streamingNegotiated = false;
     static std::vector<std::uint8_t> reply(Header h, std::int32_t error,
                                          std::uint32_t id = 0, const Result* result = nullptr) {
         h.handle = id; h.status = error; h.padding = 0;
@@ -493,6 +500,7 @@ class Session {
 public:
     explicit Session(Driver& d) : driver(d) {}
     std::size_t objectCount() const { return objects.size(); }
+    unsigned requestLimit() const { return streamingNegotiated ? GuestStreamProfile.requestLimit : 10000; }
     Session(const Session&) = delete;
     Session& operator=(const Session&) = delete;
     // A disconnect releases child objects before their parents. The Windows
@@ -525,7 +533,7 @@ public:
             if (h.handle || packet.size() != sizeof h + 4) return reply(h, -22);
             if (!objects.empty()) return reply(h, -16);
             std::uint32_t version{}; std::memcpy(&version, packet.data() + sizeof h, 4);
-            negotiated = false;
+            negotiated = false; streamingNegotiated = false;
             if (version != Version) return reply(h, -93);
             const auto caps = driver.capabilities();
             if (caps.version != Version) return reply(h, -93);
@@ -533,6 +541,20 @@ public:
             auto out = reply(h, 0); out.resize(sizeof h + sizeof caps);
             std::memcpy(out.data() + sizeof h, &caps, sizeof caps);
             return out;
+        }
+        if (op == Op::BeginStreaming) {
+            if (!negotiated) return reply(h, -71);
+            if (h.handle || packet.size() != sizeof h) return reply(h, -22);
+            if (streamingNegotiated ||
+                std::any_of(objects.begin(), objects.end(), [](const auto& item) { return item.second.kind == Kind::VendorResource; }))
+                return reply(h, -16);
+            const auto required = NativeSharedTextureCapability | SharedTextureConsumeCapability | AsyncHwSubmitCapability | UINT32_C(0x80000000);
+            if ((driver.capabilities().flags & required) != required) return reply(h, -95);
+            const auto profile = driver.beginStreaming();
+            if (!validStreamProfile(profile)) return reply(h, -95);
+            streamingNegotiated = true;
+            auto out = reply(h, 0); out.resize(sizeof h + sizeof profile);
+            std::memcpy(out.data() + sizeof h, &profile, sizeof profile); return out;
         }
         if (op >= Op::BeginAdapterQuery && op <= Op::EndAdapterQuery) {
             if (!negotiated) return reply(h, -71);
@@ -729,7 +751,7 @@ public:
                 }
             }
             if (commandOwners != 1) return reply(h, -9);
-            if (submissionAttempts >= MaxHwSubmissions) return reply(h, -24);
+            if (submissionAttempts >= (streamingNegotiated ? GuestStreamProfile.totalCommands : MaxHwSubmissions)) return reply(h, -24);
             ++submissionAttempts;
             const std::vector<std::uint8_t> data(packet.begin() + sizeof h + sizeof desc, packet.end());
             const auto native = asynchronous ? driver.queueHwCommand(queue->second.nativeHandle, desc, data) :
@@ -800,7 +822,8 @@ public:
                     std::find(ids.begin(),ids.begin()+n,ids[n]) != ids.begin()+n) return reply(h,-9);
                 nativeQueues.push_back(queue->second.nativeHandle);
             }
-            if (hwQueueSignalAttempts >= MaxHwQueueSignals) return reply(h,-24);
+            if (streamingNegotiated ? hwQueueSignalAttempts + contextSignalAttempts >= GuestStreamProfile.totalSignals :
+                                      hwQueueSignalAttempts >= MaxHwQueueSignals) return reply(h,-24);
             ++hwQueueSignalAttempts;
             const auto result = driver.queueHwQueueSignal(sync->second.nativeHandle,nativeQueues,desc);
             if (!validHwSubmitReply(result,desc.fence,AsyncHwSubmitCapability)) return reply(h,-5);
@@ -818,7 +841,8 @@ public:
                 sync == objects.end() || sync->second.kind != Kind::Sync || sync->second.syncType != 5 ||
                 sync->second.syncFlags != NoGpuAccessSyncFlag || sync->second.parent != context->second.parent) return reply(h, -9);
             if (desc.fence <= sync->second.submittedFence) return reply(h, -22);
-            if (contextSignalAttempts >= MaxContextSignals) return reply(h, -24);
+            if (streamingNegotiated ? contextSignalAttempts + hwQueueSignalAttempts >= GuestStreamProfile.totalSignals :
+                                      contextSignalAttempts >= MaxContextSignals) return reply(h, -24);
             ++contextSignalAttempts;
             const auto result = driver.signalContextSync(context->second.nativeHandle, sync->second.nativeHandle, desc);
             if (result.ntstatus > 0 || result.nativeHandle ||
@@ -942,8 +966,10 @@ public:
                 throw;
             }
         }
-        if (op == Op::ConsumeSharedTexture) {
+        if (op == Op::ConsumeSharedTexture || op == Op::ConsumeStreamingTexture) {
             if (!negotiated) return reply(h, -71);
+            const bool streaming = op == Op::ConsumeStreamingTexture;
+            if (streaming != streamingNegotiated) return reply(h, -71);
             if (!(driver.capabilities().flags & SharedTextureConsumeCapability)) return reply(h, -95);
             if (packet.size() != sizeof h + sizeof(SharedTextureConsumeDesc)) return reply(h, -22);
             SharedTextureConsumeDesc desc{}; std::memcpy(&desc, packet.data() + sizeof h, sizeof desc);
@@ -956,7 +982,8 @@ public:
             if (allocation == objects.end() || allocation->second.kind != Kind::VendorAllocation ||
                 allocation->second.parent != sync->second.parent) return reply(h, -9);
             auto nativeDesc = desc; nativeDesc.sync = sync->second.nativeHandle;
-            const auto result = driver.consumeSharedTexture(resource->second.nativeHandle, sync->second.nativeHandle, nativeDesc);
+            const auto result = streaming ? driver.consumeStreamingTexture(resource->second.nativeHandle, sync->second.nativeHandle, nativeDesc) :
+                                           driver.consumeSharedTexture(resource->second.nativeHandle, sync->second.nativeHandle, nativeDesc);
             if (result.nativeHandle || result.ntstatus > 0 || (result.ntstatus < 0 && result.value)) return reply(h, -5);
             return reply(h, 0, h.handle, &result);
         }

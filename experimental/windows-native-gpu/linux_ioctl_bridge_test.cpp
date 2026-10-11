@@ -23,6 +23,28 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (fd < 0) return failed("open");
+    if (!std::strncmp(mode,"stream-profile-",15)) {
+        using Begin = int (*)();
+        const auto begin = reinterpret_cast<Begin>(dlsym(RTLD_DEFAULT,"wddm_bridge_begin_streaming"));
+        if (!begin) return failed("stream hook absent");
+        if (!std::strcmp(mode,"stream-profile-unowned")) {
+            if (begin() != -1 || errno != EINVAL) return failed("stream without unique device accepted");
+            close(fd); return 0;
+        }
+        D3DKMT_OPENADAPTERFROMLUID adapter{}; adapter.AdapterLuid.LowPart = 0x57475055;
+        if (ioctl(fd, _IOWR('G',1,D3DKMT_OPENADAPTERFROMLUID), &adapter)) return failed("stream adapter");
+        D3DKMT_CREATEDEVICE device{}; device.hAdapter = adapter.hAdapter; device.Flags.RequestVSync = 1;
+        if (ioctl(fd, _IOWR('G',2,D3DKMT_CREATEDEVICE), &device)) return failed("stream device");
+        if (!std::strcmp(mode,"stream-profile-normal")) {
+            if (begin()) return failed("stream negotiation");
+            if (begin() != -1 || errno != EINVAL) return failed("repeated stream accepted");
+        } else {
+            const bool missing = !std::strncmp(mode,"stream-profile-missing-",23);
+            const bool disabled = !std::strcmp(mode,"stream-profile-disabled");
+            if (begin() != -1 || errno != (disabled ? EINVAL : missing ? ENOSYS : EPROTO)) return failed("invalid stream accepted");
+        }
+        close(fd); return 0;
+    }
     if (!std::strncmp(mode,"consume-",8)) {
         using Consume = int (*)(std::uint64_t,std::uint64_t*);
         const auto consume = reinterpret_cast<Consume>(dlsym(RTLD_DEFAULT,"wddm_bridge_consume_shared_texture"));

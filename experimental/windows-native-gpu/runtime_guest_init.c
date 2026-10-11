@@ -66,18 +66,26 @@ int main(void) {
     char module[130] = {0};
     FILE* name = fopen("/linux-umd-name", "rb");
     int status = 127;
+    unsigned runtime_deadline = 40;
+    FILE* deadline_workload = fopen("/runtime-workload", "rb");
+    if (deadline_workload) {
+        char value[14] = {0}; const size_t bytes = fread(value, 1, sizeof value, deadline_workload);
+        if (bytes == 13 && !memcmp(value, "native-stream", 13)) runtime_deadline = 120;
+        fclose(deadline_workload);
+    }
     if (name && fread(module, 1, sizeof(module) - 1, name) && !access(port, F_OK)) {
         module[strcspn(module, "\r\n")] = 0;
         pid_t child = fork();
         if (child == 0) {
             FILE* workload_file = fopen("/runtime-workload", "rb");
             if (workload_file) {
-                char workload[9] = {0}; const size_t count = fread(workload, 1, sizeof(workload), workload_file);
+                char workload[14] = {0}; const size_t count = fread(workload, 1, sizeof(workload), workload_file);
                 fclose(workload_file);
                 if (count == 4 && !memcmp(workload, "copy", 4)) setenv("WDDM_BRIDGE_RUNTIME_WORKLOAD", "copy", 1);
                 else if (count == 5 && !memcmp(workload, "clear", 5)) setenv("WDDM_BRIDGE_RUNTIME_WORKLOAD", "clear", 1);
                 else if (count == 8 && !memcmp(workload, "triangle", 8)) setenv("WDDM_BRIDGE_RUNTIME_WORKLOAD", "triangle", 1);
                 else if (count == 6 && !memcmp(workload, "shared", 6)) setenv("WDDM_BRIDGE_RUNTIME_WORKLOAD", "shared", 1);
+                else if (count == 13 && !memcmp(workload, "native-stream", 13)) setenv("WDDM_BRIDGE_RUNTIME_WORKLOAD", "native-stream", 1);
                 else if (count == 6 && !memcmp(workload, "native", 6)) setenv("WDDM_BRIDGE_RUNTIME_WORKLOAD", "native", 1);
                 else if (count == 7 && !memcmp(workload, "consume", 7)) setenv("WDDM_BRIDGE_RUNTIME_WORKLOAD", "consume", 1);
                 else if (count != 4 || memcmp(workload, "init", 4)) _exit(126);
@@ -110,7 +118,7 @@ int main(void) {
         }
         if (child > 0) {
             struct sigaction action = {0}; action.sa_handler = timeout_handler;
-            sigaction(SIGALRM, &action, NULL); alarm(40);
+            sigaction(SIGALRM, &action, NULL); alarm(runtime_deadline);
             if (waitpid(child, &status, 0) == child) status = WIFEXITED(status) ? WEXITSTATUS(status) : 128;
             else { kill(child, SIGKILL); waitpid(child, NULL, 0); status = 124; }
             alarm(0);

@@ -5,7 +5,15 @@
 #if defined(WDDM_BRIDGE_4K_LAB) && WDDM_BRIDGE_4K_LAB != 1
 #error WDDM_BRIDGE_4K_LAB must be 1 or absent
 #endif
+#if defined(WDDM_BRIDGE_STREAM_LAB) && (!defined(WDDM_BRIDGE_4K_LAB) || WDDM_BRIDGE_STREAM_LAB != 1)
+#error WDDM_BRIDGE_STREAM_LAB requires the explicit 4K lab profile
+#endif
 namespace gpu_diagnostic {
+#ifdef WDDM_BRIDGE_STREAM_LAB
+constexpr bool Streaming = true;
+#else
+constexpr bool Streaming = false;
+#endif
 #ifdef WDDM_BRIDGE_4K_LAB
 constexpr bool HighResolution = true;
 #else

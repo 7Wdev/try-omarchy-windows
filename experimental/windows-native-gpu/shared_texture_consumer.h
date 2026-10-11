@@ -3,6 +3,7 @@
 #pragma once
 #include "shared_texture_presenter.h"
 #include "binary_capture.h"
+#include "stream_profile.h"
 namespace driver_shared {
 class TextureConsumer {
     Microsoft::WRL::ComPtr<ID3D12Device> device;
@@ -15,7 +16,7 @@ class TextureConsumer {
     UINT64 totalBytes = 0, sequence = 0;
     std::unique_ptr<TexturePresenter> presenter;
     Microsoft::WRL::ComPtr<ID3D12Resource> backBufferReadback;
-    HRESULT exportPixels(ID3D12Resource* buffer, const char* prefix, std::uint64_t& hash) {
+    HRESULT exportPixels(ID3D12Resource* buffer, const char* prefix, std::uint64_t& hash, unsigned auditRound = 0) {
         void* mapped = nullptr; const D3D12_RANGE range{static_cast<SIZE_T>(footprint.Offset), static_cast<SIZE_T>(totalBytes)};
         const auto hr = buffer->Map(0, &range, &mapped); if (FAILED(hr)) return hr;
         struct ScopedUnmap {
@@ -25,7 +26,7 @@ class TextureConsumer {
         if (!mapped) return E_FAIL;
         hash = UINT64_C(14695981039346656037);
         if (gpu_diagnostic::HighResolution) {
-            return driver_capture::write(prefix, static_cast<unsigned>(sequence), mapped,
+            return driver_capture::write(prefix, auditRound ? auditRound : static_cast<unsigned>(sequence), mapped,
                                          footprint.Offset, footprint.Footprint.RowPitch, hash);
         }
         const char hex[] = "0123456789abcdef";
@@ -102,8 +103,11 @@ public:
         }
         return hr;
     }
-    HRESULT consume(std::uint64_t& hash) {
-        if (!fence || sequence >= 2) return E_INVALIDARG;
+    HRESULT consume(std::uint64_t& hash, bool streaming = false) {
+        if (!fence || sequence >= (streaming ? driver_bridge::GuestStreamProfile.frames : 2) ||
+            (streaming && !gpu_diagnostic::Streaming)) return E_INVALIDARG;
+        const unsigned auditRound = streaming ? driver_bridge::streamAuditRound(sequence + 1) : static_cast<unsigned>(sequence + 1);
+        const bool audit = auditRound != 0; hash = 0;
         auto hr = allocator->Reset(); if (FAILED(hr)) return hr;
         hr = commands->Reset(allocator.Get(), nullptr); if (FAILED(hr)) return hr;
         const auto barrier = [&](ID3D12Resource* resource, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after) {
@@ -119,9 +123,9 @@ public:
         D3D12_TEXTURE_COPY_LOCATION from{}; from.pResource = destination.Get(); from.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
         D3D12_TEXTURE_COPY_LOCATION to{}; to.pResource = readback.Get(); to.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
         to.PlacedFootprint = footprint;
-        commands->CopyTextureRegion(&to, 0, 0, 0, &from, nullptr);
+        if (audit) commands->CopyTextureRegion(&to, 0, 0, 0, &from, nullptr);
         if (presenter) {
-            hr = presenter->copy(commands.Get(), destination.Get(), backBufferReadback.Get(), footprint);
+            hr = presenter->copy(commands.Get(), destination.Get(), audit ? backBufferReadback.Get() : nullptr, footprint);
             if (FAILED(hr)) return hr;
         }
         barrier(destination.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON);
@@ -137,15 +141,20 @@ public:
             std::cerr << "FAIL: Native shared texture copy did not retire; backing retained until process teardown\n" << std::flush;
             ExitProcess(3);
         }
-        hr = exportPixels(readback.Get(), "NATIVE_SHARED_TEXTURE_PIXEL_ROW", hash); if (FAILED(hr)) return hr;
+        if (audit) { hr = exportPixels(readback.Get(), "NATIVE_SHARED_TEXTURE_PIXEL_ROW", hash, auditRound); if (FAILED(hr)) return hr; }
+        if (streaming) std::cerr << "{\"guestStreamCopy\":true,\"frame\":" << target << ",\"auditRound\":" << auditRound
+            << ",\"gpuFenceObserved\":" << observed << ",\"fnv1a\":" << hash
+            << ",\"cpuReadback\":" << (audit ? "true" : "false") << ",\"sourceReturnedToCommon\":true,\"cpuUpload\":false}\n";
         std::cerr << "{\"nativeSharedTextureCopied\":true,\"round\":" << target << ",\"width\":" << gpu_diagnostic::Width << ",\"height\":" << gpu_diagnostic::Height
                   << ",\"gpuFenceTarget\":" << target << ",\"gpuFenceObserved\":" << observed
                   << ",\"fnv1a\":" << hash << ",\"sourceReturnedToCommon\":true,\"cpuUpload\":false,\"presented\":false}\n";
         if (presenter) {
             std::uint64_t backHash = 0;
-            hr = exportPixels(backBufferReadback.Get(), "NATIVE_SHARED_TEXTURE_BACKBUFFER_ROW", backHash);
-            if (FAILED(hr) || backHash != hash) return E_FAIL;
-            hr = presenter->present(queue.Get(), target, backHash);
+            if (audit) {
+                hr = exportPixels(backBufferReadback.Get(), "NATIVE_SHARED_TEXTURE_BACKBUFFER_ROW", backHash, auditRound);
+                if (FAILED(hr) || backHash != hash) return E_FAIL;
+            }
+            hr = streaming ? presenter->presentStreaming(queue.Get(), target) : presenter->present(queue.Get(), target, backHash);
             if (hr != S_OK) return E_FAIL;
         }
         return S_OK;

@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -15,6 +16,7 @@
 #include <dlfcn.h>
 #include "triangle_shaders.h"
 #include "diagnostic_profile.h"
+#include "stream_profile.h"
 
 namespace gpu_triangle {
 using Microsoft::WRL::ComPtr;
@@ -48,13 +50,25 @@ inline bool reference(unsigned x, unsigned y, unsigned round, std::uint8_t* rgba
     return inside;
 }
 
-inline int run(ID3D12Device* device, bool shared = false, bool consume = false, bool nativeMetadata = false) {
+inline int run(ID3D12Device* device, bool shared = false, bool consume = false, bool nativeMetadata = false, bool streaming = false) {
+    if (streaming && (!gpu_diagnostic::Streaming || !nativeMetadata || !consume || !shared)) return 5;
+    const unsigned frames = streaming ? driver_bridge::GuestStreamProfile.frames : Rounds;
+    const auto submittedFailure = [streaming]() {
+        // The owned VM stops before the host releases native backing. A failed
+        // Signal/wait cannot justify unwinding resources potentially in use.
+        if (streaming) { std::fflush(nullptr); std::_Exit(5); }
+        return 5;
+    };
+    using BeginStream = int (*)();
+    const auto beginStream = streaming ? reinterpret_cast<BeginStream>(dlsym(RTLD_DEFAULT, "wddm_bridge_begin_streaming")) : nullptr;
+    if (streaming && (!beginStream || beginStream())) return 5;
     using Consume = int (*)(std::uint64_t, std::uint64_t*);
-    const auto consumeTexture = consume ? reinterpret_cast<Consume>(dlsym(RTLD_DEFAULT, "wddm_bridge_consume_shared_texture")) : nullptr;
+    const auto consumeTexture = consume ? reinterpret_cast<Consume>(dlsym(RTLD_DEFAULT, streaming ? "wddm_bridge_consume_streaming_texture" : "wddm_bridge_consume_shared_texture")) : nullptr;
     if (consume && (!shared || !consumeTexture)) return 5;
     using Prepare = int (*)(std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t);
     const auto prepareTexture = nativeMetadata ? reinterpret_cast<Prepare>(dlsym(RTLD_DEFAULT, "wddm_bridge_prepare_native_texture")) : nullptr;
     if (nativeMetadata && (!consume || !prepareTexture)) return 5;
+    if (streaming) std::printf("GPU_STREAM_TEST_BEGIN frames=64 width=%u height=%u audits=2 pendingCommands=16 pendingSignals=16\n", Width, Height);
     if (nativeMetadata) std::printf("GPU_NATIVE_METADATA_TEST_BEGIN width=%u height=%u format=28 flags=1\n", Width, Height);
     if (consume) std::printf("GPU_SHARED_CONSUME_TEST_BEGIN rounds=2 state=COMMON\n");
     if (shared) std::printf("GPU_SHARED_RESOURCE_TEST_BEGIN width=%u height=%u format=R8G8B8A8_UNORM\n", Width, Height);
@@ -136,14 +150,17 @@ inline int run(ID3D12Device* device, bool shared = false, bool consume = false, 
     ComPtr<ID3D12Fence> fence;
     if (!succeeded("Fence", device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence)))) return 5;
     ComPtr<ID3D12Fence> handoffFence;
-    if (consume && FAILED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&handoffFence)))) return 5;
+    if (consume && !streaming && FAILED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&handoffFence)))) return 5;
     const FLOAT backgrounds[2][4]{{0, 0, 1, 1}, {0, 0, 0, 1}};
     const D3D12_VIEWPORT viewport{0, 0, static_cast<FLOAT>(Width), static_cast<FLOAT>(Height), 0, 1};
     const D3D12_RECT scissor{0, 0, Width, Height};
     // Larger diagnostic profiles must not place two full images on the stack.
     std::vector<std::uint8_t> expectedStorage(Bytes), actualStorage(Bytes);
     auto* expected = expectedStorage.data(); auto* actual = actualStorage.data();
-    for (unsigned round = 1; round <= Rounds; ++round) {
+    for (unsigned round = 1; round <= frames; ++round) {
+        const unsigned renderRound = streaming ? 1 + (round - 1) % 2 : round;
+        const unsigned auditRound = streaming ? driver_bridge::streamAuditRound(round) : round;
+        const bool audit = auditRound != 0; std::uint64_t observedHash = 0;
         if (round > 1 && (!succeeded("AllocatorReset", allocator->Reset()) ||
                          !succeeded("CommandListReset", commands->Reset(allocator.Get(), pipeline.Get())))) return 5;
         if (consume && round > 1) {
@@ -153,15 +170,16 @@ inline int run(ID3D12Device* device, bool shared = false, bool consume = false, 
             commands->ResourceBarrier(1, &b);
         }
         commands->SetGraphicsRootSignature(root.Get());
-        commands->SetGraphicsRoot32BitConstant(0, round - 1, 0);
+        commands->SetGraphicsRoot32BitConstant(0, renderRound - 1, 0);
         commands->RSSetViewports(1, &viewport); commands->RSSetScissorRects(1, &scissor);
         commands->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
-        commands->ClearRenderTargetView(rtv, backgrounds[round - 1], 0, nullptr);
+        commands->ClearRenderTargetView(rtv, backgrounds[renderRound - 1], 0, nullptr);
         commands->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        std::printf("GPU_TRIANGLE_DRAW round=%u vertices=3 startVertex=0 instances=1 colorRotation=%u\n", round, round - 1);
+        std::printf("GPU_TRIANGLE_DRAW round=%u vertices=3 startVertex=0 instances=1 colorRotation=%u\n", round, renderRound - 1);
         commands->DrawInstanced(3, 1, 0, 0);
         D3D12_RESOURCE_BARRIER barrier{}; barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
         barrier.Transition.pResource = target.Get(); barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        if (audit) {
         barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET; barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
         commands->ResourceBarrier(1, &barrier);
         D3D12_TEXTURE_COPY_LOCATION source{}; source.pResource = target.Get(); source.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
@@ -170,17 +188,24 @@ inline int run(ID3D12Device* device, bool shared = false, bool consume = false, 
         commands->CopyTextureRegion(&destination, 0, 0, 0, &source, nullptr);
         barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE; barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
         commands->ResourceBarrier(1, &barrier);
+        }
+        if (streaming) {
+            barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+            barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COMMON;
+            commands->ResourceBarrier(1, &barrier);
+        }
         if (!succeeded("Close", commands->Close())) return 5;
         ID3D12CommandList* lists[]{commands.Get()}; queue->ExecuteCommandLists(1, lists);
-        if (!succeeded("Signal", queue->Signal(fence.Get(), round))) return 5;
+        if (!succeeded("Signal", queue->Signal(fence.Get(), round))) return submittedFailure();
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10); std::uint64_t observed = 0;
         do {
             observed = fence->GetCompletedValue();
-            if (observed == UINT64_MAX) { succeeded("DeviceRemoved", device->GetDeviceRemovedReason()); return 5; }
+            if (observed == UINT64_MAX) { succeeded("DeviceRemoved", device->GetDeviceRemovedReason()); return submittedFailure(); }
             if (observed >= round) break;
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         } while (std::chrono::steady_clock::now() < deadline);
-        if (observed < round) { std::printf("GPU_TRIANGLE_TIMEOUT round=%u observed=%llu\n", round, static_cast<unsigned long long>(observed)); return 5; }
+        if (observed < round) { std::printf("GPU_TRIANGLE_TIMEOUT round=%u observed=%llu\n", round, static_cast<unsigned long long>(observed)); return submittedFailure(); }
+        if (audit) {
         void* pointer = nullptr; const D3D12_RANGE range{static_cast<SIZE_T>(footprint.Offset), static_cast<SIZE_T>(totalBytes)};
         if (!succeeded("ReadbackMap", readback->Map(0, &range, &pointer)) || !pointer) return 5;
         unsigned trianglePixels = 0, verified = 0, maximumError = 0;
@@ -189,7 +214,7 @@ inline int run(ID3D12Device* device, bool shared = false, bool consume = false, 
             std::memcpy(actual + y * Width * 4, static_cast<const std::uint8_t*>(pointer) + footprint.Offset + y * footprint.Footprint.RowPitch, Width * 4);
             for (unsigned x = 0; x < Width; ++x) {
                 const std::size_t offset = (y * Width + x) * 4;
-                const bool inside = reference(x, y, round, expected + offset); trianglePixels += inside;
+                const bool inside = reference(x, y, auditRound, expected + offset); trianglePixels += inside;
                 bool matches = true;
                 for (unsigned channel = 0; channel < 4; ++channel) {
                     const unsigned error = static_cast<unsigned>(std::abs(static_cast<int>(actual[offset + channel]) - expected[offset + channel]));
@@ -200,21 +225,21 @@ inline int run(ID3D12Device* device, bool shared = false, bool consume = false, 
                 if (!matches && !reportedMismatch) {
                     reportedMismatch = true;
                     std::printf("GPU_TRIANGLE_MISMATCH round=%u x=%u y=%u inside=%u actual=%u,%u,%u,%u expected=%u,%u,%u,%u\n",
-                        round, x, y, inside, actual[offset], actual[offset+1], actual[offset+2], actual[offset+3],
+                        auditRound, x, y, inside, actual[offset], actual[offset+1], actual[offset+2], actual[offset+3],
                         expected[offset], expected[offset+1], expected[offset+2], expected[offset+3]);
                 }
             }
         }
         const D3D12_RANGE empty{}; readback->Unmap(0, &empty);
         std::printf("GPU_TRIANGLE_ROUND round=%u verifiedPixels=%u trianglePixels=%u backgroundPixels=%u maxChannelError=%u referenceHash=%016llx observedHash=%016llx fenceTarget=%u fenceObserved=%llu\n",
-            round, verified, trianglePixels, Width * Height - trianglePixels, maximumError,
+            auditRound, verified, trianglePixels, Width * Height - trianglePixels, maximumError,
             static_cast<unsigned long long>(hash(expected, Bytes)), static_cast<unsigned long long>(hash(actual, Bytes)),
             round, static_cast<unsigned long long>(observed));
         // Export actual GPU bytes, including failing results, for independent inspection.
         if (gpu_diagnostic::HighResolution) {
             // A 66 MB UART hex stream per frame can exceed the transport deadline.
             // The guest still verifies every pixel and the host independently captures RGBA.
-            std::printf("GPU_TRIANGLE_COMPACT_CAPTURE round=%u bytes=%zu hostBinaryExport=true\n", round, Bytes);
+            std::printf("GPU_TRIANGLE_COMPACT_CAPTURE round=%u bytes=%zu hostBinaryExport=true\n", auditRound, Bytes);
         } else {
         const char hex[] = "0123456789abcdef";
         for (unsigned y = 0; y < Height; ++y) {
@@ -222,11 +247,15 @@ inline int run(ID3D12Device* device, bool shared = false, bool consume = false, 
             for (unsigned i = 0; i < Width * 4; ++i) {
                 const auto value = actual[y * Width * 4 + i]; row.push_back(hex[value >> 4]); row.push_back(hex[value & 15]);
             }
-            std::printf("GPU_TRIANGLE_PIXEL_ROW round=%u y=%u rgba=%s\n", round, y, row.c_str());
+            std::printf("GPU_TRIANGLE_PIXEL_ROW round=%u y=%u rgba=%s\n", auditRound, y, row.c_str());
         }
         }
         if (verified != Width * Height) return 5;
+        observedHash = hash(actual, Bytes);
+        }
         if (consume) {
+            std::uint64_t retired = observed;
+            if (!streaming) {
             if (FAILED(allocator->Reset()) || FAILED(commands->Reset(allocator.Get(), nullptr))) return 5;
             barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
             barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COMMON;
@@ -235,7 +264,7 @@ inline int run(ID3D12Device* device, bool shared = false, bool consume = false, 
             queue->ExecuteCommandLists(1, lists);
             if (FAILED(queue->Signal(handoffFence.Get(), round))) return 5;
             const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-            std::uint64_t retired = 0;
+            retired = 0;
             do {
                 retired = handoffFence->GetCompletedValue();
                 if (retired == UINT64_MAX) return 5;
@@ -243,13 +272,20 @@ inline int run(ID3D12Device* device, bool shared = false, bool consume = false, 
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
             } while (std::chrono::steady_clock::now() < end);
             if (retired < round) return 5;
+            }
             std::printf("GPU_SHARED_CONSUME_HANDOFF round=%u state=COMMON fenceTarget=%u fenceObserved=%llu\n",
                         round, round, static_cast<unsigned long long>(retired));
             std::uint64_t hostHash = 0;
-            if (consumeTexture(round, &hostHash) || hostHash != hash(actual, Bytes)) return 5;
+            if (consumeTexture(round, &hostHash) || hostHash != observedHash) return 5;
             std::printf("GPU_SHARED_CONSUME_HOST round=%u hash=%016llx returnedState=COMMON\n",
                         round, static_cast<unsigned long long>(hostHash));
+            if (streaming) std::printf("GPU_STREAM_FRAME frame=%u auditRound=%u renderRound=%u guestFenceObserved=%llu hostHash=%016llx cpuReadback=%s returnedState=COMMON\n",
+                round, auditRound, renderRound, static_cast<unsigned long long>(retired), static_cast<unsigned long long>(hostHash), audit ? "true" : "false");
         }
+    }
+    if (streaming) {
+        std::printf("GPU_STREAM_TEST_COMPLETE verified=true frames=64 width=%u height=%u audits=2 allFramesDisplayedVerified=false\n", Width, Height);
+        return 0;
     }
     std::printf("GPU_TRIANGLE_TEST_COMPLETE verified=true width=%u height=%u rounds=%u\n", Width, Height, Rounds);
     if (shared) std::printf("GPU_SHARED_RESOURCE_TEST_COMPLETE verified=true width=%u height=%u rounds=2\n", Width, Height);

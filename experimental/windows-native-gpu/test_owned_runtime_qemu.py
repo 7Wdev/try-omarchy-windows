@@ -156,14 +156,14 @@ def no_broadcast_queue_eof_complete(log, control, cleanup, target_flags=2):
             control.get('allocationSlotUnmapAcknowledgements') == slots)
 
 
-def async_submissions_complete(queued, accepted, retired, cleanup):
+def async_submissions_complete(queued, accepted, retired, cleanup, *, maximum=16, pending_limit=16):
     """Enqueue receipts alone never prove completion; correlate every fence."""
     count = len(queued)
-    if not 0 < count <= 16 or len(accepted) != count or len(retired) != count:
+    if not 0 < count <= maximum or len(accepted) != count or len(retired) != count:
         return False
     if (cleanup.get('asynchronousSubmissionOptIn') is not True or
         cleanup.get('acceptedAsyncSubmissions') != count or cleanup.get('completedNativeSubmissions') != count or
-        cleanup.get('pendingNativeSubmissions') != 0 or not 0 < cleanup.get('peakPendingNativeSubmissions',0) <= count):
+        cleanup.get('pendingNativeSubmissions') != 0 or not 0 < cleanup.get('peakPendingNativeSubmissions',0) <= min(count,pending_limit)):
         return False
     if [a.get('index') for a in accepted] != list(range(1,count+1)) or sorted(r.get('index',0) for r in retired) != list(range(1,count+1)):
         return False
@@ -178,16 +178,16 @@ def async_submissions_complete(queued, accepted, retired, cleanup):
     return True
 
 
-def hw_queue_signals_complete(queued, returned, accepted, retired, cleanup):
+def hw_queue_signals_complete(queued, returned, accepted, retired, cleanup, *, maximum=16, pending_limit=16):
     count=len(queued)
     if count == 0:
         return not returned and not accepted and not retired and all(cleanup.get(k,0) == 0 for k in
             ('nativeHwQueueSignalAttempts','acceptedHwQueueSignals','completedHwQueueSignals','failedHwQueueSignals','pendingHwQueueSignals','peakPendingHwQueueSignals'))
-    if not 0 < count <= 16 or len(returned) != count or len(accepted) != count or len(retired) != count:
+    if not 0 < count <= maximum or len(returned) != count or len(accepted) != count or len(retired) != count:
         return False
     if (any(cleanup.get(k) != count for k in ('nativeHwQueueSignalAttempts','acceptedHwQueueSignals','completedHwQueueSignals')) or
         cleanup.get('failedHwQueueSignals') != 0 or cleanup.get('pendingHwQueueSignals') != 0 or
-        not 0 < cleanup.get('peakPendingHwQueueSignals',0) <= count): return False
+        not 0 < cleanup.get('peakPendingHwQueueSignals',0) <= min(count,pending_limit)): return False
     if [a.get('index') for a in accepted] != list(range(1,count+1)) or sorted(r.get('index',0) for r in retired) != list(range(1,count+1)):
         return False
     by_index={r['index']:r for r in retired}
@@ -211,7 +211,7 @@ def main():
     parser.add_argument('--driver-native-metadata', action='store_true', help='Enable typed texture allocation with Windows-generated runtime metadata')
     parser.add_argument('--driver-present-shared', action='store_true', help='Present consumed guest frames in an owned diagnostic Windows window')
     parser.add_argument('--driver-shared-resources', action='store_true', help='Opt into bounded shareable NVIDIA resource creation and native import probing')
-    parser.add_argument('--runtime-workload', choices=('init', 'copy', 'clear', 'triangle', 'shared', 'consume', 'native'), default='init', help='Require the workload selected when packing the private guest image')
+    parser.add_argument('--runtime-workload', choices=('init', 'copy', 'clear', 'triangle', 'shared', 'consume', 'native', 'native-stream'), default='init', help='Require the workload selected when packing the private guest image')
     parser.add_argument('--driver-allocations', action='store_true', help='Explicitly enable diagnostic vendor video-memory allocations')
     parser.add_argument('--minimum-vendor-allocations', type=int, default=0)
     parser.add_argument('--minimum-uninitialized-source-allocations', type=int, default=0)
@@ -409,7 +409,7 @@ def main():
     reader.start(); error_reader.start()
     try:
         try:
-            owner.wait(timeout=110)
+            owner.wait(timeout=210 if args.runtime_workload == 'native-stream' else 110)
         except subprocess.TimeoutExpired:
             # The retained handle cannot target a reused PID. Stop and reap
             # QEMU first, while the owner still retains the native pages.
@@ -714,7 +714,7 @@ def main():
         copy_verified = copy_workload_complete(log, args.driver_async_submit and async_verified)
         clear_verified = clear_workload_complete(log, args.driver_async_submit and async_verified)
         triangle_verified = triangle_workload_complete(log, args.driver_async_submit and async_verified)
-        native_requested = args.runtime_workload == 'native'
+        native_requested = args.runtime_workload in ('native', 'native-stream')
         metadata_bytes = native_texture_runtime_bytes(log, "\n".join(errors), requested=native_requested)
         shared_verified = shared_resource_import_complete(log, shared_probes, cleanup, triangle_verified, runtime_bytes=metadata_bytes)
         consume_verified = shared_texture_consume_complete(log, "\n".join(errors), cleanup, shared_verified,
@@ -872,6 +872,10 @@ def main():
                   'guestArbitraryGpuCommandSubmissionImplemented': False,
                   'boundedNativeCommandSubmissionVerified': bool(args.driver_submit and accepted and submissions),
                   'guestDesktopAcceleratedByThisBackend': False, 'nearNativePerformanceMeasured': False}
+        if args.runtime_workload == 'native-stream':
+            # Separate offline stream verifier owns this new milestone.
+            accepted = False; report['diagnosticAccepted'] = False
+            report['guestStreamChecks'] = [json.loads(line) for line in errors if line.startswith('{') and 'guestStream' in line]
         args.report.write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8', newline='\n')
         args.report.with_suffix('.host.log').write_text(''.join(output + errors), encoding='utf-8', newline='\n')
         for line in log.splitlines():

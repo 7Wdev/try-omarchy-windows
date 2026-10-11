@@ -3,6 +3,7 @@
 #pragma once
 #include <dwmapi.h>
 #include "diagnostic_profile.h"
+#include "stream_profile.h"
 namespace driver_shared {
 class TexturePresenter {
     Microsoft::WRL::ComPtr<IDXGISwapChain3> swapchain;
@@ -85,6 +86,10 @@ public:
         };
         barrier(D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_DEST);
         commands->CopyResource(buffers[index].Get(), source);
+        if (!readback) {
+            barrier(D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PRESENT);
+            return S_OK;
+        }
         barrier(D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COPY_SOURCE);
         D3D12_TEXTURE_COPY_LOCATION from{}; from.pResource = buffers[index].Get(); from.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
         D3D12_TEXTURE_COPY_LOCATION to{}; to.pResource = readback; to.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
@@ -92,6 +97,29 @@ public:
         commands->CopyTextureRegion(&to, 0, 0, 0, &from, nullptr);
         barrier(D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_PRESENT);
         return S_OK;
+    }
+    // Stream acceptance is separate from the strict two-frame display proof.
+    // A retired queue and Present(S_OK) alone do not prove scanout.
+    HRESULT presentStreaming(ID3D12CommandQueue* queue, UINT64 frame) {
+        if (!opened || !gpu_diagnostic::Streaming || !frame || frame > driver_bridge::GuestStreamProfile.frames) return E_INVALIDARG;
+        pump(); LARGE_INTEGER before{}, after{}, frequency{};
+        if (!QueryPerformanceFrequency(&frequency) || !QueryPerformanceCounter(&before)) return E_FAIL;
+        const auto presented = swapchain->Present(1, 0);
+        if (!QueryPerformanceCounter(&after)) ExitProcess(3);
+        auto hr = queue->Signal(retirement.Get(), frame);
+        const auto deadline = GetTickCount64() + 5000; UINT64 observed = 0;
+        while (SUCCEEDED(hr) && (observed = retirement->GetCompletedValue()) < frame && GetTickCount64() < deadline) { pump(); Sleep(1); }
+        if (FAILED(hr) || observed == UINT64_MAX || observed < frame) ExitProcess(3);
+        UINT count = 0; const auto counted = swapchain->GetLastPresentCount(&count);
+        DXGI_FRAME_STATISTICS stats{}; const auto statistics = swapchain->GetFrameStatistics(&stats);
+        std::cerr << "{\"guestStreamPresent\":true,\"frame\":" << frame << ",\"presentHresult\":" << presented
+            << ",\"presentCountHresult\":" << counted << ",\"lastPresentCount\":" << count
+            << ",\"presentQueueFenceObserved\":" << observed << ",\"presentCallQpcBefore\":" << before.QuadPart
+            << ",\"presentCallQpcAfter\":" << after.QuadPart << ",\"qpcFrequency\":" << frequency.QuadPart
+            << ",\"presentProcessId\":" << GetCurrentProcessId() << ",\"presentSwapChain\":" << reinterpret_cast<std::uintptr_t>(swapchain.Get())
+            << ",\"statisticsHresult\":" << statistics << ",\"statisticsPresentCount\":" << stats.PresentCount
+            << ",\"allFramesDisplayedVerified\":false,\"cpuUpload\":false}\n";
+        return presented == S_OK && counted == S_OK && count == frame ? S_OK : E_FAIL;
     }
     HRESULT present(ID3D12CommandQueue* queue, UINT64 round, UINT64 hash) {
         if (!opened || !round || round > 2) return E_INVALIDARG;

@@ -2,7 +2,7 @@
 # Build source only. Runtime libraries remain separately installed local files.
 set -eu
 if [ "$#" -lt 3 ] || [ "$#" -gt 4 ]; then
-    echo 'Usage: build_runtime_diagnostic.sh DirectX-Headers-directory libdxg-directory output-directory [4k]' >&2
+    echo 'Usage: build_runtime_diagnostic.sh DirectX-Headers-directory libdxg-directory output-directory [4k|stream]' >&2
     exit 2
 fi
 base=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -12,8 +12,11 @@ mkdir -p "$3"
 output=$(CDPATH= cd -- "$3" && pwd)
 profile_define=
 if [ "$#" -eq 4 ]; then
-    [ "$4" = 4k ] || { echo 'Only the explicit 4k lab profile is supported' >&2; exit 2; }
-    profile_define=-DWDDM_BRIDGE_4K_LAB=1
+    case "$4" in
+        4k) profile_define=-DWDDM_BRIDGE_4K_LAB=1 ;;
+        stream) profile_define='-DWDDM_BRIDGE_4K_LAB=1 -DWDDM_BRIDGE_STREAM_LAB=1' ;;
+        *) echo 'Only the explicit 4k and stream lab profiles are supported' >&2; exit 2 ;;
+    esac
 fi
 "${CXX:-c++}" -std=c++17 -O2 -Wall -Wextra -Werror $profile_define \
     -isystem "$headers/include" -isystem "$headers/include/wsl/stubs" -isystem "$dxg/include" \

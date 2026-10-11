@@ -1,6 +1,9 @@
-param([string]$OutputDirectory = (Join-Path $PSScriptRoot 'build'), [switch]$HighResolutionDiagnostic)
+param([string]$OutputDirectory = (Join-Path $PSScriptRoot 'build'), [switch]$HighResolutionDiagnostic, [switch]$StreamingDiagnostic)
 $ErrorActionPreference = 'Stop'
-if ($HighResolutionDiagnostic -and -not $PSBoundParameters.ContainsKey('OutputDirectory')) {
+if ($StreamingDiagnostic) { $HighResolutionDiagnostic = $true }
+if ($StreamingDiagnostic -and -not $PSBoundParameters.ContainsKey('OutputDirectory')) {
+    $OutputDirectory = Join-Path $PSScriptRoot 'build-stream'
+} elseif ($HighResolutionDiagnostic -and -not $PSBoundParameters.ContainsKey('OutputDirectory')) {
     $OutputDirectory = Join-Path $PSScriptRoot 'build-4k'
 }
 $output = [IO.Path]::GetFullPath($OutputDirectory)
@@ -17,6 +20,7 @@ foreach ($path in @($dev, $PSScriptRoot, $output)) {
 }
 $batch = Join-Path $output 'build-native-gpu.cmd'
 $profileDefine = if ($HighResolutionDiagnostic) { '/DWDDM_BRIDGE_4K_LAB=1' } else { '' }
+if ($StreamingDiagnostic) { $profileDefine += ' /DWDDM_BRIDGE_STREAM_LAB=1' }
 $captureTestDirectory = Join-Path $output ('capture-test-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory $captureTestDirectory | Out-Null
 @"

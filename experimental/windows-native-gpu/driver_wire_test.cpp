@@ -315,6 +315,71 @@ struct Fake : Driver {
     }
 };
 int main() {
+    struct StreamFake : Fake {
+        StreamProfile profile = GuestStreamProfile;
+        unsigned begins = 0;
+        std::uint32_t missing = 0;
+        native_gpu::Capabilities capabilities() const override {
+            auto caps = Fake::capabilities();
+            caps.flags |= NativeSharedTextureCapability | SharedTextureConsumeCapability | AsyncHwSubmitCapability | UINT32_C(0x80000000);
+            caps.flags &= ~missing; return caps;
+        }
+        StreamProfile beginStreaming() override { ++begins; return profile; }
+    };
+    {
+        StreamFake f; Session s(f);
+        require(s.requestLimit() == 10000);
+        require(header(s.dispatch(request(Op::BeginStreaming))).status == -71 && f.begins == 0);
+        s.dispatch(hello());
+        require(header(s.dispatch(request(Op::ConsumeStreamingTexture, 1, SharedTextureConsumeDesc{2,0,1}))).status == -71);
+        require(header(s.dispatch(request(Op::BeginStreaming, 1))).status == -22);
+        auto oversized = request(Op::BeginStreaming); oversized.push_back(0);
+        require(header(s.dispatch(oversized)).status == -22 && f.begins == 0);
+        for (const auto missing : {NativeSharedTextureCapability, SharedTextureConsumeCapability, AsyncHwSubmitCapability, UINT32_C(0x80000000)}) {
+            f.missing = missing;
+            require(header(s.dispatch(request(Op::BeginStreaming))).status == -95 && f.begins == 0);
+        }
+        f.missing = 0;
+        for (unsigned field = 0; field < 8; ++field) {
+            std::uint32_t values[8]{}; std::memcpy(values, &GuestStreamProfile, sizeof values); ++values[field];
+            std::memcpy(&f.profile, values, sizeof values);
+            require(!validStreamProfile(f.profile) && header(s.dispatch(request(Op::BeginStreaming))).status == -95);
+        }
+        f.profile = GuestStreamProfile;
+        const auto out = s.dispatch(request(Op::BeginStreaming)); StreamProfile profile{};
+        require(!header(out).status && !header(out).handle && out.size() == sizeof(Header) + sizeof profile);
+        std::memcpy(&profile, out.data() + sizeof(Header), sizeof profile); require(validStreamProfile(profile));
+        require(s.requestLimit() == 50000);
+        const auto before = f.begins;
+        require(header(s.dispatch(request(Op::BeginStreaming))).status == -16 && f.begins == before);
+        require(header(s.dispatch(request(Op::ConsumeSharedTexture, 1, SharedTextureConsumeDesc{2,0,1}))).status == -71);
+        require(header(s.dispatch(request(Op::ConsumeStreamingTexture, 1, SharedTextureConsumeDesc{2,0,1}))).status == -9);
+        require(streamAuditRound(1) == 1 && streamAuditRound(64) == 2);
+        for (unsigned frame = 2; frame < 64; ++frame) require(streamAuditRound(frame) == 0);
+    }
+    {
+        // Negotiation expands lifetime budget, never resets prior attempts.
+        StreamFake f; f.syncEnabled = f.contextSignalEnabled = f.hwQueuesEnabled = f.hwQueueSignalEnabled = true;
+        Session s(f); s.dispatch(hello());
+        const auto a = header(s.dispatch(request(Op::OpenAdapter))).handle;
+        const auto d = header(s.dispatch(request(Op::CreateDevice,a))).handle;
+        auto context = request(Op::CreateContext,d,ContextDesc{0,1,16,12,4,0}); context.insert(context.end(),{1,2,3,4});
+        const auto c = header(s.dispatch(context)).handle;
+        const auto fence = header(s.dispatch(request(Op::CreateSync,d,SyncDesc{5,NoGpuAccessSyncFlag,0,0,0}))).handle;
+        auto queue = request(Op::CreateHwQueue,c,HwQueueDesc{0,4,0,0}); queue.insert(queue.end(),{37,38,39,40});
+        const auto q = header(s.dispatch(queue)).handle; require(q != 0);
+        require(a && d && c && fence);
+        require(!header(s.dispatch(request(Op::SignalContextSync,c,ContextSignalDesc{fence,4,1}))).status);
+        require(!header(s.dispatch(request(Op::BeginStreaming))).status);
+        for (unsigned target = 2; target <= GuestStreamProfile.totalSignals; ++target)
+            require(!header(s.dispatch(request(Op::SignalContextSync,c,ContextSignalDesc{fence,4,target}))).status);
+        const auto before = f.calls;
+        require(header(s.dispatch(request(Op::SignalContextSync,c,ContextSignalDesc{fence,4,257}))).status == -24 && f.calls == before);
+        require(f.contextSignalCalls == GuestStreamProfile.totalSignals);
+        auto signal = request(Op::QueueHwQueueSignal,fence,HwQueueSignalDesc{0,1,257});
+        const auto bytes = reinterpret_cast<const std::uint8_t*>(&q); signal.insert(signal.end(),bytes,bytes+4);
+        require(header(s.dispatch(signal)).status == -24 && f.calls == before && f.hwQueueSignalCalls == 0);
+    }
     for (const auto cap : {0u,AsyncHwSubmitCapability}) {
         require(validHwSubmitReply({0,0,5},5,cap));
         require(validHwSubmitReply({0,0,6},5,cap));

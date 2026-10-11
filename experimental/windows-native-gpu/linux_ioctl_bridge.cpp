@@ -214,6 +214,8 @@ class Bridge {
     guest_allocation::Memory allocationMemory;
     std::set<std::uint32_t> cpuLocks;
     bool negotiated = false;
+    bool streamingNegotiated = false;
+    std::uint64_t consumedStreamFrames = 0;
     native_gpu::Capabilities caps{};
     unsigned counts[256]{}, completedQueries = 0, privateQueries = 0, contexts = 0;
     std::map<int, std::pair<dev_t, ino_t>> descriptors;
@@ -1198,7 +1200,22 @@ public:
         if (pendingNativeDevice || !sharedResources.empty() || deviceAdapters.size() != 1) throw Error(EBUSY);
         pendingNativeTexture = profile; pendingNativeDevice = deviceAdapters.begin()->first; pendingNativeThread = pthread_self();
     }
-    std::uint64_t consumeSharedTexture(std::uint64_t target) {
+    void beginStreaming() {
+        if (!gpu_diagnostic::Streaming || streamingNegotiated || !sharedResources.empty() || deviceAdapters.size() != 1) throw Error(EINVAL);
+        const auto required = NativeSharedTextureCapability | SharedTextureConsumeCapability | AsyncHwSubmitCapability | UINT32_C(0x80000000);
+        if ((caps.flags & required) != required) throw Error(ENOSYS);
+        const auto packet = transport.exchange(request(Op::BeginStreaming, 0));
+        if (packet.size() != sizeof(Header) + sizeof(StreamProfile)) { transport.fail(); throw Error(EPROTO); }
+        Header header{}; StreamProfile profile{};
+        std::memcpy(&header, packet.data(), sizeof header);
+        std::memcpy(&profile, packet.data() + sizeof header, sizeof profile);
+        if (header.type != static_cast<unsigned>(Op::BeginStreaming) || header.handle || header.status || header.padding ||
+            !validStreamProfile(profile)) { transport.fail(); throw Error(EPROTO); }
+        streamingNegotiated = true;
+        std::fprintf(stderr, "LINUX_BRIDGE guestStreamNegotiated=true frames=64 pendingCommands=16 pendingSignals=16\n");
+    }
+    std::uint64_t consumeSharedTexture(std::uint64_t target, bool streaming = false) {
+        if (streaming != streamingNegotiated || (streaming && (target != consumedStreamFrames + 1 || target > GuestStreamProfile.frames))) throw Error(EINVAL);
         if (!(caps.flags & SharedTextureConsumeCapability)) throw Error(ENOSYS);
         if (sharedResources.size() != 1 || !lastHwSignalSync) throw Error(EINVAL);
         const auto resource = *sharedResources.begin();
@@ -1208,10 +1225,14 @@ public:
             !vendorOwners.count(allocation->second) || vendorOwners.at(allocation->second) != sync->second.device) throw Error(EBADF);
         const SharedTextureConsumeDesc desc{sync->first,0,target};
         if (!validSharedTextureConsume(desc)) throw Error(EINVAL);
-        const auto result = call(request(Op::ConsumeSharedTexture,resource,desc),0,true);
+        const auto result = call(request(streaming ? Op::ConsumeStreamingTexture : Op::ConsumeSharedTexture,resource,desc),0,true);
         if (result.header.handle != resource || result.result.ntstatus > 0 ||
             (result.result.ntstatus < 0 && result.result.value)) { transport.fail(); throw Error(EPROTO); }
         checkNt(result.result.ntstatus);
+        if (streaming) {
+            if (!streamAuditRound(target) && result.result.value) { transport.fail(); throw Error(EPROTO); }
+            ++consumedStreamFrames;
+        }
         return result.result.value;
     }
     void protocolFailed() { transport.fail(); }
@@ -1256,6 +1277,22 @@ extern "C" int wddm_bridge_prepare_native_texture(std::uint32_t width, std::uint
 }
 // Lab handoff hook; it chooses only the unique owned shared resource and the
 // most recently signaled owned workload fence. No host pointer/handle is exposed.
+extern "C" int wddm_bridge_begin_streaming() {
+    if (bridgeStopped) { errno = ESHUTDOWN; return -1; }
+    auto& state = bridge(); std::lock_guard<std::mutex> lock(state.guard);
+    try { state.beginStreaming(); return 0; }
+    catch (const Error& error) { errno = error.number; }
+    catch (...) { state.protocolFailed(); errno = EIO; }
+    return -1;
+}
+extern "C" int wddm_bridge_consume_streaming_texture(std::uint64_t target, std::uint64_t* hash) {
+    if (bridgeStopped || !hash) { errno = EINVAL; return -1; }
+    auto& state = bridge(); std::lock_guard<std::mutex> lock(state.guard);
+    try { *hash = state.consumeSharedTexture(target, true); return 0; }
+    catch (const Error& error) { errno = error.number; }
+    catch (...) { state.protocolFailed(); errno = EIO; }
+    return -1;
+}
 extern "C" int wddm_bridge_consume_shared_texture(std::uint64_t target, std::uint64_t* hash) {
     if (bridgeStopped || !hash) { errno = EINVAL; return -1; }
     auto& state = bridge(); std::lock_guard<std::mutex> lock(state.guard);
