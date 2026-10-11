@@ -106,6 +106,9 @@ experimental/windows-native-gpu/build/native-gpu.exe --self-test --report native
 
 The build runs packet contract tests. GPU tests require an interactive Windows
 desktop and real NVIDIA hardware; hosted CI only builds the experiment.
+The separate [continuous native shader reference](../../docs/NATIVE-GPU-STREAM.md)
+adds bounded frame reuse, GPU timestamps and two independent 4K audit captures
+as a control for sustained guest rendering and display research.
 `--probe` reports adapter/device availability without claiming rendering.
 Failures have nonzero exit status; software fallback is refused. Reports
 explicitly record that guest acceleration and a custom virtio GPU are absent.

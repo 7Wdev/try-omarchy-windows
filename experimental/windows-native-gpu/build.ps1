@@ -44,6 +44,8 @@ cl /nologo /std:c++17 /EHsc /W4 /WX /O2 $profileDefine /DUNICODE /D_UNICODE "$PS
 if not "%errorlevel%"=="0" exit /b %errorlevel%
 cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\rgba_oracle.cpp" /Fe:rgba-oracle.exe
 if not "%errorlevel%"=="0" exit /b %errorlevel%
+cl /nologo /std:c++17 /EHsc /W4 /WX /O2 $profileDefine "$PSScriptRoot\native_stream_probe.cpp" /Fe:native-stream-probe.exe /link d3d12.lib dxgi.lib user32.lib
+if not "%errorlevel%"=="0" exit /b %errorlevel%
 cl /nologo /std:c++17 /EHsc /W4 /WX /O2 $profileDefine "$PSScriptRoot\diagnostic_profile_test.cpp" /Fe:diagnostic-profile-test.exe
 if not "%errorlevel%"=="0" exit /b %errorlevel%
 diagnostic-profile-test.exe

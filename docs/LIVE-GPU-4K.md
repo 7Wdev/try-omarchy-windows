@@ -126,6 +126,12 @@ verifier. ETW is an optional lab tool, not a production runtime dependency.
 
 ## Next engineering work
 
+The [continuous native Windows reference](NATIVE-GPU-STREAM.md) now verifies
+bounded submission/retirement, two full-image audits and GPU timing in repeated
+4K runs. Its native frame statistics also become stale. This provides a control
+experiment for the display investigation; it does not establish guest streaming
+or a native/guest performance ratio.
+
 Sustained rendering needs bounded outstanding submission/signal credits and a
 separate total-run budget. The current lifetime caps (16 submissions/signals,
 two shared consumes) are diagnostic limits. Keep native retirement and ownership
