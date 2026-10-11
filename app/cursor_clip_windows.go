@@ -45,9 +45,9 @@ type appBarData struct {
 
 // autoHideTaskbarRect reports an auto-hidden taskbar on an edge of monitor.
 // ABM_GETAUTOHIDEBAREX is the multiple-monitor-aware query, so a taskbar on
-// another display does not affect this display. The one-pixel rectangle is
-// enough for fullscreenCursorClip; the real taskbar bounds are not needed
-// because the guard only keeps the pointer away from the triggering edge.
+// another display does not affect this display. It returns the taskbar
+// window, whose rectangle shows how much of it stays on screen while hidden;
+// a one-pixel strip on that edge stands in when the rectangle is unavailable.
 func autoHideTaskbarRect(monitor screenRect) (screenRect, bool) {
 	for _, edge := range []uint32{abeLeft, abeTop, abeRight, abeBottom} {
 		data := appBarData{
@@ -58,6 +58,10 @@ func autoHideTaskbarRect(monitor screenRect) (screenRect, bool) {
 		result, _, _ := procShAppBarMessage.Call(abmGetAutoHideBarEx, uintptr(unsafe.Pointer(&data)))
 		if result == 0 {
 			continue
+		}
+		var bar screenRect
+		if ok, _, _ := procGetWindowRect.Call(result, uintptr(unsafe.Pointer(&bar))); ok != 0 && overlaps(bar, monitor) {
+			return bar, true
 		}
 		switch edge {
 		case abeTop:

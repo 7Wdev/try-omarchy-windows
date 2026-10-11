@@ -1,10 +1,17 @@
 package main
 
+// maxAutoHideSliver bounds how far the clip is pulled in. A hidden taskbar
+// leaves a strip of about two pixels on the monitor; the bound keeps a
+// taskbar that is momentarily shown from shrinking the clip by its full size.
+const maxAutoHideSliver = 4
+
 // fullscreenCursorClip returns the rectangle that keeps an SDL cursor grab
 // away from an auto-hidden taskbar without confining the pointer to the VM's
 // monitor. The clip starts from the whole virtual screen so the pointer can
 // still cross to other monitors, and only the edge where the taskbar sits is
-// pulled in by one pixel so the pointer can reach that edge and reveal it.
+// pulled in past the strip the hidden taskbar leaves on screen. A click on
+// that strip reveals the taskbar and goes to Windows, so the pointer must not
+// reach it.
 func fullscreenCursorClip(fullscreen bool, virtual, monitor, taskbar screenRect) (screenRect, bool) {
 	if !fullscreen || virtual.width() <= 0 || virtual.height() <= 0 || monitor.width() <= 0 || monitor.height() <= 0 {
 		return screenRect{}, false
@@ -35,17 +42,20 @@ func fullscreenCursorClip(fullscreen bool, virtual, monitor, taskbar screenRect)
 	if internal {
 		clip = monitor
 	}
+	inset := func(onMonitor int32) int32 {
+		return max(1, min(onMonitor, maxAutoHideSliver))
+	}
 	if top {
-		clip.Top++
+		clip.Top += inset(min(taskbar.Bottom, monitor.Bottom) - monitor.Top)
 	}
 	if bottom {
-		clip.Bottom--
+		clip.Bottom -= inset(monitor.Bottom - max(taskbar.Top, monitor.Top))
 	}
 	if left {
-		clip.Left++
+		clip.Left += inset(min(taskbar.Right, monitor.Right) - monitor.Left)
 	}
 	if right {
-		clip.Right--
+		clip.Right -= inset(monitor.Right - max(taskbar.Left, monitor.Left))
 	}
 	if clip.width() <= 0 || clip.height() <= 0 {
 		return screenRect{}, false
