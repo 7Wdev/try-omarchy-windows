@@ -422,7 +422,7 @@ func acquireFactoryArtifact(cfg *config, client *http.Client, release, digest, n
 			return ensureVerifiedPortableCopy(cached, dest, sum, "", ui)
 		}
 	}
-	return ensureVerifiedDownload(client, normalizedRelease(release)+"/"+name, dest, sum, uiTextWith("status.checking_cached_file", map[string]string{"file": name}), ui)
+	return ensureVerifiedDownload(client, normalizedRelease(release)+"/"+name, dest, sum, uiText("status.downloading_system"), ui)
 }
 
 func ensureInstalledFactory(cfg *config) error {

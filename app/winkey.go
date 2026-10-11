@@ -157,6 +157,16 @@ func hookCallback(nCode, wParam, lParam uintptr) uintptr {
 				return 1
 			}
 		}
+		if vk == vkG {
+			pid := qemuPid.Load()
+			held, _, _ := procGetAsyncKeyState.Call(vkG) // state before this change
+			control, _, _ := procGetAsyncKeyState.Call(vkLControl)
+			alt, _, _ := procGetAsyncKeyState.Call(vkLMenu)
+			if isCursorReleaseChord(wParam == wmKeydown || wParam == wmSyskeydown, held&0x8000 != 0, control&0x8000 != 0, alt&0x8000 != 0, pid != 0 && foregroundPid() == pid) {
+				// QEMU still sees the chord: it ends a windowed grab itself.
+				fullscreenCursorReleased.Store(!fullscreenCursorReleased.Load())
+			}
+		}
 	}
 	chaining := hookChaining
 	hookChaining = true
@@ -380,13 +390,15 @@ func runTitleEnforcer(dir string, fullscreen bool, fullscreenDisplay string) {
 }
 
 // runCursorReleaseGuard keeps the SDL frontend from confining the Windows
-// cursor to the VM. SDL re-applies its grab whenever the window gains focus,
-// so this must watch the full lifetime rather than run only at launch.
+// cursor to the VM in windowed mode. In fullscreen it preserves SDL's grab
+// while keeping its clip away from an auto-hidden taskbar edge. SDL re-applies
+// its grab whenever the window gains focus, so this must watch the full
+// lifetime rather than run only at launch.
 func runCursorReleaseGuard() {
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
 	for range ticker.C {
-		releaseQemuCursor()
+		updateQemuCursorClip()
 	}
 }
 
