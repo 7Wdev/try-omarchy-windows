@@ -2,6 +2,7 @@
 // Bounded diagnostic presentation; not the Omarchy display integration.
 #pragma once
 #include <dwmapi.h>
+#include "diagnostic_profile.h"
 namespace driver_shared {
 class TexturePresenter {
     Microsoft::WRL::ComPtr<IDXGISwapChain3> swapchain;
@@ -46,7 +47,7 @@ public:
             CW_USEDEFAULT, CW_USEDEFAULT, bounds.right - bounds.left, bounds.bottom - bounds.top,
             nullptr, nullptr, type.hInstance, nullptr);
         if (!window) return HRESULT_FROM_WIN32(GetLastError());
-        DXGI_SWAP_CHAIN_DESC1 desc{}; desc.Width = 130; desc.Height = 73;
+        DXGI_SWAP_CHAIN_DESC1 desc{}; desc.Width = gpu_diagnostic::Width; desc.Height = gpu_diagnostic::Height;
         desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM; desc.SampleDesc.Count = 1;
         desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT; desc.BufferCount = 2;
         desc.Scaling = DXGI_SCALING_STRETCH; desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
@@ -67,7 +68,8 @@ public:
         RECT client{};
         if (!IsWindowVisible(window) || !GetClientRect(window, &client) || client.right <= 0 || client.bottom <= 0) return E_FAIL;
         opened = true;
-        std::cerr << "{\"nativeSharedTexturePresenterOpened\":true,\"width\":130,\"height\":73,\"bufferCount\":2"
+        std::cerr << "{\"nativeSharedTexturePresenterOpened\":true,\"width\":" << gpu_diagnostic::Width
+            << ",\"height\":" << gpu_diagnostic::Height << ",\"bufferCount\":2"
             << ",\"flipModel\":true,\"clientWidth\":" << client.right << ",\"clientHeight\":" << client.bottom
             << ",\"windowVisible\":true,\"sameAdapter\":true,\"cpuUpload\":false}\n";
         return S_OK;
@@ -94,7 +96,11 @@ public:
     HRESULT present(ID3D12CommandQueue* queue, UINT64 round, UINT64 hash) {
         if (!opened || !round || round > 2) return E_INVALIDARG;
         pump();
+        LARGE_INTEGER before{}, after{}, frequency{};
+        if (!QueryPerformanceFrequency(&frequency) || !QueryPerformanceCounter(&before)) return E_FAIL;
         const auto presented = swapchain->Present(1, 0);
+        if (!QueryPerformanceCounter(&after)) ExitProcess(3); // Submitted work must not unwind.
+
         // Retire the queue even if Present reports an error or occlusion.
         auto hr = queue->Signal(retirement.Get(), round);
         const auto deadline = GetTickCount64() + 5000; UINT64 observed = 0;
@@ -117,7 +123,13 @@ public:
         const bool visible = IsWindowVisible(window) != FALSE && !IsIconic(window);
         const bool complete = hr == S_OK && stats.PresentCount == count && stats.SyncQPCTime.QuadPart > 0 && visible;
         std::cerr << "{\"nativeSharedTexturePresented\":" << (complete ? "true" : "false") << ",\"round\":" << round
-            << ",\"width\":130,\"height\":73,\"backBufferIndex\":" << index << ",\"backBufferFnv1a\":" << hash
+            << ",\"width\":" << gpu_diagnostic::Width << ",\"height\":" << gpu_diagnostic::Height << ",\"backBufferIndex\":" << index << ",\"backBufferFnv1a\":" << hash
+            << ",\"presentProcessId\":" << GetCurrentProcessId()
+            << ",\"presentSwapChain\":" << reinterpret_cast<std::uintptr_t>(swapchain.Get())
+            << ",\"presentCallQpcBefore\":" << before.QuadPart << ",\"presentCallQpcAfter\":" << after.QuadPart
+            << ",\"qpcFrequency\":" << frequency.QuadPart
+            << ",\"dxgiStatisticsComplete\":" << (complete ? "true" : "false")
+            << ",\"presentationResult\":\"" << (complete ? "dxgi-statistics-verified" : "statistics-unavailable") << "\""
             << ",\"presentHresult\":" << presented << ",\"lastPresentCount\":" << count << ",\"statisticsHresult\":" << hr
             << ",\"statisticsPresentCount\":" << stats.PresentCount << ",\"syncQpc\":" << stats.SyncQPCTime.QuadPart
             << ",\"dwmFlushHresult\":" << flushed << ",\"windowVisible\":" << (visible ? "true" : "false")
@@ -125,6 +137,9 @@ public:
             << ",\"backBufferState\":\"PRESENT\",\"cpuUpload\":false}\n";
         // Leave the verified frame visible briefly, pumping its window messages.
         if (complete) { const auto hold = GetTickCount64() + 3000; do { pump(); Sleep(10); } while (GetTickCount64() < hold); }
+        // Statistics can be stale even when ETW records the frame as displayed.
+        // Preserve strict diagnostic failure; an offline ETW verifier needs exact
+        // PID/swapchain/QPC correlation, never Present(S_OK) or a retired GPU fence alone.
         return complete ? S_OK : E_FAIL;
     }
 };

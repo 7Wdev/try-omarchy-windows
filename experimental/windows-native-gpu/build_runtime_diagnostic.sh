@@ -1,8 +1,8 @@
 #!/bin/sh
 # Build source only. Runtime libraries remain separately installed local files.
 set -eu
-if [ "$#" -ne 3 ]; then
-    echo 'Usage: build_runtime_diagnostic.sh DirectX-Headers-directory libdxg-directory output-directory' >&2
+if [ "$#" -lt 3 ] || [ "$#" -gt 4 ]; then
+    echo 'Usage: build_runtime_diagnostic.sh DirectX-Headers-directory libdxg-directory output-directory [4k]' >&2
     exit 2
 fi
 base=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -10,10 +10,15 @@ headers=$(CDPATH= cd -- "$1" && pwd)
 dxg=$(CDPATH= cd -- "$2" && pwd)
 mkdir -p "$3"
 output=$(CDPATH= cd -- "$3" && pwd)
-"${CXX:-c++}" -std=c++17 -Wall -Wextra -Werror \
+profile_define=
+if [ "$#" -eq 4 ]; then
+    [ "$4" = 4k ] || { echo 'Only the explicit 4k lab profile is supported' >&2; exit 2; }
+    profile_define=-DWDDM_BRIDGE_4K_LAB=1
+fi
+"${CXX:-c++}" -std=c++17 -O2 -Wall -Wextra -Werror $profile_define \
     -isystem "$headers/include" -isystem "$headers/include/wsl/stubs" -isystem "$dxg/include" \
     -shared -fPIC "$base/linux_ioctl_bridge.cpp" -ldl -pthread -o "$output/linux-ioctl-bridge.so"
-"${CXX:-c++}" -std=c++17 -Wall -Wextra -Werror \
+"${CXX:-c++}" -std=c++17 -O2 -Wall -Wextra -Werror $profile_define \
     -isystem "$headers/include" -isystem "$headers/include/wsl/stubs" \
     "$base/umd_context_probe.cpp" "$headers/src/dxguids.cpp" \
     -L/usr/lib/wsl/lib -Wl,-rpath,/usr/lib/wsl/lib -ld3d12 -ldxcore -ldl -o "$output/runtime-probe"

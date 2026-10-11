@@ -1,5 +1,8 @@
-param([string]$OutputDirectory = (Join-Path $PSScriptRoot 'build'))
+param([string]$OutputDirectory = (Join-Path $PSScriptRoot 'build'), [switch]$HighResolutionDiagnostic)
 $ErrorActionPreference = 'Stop'
+if ($HighResolutionDiagnostic -and -not $PSBoundParameters.ContainsKey('OutputDirectory')) {
+    $OutputDirectory = Join-Path $PSScriptRoot 'build-4k'
+}
 $output = [IO.Path]::GetFullPath($OutputDirectory)
 New-Item -ItemType Directory -Force $output | Out-Null
 $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
@@ -13,6 +16,9 @@ foreach ($path in @($dev, $PSScriptRoot, $output)) {
     if ($path -match '["%&|<>^\r\n]') { throw 'Build paths contain unsupported shell characters.' }
 }
 $batch = Join-Path $output 'build-native-gpu.cmd'
+$profileDefine = if ($HighResolutionDiagnostic) { '/DWDDM_BRIDGE_4K_LAB=1' } else { '' }
+$captureTestDirectory = Join-Path $output ('capture-test-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory $captureTestDirectory | Out-Null
 @"
 @echo off
 call "$dev" -arch=x64 -host_arch=x64 >nul
@@ -34,7 +40,18 @@ cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\qmp_protocol_test.cpp" /F
 if not "%errorlevel%"=="0" exit /b %errorlevel%
 qmp-protocol-test.exe
 if not "%errorlevel%"=="0" exit /b %errorlevel%
-cl /nologo /std:c++17 /EHsc /W4 /WX /O2 /DUNICODE /D_UNICODE "$PSScriptRoot\driver_bridge.cpp" /Fe:driver-bridge.exe /link d3d12.lib dxgi.lib gdi32.lib ws2_32.lib bcrypt.lib user32.lib dwmapi.lib
+cl /nologo /std:c++17 /EHsc /W4 /WX /O2 $profileDefine /DUNICODE /D_UNICODE "$PSScriptRoot\driver_bridge.cpp" /Fe:driver-bridge.exe /link d3d12.lib dxgi.lib gdi32.lib ws2_32.lib bcrypt.lib user32.lib dwmapi.lib
+if not "%errorlevel%"=="0" exit /b %errorlevel%
+cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\rgba_oracle.cpp" /Fe:rgba-oracle.exe
+if not "%errorlevel%"=="0" exit /b %errorlevel%
+cl /nologo /std:c++17 /EHsc /W4 /WX /O2 $profileDefine "$PSScriptRoot\diagnostic_profile_test.cpp" /Fe:diagnostic-profile-test.exe
+if not "%errorlevel%"=="0" exit /b %errorlevel%
+diagnostic-profile-test.exe
+if not "%errorlevel%"=="0" exit /b %errorlevel%
+cl /nologo /std:c++17 /EHsc /W4 /WX /O2 $profileDefine "$PSScriptRoot\binary_capture_test.cpp" /Fe:binary-capture-test.exe
+if not "%errorlevel%"=="0" exit /b %errorlevel%
+set "WDDM_BRIDGE_CAPTURE_DIRECTORY=$captureTestDirectory"
+binary-capture-test.exe
 if not "%errorlevel%"=="0" exit /b %errorlevel%
 cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\context_native_probe.cpp" /Fe:context-native-probe.exe /link dxgi.lib gdi32.lib
 if not "%errorlevel%"=="0" exit /b %errorlevel%

@@ -1,5 +1,12 @@
 # Native Windows GPU experiment
 
+The separate [4K lab profile](../../docs/LIVE-GPU-4K.md) now renders and verifies
+3840×2160 shader frames and native backbuffer copies. One presentation run passes
+both statistics receipts; subsequent stale-counter failures remain preserved.
+It adds bounded larger-resource builds, compact binary captures and exact
+presentation timing records. Display stability and sustained performance remain
+unfinished.
+
 Experimental Windows NVIDIA driver bridge for the 7Wdev fork. The genuine Linux
 NVIDIA runtime in an owned QEMU/WHPX guest now passes
 [full D3D12 device and copy queue initialization](../../docs/LIVE-D3D12-INITIALIZATION.md)

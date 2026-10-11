@@ -2,6 +2,7 @@
 // Retained same-adapter GPU consumer. CPU readback is diagnostic verification.
 #pragma once
 #include "shared_texture_presenter.h"
+#include "binary_capture.h"
 namespace driver_shared {
 class TextureConsumer {
     Microsoft::WRL::ComPtr<ID3D12Device> device;
@@ -17,8 +18,16 @@ class TextureConsumer {
     HRESULT exportPixels(ID3D12Resource* buffer, const char* prefix, std::uint64_t& hash) {
         void* mapped = nullptr; const D3D12_RANGE range{static_cast<SIZE_T>(footprint.Offset), static_cast<SIZE_T>(totalBytes)};
         const auto hr = buffer->Map(0, &range, &mapped); if (FAILED(hr)) return hr;
-        if (!mapped) { const D3D12_RANGE empty{}; buffer->Unmap(0, &empty); return E_FAIL; }
+        struct ScopedUnmap {
+            ID3D12Resource* resource;
+            ~ScopedUnmap() { const D3D12_RANGE empty{}; resource->Unmap(0, &empty); }
+        } unmap{buffer};
+        if (!mapped) return E_FAIL;
         hash = UINT64_C(14695981039346656037);
+        if (gpu_diagnostic::HighResolution) {
+            return driver_capture::write(prefix, static_cast<unsigned>(sequence), mapped,
+                                         footprint.Offset, footprint.Footprint.RowPitch, hash);
+        }
         const char hex[] = "0123456789abcdef";
         for (unsigned y = 0; y < 73; ++y) {
             const auto bytes = static_cast<const std::uint8_t*>(mapped) + footprint.Offset + y * footprint.Footprint.RowPitch;
@@ -29,7 +38,6 @@ class TextureConsumer {
             }
             std::cerr << prefix << " round=" << sequence << " y=" << y << " rgba=" << row << "\n";
         }
-        const D3D12_RANGE empty{}; buffer->Unmap(0, &empty);
         return S_OK;
     }
 public:
@@ -53,15 +61,15 @@ public:
         if (!closed) ExitProcess(3);
         if (FAILED(hr)) return hr;
         auto desc = source->GetDesc();
-        if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || desc.Width != 130 || desc.Height != 73 ||
+        if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || desc.Width != gpu_diagnostic::Width || desc.Height != gpu_diagnostic::Height ||
             desc.DepthOrArraySize != 1 || desc.MipLevels != 1 || desc.Format != DXGI_FORMAT_R8G8B8A8_UNORM ||
             desc.SampleDesc.Count != 1 || desc.SampleDesc.Quality || desc.Flags != D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET)
             return E_INVALIDARG;
         UINT rows = 0; UINT64 rowBytes = 0, required = 0;
         device->GetCopyableFootprints(&desc, 0, 1, 512, &footprint, &rows, &rowBytes, &required);
-        if (rows != 73 || rowBytes != 520 || footprint.Offset != 512 || footprint.Footprint.RowPitch < rowBytes ||
-            footprint.Footprint.RowPitch > 4096 || footprint.Footprint.RowPitch % 256 ||
-            required < 72ull * footprint.Footprint.RowPitch + rowBytes || required > 1048576 - footprint.Offset)
+        if (rows != gpu_diagnostic::Height || rowBytes != gpu_diagnostic::Width * 4 || footprint.Offset != 512 || footprint.Footprint.RowPitch < rowBytes ||
+            footprint.Footprint.RowPitch > gpu_diagnostic::MaxRowPitch || footprint.Footprint.RowPitch % 256 ||
+            required < std::uint64_t(gpu_diagnostic::Height - 1) * footprint.Footprint.RowPitch + rowBytes || required > gpu_diagnostic::MaxReadbackBytes - footprint.Offset)
             return E_INVALIDARG;
         totalBytes = footprint.Offset + required;
         D3D12_HEAP_PROPERTIES heap{}; heap.Type = D3D12_HEAP_TYPE_DEFAULT; heap.CreationNodeMask = heap.VisibleNodeMask = 1;
@@ -130,7 +138,7 @@ public:
             ExitProcess(3);
         }
         hr = exportPixels(readback.Get(), "NATIVE_SHARED_TEXTURE_PIXEL_ROW", hash); if (FAILED(hr)) return hr;
-        std::cerr << "{\"nativeSharedTextureCopied\":true,\"round\":" << target << ",\"width\":130,\"height\":73"
+        std::cerr << "{\"nativeSharedTextureCopied\":true,\"round\":" << target << ",\"width\":" << gpu_diagnostic::Width << ",\"height\":" << gpu_diagnostic::Height
                   << ",\"gpuFenceTarget\":" << target << ",\"gpuFenceObserved\":" << observed
                   << ",\"fnv1a\":" << hash << ",\"sourceReturnedToCommon\":true,\"cpuUpload\":false,\"presented\":false}\n";
         if (presenter) {

@@ -10,13 +10,15 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <vector>
 #include <thread>
 #include <dlfcn.h>
 #include "triangle_shaders.h"
+#include "diagnostic_profile.h"
 
 namespace gpu_triangle {
 using Microsoft::WRL::ComPtr;
-constexpr unsigned Width = 130, Height = 73, Rounds = 2, Tolerance = 2;
+constexpr unsigned Width = gpu_diagnostic::Width, Height = gpu_diagnostic::Height, Rounds = 2, Tolerance = 2;
 constexpr std::size_t Bytes = Width * Height * 4;
 inline std::uint64_t hash(const std::uint8_t* data, std::size_t bytes) {
     std::uint64_t result = UINT64_C(14695981039346656037);
@@ -53,9 +55,9 @@ inline int run(ID3D12Device* device, bool shared = false, bool consume = false, 
     using Prepare = int (*)(std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t);
     const auto prepareTexture = nativeMetadata ? reinterpret_cast<Prepare>(dlsym(RTLD_DEFAULT, "wddm_bridge_prepare_native_texture")) : nullptr;
     if (nativeMetadata && (!consume || !prepareTexture)) return 5;
-    if (nativeMetadata) std::printf("GPU_NATIVE_METADATA_TEST_BEGIN width=130 height=73 format=28 flags=1\n");
+    if (nativeMetadata) std::printf("GPU_NATIVE_METADATA_TEST_BEGIN width=%u height=%u format=28 flags=1\n", Width, Height);
     if (consume) std::printf("GPU_SHARED_CONSUME_TEST_BEGIN rounds=2 state=COMMON\n");
-    if (shared) std::printf("GPU_SHARED_RESOURCE_TEST_BEGIN width=130 height=73 format=R8G8B8A8_UNORM\n");
+    if (shared) std::printf("GPU_SHARED_RESOURCE_TEST_BEGIN width=%u height=%u format=R8G8B8A8_UNORM\n", Width, Height);
     std::printf("GPU_TRIANGLE_TEST_BEGIN width=%u height=%u format=R8G8B8A8_UNORM rounds=%u vertices=3 tolerance=%u\n", Width, Height, Rounds, Tolerance);
     std::printf("GPU_TRIANGLE_SHADERS vertexBytes=%zu pixelBytes=%zu vertexHash=%016llx pixelHash=%016llx\n",
         sizeof(TriangleVertexShader), sizeof(TrianglePixelShader),
@@ -110,8 +112,8 @@ inline int run(ID3D12Device* device, bool shared = false, bool consume = false, 
     device->GetCopyableFootprints(&desc, 0, 1, 512, &footprint, &rows, &rowBytes, &requiredBytes);
     if (footprint.Offset != 512 || footprint.Footprint.Format != desc.Format || footprint.Footprint.Width != Width ||
         footprint.Footprint.Height != Height || footprint.Footprint.Depth != 1 || rows != Height || rowBytes != Width * 4 ||
-        footprint.Footprint.RowPitch < rowBytes || footprint.Footprint.RowPitch > 4096 || footprint.Footprint.RowPitch % 256 ||
-        requiredBytes < (Height - 1) * footprint.Footprint.RowPitch + rowBytes || requiredBytes > 1048576 - footprint.Offset) return 5;
+        footprint.Footprint.RowPitch < rowBytes || footprint.Footprint.RowPitch > gpu_diagnostic::MaxRowPitch || footprint.Footprint.RowPitch % 256 ||
+        requiredBytes < (Height - 1) * footprint.Footprint.RowPitch + rowBytes || requiredBytes > gpu_diagnostic::MaxReadbackBytes - footprint.Offset) return 5;
     const UINT64 totalBytes = footprint.Offset + requiredBytes;
     std::printf("GPU_TRIANGLE_FOOTPRINT width=%u height=%u offset=%llu rowPitch=%u rowBytes=%llu rows=%u totalBytes=%llu\n",
         Width, Height, static_cast<unsigned long long>(footprint.Offset), footprint.Footprint.RowPitch,
@@ -138,7 +140,9 @@ inline int run(ID3D12Device* device, bool shared = false, bool consume = false, 
     const FLOAT backgrounds[2][4]{{0, 0, 1, 1}, {0, 0, 0, 1}};
     const D3D12_VIEWPORT viewport{0, 0, static_cast<FLOAT>(Width), static_cast<FLOAT>(Height), 0, 1};
     const D3D12_RECT scissor{0, 0, Width, Height};
-    std::uint8_t expected[Bytes], actual[Bytes];
+    // Larger diagnostic profiles must not place two full images on the stack.
+    std::vector<std::uint8_t> expectedStorage(Bytes), actualStorage(Bytes);
+    auto* expected = expectedStorage.data(); auto* actual = actualStorage.data();
     for (unsigned round = 1; round <= Rounds; ++round) {
         if (round > 1 && (!succeeded("AllocatorReset", allocator->Reset()) ||
                          !succeeded("CommandListReset", commands->Reset(allocator.Get(), pipeline.Get())))) return 5;
@@ -207,6 +211,11 @@ inline int run(ID3D12Device* device, bool shared = false, bool consume = false, 
             static_cast<unsigned long long>(hash(expected, Bytes)), static_cast<unsigned long long>(hash(actual, Bytes)),
             round, static_cast<unsigned long long>(observed));
         // Export actual GPU bytes, including failing results, for independent inspection.
+        if (gpu_diagnostic::HighResolution) {
+            // A 66 MB UART hex stream per frame can exceed the transport deadline.
+            // The guest still verifies every pixel and the host independently captures RGBA.
+            std::printf("GPU_TRIANGLE_COMPACT_CAPTURE round=%u bytes=%zu hostBinaryExport=true\n", round, Bytes);
+        } else {
         const char hex[] = "0123456789abcdef";
         for (unsigned y = 0; y < Height; ++y) {
             std::string row; row.reserve(Width * 8);
@@ -214,6 +223,7 @@ inline int run(ID3D12Device* device, bool shared = false, bool consume = false, 
                 const auto value = actual[y * Width * 4 + i]; row.push_back(hex[value >> 4]); row.push_back(hex[value & 15]);
             }
             std::printf("GPU_TRIANGLE_PIXEL_ROW round=%u y=%u rgba=%s\n", round, y, row.c_str());
+        }
         }
         if (verified != Width * Height) return 5;
         if (consume) {
@@ -242,7 +252,7 @@ inline int run(ID3D12Device* device, bool shared = false, bool consume = false, 
         }
     }
     std::printf("GPU_TRIANGLE_TEST_COMPLETE verified=true width=%u height=%u rounds=%u\n", Width, Height, Rounds);
-    if (shared) std::printf("GPU_SHARED_RESOURCE_TEST_COMPLETE verified=true width=130 height=73 rounds=2\n");
+    if (shared) std::printf("GPU_SHARED_RESOURCE_TEST_COMPLETE verified=true width=%u height=%u rounds=2\n", Width, Height);
     if (consume) std::printf("GPU_SHARED_CONSUME_TEST_COMPLETE verified=true rounds=2\n");
     if (nativeMetadata) std::printf("GPU_NATIVE_METADATA_TEST_COMPLETE verified=true rounds=2\n");
     return 0;

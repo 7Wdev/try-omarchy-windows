@@ -19,6 +19,11 @@ passes three repeated two-frame native GPU consumption runs, while both new
 presentation attempts fail DXGI statistics. These results advance resource
 interoperability without proving import or display stability.
 
+The separate [4K diagnostic](LIVE-GPU-4K.md) verifies full 3840×2160 shader pixels
+and native backbuffers. One two-frame presentation run passes, while subsequent
+DXGI statistics failures remain unresolved. This is not a sustained frame-rate
+measurement, a native 4K monitor scanout test or product acceptance.
+
 ## Functional acceptance
 
 | Requirement | Evidence required before completion |

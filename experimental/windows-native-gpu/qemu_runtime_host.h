@@ -232,7 +232,7 @@ public:
         std::cout << "{\"ownedQemuPid\":" << child.dwProcessId << "}\n" << std::flush;
         qmp = std::make_unique<Qmp>(qmpPort, process, name);
     }
-    ~Runtime() { stop(); }
+    ~Runtime() { stop(); report(); }
     FenceLease map(volatile std::uint64_t* fence) {
         if (stopped || !fence || generation == UINT64_MAX) throw std::runtime_error("Fence mapping owner unavailable");
         std::uint32_t slot = 0;
@@ -281,7 +281,12 @@ public:
             qmp->allocationMapping("unmap:" + std::to_string(slot) + ':' + std::to_string(chunkGeneration));
         }, [this] { failed = true; stop(0); });
     }
+    mutable bool reported = false;
     void report() const {
+        if (reported) return;
+        // Exception unwinding must preserve the owned-VM exit receipt too.
+        // A diagnostic report made while running must not hide final teardown.
+        if (stopped) reported = true;
         std::cout << "{\"ownedQemuExited\":" << (stopped ? "true" : "false") << ",\"qemuExit\":" << process.exit
                   << ",\"qemuForcedStop\":" << (process.forced ? "true" : "false")
                   << ",\"fenceControlFailed\":" << (failed ? "true" : "false")

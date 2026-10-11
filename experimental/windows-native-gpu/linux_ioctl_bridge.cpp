@@ -1193,6 +1193,7 @@ public:
     }
     void prepareNativeTexture(NativeTextureDesc profile) {
         if (!(caps.flags & NativeSharedTextureCapability) || !(caps.flags & SharedVendorResourceCapability)) throw Error(ENOSYS);
+        if (gpu_diagnostic::HighResolution && !(caps.flags & gpu_diagnostic::Capability)) throw Error(ENOSYS);
         if (!validNativeTexture(profile)) throw Error(EINVAL);
         if (pendingNativeDevice || !sharedResources.empty() || deviceAdapters.size() != 1) throw Error(EBUSY);
         pendingNativeTexture = profile; pendingNativeDevice = deviceAdapters.begin()->first; pendingNativeThread = pthread_self();

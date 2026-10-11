@@ -213,7 +213,7 @@ class KmtDriver : public Driver {
     unsigned completedVendorAllocations = 0, destroyedVendorAllocations = 0, failedVendorAllocations = 0, uninitializedSourceAllocations = 0;
     std::size_t peakVendorAllocationObjects = 0;
     std::uint64_t peakReportedGpuUsage = 0;
-    static constexpr std::uint64_t ReportedGpuUsageLimit = 64ull * 1024 * 1024;
+    static constexpr std::uint64_t ReportedGpuUsageLimit = gpu_diagnostic::ReportedGpuBytes;
     std::uint32_t allocatedBytes = 0;
     unsigned activeAdapters = 0, activeDevices = 0, cleanupFailures = 0;
     std::map<std::uint32_t, std::uint32_t> deviceAdapters;
@@ -369,7 +369,7 @@ public:
                 (allocationsEnabled ? VendorResourceCapability : 0u) |
                 (sharedResourcesEnabled ? SharedVendorResourceCapability : 0u) |
                 (consumeSharedEnabled ? SharedTextureConsumeCapability : 0u) |
-                (nativeMetadataEnabled ? NativeSharedTextureCapability : 0u) |
+                (nativeMetadataEnabled ? NativeSharedTextureCapability | gpu_diagnostic::Capability : 0u) |
                 (submitEnabled && syncEnabled ? ContextSignalCapability : 0u) |
                 (retirementEnabled ? VendorRetirementCapability : 0u) | (reservationEnabled ? GpuReservationCapability : 0u) |
                 (gpuStateEnabled ? GpuStateCapability : 0u),
@@ -1708,6 +1708,12 @@ int main(int argc, char** argv) {
             else if (option == "--gpu-state-eof-test" && !gpuStateEofTest) gpuStateEofTest = true;
             else break;
             --argc;
+        }
+        if (gpu_diagnostic::HighResolution) {
+            if (!nativeMetadata || !consumeShared || !cpu || cpuSlots != 128 ||
+                argc != 7 || std::string(argv[1]) != "--run-qemu")
+                throw std::runtime_error("4K lab build requires native metadata, consumption and 128 CPU slots in an owned QEMU runtime");
+            (void)driver_capture::directory(); // Validate capture destination before GPU work.
         }
         if (allocations && (!contexts || !queries)) throw std::runtime_error("Vendor allocations require explicit query/context opt-ins");
         if (nativeMetadata && !sharedResources) throw std::runtime_error("Native texture metadata requires explicit shared resource opt-in");

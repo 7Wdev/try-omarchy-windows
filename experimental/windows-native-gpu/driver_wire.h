@@ -2,6 +2,7 @@
 // Independent, deliberately small WDDM experiment, not the /dev/dxg or RM ABI.
 #pragma once
 #include "wire.h"
+#include "diagnostic_profile.h"
 #include "gpu_state_ranges.h"
 #include <algorithm>
 #include <map>
@@ -47,7 +48,7 @@ constexpr std::uint32_t VendorCpuCapability = 2048;
 // Only the explicitly selected 128-slot native profile advertises this budget.
 // Preserve standard allocation and 16/32/64-slot vendor CPU budgets.
 constexpr std::uint32_t ExpandedVendorCpuCapability = 4194304;
-constexpr std::uint32_t ExpandedVendorCpuBytes = 32 * 1024 * 1024;
+constexpr std::uint32_t ExpandedVendorCpuBytes = gpu_diagnostic::ExpandedCpuBytes;
 inline std::uint32_t vendorCpuByteLimit(std::uint32_t capabilities) {
     return (capabilities & ExpandedVendorCpuCapability) ? ExpandedVendorCpuBytes : MaxAllocatedBytes;
 }
@@ -99,7 +100,7 @@ inline bool validHwQueue(HwQueueDesc d) {
 struct VendorTranslationDesc { std::uint32_t device, adapter, reserved, reserved2; };
 static_assert(sizeof(VendorTranslationDesc) == 16, "fixed allocation translation layout");
 constexpr std::uint64_t VendorCpuSlotBytes = MaxAllocation;
-constexpr std::uint32_t MaxVendorCpuMappingBytes = 4 * MaxAllocation;
+constexpr std::uint32_t MaxVendorCpuMappingBytes = gpu_diagnostic::MaxMappingBytes;
 constexpr std::uint64_t VendorCpuApertureBytes = MaxVendorCpuSlots * VendorCpuSlotBytes;
 constexpr std::uint64_t CpuStoreFirstMarker = 0x4350554649525354ull, CpuStoreLastMarker = 0x4350554c41535421ull;
 struct VendorCpuDesc { std::uint32_t device, flags; };
@@ -165,7 +166,7 @@ inline bool validHwSubmit(HwSubmitDesc d) {
            d.fence && d.fence != UINT64_MAX && d.privateBytes <= 4000 && !d.primaries && !d.reserved;
 }
 // GPU-only mappings do not consume the separate 1 MiB CPU aperture slots.
-constexpr std::uint32_t MaxVendorMapPages = 4 * MaxAllocation / 4096;
+constexpr std::uint32_t MaxVendorMapPages = gpu_diagnostic::MaxMappingBytes / 4096;
 // A successful device occupies almost all of the old 16 MiB GPU map budget;
 // queue startup then needs another 4 MiB allocation. The 128-slot graphics
 // profile negotiates a separate 64 MiB GPU-map budget. Native reported usage
@@ -173,7 +174,7 @@ constexpr std::uint32_t MaxVendorMapPages = 4 * MaxAllocation / 4096;
 constexpr std::uint32_t MaxVendorGpuMappedBytes = 32 * 1024 * 1024;
 constexpr std::uint32_t MaxVendorMappedPages = MaxVendorGpuMappedBytes / 4096;
 constexpr std::uint32_t ExpandedVendorGpuCapability = 8388608;
-constexpr std::uint32_t ExpandedVendorGpuMappedBytes = 64 * 1024 * 1024;
+constexpr std::uint32_t ExpandedVendorGpuMappedBytes = gpu_diagnostic::ExpandedGpuBytes;
 inline std::uint32_t vendorGpuPageLimit(std::uint32_t capabilities) {
     return ((capabilities & ExpandedVendorGpuCapability) ? ExpandedVendorGpuMappedBytes : MaxVendorGpuMappedBytes) / 4096;
 }
@@ -249,7 +250,7 @@ static_assert(sizeof(NativeTextureDesc) == 16, "fixed public texture profile");
 inline bool validNativeTexture(NativeTextureDesc d) {
     // Initial diagnostic profile: TEX2D, RGBA8, one mip/array/sample,
     // ALLOW_RENDER_TARGET, DEFAULT/SHARED heap, UNKNOWN layout, no clear value.
-    return d.width == 130 && d.height == 73 && d.format == 28 && d.flags == 1;
+    return d.width == gpu_diagnostic::Width && d.height == gpu_diagnostic::Height && d.format == 28 && d.flags == 1;
 }
 struct NativeSharedVendorAllocationDesc {
     SharedVendorAllocationDesc shared;

@@ -51,7 +51,8 @@ inline std::vector<std::uint8_t> generate(LUID luid, driver_bridge::NativeTextur
     desc.Format = static_cast<DXGI_FORMAT>(profile.format); desc.SampleDesc.Count = 1;
     desc.Flags = static_cast<D3D12_RESOURCE_FLAGS>(profile.flags);
     const auto info = device->GetResourceAllocationInfo(0, 1, &desc);
-    if (info.SizeInBytes != 65536 || info.Alignment != 65536) throw std::runtime_error("Unexpected native template allocation requirements");
+    if ((!gpu_diagnostic::HighResolution && info.SizeInBytes != 65536) ||
+        !info.SizeInBytes || info.SizeInBytes > gpu_diagnostic::MaxMappingBytes || info.Alignment != 65536) throw std::runtime_error("Unexpected native template allocation requirements");
     hr = device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_SHARED, &desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&prototype));
     if (FAILED(hr)) throw std::runtime_error("Cannot create native metadata template");
     Lease owned;
