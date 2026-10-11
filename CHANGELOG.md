@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- First setup says the Omarchy system image is downloading instead of showing
+  "Checking cached rootfs.ext4.zst..." for the whole download.
 - In fullscreen with an auto-hiding Windows taskbar, clicks at the bottom edge
   stay in Omarchy instead of opening the taskbar. Ctrl+Alt+G still releases the
   pointer so the taskbar can be reached (#320).
