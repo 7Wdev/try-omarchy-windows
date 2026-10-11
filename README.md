@@ -4,10 +4,28 @@
 
 <h1 align="center">Try Omarchy for Windows</h1>
 
-**7Wdev development fork:** [build and upstream sync](docs/FORK.md) ·
-[Windows NVIDIA investigation](docs/WINDOWS-NVIDIA-BACKEND.md).
-The new GPU experiment is host-only; guest driver-level acceleration is not
-implemented. Download links below refer to official upstream releases.
+**7Wdev development fork:** [build and upstream sync](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/FORK.md) ·
+[Windows NVIDIA investigation](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/WINDOWS-NVIDIA-BACKEND.md).
+The NVIDIA bridge has demonstrated [4K guest shaders and GPU texture handoffs](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-4K.md)
+through QEMU/WHPX. Full acceleration of the Omarchy/Hyprland desktop through this new backend remains under development.
+
+![NVIDIA backend progress: 4 of 8 verification stages demonstrated](docs/images/gpu-backend-progress.svg)
+
+**4/8 verification stages demonstrated.** This counts the stages below; it is not an estimate of engineering work completed.
+The largest integration work remains. [See the roadmap and evidence](docs/GPU-BACKEND-PROGRESS.md).
+
+| Stage | Status | What must be demonstrated |
+| --- | --- | --- |
+| Fork and upstream updates | Demonstrated | Preserve upstream fixes and the custom QEMU work. |
+| Windows driver bridge and D3D12 initialization | Demonstrated in the lab | Genuine NVIDIA Linux runtime initializes through QEMU and owned native Windows driver objects. |
+| 4K shaders and shared GPU textures | Demonstrated in the lab | Independent pixel checks and retired GPU texture handoffs. |
+| Repeated guest rendering | Demonstrated in the bounded lab | 64-frame 4K draws, safe storage reuse, two pixel audits, and complete VM/host cleanup. Display stability and long runs remain open. |
+| Linux graphics and display integration | Pending | Kernel/DRM render-node access, buffer sharing and synchronization usable by Linux graphics applications. |
+| Full Omarchy/Hyprland desktop | Pending | Interactive desktop, correct frames, resizing, fullscreen, and display/input integration through this backend. |
+| Required graphics, compute and video APIs | Pending | OpenGL, Vulkan, CUDA, and video acceleration work in the guest with real application tests. |
+| Reliability and ≥93% native performance | Pending | Repeated long runs, recovery tests, and matched native/guest benchmarks across resolutions up to 4K. |
+
+Download links below refer to official upstream releases.
 
 <p align="center">The full Omarchy desktop, running in a window on your Windows PC.</p>
 
