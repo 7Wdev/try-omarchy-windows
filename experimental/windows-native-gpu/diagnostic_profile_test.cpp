@@ -34,5 +34,6 @@ int main() {
     require(ExpandedCpuBytes == (HighResolution ? 96u : 32u) * 1024 * 1024);
     require(ExpandedGpuBytes == (HighResolution ? 256u : 64u) * 1024 * 1024);
     require(Capability == (HighResolution ? UINT32_C(0x80000000) : 0));
+    require(GuestMemoryMiB == (HighResolution ? 1024u : 512u));
     std::cout << "PASS: bounded " << Width << 'x' << Height << " lab profile\n";
 }

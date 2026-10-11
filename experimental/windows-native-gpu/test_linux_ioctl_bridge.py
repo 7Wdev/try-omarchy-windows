@@ -101,14 +101,15 @@ try:
                  ntstatus=-1073741811 if failed else 259 if mode == 'reservation-free-status' else 0)
         elif op == 0x2070:
             mutex = mode in ('sync-mutex', 'sync-failed-destroy', 'sync-mutex-bad-map') or mode.startswith('sync-destroy-')
-            no_gpu = mode.startswith('sync-nogpu-')
+            no_gpu = mode.startswith(('sync-nogpu-', 'sync-ntshared-'))
             no_max = mode.startswith('sync-nomax-')
-            assert handle == 2 and packet[16:] == struct.pack('<IIIIQ',1 if mutex else 5,128 if no_gpu else 64 if no_max else 0,0 if mutex else 1,0,1 if mutex else 42)
+            flags = (1155 if '-lifetime-' in mode else 131) if mode.startswith('sync-ntshared-') else 128 if no_gpu else 64 if no_max else 0
+            assert handle == 2 and packet[16:] == struct.pack('<IIIIQ',1 if mutex else 5,flags,0 if mutex else 1,0,1 if mutex else 42)
             failed = mode in ('sync-nt-failure','sync-bad-failure')
             identity = 0 if failed or mode == 'sync-bad-id' else 3
             offset = 0 if failed or mutex else 1 if mode == 'sync-bad-alignment' else 524288 if mode == 'sync-bad-offset' else 8192
             gpu = 0 if failed or mutex or mode in ('sync-zero-gpu','sync-nomax-zero-gpu') else 65537 if mode == 'sync-bad-gpu-alignment' else 1 << 48 if mode == 'sync-bad-gpu-range' else 65536
-            if no_gpu: gpu = 65536 if mode == 'sync-nogpu-nonzero-gpu' else 0
+            if no_gpu: gpu = 65536 if mode.endswith('-nonzero-gpu') else 0
             if mode == 'sync-nogpu-bad-offset': offset = 524288
             if mode in ('sync-bad-failure', 'sync-mutex-bad-map'): offset = 8192
             data = struct.pack('<QQ',offset,gpu)
@@ -125,8 +126,11 @@ try:
         elif op == 0x2020:
             assert handle == 2
             desc = struct.unpack_from('<6I',packet,16)
-            assert desc == ((0,0,8,0,0,0) if mode == 'hwqueue-sync-context' else (0,1,16,12,4,0))
+            assert desc == ((0,0,8,0,0,0) if mode == 'hwqueue-sync-context' else (0,1,16,16 if mode == 'glon12-normal' else 12,4,0))
             send(op,3,data=b'' if mode == 'hwqueue-sync-context' else bytes([37 ^ 255,38,39,40]))
+        elif op == 0x2021:
+            assert mode == 'glon12-normal' and handle == 3 and len(packet) == 16
+            send(op,handle)
         elif op == 0x2060:
             assert handle == 3 and packet[16:32] == struct.pack('<4I',6 if mode.startswith('hwqueue-internal-') else 2 if mode.startswith('hwqueue-nobroadcast-') else 0,4,0,0)
             assert packet[32:] == bytes([37,38,39,40])
@@ -233,6 +237,7 @@ if mode.startswith('allocation-destroy-'): assert operations.count(0x2051) == 1,
 if mode.startswith('gpuva-'): assert operations == [0x2000], operations
 if mode.startswith('cpu-wait-'): assert operations == [0x2000], operations
 if mode.startswith('context-signal-'): assert operations == [0x2000], operations
+if mode == 'glon12-normal': assert operations == [0x2000,0x2001,0x2004,0x2020,0x2021], operations
 if mode in ('resource-disabled','resource-invalid'): assert 0x2057 not in operations, operations
 if mode in ('shared-resource-disabled','shared-resource-invalid'): assert 0x2059 not in operations, operations
 if mode in ('native-resource-disabled','native-resource-invalid','native-resource-unowned'): assert 0x205b not in operations, operations
@@ -252,7 +257,7 @@ if mode.startswith('translation-'): assert 0x2016 not in operations, operations
 if mode in ('hwqueue-disabled','hwqueue-invalid','hwqueue-sync-context','hwqueue-nobroadcast-disabled'): assert 0x2060 not in operations, operations
 if mode in ('hwqueue-no-hub','hwqueue-nobroadcast-no-hub'): assert operations[-2:] == [0x2060,0x2061], operations
 if mode in ('sync-disabled','sync-invalid'): assert 0x2070 not in operations and 0x2071 not in operations, operations
-if mode in ('sync-no-hub','sync-nogpu-no-hub'): assert operations[-2:] == [0x2070,0x2071], operations
+if mode.startswith('sync-') and mode.endswith('-no-hub'): assert operations[-2:] == [0x2070,0x2071], operations
 if mode == 'sync-mutex' or mode.startswith('sync-destroy-'): assert operations.count(0x2071) == 1, operations
 if mode == 'sync-failed-destroy': assert operations.count(0x2071) == 2, operations
 if mode.startswith('submit-'): assert 0x2062 not in operations, operations
@@ -280,7 +285,7 @@ def main():
                      'cpu-wait-invalid', 'cpu-wait-unowned',
                      'shared-resource-normal', 'shared-resource-disabled', 'shared-resource-invalid',
                      'shared-resource-nt-failure', 'shared-resource-short', 'shared-resource-runtime-changed',
-                     'context-signal-invalid', 'context-signal-disabled', 'context-signal-unowned',
+                     'glon12-normal', 'context-signal-invalid', 'context-signal-disabled', 'context-signal-unowned',
                      'hw-signal-invalid', 'hw-signal-disabled', 'hw-signal-unowned',
                      'resource-normal', 'resource-disabled', 'resource-invalid', 'resource-nt-failure', 'resource-bad-failure',
                      'resource-zero', 'resource-same-id', 'resource-reserved', 'resource-short', 'resource-no-allocation',
@@ -309,6 +314,8 @@ def main():
                      'sync-bad-gpu-range', 'sync-short', 'sync-bad-value', 'sync-bad-status', 'sync-no-hub', 'sync-mutex-bad-map',
                      'sync-nogpu-no-hub', 'sync-nogpu-nonzero-gpu', 'sync-nogpu-bad-offset',
                      'sync-nomax-no-hub', 'sync-nomax-zero-gpu',
+                     'sync-ntshared-no-hub', 'sync-ntshared-nonzero-gpu',
+                     'sync-ntshared-lifetime-no-hub', 'sync-ntshared-lifetime-nonzero-gpu',
                      'priority-normal', 'priority-disabled', 'priority-unowned', 'priority-invalid', 'priority-nt-failure',
                      'priority-bad-id', 'priority-bad-value', 'priority-long', 'priority-bad-status',
                      'sync-destroy-bad-id', 'sync-destroy-bad-value', 'sync-destroy-long', 'sync-destroy-bad-status',

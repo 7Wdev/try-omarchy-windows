@@ -2,6 +2,7 @@
 // Independent, deliberately small WDDM experiment, not the /dev/dxg or RM ABI.
 #pragma once
 #include "stream_profile.h"
+#include "opengl_profile.h"
 #include "wire.h"
 #include "diagnostic_profile.h"
 #include "gpu_state_ranges.h"
@@ -65,6 +66,14 @@ constexpr std::uint32_t SyncCapability = 16384;
 constexpr std::size_t MaxSyncObjects = 96;
 constexpr std::uint32_t NoSignalMaxValueOnTdrSyncFlag = 64;
 constexpr std::uint32_t NoGpuAccessSyncFlag = 128;
+// NT-shareable monitored fences have no global D3DKMT handle. Exporting an
+// NT handle is a separate operation; creation must preserve these flags.
+constexpr std::uint32_t NtSharedNoGpuAccessSyncFlags = 1 | 2 | NoGpuAccessSyncFlag;
+constexpr std::uint32_t UnwaitCpuWaitersOnlyOnDestroySyncFlag = 1024;
+inline bool packetSignalSyncFlags(std::uint32_t flags) {
+    return flags == NoGpuAccessSyncFlag || flags == NtSharedNoGpuAccessSyncFlags ||
+           flags == (NtSharedNoGpuAccessSyncFlags | UnwaitCpuWaitersOnlyOnDestroySyncFlag);
+}
 constexpr std::uint32_t ContextSignalCapability = 1048576;
 constexpr std::uint32_t MaxContextSignals = 16;
 struct ContextSignalDesc { std::uint32_t sync, flags; std::uint64_t fence; };
@@ -75,7 +84,7 @@ struct SyncReply { std::uint64_t offset, gpuAddress; };
 static_assert(sizeof(SyncDesc) == 24 && sizeof(SyncReply) == 16, "fixed synchronization layouts");
 inline bool validSync(SyncDesc d) {
     return !d.reserved && ((d.type == 1 && !d.flags && !d.affinity && d.initial <= 1) ||
-           (d.type == 5 && (d.flags == 0 || d.flags == NoSignalMaxValueOnTdrSyncFlag || d.flags == NoGpuAccessSyncFlag) && d.affinity <= 1));
+           (d.type == 5 && (d.flags == 0 || d.flags == NoSignalMaxValueOnTdrSyncFlag || packetSignalSyncFlags(d.flags)) && d.affinity <= 1));
 }
 constexpr std::size_t MaxHwQueues = 8;
 constexpr std::uint32_t HwQueueSignalCapability = 134217728;
@@ -124,7 +133,7 @@ static_assert(sizeof(ResidentReply) == 16, "fixed residency output");
 constexpr std::uint64_t MaxGpuAddress = 1ull << 48;
 inline bool validSyncGpuAddress(SyncDesc desc, std::uint64_t address) {
     // NoGPUAccess fences have CPU storage but no GPU virtual address.
-    return desc.flags == NoGpuAccessSyncFlag ? address == 0 : address && !(address % 8) && address < MaxGpuAddress;
+    return (desc.flags & NoGpuAccessSyncFlag) ? address == 0 : address && !(address % 8) && address < MaxGpuAddress;
 }
 constexpr std::uint32_t HwSubmitCapability = 32768;
 constexpr std::uint32_t VendorRetirementCapability = 65536;
@@ -302,6 +311,7 @@ enum class Op : std::uint32_t {
     CreateVendorResourceAllocation, DestroyVendorResource, CreateSharedVendorResourceAllocation, ConsumeSharedTexture,
     CreateNativeSharedVendorResourceAllocation,
     BeginStreaming, ConsumeStreamingTexture,
+    BeginOpenGl,
     CreateHwQueue = 0x2060, DestroyHwQueue, SubmitHwQueue, QueueHwCommand,
     CreateSync = 0x2070, DestroySync, SignalContextSync, QueueHwQueueSignal,
     ReserveGpuAddress = 0x2080, FreeGpuReservation, MapGpuState
@@ -315,10 +325,11 @@ inline bool validContext(ContextDesc d) {
     if (d.reserved || d.privateBytes > MaxContextPrivateBytes) return false;
     // Synchronization-only contexts do not require vendor initialization data.
     if (d.flags == 8) return d.node == 0 && d.engine == 0 && d.clientHint == 0 && !d.privateBytes;
-    // Initial graphics bridge scope: D3D12 virtual contexts. In particular,
-    // never forward DisableGpuTimeout, TestContext or unknown flag bits.
+    // D3D12 virtual contexts, including Mesa's documented GLON12 client hint.
+    // The client hint identifies the frontend; it grants no extra operations.
+    // Never forward DisableGpuTimeout, TestContext or unknown flag bits.
     return d.node < 64 && d.engine == 1 && (d.flags == 0 || d.flags == 16) &&
-           d.clientHint == 12 && d.privateBytes;
+           (d.clientHint == 12 || d.clientHint == 16) && d.privateBytes;
 }
 inline bool validContextPriority(std::int32_t priority) { return priority == 0 || priority == 1; }
 struct Range { std::uint32_t offset; std::uint32_t size; };
@@ -355,6 +366,7 @@ public:
     virtual ~Driver() = default;
     virtual native_gpu::Capabilities capabilities() const = 0;
     virtual StreamProfile beginStreaming() { return {}; }
+    virtual OpenGlProfile beginOpenGl() { return {}; }
     virtual Result consumeStreamingTexture(std::uint32_t, std::uint32_t, SharedTextureConsumeDesc) {
         return {static_cast<std::int32_t>(0xc00000bbu), 0, 0};
     }
@@ -476,6 +488,7 @@ class Session {
     GpuStateRanges gpuStates;
     bool negotiated = false;
     bool streamingNegotiated = false;
+    bool openglNegotiated = false;
     static std::vector<std::uint8_t> reply(Header h, std::int32_t error,
                                          std::uint32_t id = 0, const Result* result = nullptr) {
         h.handle = id; h.status = error; h.padding = 0;
@@ -533,7 +546,7 @@ public:
             if (h.handle || packet.size() != sizeof h + 4) return reply(h, -22);
             if (!objects.empty()) return reply(h, -16);
             std::uint32_t version{}; std::memcpy(&version, packet.data() + sizeof h, 4);
-            negotiated = false; streamingNegotiated = false;
+            negotiated = false; streamingNegotiated = false; openglNegotiated = false;
             if (version != Version) return reply(h, -93);
             const auto caps = driver.capabilities();
             if (caps.version != Version) return reply(h, -93);
@@ -545,7 +558,7 @@ public:
         if (op == Op::BeginStreaming) {
             if (!negotiated) return reply(h, -71);
             if (h.handle || packet.size() != sizeof h) return reply(h, -22);
-            if (streamingNegotiated ||
+            if (streamingNegotiated || openglNegotiated ||
                 std::any_of(objects.begin(), objects.end(), [](const auto& item) { return item.second.kind == Kind::VendorResource; }))
                 return reply(h, -16);
             const auto required = NativeSharedTextureCapability | SharedTextureConsumeCapability | AsyncHwSubmitCapability | UINT32_C(0x80000000);
@@ -553,6 +566,18 @@ public:
             const auto profile = driver.beginStreaming();
             if (!validStreamProfile(profile)) return reply(h, -95);
             streamingNegotiated = true;
+            auto out = reply(h, 0); out.resize(sizeof h + sizeof profile);
+            std::memcpy(out.data() + sizeof h, &profile, sizeof profile); return out;
+        }
+        if (op == Op::BeginOpenGl) {
+            if (!negotiated) return reply(h, -71);
+            if (h.handle || packet.size() != sizeof h) return reply(h, -22);
+            if (openglNegotiated || streamingNegotiated || !objects.empty()) return reply(h, -16);
+            const auto required = AsyncHwSubmitCapability | SyncCapability | GpuReservationCapability | UINT32_C(0x80000000);
+            if ((driver.capabilities().flags & required) != required) return reply(h, -95);
+            const auto profile = driver.beginOpenGl();
+            if (!validOpenGlProfile(profile)) return reply(h, -95);
+            openglNegotiated = true;
             auto out = reply(h, 0); out.resize(sizeof h + sizeof profile);
             std::memcpy(out.data() + sizeof h, &profile, sizeof profile); return out;
         }
@@ -742,16 +767,20 @@ public:
             for (const auto& item : objects) {
                 const auto& allocation = item.second;
                 if (allocation.kind != Kind::VendorAllocation || allocation.parent != device) continue;
-                if (!allocation.resident) return reply(h, -16);
                 if (!allocation.gpuPages || desc.address < allocation.gpuAddress) continue;
                 const auto offset = desc.address - allocation.gpuAddress;
                 if (offset <= allocation.gpuPages * 4096ull && desc.bytes <= allocation.gpuPages * 4096ull - offset) {
-                    if (!allocation.cpuBytes || offset > allocation.cpuBytes || desc.bytes > allocation.cpuBytes - offset) return reply(h, -16);
+                    // Unreferenced allocations may remain nonresident. This
+                    // preflight validates the uniquely owned command buffer;
+                    // opaque UMD references remain subject to native VidMm.
+                    if (!allocation.resident || !allocation.cpuBytes || offset > allocation.cpuBytes ||
+                        desc.bytes > allocation.cpuBytes - offset) return reply(h, -16);
                     ++commandOwners;
                 }
             }
             if (commandOwners != 1) return reply(h, -9);
-            if (submissionAttempts >= (streamingNegotiated ? GuestStreamProfile.totalCommands : MaxHwSubmissions)) return reply(h, -24);
+            if (submissionAttempts >= (streamingNegotiated ? GuestStreamProfile.totalCommands :
+                                      openglNegotiated ? GuestOpenGlProfile.commandLimit : MaxHwSubmissions)) return reply(h, -24);
             ++submissionAttempts;
             const std::vector<std::uint8_t> data(packet.begin() + sizeof h + sizeof desc, packet.end());
             const auto native = asynchronous ? driver.queueHwCommand(queue->second.nativeHandle, desc, data) :
@@ -811,7 +840,7 @@ public:
                 return reply(h,-22);
             const auto sync = objects.find(h.handle);
             if (sync == objects.end() || sync->second.kind != Kind::Sync || sync->second.syncType != 5 ||
-                sync->second.syncFlags != NoGpuAccessSyncFlag) return reply(h,-9);
+                !packetSignalSyncFlags(sync->second.syncFlags)) return reply(h,-9);
             if (desc.fence <= sync->second.submittedFence) return reply(h,-22);
             std::vector<std::uint32_t> ids(desc.count), nativeQueues;
             std::memcpy(ids.data(),packet.data()+sizeof h+sizeof desc,desc.count*sizeof(std::uint32_t));
@@ -839,7 +868,7 @@ public:
             const auto context = objects.find(h.handle), sync = objects.find(desc.sync);
             if (context == objects.end() || context->second.kind != Kind::Context || context->second.contextFlags != 16 ||
                 sync == objects.end() || sync->second.kind != Kind::Sync || sync->second.syncType != 5 ||
-                sync->second.syncFlags != NoGpuAccessSyncFlag || sync->second.parent != context->second.parent) return reply(h, -9);
+                !packetSignalSyncFlags(sync->second.syncFlags) || sync->second.parent != context->second.parent) return reply(h, -9);
             if (desc.fence <= sync->second.submittedFence) return reply(h, -22);
             if (streamingNegotiated ? contextSignalAttempts + hwQueueSignalAttempts >= GuestStreamProfile.totalSignals :
                                       contextSignalAttempts >= MaxContextSignals) return reply(h, -24);
@@ -1122,7 +1151,8 @@ public:
             GpuReservationDesc desc{}; std::memcpy(&desc, packet.data() + sizeof h, sizeof desc);
             if (!validGpuReservation(desc)) return reply(h, -22);
             const auto count = std::count_if(objects.begin(), objects.end(), [](const auto& item) { return item.second.kind == Kind::GpuReservation; });
-            if (objects.size() >= MaxObjects || nextId == UINT32_MAX || static_cast<std::size_t>(count) >= MaxGpuReservations ||
+            if (objects.size() >= MaxObjects || nextId == UINT32_MAX ||
+                static_cast<std::size_t>(count) >= (openglNegotiated ? GuestOpenGlProfile.reservationLimit : MaxGpuReservations) ||
                 desc.bytes > MaxGpuReservedBytes - gpuReservedBytes) return reply(h, -24);
             if (desc.base) for (const auto& item : objects)
                 if (item.second.kind == Kind::GpuReservation && gpuRangesOverlap(desc.base, desc.bytes, item.second.gpuAddress, item.second.reservedGpuBytes))

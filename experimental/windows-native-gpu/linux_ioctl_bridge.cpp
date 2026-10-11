@@ -215,6 +215,7 @@ class Bridge {
     std::set<std::uint32_t> cpuLocks;
     bool negotiated = false;
     bool streamingNegotiated = false;
+    bool openglNegotiated = false;
     std::uint64_t consumedStreamFrames = 0;
     native_gpu::Capabilities caps{};
     unsigned counts[256]{}, completedQueries = 0, privateQueries = 0, contexts = 0;
@@ -457,6 +458,8 @@ public:
             case 4: {
                 auto& a = args<D3DKMT_CREATECONTEXTVIRTUAL>(requestNumber, pointer);
                 const ContextDesc desc{a.NodeOrdinal, a.EngineAffinity, a.Flags.Value, static_cast<unsigned>(a.ClientHint), a.PrivateDriverDataSize, 0};
+                std::fprintf(stderr, "LINUX_BRIDGE contextInput node=%u engine=%u flags=%u clientHint=%u privateBytes=%u\n",
+                    desc.node, desc.engine, desc.flags, desc.clientHint, desc.privateBytes);
                 if (!validContext(desc) || (desc.privateBytes && !a.pPrivateDriverData)) throw Error(ENOSYS);
                 auto packet = request(Op::CreateContext, a.hDevice, desc);
                 if (desc.privateBytes) {
@@ -679,7 +682,8 @@ public:
                 const GpuReservationDesc desc{a.BaseAddress, a.MinimumAddress, a.MaximumAddress, a.Size};
                 if (a.Reserved0 || a.Reserved1 || a.Reserved2 || !validGpuReservation(desc)) throw Error(EINVAL);
                 if (!ownedAdapters.count(a.hAdapter)) throw Error(EBADF);
-                if (gpuReservations.size() >= MaxGpuReservations || desc.bytes > MaxGpuReservedBytes - gpuReservedBytes) throw Error(EMFILE);
+                if (gpuReservations.size() >= (openglNegotiated ? GuestOpenGlProfile.reservationLimit : MaxGpuReservations) ||
+                    desc.bytes > MaxGpuReservedBytes - gpuReservedBytes) throw Error(EMFILE);
                 if (desc.base) for (const auto& range : gpuReservations)
                     if (gpuRangesOverlap(desc.base, desc.bytes, range.second.address, range.second.bytes)) throw Error(EBUSY);
                 const auto result = call(request(Op::ReserveGpuAddress, a.hAdapter, desc), 0, true);
@@ -1201,7 +1205,7 @@ public:
         pendingNativeTexture = profile; pendingNativeDevice = deviceAdapters.begin()->first; pendingNativeThread = pthread_self();
     }
     void beginStreaming() {
-        if (!gpu_diagnostic::Streaming || streamingNegotiated || !sharedResources.empty() || deviceAdapters.size() != 1) throw Error(EINVAL);
+        if (!gpu_diagnostic::Streaming || streamingNegotiated || openglNegotiated || !sharedResources.empty() || deviceAdapters.size() != 1) throw Error(EINVAL);
         const auto required = NativeSharedTextureCapability | SharedTextureConsumeCapability | AsyncHwSubmitCapability | UINT32_C(0x80000000);
         if ((caps.flags & required) != required) throw Error(ENOSYS);
         const auto packet = transport.exchange(request(Op::BeginStreaming, 0));
@@ -1213,6 +1217,24 @@ public:
             !validStreamProfile(profile)) { transport.fail(); throw Error(EPROTO); }
         streamingNegotiated = true;
         std::fprintf(stderr, "LINUX_BRIDGE guestStreamNegotiated=true frames=64 pendingCommands=16 pendingSignals=16\n");
+    }
+    void beginOpenGl() {
+        if (!gpu_diagnostic::HighResolution || openglNegotiated || streamingNegotiated || !ownedAdapters.empty() || !deviceAdapters.empty()) throw Error(EINVAL);
+        negotiate();
+        const auto required = AsyncHwSubmitCapability | SyncCapability | GpuReservationCapability | UINT32_C(0x80000000);
+        if ((caps.flags & required) != required) throw Error(ENOSYS);
+        const auto packet = transport.exchange(request(Op::BeginOpenGl, 0));
+        Header header{}; std::memcpy(&header, packet.data(), sizeof header);
+        if (header.type != static_cast<unsigned>(Op::BeginOpenGl) || header.handle || header.padding ||
+            (header.status && (header.status > 0 || header.status < -4095 || packet.size() != sizeof header))) {
+            transport.fail(); throw Error(EPROTO);
+        }
+        if (header.status) throw Error(-header.status);
+        if (packet.size() != sizeof header + sizeof(OpenGlProfile)) { transport.fail(); throw Error(EPROTO); }
+        OpenGlProfile profile{}; std::memcpy(&profile, packet.data() + sizeof header, sizeof profile);
+        if (!validOpenGlProfile(profile)) { transport.fail(); throw Error(EPROTO); }
+        openglNegotiated = true;
+        std::fprintf(stderr, "LINUX_BRIDGE openGlProfileNegotiated=true frames=2 commandLimit=64 reservationLimit=16 reservedByteLimit=17179869184\n");
     }
     std::uint64_t consumeSharedTexture(std::uint64_t target, bool streaming = false) {
         if (streaming != streamingNegotiated || (streaming && (target != consumedStreamFrames + 1 || target > GuestStreamProfile.frames))) throw Error(EINVAL);
@@ -1281,6 +1303,14 @@ extern "C" int wddm_bridge_begin_streaming() {
     if (bridgeStopped) { errno = ESHUTDOWN; return -1; }
     auto& state = bridge(); std::lock_guard<std::mutex> lock(state.guard);
     try { state.beginStreaming(); return 0; }
+    catch (const Error& error) { errno = error.number; }
+    catch (...) { state.protocolFailed(); errno = EIO; }
+    return -1;
+}
+extern "C" int wddm_bridge_begin_opengl() {
+    if (bridgeStopped) { errno = ESHUTDOWN; return -1; }
+    auto& state = bridge(); std::lock_guard<std::mutex> lock(state.guard);
+    try { state.beginOpenGl(); return 0; }
     catch (const Error& error) { errno = error.number; }
     catch (...) { state.protocolFailed(); errno = EIO; }
     return -1;

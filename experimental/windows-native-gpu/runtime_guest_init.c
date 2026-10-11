@@ -88,6 +88,15 @@ int main(void) {
                 else if (count == 13 && !memcmp(workload, "native-stream", 13)) setenv("WDDM_BRIDGE_RUNTIME_WORKLOAD", "native-stream", 1);
                 else if (count == 6 && !memcmp(workload, "native", 6)) setenv("WDDM_BRIDGE_RUNTIME_WORKLOAD", "native", 1);
                 else if (count == 7 && !memcmp(workload, "consume", 7)) setenv("WDDM_BRIDGE_RUNTIME_WORKLOAD", "consume", 1);
+                else if (count == 6 && !memcmp(workload, "opengl", 6)) {
+                    setenv("WDDM_BRIDGE_RUNTIME_WORKLOAD", "opengl", 1);
+                    setenv("EGL_PLATFORM", "surfaceless", 1);
+                    setenv("GALLIUM_DRIVER", "d3d12", 1);
+                    setenv("MESA_D3D12_DEFAULT_ADAPTER_NAME", "NVIDIA", 1);
+                    setenv("LIBGL_DRIVERS_PATH", "/opt/wddm-mesa/lib/dri", 1);
+                    setenv("MESA_SHADER_CACHE_DISABLE", "true", 1);
+                    setenv("EGL_LOG_LEVEL", "debug", 1);
+                }
                 else if (count != 4 || memcmp(workload, "init", 4)) _exit(126);
             }
             setenv("WDDM_BRIDGE_PORT", port, 1);
@@ -106,7 +115,10 @@ int main(void) {
             if (hwqueue_wait_eof_test) setenv("WDDM_BRIDGE_HWQUEUE_EOF_TEST", "3", 1);
             setenv("WDDM_BRIDGE_LINUX_UMD_NAME", module, 1);
             setenv("LD_PRELOAD", "/linux-ioctl-bridge.so", 1);
-            setenv("LD_LIBRARY_PATH", "/usr/lib/wsl/lib:/usr/lib/x86_64-linux-gnu", 1);
+            const char* selected_workload = getenv("WDDM_BRIDGE_RUNTIME_WORKLOAD");
+            setenv("LD_LIBRARY_PATH", selected_workload && !strcmp(selected_workload, "opengl") ?
+                "/opt/wddm-mesa/lib:/usr/lib/wsl/lib:/usr/lib/x86_64-linux-gnu" :
+                "/usr/lib/wsl/lib:/usr/lib/x86_64-linux-gnu", 1);
             if (!access("/runtime-tracer", X_OK)) {
                 unsetenv("LD_PRELOAD");
                 execl("/runtime-tracer", "/runtime-tracer", "-f", "-e", "status=failed", "-e",

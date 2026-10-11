@@ -23,6 +23,49 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (fd < 0) return failed("open");
+    if (!std::strncmp(mode,"opengl-profile-",15)) {
+        using Begin = int (*)();
+        const auto begin = reinterpret_cast<Begin>(dlsym(RTLD_DEFAULT,"wddm_bridge_begin_opengl"));
+        if (!begin) return failed("OpenGL hook absent");
+        if (!std::strcmp(mode,"opengl-profile-late")) {
+            D3DKMT_OPENADAPTERFROMLUID adapter{}; adapter.AdapterLuid.LowPart = 0x57475055;
+            if (ioctl(fd,_IOWR('G',1,D3DKMT_OPENADAPTERFROMLUID),&adapter)) return failed("OpenGL late adapter");
+        }
+        if (!std::strcmp(mode,"opengl-profile-normal")) {
+            if (begin()) return failed("OpenGL profile negotiation");
+            if (begin() != -1 || errno != EINVAL) return failed("repeated OpenGL profile accepted");
+        } else {
+            const bool local = !std::strcmp(mode,"opengl-profile-disabled") || !std::strcmp(mode,"opengl-profile-late");
+            const bool missing = !std::strncmp(mode,"opengl-profile-missing-",23);
+            const bool unsupported = !std::strcmp(mode,"opengl-profile-unsupported");
+            if (begin() != -1 || errno != (local ? EINVAL : missing ? ENOSYS : unsupported ? EOPNOTSUPP : EPROTO))
+                return failed("invalid OpenGL profile accepted");
+        }
+        close(fd); return 0;
+    }
+    if (!std::strcmp(mode, "glon12-normal")) {
+        D3DKMT_OPENADAPTERFROMLUID adapter{}; adapter.AdapterLuid.LowPart = 0x57475055;
+        if (ioctl(fd,_IOWR('G',1,D3DKMT_OPENADAPTERFROMLUID),&adapter)) return failed("GLON12 adapter");
+        D3DKMT_CREATEDEVICE device{}; device.hAdapter = adapter.hAdapter; device.Flags.RequestVSync = 1;
+        if (ioctl(fd,_IOWR('G',2,D3DKMT_CREATEDEVICE),&device)) return failed("GLON12 device");
+        unsigned char data[]{37,38,39,40};
+        D3DKMT_CREATECONTEXTVIRTUAL context{}; context.hDevice = device.hDevice;
+        context.EngineAffinity = 1; context.Flags.Value = 16; context.ClientHint = D3DKMT_CLIENTHINT_GLON12;
+        context.PrivateDriverDataSize = sizeof data; context.pPrivateDriverData = data;
+        for (unsigned i = 0; i < 5; ++i) {
+            auto bad = context;
+            if (i < 3) bad.Flags.Value = 1u << i;
+            else if (i == 3) bad.ClientHint = D3DKMT_CLIENTHINT_CUDA;
+            else bad.ClientHint = D3DKMT_CLIENTHINT_VKON12;
+            if (ioctl(fd,_IOWR('G',4,D3DKMT_CREATECONTEXTVIRTUAL),&bad) != -1 || errno != ENOSYS)
+                return failed("unsupported GLON12 context reached transport");
+        }
+        if (ioctl(fd,_IOWR('G',4,D3DKMT_CREATECONTEXTVIRTUAL),&context) || context.hContext != 3 ||
+            data[0] != (37^255)) return failed("GLON12 context in/out");
+        D3DKMT_DESTROYCONTEXT release{}; release.hContext = context.hContext;
+        if (ioctl(fd,_IOWR('G',5,D3DKMT_DESTROYCONTEXT),&release)) return failed("GLON12 context release");
+        close(fd); return 0;
+    }
     if (!std::strncmp(mode,"stream-profile-",15)) {
         using Begin = int (*)();
         const auto begin = reinterpret_cast<Begin>(dlsym(RTLD_DEFAULT,"wddm_bridge_begin_streaming"));
@@ -462,6 +505,10 @@ int main(int argc, char** argv) {
         else { create.Info.MonitoredFence.InitialFenceValue = 42; create.Info.MonitoredFence.EngineAffinity = 1; }
         if (!std::strncmp(mode, "sync-nogpu-", 11)) create.Info.Flags.NoGPUAccess = 1;
         if (!std::strncmp(mode, "sync-nomax-", 11)) create.Info.Flags.NoSignalMaxValueOnTdr = 1;
+        if (!std::strncmp(mode, "sync-ntshared-", 14)) {
+            create.Info.Flags.Shared = create.Info.Flags.NtSecuritySharing = create.Info.Flags.NoGPUAccess = 1;
+            if (std::strstr(mode, "-lifetime-")) create.Info.Flags.UnwaitCpuWaitersOnlyOnDestroy = 1;
+        }
         if (!std::strcmp(mode, "sync-invalid")) {
             for (unsigned n = 0; n < 15; ++n) {
                 auto invalid = create;
@@ -504,7 +551,7 @@ int main(int argc, char** argv) {
             }
         } else {
             const auto expected = !std::strcmp(mode, "sync-disabled") ? ENOSYS : !std::strcmp(mode, "sync-nt-failure") ? EINVAL :
-                                  (!std::strcmp(mode, "sync-no-hub") || !std::strcmp(mode, "sync-nogpu-no-hub") || !std::strcmp(mode, "sync-nomax-no-hub")) ? EIO : EPROTO;
+                                  std::strstr(mode, "-no-hub") ? EIO : EPROTO;
             if (ioctl(fd, _IOWR('G', 16, D3DKMT_CREATESYNCHRONIZATIONOBJECT2), &create) != -1 || errno != expected || create.hSyncObject || create.Info.SharedHandle ||
                 (!mutex && (create.Info.MonitoredFence.FenceValueCPUVirtualAddress || create.Info.MonitoredFence.FenceValueGPUVirtualAddress)))
                 return failed("sync malformed response");

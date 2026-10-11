@@ -153,6 +153,7 @@ class Runtime {
     bool allocationsEnabled = false;
     std::uint64_t generation = 0;
     unsigned mapped = 0, mappedTotal = 0, unmappedTotal = 0;
+    unsigned fencesReleasedAfterVmExit = 0, allocationsReleasedAfterVmExit = 0, allocationSlotsReleasedAfterVmExit = 0;
     bool stopped = false, failed = false;
     std::filesystem::path logfile;
 public:
@@ -186,7 +187,7 @@ public:
         auto attributes = static_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(HeapAlloc(GetProcessHeap(), 0, size));
         bool initialized = attributes && InitializeProcThreadAttributeList(attributes, 1, 0, &size);
         bool ready = initialized && UpdateProcThreadAttribute(attributes, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, inherited, sizeof inherited, nullptr, nullptr);
-        std::vector<std::wstring> args{executable, L"-machine", L"q35,accel=whpx", L"-cpu", L"host", L"-m", L"512", L"-smp", L"1",
+        std::vector<std::wstring> args{executable, L"-machine", L"q35,accel=whpx", L"-cpu", L"host", L"-m", std::to_wstring(gpu_diagnostic::GuestMemoryMiB), L"-smp", L"1",
             L"-display", L"none", L"-monitor", L"none", L"-serial", L"stdio", L"-nodefaults", L"-no-reboot",
             L"-L", std::filesystem::absolute(paths.firmware).wstring(), L"-kernel", std::filesystem::absolute(paths.kernel).wstring(),
             L"-initrd", std::filesystem::absolute(paths.initramfs).wstring(), L"-append",
@@ -229,7 +230,7 @@ public:
         const bool resumed = assigned && ResumeThread(child.hThread) != static_cast<DWORD>(-1);
         CloseHandle(child.hThread);
         if (!resumed) throw std::runtime_error("Cannot start QEMU within its owned job");
-        std::cout << "{\"ownedQemuPid\":" << child.dwProcessId << "}\n" << std::flush;
+        std::cout << "{\"ownedQemuPid\":" << child.dwProcessId << ",\"guestMemoryMiB\":" << gpu_diagnostic::GuestMemoryMiB << "}\n" << std::flush;
         qmp = std::make_unique<Qmp>(qmpPort, process, name);
     }
     ~Runtime() { stop(); report(); }
@@ -256,6 +257,9 @@ public:
         if (stopped) return;
         process.stop(grace); // Every driver owner must outlive this step.
         qmp.reset();
+        fencesReleasedAfterVmExit += mapped;
+        allocationsReleasedAfterVmExit += allocationAperture.groups();
+        allocationSlotsReleasedAfterVmExit += allocationAperture.chunks();
         for (auto& lease : leases) lease.reset();
         allocationAperture.clearAfterVmExit();
         mapped = 0; stopped = true;
@@ -292,11 +296,14 @@ public:
                   << ",\"fenceControlFailed\":" << (failed ? "true" : "false")
                   << ",\"liveFenceMappings\":" << mapped << ",\"fenceMappingsCreated\":" << mappedTotal
                   << ",\"fenceUnmapAcknowledgements\":" << unmappedTotal
+                  << ",\"fenceMappingsReleasedAfterVmExit\":" << fencesReleasedAfterVmExit
                   << ",\"fenceApertureSlots\":" << fenceSlots
                   << ",\"liveAllocationMappings\":" << allocationAperture.groups() << ",\"liveAllocationMappedBytes\":" << allocationAperture.bytes()
                   << ",\"allocationMappingsCreated\":" << allocationAperture.maps()
+                  << ",\"allocationMappingsReleasedAfterVmExit\":" << allocationsReleasedAfterVmExit
                   << ",\"liveAllocationSlotMappings\":" << allocationAperture.chunks()
                   << ",\"allocationSlotMappingsCreated\":" << allocationAperture.chunkMaps()
+                  << ",\"allocationSlotMappingsReleasedAfterVmExit\":" << allocationSlotsReleasedAfterVmExit
                   << ",\"allocationSlotUnmapAcknowledgements\":" << allocationAperture.chunkUnmaps()
                   << ",\"allocationApertureSlots\":" << allocationSlots
                   << ",\"allocationUnmapAcknowledgements\":" << allocationAperture.unmaps() << "}\n";

@@ -248,7 +248,7 @@ struct Fake : Driver {
         if (handle) syncParents.emplace(handle, device);
         return {{badSyncReply == 1 ? 259 : 0, handle, badSyncReply == 3 ? 1ull : 0ull},
                 {desc.type == 1 && badSyncReply != 9 ? 0ull : badSyncReply == 4 ? 1ull : badSyncReply == 5 ? FenceApertureBytes : 8192ull,
-                 badSyncReply == 11 ? 65536ull : desc.type == 1 || desc.flags == NoGpuAccessSyncFlag || badSyncReply == 6 ? 0ull :
+                 badSyncReply == 11 ? 65536ull : desc.type == 1 || packetSignalSyncFlags(desc.flags) || badSyncReply == 6 ? 0ull :
                      badSyncReply == 7 ? 65537ull : badSyncReply == 8 ? MaxGpuAddress : 65536ull}};
     }
     Result signalContextSync(std::uint32_t context, std::uint32_t sync, ContextSignalDesc desc) override {
@@ -315,6 +315,53 @@ struct Fake : Driver {
     }
 };
 int main() {
+    struct OpenGlFake : Fake {
+        OpenGlProfile profile = GuestOpenGlProfile;
+        unsigned begins = 0;
+        std::uint32_t missing = 0;
+        native_gpu::Capabilities capabilities() const override {
+            auto caps = Fake::capabilities();
+            caps.flags |= AsyncHwSubmitCapability | SyncCapability | GpuReservationCapability | UINT32_C(0x80000000);
+            caps.flags &= ~missing; return caps;
+        }
+        OpenGlProfile beginOpenGl() override { ++begins; return profile; }
+    };
+    {
+        OpenGlFake f; f.reservationEnabled = true; Session s(f);
+        require(header(s.dispatch(request(Op::BeginOpenGl))).status == -71 && !f.begins);
+        s.dispatch(hello());
+        require(header(s.dispatch(request(Op::BeginOpenGl, 1))).status == -22);
+        auto longPacket = request(Op::BeginOpenGl); longPacket.push_back(0);
+        require(header(s.dispatch(longPacket)).status == -22 && !f.begins);
+        for (const auto missing : {AsyncHwSubmitCapability, SyncCapability, GpuReservationCapability, UINT32_C(0x80000000)}) {
+            f.missing = missing;
+            require(header(s.dispatch(request(Op::BeginOpenGl))).status == -95 && !f.begins);
+        }
+        f.missing = 0;
+        for (unsigned field = 0; field < 8; ++field) {
+            std::uint32_t values[8]{}; std::memcpy(values, &GuestOpenGlProfile, sizeof values); ++values[field];
+            std::memcpy(&f.profile, values, sizeof values);
+            require(!validOpenGlProfile(f.profile) && header(s.dispatch(request(Op::BeginOpenGl))).status == -95);
+        }
+        f.profile = GuestOpenGlProfile;
+        const auto out = s.dispatch(request(Op::BeginOpenGl)); OpenGlProfile received{};
+        require(!header(out).status && out.size() == sizeof(Header) + sizeof received);
+        std::memcpy(&received, out.data() + sizeof(Header), sizeof received); require(validOpenGlProfile(received));
+        const auto before = f.begins;
+        require(header(s.dispatch(request(Op::BeginOpenGl))).status == -16 && f.begins == before);
+        require(header(s.dispatch(request(Op::BeginStreaming))).status == -16);
+        const auto adapter = header(s.dispatch(request(Op::OpenAdapter))).handle;
+        for (unsigned n = 0; n < GuestOpenGlProfile.reservationLimit; ++n)
+            require(header(s.dispatch(request(Op::ReserveGpuAddress, adapter, GpuReservationDesc{0, 67108864, 1ull << 40, 65536}))).handle != 0);
+        const auto callsBefore = f.calls;
+        require(header(s.dispatch(request(Op::ReserveGpuAddress, adapter, GpuReservationDesc{0, 67108864, 1ull << 40, 65536}))).status == -24 && f.calls == callsBefore);
+        require(MaxGpuReservations == 8 && MaxGpuReservedBytes == GuestOpenGlProfile.reservedBytes && MaxHwSubmissions == 16);
+    }
+    {
+        OpenGlFake f; Session s(f); s.dispatch(hello());
+        require(header(s.dispatch(request(Op::OpenAdapter))).handle != 0);
+        require(header(s.dispatch(request(Op::BeginOpenGl))).status == -16 && !f.begins);
+    }
     struct StreamFake : Fake {
         StreamProfile profile = GuestStreamProfile;
         unsigned begins = 0;
@@ -719,6 +766,31 @@ int main() {
         // Leave the second context alive: disconnect destroys it before device.
     }
     require(contexts.destroyed == std::vector<Kind>{Kind::Context, Kind::Context, Kind::Context, Kind::Device, Kind::Adapter});
+    Fake glContexts;
+    {
+        Session s(glContexts); s.dispatch(hello());
+        const auto a = header(s.dispatch(request(Op::OpenAdapter))).handle;
+        const auto d = header(s.dispatch(request(Op::CreateDevice, a))).handle;
+        auto packet = [&](ContextDesc desc, unsigned bytes = 3) {
+            auto p = request(Op::CreateContext, d, desc);
+            p.insert(p.end(), bytes, 11); return p;
+        };
+        const auto before = glContexts.calls;
+        for (const auto bad : {ContextDesc{0,1,4,16,3,0}, ContextDesc{0,1,2,16,3,0},
+                ContextDesc{0,1,8,16,3,0}, ContextDesc{0,0,16,16,3,0}, ContextDesc{64,1,16,16,3,0},
+                ContextDesc{0,1,16,16,3,1}, ContextDesc{0,1,16,16,MaxContextPrivateBytes+1,0},
+                ContextDesc{0,1,16,1,3,0}, ContextDesc{0,1,16,5,3,0},
+                ContextDesc{0,1,16,17,3,0}, ContextDesc{0,1,16,21,3,0}})
+            require(header(s.dispatch(packet(bad))).status == -22);
+        require(header(s.dispatch(packet({0,1,16,16,3,0},2))).status == -22);
+        require(glContexts.calls == before);
+        const auto p = packet({0,1,16,16,3,0});
+        const auto output = s.dispatch(p); const auto c = header(output).handle;
+        require(c && !header(output).status && output.size() == sizeof(Header)+sizeof(Reply)+3);
+        require(output[sizeof(Header)+sizeof(Reply)] == (11^255));
+        require(header(s.dispatch(request(Op::DestroyContext,c))).status == 0);
+    }
+    require(glContexts.destroyed == std::vector<Kind>{Kind::Context,Kind::Device,Kind::Adapter});
     Fake adapterQueries;
     {
         Session s(adapterQueries);
@@ -1583,8 +1655,20 @@ int main() {
         require(noMaxFence && view.offset == 8192 && view.gpuAddress == 65536 &&
                 synchronization.lastSyncDesc.flags == NoSignalMaxValueOnTdrSyncFlag && synchronization.lastSyncDesc.initial == 42);
         require(header(s.dispatch(request(Op::DestroySync, noMaxFence))).status == 0);
-        for (std::uint32_t flags = 0; flags < 1024; ++flags) {
-            require(validSync({5, flags, 0, 0, 0}) == (flags == 0 || flags == NoSignalMaxValueOnTdrSyncFlag || flags == NoGpuAccessSyncFlag));
+        for (const auto flags : {NtSharedNoGpuAccessSyncFlags,
+                                 NtSharedNoGpuAccessSyncFlags | UnwaitCpuWaitersOnlyOnDestroySyncFlag}) {
+            const auto sharedRequest = request(Op::CreateSync, device, SyncDesc{5, flags, 1, 0, 42});
+            synchronization.badSyncReply = 11;
+            require(header(s.dispatch(sharedRequest)).status == -5 && synchronization.syncParents.size() == 1);
+            synchronization.badSyncReply = 0;
+            out = s.dispatch(sharedRequest); const auto sharedFence = header(out).handle;
+            std::memcpy(&view, out.data() + sizeof(Header) + sizeof body, sizeof view);
+            require(sharedFence && view.offset == 8192 && !view.gpuAddress &&
+                    synchronization.lastSyncDesc.flags == flags && synchronization.lastSyncDesc.initial == 42);
+            require(header(s.dispatch(request(Op::DestroySync, sharedFence))).status == 0);
+        }
+        for (std::uint32_t flags = 0; flags < 4096; ++flags) {
+            require(validSync({5, flags, 0, 0, 0}) == (flags == 0 || flags == 64 || flags == 128 || flags == 131 || flags == 1155));
             require(validSync({1, flags, 0, 0, 0}) == (flags == 0));
         }
         for (std::size_t n = 1; n < MaxSyncObjects; ++n)
@@ -1639,9 +1723,11 @@ int main() {
             }
             require(header(s.dispatch(submitPacket(submitQueue, invalid))).status == -22);
         }
-        require(header(s.dispatch(submitPacket(submitQueue, validSubmit))).status == -16 && submission.calls == submitBefore);
+        require(header(s.dispatch(submitPacket(submitQueue, validSubmit))).status == -9 && submission.calls == submitBefore);
         const GpuVaDesc submitMapping{submitPaging, 0, 65536, 0, 0, 0, 16, 1, 0};
         require(header(s.dispatch(request(Op::MapVendorAllocation, submitAllocation, submitMapping))).status == 0);
+        submitBefore = submission.calls;
+        require(header(s.dispatch(submitPacket(submitQueue, validSubmit))).status == -16 && submission.calls == submitBefore);
         auto submitResidency = request(Op::MakeVendorResident, submitPaging, ResidentDesc{1, 1, 0, 0});
         const auto submitIdBytes = reinterpret_cast<const std::uint8_t*>(&submitAllocation);
         submitResidency.insert(submitResidency.end(), submitIdBytes, submitIdBytes + 4);
@@ -1649,6 +1735,11 @@ int main() {
         submitBefore = submission.calls;
         require(header(s.dispatch(submitPacket(submitQueue, validSubmit))).status == -16 && submission.calls == submitBefore);
         require(header(s.dispatch(request(Op::LockVendorAllocation, submitAllocation, VendorCpuDesc{submitDevice, 0}))).status == 0);
+        // Mesa may allocate buffers it has not yet made resident. They must
+        // not prevent submission of a different, resident command buffer.
+        auto unusedAllocation = request(Op::CreateVendorAllocation, submitDevice, VendorAllocationDesc{0, 0, 0, 1, 0, 0});
+        unusedAllocation.push_back(37);
+        require(header(s.dispatch(unusedAllocation)).handle != 0);
         auto submitOutside = validSubmit; submitOutside.address = 131072;
         submitBefore = submission.calls;
         require(header(s.dispatch(submitPacket(submitQueue, submitOutside))).status == -9 && submission.calls == submitBefore);
@@ -1785,6 +1876,12 @@ int main() {
             require(header(signalSession.dispatch(request(Op::SignalContextSync,contextId,ContextSignalDesc{bad,4,1}))).status == -9);
         require(header(signalSession.dispatch(request(Op::SignalContextSync,deviceId,ContextSignalDesc{fenceId,4,1}))).status == -9);
         require(contextSignals.calls == before);
+        for (const auto flags : {NtSharedNoGpuAccessSyncFlags,
+                                 NtSharedNoGpuAccessSyncFlags | UnwaitCpuWaitersOnlyOnDestroySyncFlag}) {
+            const auto shared = header(signalSession.dispatch(request(Op::CreateSync,deviceId,SyncDesc{5,flags,0,0,0}))).handle;
+            require(shared && !header(signalSession.dispatch(request(Op::SignalContextSync,contextId,ContextSignalDesc{shared,4,1}))).status);
+            require(!header(signalSession.dispatch(request(Op::DestroySync,shared))).status);
+        }
         require(!header(signalSession.dispatch(request(Op::SignalContextSync,contextId,ContextSignalDesc{fenceId,4,1}))).status);
         require(header(signalSession.dispatch(request(Op::SignalContextSync,contextId,ContextSignalDesc{fenceId,4,1}))).status == -22);
         for (const auto mode : {1,2,3,4}) {

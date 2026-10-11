@@ -24,7 +24,8 @@ def main():
     parser.add_argument('--strace', type=pathlib.Path, help='Optional locally supplied syscall tracer; failed calls only')
     parser.add_argument('--dependency-directory', type=pathlib.Path, action='append', default=[], help='Optional local ELF dependencies; mapped to the guest library directory')
     parser.add_argument('--extra-runtime', type=pathlib.Path, action='append', default=[], help='Installed library loaded dynamically; preserves its absolute guest path')
-    parser.add_argument('--runtime-workload', choices=('init', 'copy', 'clear', 'triangle', 'shared', 'consume', 'native', 'native-stream'), default='init', help='Explicit guest D3D12 workload; consume hands completed shared textures to a native GPU consumer')
+    parser.add_argument('--mesa-runtime-directory', type=pathlib.Path, help='Private non-GLVND Mesa install for the explicit OpenGL probe; relocated to /opt/wddm-mesa')
+    parser.add_argument('--runtime-workload', choices=('init', 'copy', 'clear', 'triangle', 'shared', 'consume', 'native', 'native-stream', 'opengl'), default='init', help='Explicit guest workload; OpenGL is a separate Mesa frontend probe')
     args = parser.parse_args()
     if sys.platform != 'linux':
         parser.error('Run in Linux/WSL with locally installed runtime libraries')
@@ -35,6 +36,26 @@ def main():
         parser.error('Invalid Linux UMD module basename')
     files = {'init': args.init, 'guest-probe': args.probe, 'linux-ioctl-bridge.so': args.shim}
     roots = [args.probe, args.shim, args.linux_umd, args.d3d12, args.d3d12core, args.dxcore]
+    relocated = {}
+    if (args.runtime_workload == 'opengl') != bool(args.mesa_runtime_directory):
+        parser.error('The OpenGL workload requires --mesa-runtime-directory, exclusive to that workload')
+    if args.mesa_runtime_directory:
+        mesa = args.mesa_runtime_directory.resolve(strict=True)
+        if not (mesa / 'lib/libEGL.so.1').is_file():
+            parser.error('The private Mesa install must contain lib/libEGL.so.1')
+        # Resolve local symlinks to bytes inside the private image, preserving
+        # loader names. Never copy a host directory wholesale into the guest.
+        mesa_files = sorted((mesa / 'lib').glob('*.so*')) + sorted((mesa / 'lib/dri').glob('*.so'))
+        if not 1 <= len(mesa_files) <= 32:
+            parser.error('Private Mesa library count is outside the diagnostic bound')
+        for path in mesa_files:
+            resolved = path.resolve(strict=True)
+            if not resolved.is_relative_to(mesa) or not resolved.is_file():
+                parser.error('Private Mesa libraries must resolve inside their install directory')
+            name = 'opt/wddm-mesa/' + path.relative_to(mesa).as_posix()
+            files[name] = path
+            relocated[resolved] = name
+        roots.extend(dict.fromkeys(p.resolve() for p in mesa_files))
     roots.extend(args.extra_runtime)
     if args.strace:
         files['runtime-tracer'] = args.strace
@@ -51,6 +72,8 @@ def main():
         files[path.as_posix().lstrip('/')] = path
     environment = dict(os.environ)
     dependency_directories = [p.resolve(strict=True) for p in args.dependency_directory]
+    if args.mesa_runtime_directory:
+        dependency_directories.append(mesa / 'lib')
     if any(not p.is_dir() for p in dependency_directories):
         parser.error('Dependency directories must exist')
     if dependency_directories:
@@ -63,8 +86,8 @@ def main():
             match = re.search(r'(?:=>\s+)?(/[^\s]+)\s+\(0x[0-9a-f]+\)', line)
             if match:
                 dependency = pathlib.Path(match[1])
-                name = dependency.as_posix().lstrip('/')
-                if any(dependency.resolve().is_relative_to(p) for p in dependency_directories):
+                name = relocated.get(dependency.resolve(), dependency.as_posix().lstrip('/'))
+                if dependency.resolve() not in relocated and any(dependency.resolve().is_relative_to(p) for p in dependency_directories):
                     name = 'usr/lib/x86_64-linux-gnu/' + dependency.name
                 if name in files and files[name].resolve() != dependency.resolve():
                     parser.error(f'Conflicting guest dependency: {name}')
@@ -92,7 +115,8 @@ def main():
         entry(directory, stat.S_IFDIR | (0o1777 if directory == 'tmp' else 0o755))
     entry('dev/console', stat.S_IFCHR | 0o600, major=5, minor=1)
     manifest = {'schema': 1, 'privateImage': True, 'vendorBinariesIncluded': True,
-                'redistributionApproved': False, 'runtimeWorkload': args.runtime_workload, 'files': []}
+                'redistributionApproved': False, 'runtimeWorkload': args.runtime_workload,
+                'mesaFrontendIncluded': bool(args.mesa_runtime_directory), 'files': []}
     for name, path in sorted(files.items()):
         data = path.read_bytes()
         entry(name, stat.S_IFREG | 0o755, data)

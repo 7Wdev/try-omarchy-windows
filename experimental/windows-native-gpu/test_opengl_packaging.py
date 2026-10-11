@@ -1,0 +1,71 @@
+"""Private Mesa packaging bounds using inert ELF fixtures, never vendor code."""
+import contextlib
+import io
+import json
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import unittest
+from unittest.mock import patch
+import make_runtime_initramfs
+
+
+@unittest.skipUnless(sys.platform == 'linux', 'The private initramfs packer runs on Linux')
+class OpenGlPackaging(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix='opengl-packaging-')
+        self.addCleanup(self.temporary.cleanup)
+        self.base = Path(self.temporary.name)
+        self.elf = bytearray(64); self.elf[:6] = b'\x7fELF\x02\x01'; self.elf[18:20] = b'\x3e\x00'
+        self.input = self.base/'inert-fixture.so'; self.input.write_bytes(self.elf)
+        self.output = self.base/'private.cpio.gz'
+        self.mesa = self.base/'mesa'; (self.mesa/'lib').mkdir(parents=True)
+        (self.mesa/'lib/libEGL.so.1').write_bytes(self.elf)
+
+    def run_packer(self, *extra):
+        argv = ['make_runtime_initramfs.py']
+        for key in ('init','probe','shim','linux-umd','d3d12','d3d12core','dxcore'):
+            argv += ['--'+key,str(self.input)]
+        argv += ['--output',str(self.output)] + list(extra)
+        with patch.object(sys,'argv',argv), patch.object(subprocess,'run',return_value=subprocess.CompletedProcess([],0,stdout='')):
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                make_runtime_initramfs.main()
+
+    def test_requires_explicit_paired_workload_and_mesa(self):
+        for extra in (('--runtime-workload','opengl'), ('--mesa-runtime-directory',str(self.mesa))):
+            with self.subTest(extra=extra), self.assertRaises(SystemExit): self.run_packer(*extra)
+        self.assertFalse(self.output.exists())
+
+    def test_bounded_relocation_manifest(self):
+        self.run_packer('--runtime-workload','opengl','--mesa-runtime-directory',str(self.mesa))
+        manifest = json.loads(self.output.with_suffix('.manifest.json').read_text())
+        self.assertTrue(manifest['mesaFrontendIncluded'])
+        self.assertFalse(manifest['redistributionApproved'])
+        self.assertEqual([f['path'] for f in manifest['files'] if f['path'].startswith('/opt/')], ['/opt/wddm-mesa/lib/libEGL.so.1'])
+
+    def test_external_library_symlink_rejected(self):
+        (self.mesa/'lib/libOutside.so').symlink_to(self.input)
+        with self.assertRaises(SystemExit): self.run_packer('--runtime-workload','opengl','--mesa-runtime-directory',str(self.mesa))
+        self.assertFalse(self.output.exists())
+
+    def test_library_count_bound_rejected(self):
+        for i in range(32): (self.mesa/f'lib/libFixture{i}.so').write_bytes(self.elf)
+        with self.assertRaises(SystemExit): self.run_packer('--runtime-workload','opengl','--mesa-runtime-directory',str(self.mesa))
+        self.assertFalse(self.output.exists())
+
+    def test_missing_egl_or_wrong_elf_rejected(self):
+        (self.mesa/'lib/libEGL.so.1').write_bytes(b'not an ELF')
+        with self.assertRaises(SystemExit): self.run_packer('--runtime-workload','opengl','--mesa-runtime-directory',str(self.mesa))
+        (self.mesa/'lib/libEGL.so.1').unlink()
+        with self.assertRaises(SystemExit): self.run_packer('--runtime-workload','opengl','--mesa-runtime-directory',str(self.mesa))
+
+    def test_existing_manifest_is_never_overwritten(self):
+        manifest = self.output.with_suffix('.manifest.json'); manifest.write_text('retained')
+        with self.assertRaises(SystemExit): self.run_packer('--runtime-workload','opengl','--mesa-runtime-directory',str(self.mesa))
+        self.assertEqual(manifest.read_text(),'retained')
+        self.assertFalse(self.output.exists())
+
+
+if __name__ == '__main__':
+    unittest.main()

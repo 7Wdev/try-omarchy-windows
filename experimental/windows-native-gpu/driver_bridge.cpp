@@ -47,6 +47,7 @@ class KmtDriver : public Driver {
     std::map<std::uint32_t, HwQueue> hwQueues;
     bool submitEnabled = false;
     bool asyncSubmitEnabled = false;
+    bool openglEnabled = false;
     struct PendingSubmission { unsigned index; std::uint32_t queue, bytes, privateBytes; std::uint64_t target; };
     std::vector<PendingSubmission> pendingSubmissions;
     unsigned acceptedAsyncSubmissions = 0, peakPendingSubmissions = 0;
@@ -517,11 +518,19 @@ public:
     }
     StreamProfile beginStreaming() override {
         if (!collectRetiredSubmissions()) return {};
-        if (!gpu_diagnostic::Streaming || streamingEnabled || !nativeMetadataEnabled || !consumeSharedEnabled || !asyncSubmitEnabled ||
+        if (!gpu_diagnostic::Streaming || streamingEnabled || openglEnabled || !nativeMetadataEnabled || !consumeSharedEnabled || !asyncSubmitEnabled ||
             !runtime || runtime->hasStopped() || !pendingSubmissions.empty() || !pendingHwSignals.empty() || !sharedResourceIds.empty()) return {};
         streamingEnabled = true;
         std::cerr << "{\"guestStreamNegotiated\":true,\"version\":1,\"frames\":64,\"pendingCommands\":16,\"pendingSignals\":16,\"totalCommands\":1024,\"totalSignals\":256,\"requestLimit\":50000}\n";
         return GuestStreamProfile;
+    }
+    OpenGlProfile beginOpenGl() override {
+        if (!gpu_diagnostic::HighResolution || openglEnabled || streamingEnabled || !asyncSubmitEnabled || !syncEnabled || !reservationEnabled ||
+            !runtime || runtime->hasStopped() || !ownedAdapters.empty() || !deviceAdapters.empty() ||
+            !pendingSubmissions.empty() || !pendingHwSignals.empty()) return {};
+        openglEnabled = true;
+        std::cerr << "{\"openGlProfileNegotiated\":true,\"version\":1,\"frames\":2,\"commandLimit\":64,\"pendingCommands\":16,\"reservationLimit\":16,\"reservedByteLimit\":17179869184,\"requestLimit\":10000}\n";
+        return GuestOpenGlProfile;
     }
     Result submitNativeHwCommand(std::uint32_t handle, HwSubmitDesc desc, const std::vector<std::uint8_t>& data, bool asynchronous) {
         if (!collectRetiredSubmissions()) throw std::runtime_error("Native asynchronous retirement failed");
@@ -532,16 +541,16 @@ public:
         };
         if (!submitEnabled || !runtime || runtime->hasStopped() || !validHwSubmit(desc) || data.size() != desc.privateBytes ||
             queue == hwQueues.end() || !queue->second.lease || desc.fence <= queue->second.submittedFence ||
-            submissionAttempts >= (streamingEnabled ? GuestStreamProfile.totalCommands : MaxHwSubmissions) ||
+            submissionAttempts >= (streamingEnabled ? GuestStreamProfile.totalCommands : openglEnabled ? GuestOpenGlProfile.commandLimit : MaxHwSubmissions) ||
             pendingSubmissions.size() >= MaxHwSubmissions) return reject(1);
         unsigned owners = 0;
         for (const auto& item : vendorAllocations) {
             const auto& allocation = item.second;
             if (allocation.device != queue->second.device) continue;
-            if (!allocation.resident) return reject(2);
             if (!allocation.pages || desc.address < allocation.address) continue;
             const auto offset = desc.address - allocation.address;
             if (offset <= allocation.pages * 4096 && desc.bytes <= allocation.pages * 4096 - offset) {
+                if (!allocation.resident) return reject(2);
                 if (!allocation.locked || !allocation.cpuLease || offset > allocation.cpuBytes || desc.bytes > allocation.cpuBytes - offset)
                     return reject(3);
                 ++owners;
@@ -597,7 +606,7 @@ public:
         const auto object = syncObjects.find(sync);
         if (!asyncSubmitEnabled || !syncEnabled || !runtime || runtime->hasStopped() || !validHwQueueSignal(desc) ||
             queues.size() != desc.count || object == syncObjects.end() || object->second.type != 5 ||
-            object->second.flags != NoGpuAccessSyncFlag || !object->second.lease || !object->second.fence ||
+            !packetSignalSyncFlags(object->second.flags) || !object->second.lease || !object->second.fence ||
             desc.fence <= object->second.lastSignal || (streamingEnabled ? hwQueueSignalAttempts + contextSignalAttempts >= GuestStreamProfile.totalSignals :
                                                                         hwQueueSignalAttempts >= MaxHwQueueSignals) ||
             pendingHwSignals.size() >= MaxHwQueueSignals) return {Invalid,0,0};
@@ -631,7 +640,7 @@ public:
     }
     Result reserveGpuAddress(std::uint32_t adapter, GpuReservationDesc desc) override {
         if (!reservationEnabled || !runtime || !ownedAdapters.count(adapter) || !validGpuReservation(desc) ||
-            gpuReservations.size() >= MaxGpuReservations || nextGpuReservation == UINT32_MAX ||
+            gpuReservations.size() >= (openglEnabled ? GuestOpenGlProfile.reservationLimit : MaxGpuReservations) || nextGpuReservation == UINT32_MAX ||
             desc.bytes > MaxGpuReservedBytes - gpuReservedBytes) return {Invalid, 0, 0};
         D3DDDI_RESERVEGPUVIRTUALADDRESS a{}; a.hAdapter = adapter;
         a.BaseAddress = desc.base; a.MinimumAddress = desc.minimum; a.MaximumAddress = desc.maximum; a.Size = desc.bytes;
@@ -701,6 +710,12 @@ public:
         D3DKMT_CREATESYNCHRONIZATIONOBJECT2 a{}; a.hDevice = device;
         D3DDDI_SYNCHRONIZATIONOBJECT_FLAGS noMaxFlag{}; noMaxFlag.NoSignalMaxValueOnTdr = 1;
         if (noMaxFlag.Value != NoSignalMaxValueOnTdrSyncFlag) throw std::runtime_error("Native synchronization flag layout changed");
+        D3DDDI_SYNCHRONIZATIONOBJECT_FLAGS sharedFlags{};
+        sharedFlags.Shared = sharedFlags.NtSecuritySharing = sharedFlags.NoGPUAccess = 1;
+        if (sharedFlags.Value != NtSharedNoGpuAccessSyncFlags) throw std::runtime_error("Native NT sharing flag layout changed");
+        sharedFlags.UnwaitCpuWaitersOnlyOnDestroy = 1;
+        if (sharedFlags.Value != (NtSharedNoGpuAccessSyncFlags | UnwaitCpuWaitersOnlyOnDestroySyncFlag))
+            throw std::runtime_error("Native shared fence lifetime flag layout changed");
         a.Info.Type = static_cast<D3DDDI_SYNCHRONIZATIONOBJECT_TYPE>(desc.type);
         a.Info.Flags.Value = desc.flags;
         if (desc.type == 1) a.Info.SynchronizationMutex.InitialState = static_cast<BOOL>(desc.initial);
@@ -729,9 +744,11 @@ public:
                 throw std::runtime_error("Unexpected native synchronization output");
             if (desc.type == 5) retained.lease = runtime->map(retained.fence);
             ++completedSyncs;
-            if (desc.flags == NoGpuAccessSyncFlag) ++noGpuAccessSyncs;
+            if (desc.flags & NoGpuAccessSyncFlag) ++noGpuAccessSyncs;
             if (desc.flags == NoSignalMaxValueOnTdrSyncFlag) ++noSignalMaxValueOnTdrSyncs;
             if (desc.type == 5) ++monitoredSyncs; else ++mutexSyncs;
+            std::cerr << "{\"nativeSynchronizationCreated\":true,\"type\":" << desc.type
+                      << ",\"flags\":" << desc.flags << ",\"globalSharedHandle\":false}\n";
             return {{status, a.hSyncObject, 0}, {retained.lease ? retained.lease->offset : 0, retained.gpuAddress}};
         } catch (...) {
             ++failedSyncs; runtime->stop(0); destroy(Kind::Sync, a.hSyncObject); throw;
@@ -741,7 +758,7 @@ public:
         const auto owner = contextOwners.find(context); const auto object = syncObjects.find(sync);
         if (!submitEnabled || !syncEnabled || !runtime || runtime->hasStopped() || !validContextSignal(desc) ||
             owner == contextOwners.end() || owner->second.flags != 16 || object == syncObjects.end() ||
-            object->second.device != owner->second.device || object->second.type != 5 || object->second.flags != NoGpuAccessSyncFlag ||
+            object->second.device != owner->second.device || object->second.type != 5 || !packetSignalSyncFlags(object->second.flags) ||
             !object->second.lease || !object->second.fence || desc.fence <= object->second.lastSignal ||
             (streamingEnabled ? contextSignalAttempts + hwQueueSignalAttempts >= GuestStreamProfile.totalSignals :
                                 contextSignalAttempts >= MaxContextSignals))

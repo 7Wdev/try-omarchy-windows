@@ -21,6 +21,9 @@ constexpr bool HighResolution = false;
 #endif
 constexpr unsigned Width = HighResolution ? 3840 : 130;
 constexpr unsigned Height = HighResolution ? 2160 : 73;
+// The private high-resolution image can also contain the Mesa GL frontend.
+// Leave room for its initramfs and shader compiler without tmpfs exhaustion.
+constexpr unsigned GuestMemoryMiB = HighResolution ? 1024 : 512;
 constexpr unsigned MaxRowPitch = HighResolution ? 15360 : 4096;
 constexpr std::uint64_t MaxReadbackBytes = HighResolution ? 32ull * 1024 * 1024 : 1048576;
 constexpr std::uint32_t ExpandedCpuBytes = (HighResolution ? 96u : 32u) * 1024 * 1024;
