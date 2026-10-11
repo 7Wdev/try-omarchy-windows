@@ -298,6 +298,7 @@
   "status.preparing_disk": "Preparing your Omarchy disk...",
   "status.preparing_image_update": "Preparing an Omarchy image update...",
   "status.downloading_omarchy": "Downloading Omarchy ({part} of {total})...",
+  "status.downloading_system": "Downloading the Omarchy system image...",
   "status.checking_cached_system": "Checking the cached Omarchy system...",
   "status.checking_portable_system": "Checking the portable Omarchy system...",
   "status.unpacking_system": "Unpacking the Omarchy system...",

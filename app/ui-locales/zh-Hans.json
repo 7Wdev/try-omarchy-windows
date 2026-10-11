@@ -296,6 +296,7 @@
   "status.preparing_disk": "正在准备 Omarchy 磁盘...",
   "status.preparing_image_update": "正在准备 Omarchy 镜像更新...",
   "status.downloading_omarchy": "正在下载 Omarchy（{part}/{total}）...",
+  "status.downloading_system": "正在下载 Omarchy 系统镜像...",
   "status.checking_cached_system": "正在检查缓存的 Omarchy 系统...",
   "status.checking_portable_system": "正在检查便携版 Omarchy 系统...",
   "status.unpacking_system": "正在解压 Omarchy 系统...",
