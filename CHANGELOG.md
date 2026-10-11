@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- First setup says the Omarchy system image is downloading instead of showing
+  "Checking cached rootfs.ext4.zst..." for the whole download.
+- In fullscreen with an auto-hiding Windows taskbar, clicks at the bottom edge
+  stay in Omarchy instead of opening the taskbar. Ctrl+Alt+G still releases the
+  pointer so the taskbar can be reached (#320).
+- Diagnostics remove folder paths, account, computer and display names, and
+  private network addresses from every file, so the zip can be shared as is.
+- Omarchy's network keeps working when many connections are open. Before,
+  replies stopped arriving once more than 64 were open until Omarchy restarted.
 - The cursor is drawn by Windows with Omarchy's shapes, so it moves as smoothly
   as the Windows pointer even when the desktop is busy. Existing installs get it
   after running Update > Omarchy once (#321).
