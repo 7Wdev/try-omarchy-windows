@@ -2,17 +2,56 @@
 // Private, disk-free Linux runtime diagnostic. No guest disk is attached.
 #define _DEFAULT_SOURCE
 #include <errno.h>
+#include <fcntl.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mount.h>
+#include <sys/ioctl.h>
 #include <sys/reboot.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include "guest-kernel/wddm_aperture.h"
 static void timeout_handler(int signal_number) { (void)signal_number; }
+static int kernel_aperture_start(void) {
+    if (access("/kernel-aperture-required", F_OK)) return 0;
+    const int module = open("/wddm-aperture.ko", O_RDONLY | O_CLOEXEC);
+    if (module < 0) { perror("aperture module open"); return -1; }
+    const int result = (int)syscall(SYS_finit_module, module, "", 0);
+    close(module);
+    if (result) { perror("guest aperture finit_module"); return -1; }
+    pid_t child = fork();
+    if (!child) { execl("/aperture-contract", "/aperture-contract", (char*)NULL); _exit(127); }
+    int status = 0;
+    if (child < 0 || waitpid(child, &status, 0) != child || !WIFEXITED(status) || WEXITSTATUS(status)) {
+        puts("KERNEL_APERTURE_START failed=true"); return -1;
+    }
+    puts("KERNEL_APERTURE_START loaded=true contracts=true rawSysfsFallback=false");
+    return 1;
+}
+static int kernel_aperture_stop(void) {
+    const int fd = open("/dev/wddm-aperture", O_RDWR | O_CLOEXEC);
+    struct wddm_aperture_info info = {.version=WDDM_APERTURE_VERSION};
+    const int result = fd < 0 ? -1 : ioctl(fd, WDDM_APERTURE_INFO, &info);
+    if (fd >= 0) close(fd);
+    if (result || info.active_leases || info.active_cpu_bytes || info.fence_mmio_reads ||
+        info.allocation_mmio_reads || info.allocation_mmio_writes) {
+        puts("KERNEL_APERTURE_EXIT cleanup=false"); return -1;
+    }
+    for (unsigned attempt = 0; attempt < 20; ++attempt) {
+        if (!syscall(SYS_delete_module, "wddm_aperture", O_NONBLOCK)) {
+            puts("KERNEL_APERTURE_EXIT activeLeases=0 activeCpuBytes=0 mmioReads=0 mmioWrites=0 unloaded=true");
+            return 0;
+        }
+        if (errno != EWOULDBLOCK && errno != EBUSY) break;
+        usleep(50000);
+    }
+    perror("guest aperture delete_module"); return -1;
+}
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0); setvbuf(stderr, NULL, _IONBF, 0);
     struct rlimit core = {0, 0}; setrlimit(RLIMIT_CORE, &core);
@@ -63,6 +102,7 @@ int main(void) {
     const int hwqueue_wait_eof_test = hwqueue_wait_option &&
         (hwqueue_wait_option[hwqueue_wait_bytes] == 0 || hwqueue_wait_option[hwqueue_wait_bytes] == ' ' || hwqueue_wait_option[hwqueue_wait_bytes] == '\n');
     for (int i = 0; i < 200 && access(port, F_OK); ++i) usleep(50000);
+    const int kernel_aperture = kernel_aperture_start();
     char module[130] = {0};
     FILE* name = fopen("/linux-umd-name", "rb");
     int status = 127;
@@ -73,7 +113,7 @@ int main(void) {
         if (bytes == 13 && !memcmp(value, "native-stream", 13)) runtime_deadline = 120;
         fclose(deadline_workload);
     }
-    if (name && fread(module, 1, sizeof(module) - 1, name) && !access(port, F_OK)) {
+    if (kernel_aperture >= 0 && name && fread(module, 1, sizeof(module) - 1, name) && !access(port, F_OK)) {
         module[strcspn(module, "\r\n")] = 0;
         pid_t child = fork();
         if (child == 0) {
@@ -100,6 +140,7 @@ int main(void) {
                 else if (count != 4 || memcmp(workload, "init", 4)) _exit(126);
             }
             setenv("WDDM_BRIDGE_PORT", port, 1);
+            if (kernel_aperture) setenv("WDDM_BRIDGE_KERNEL_APERTURE", "1", 1);
             if (cpu_store_test) {
                 setenv("WDDM_BRIDGE_CPU_STORE_TEST", "1", 1);
                 setenv("WDDM_BRIDGE_CPU_REFERENCE_TEST", "1", 1);
@@ -135,8 +176,9 @@ int main(void) {
             else { kill(child, SIGKILL); waitpid(child, NULL, 0); status = 124; }
             alarm(0);
         }
-    } else puts("FAIL: runtime name or virtio port missing");
+    } else puts(kernel_aperture < 0 ? "FAIL: required guest aperture contracts failed" : "FAIL: runtime name or virtio port missing");
     if (name) fclose(name);
+    if (kernel_aperture > 0 && kernel_aperture_stop()) status = 125;
     printf("BRIDGE_RUNTIME_EXIT=%d\n", status);
     sync(); reboot(RB_POWER_OFF);
     for (;;) pause();

@@ -66,6 +66,41 @@ class OpenGlPackaging(unittest.TestCase):
         self.assertEqual(manifest.read_text(),'retained')
         self.assertFalse(self.output.exists())
 
+    def test_kernel_inputs_must_be_paired(self):
+        for key in ('guest-aperture-module','guest-aperture-contract'):
+            with self.subTest(key=key), self.assertRaises(SystemExit):
+                self.run_packer('--'+key,str(self.input))
+        self.assertFalse(self.output.exists())
+
+    def test_kernel_module_identity_and_elf_type(self):
+        module=self.base/'wddm_aperture.ko'
+        valid=bytearray(self.elf); valid[16:18]=b'\x01\x00'; valid.extend(b'name=wddm_aperture\0')
+        for bad in (b'not a module', self.elf, valid[:64],
+                    valid.replace(b'wddm_aperture',b'other_module_'),
+                    valid[:18]+b'\x28\x00'+valid[20:]):
+            module.write_bytes(bad)
+            with self.subTest(data=bad[:20]), self.assertRaises(SystemExit):
+                self.run_packer('--guest-aperture-module',str(module),'--guest-aperture-contract',str(self.input))
+        self.assertFalse(self.output.exists())
+
+    def test_kernel_module_size_bound(self):
+        module=self.base/'wddm_aperture.ko'
+        module.write_bytes(b'\0'*(16*1024*1024+1))
+        with self.assertRaises(SystemExit):
+            self.run_packer('--guest-aperture-module',str(module),'--guest-aperture-contract',str(self.input))
+        self.assertFalse(self.output.exists())
+
+    def test_kernel_module_explicit_manifest(self):
+        module=self.base/'wddm_aperture.ko'
+        valid=bytearray(self.elf); valid[16:18]=b'\x01\x00'; valid.extend(b'name=wddm_aperture\0')
+        module.write_bytes(valid)
+        self.run_packer('--guest-aperture-module',str(module),'--guest-aperture-contract',str(self.input))
+        manifest=json.loads(self.output.with_suffix('.manifest.json').read_text())
+        self.assertTrue(manifest['kernelApertureIncluded'])
+        self.assertIn('/wddm-aperture.ko',[f['path'] for f in manifest['files']])
+        self.assertIn('/aperture-contract',[f['path'] for f in manifest['files']])
+        self.assertFalse(manifest['redistributionApproved'])
+
 
 if __name__ == '__main__':
     unittest.main()

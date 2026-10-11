@@ -2,6 +2,7 @@
 // Process-local diagnostic mapping of the private QEMU read-only PCI hub.
 #pragma once
 #include "driver_wire.h"
+#include "guest_kernel_aperture.h"
 #include <dirent.h>
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -27,6 +28,7 @@ class Fences {
         }
     };
     File config, resource;
+    mutable guest_kernel::Aperture kernel;
     std::uint32_t slotCount = 0;
     struct Mapping { void* page; volatile std::uint64_t* fence; };
     std::map<std::uint32_t, Mapping> mappings;
@@ -34,11 +36,26 @@ class Fences {
     unsigned created = 0;
     static constexpr std::uint32_t Identity = 0x11fd1234, Magic = 0x31484e46;
     std::uint32_t word(unsigned offset) const {
+        if (kernel.enabled()) {
+            const auto info = kernel.info();
+            switch (offset) {
+            case 0: return Identity;
+            case 0x40: return Magic;
+            case 0x44: return info.fence_slots;
+            case 0x48: return static_cast<std::uint32_t>(info.fence_mmio_reads);
+            default: throw std::runtime_error("Unknown kernel fence layout field");
+            }
+        }
         std::uint32_t value{};
         if (pread(config.fd, &value, sizeof value, offset) != sizeof value) throw std::runtime_error("Fence PCI config read failed");
         return value;
     }
     void discover() {
+        if (kernel.enabled()) {
+            slotCount = kernel.info().fence_slots;
+            std::fprintf(stderr, "LINUX_BRIDGE fenceHubLayout=true slots=%u stride=4096 readonly=true kernel=true\n", slotCount);
+            return;
+        }
         const char* directory = "/sys/bus/pci/devices";
         auto devices = opendir(directory);
         if (!devices) throw std::runtime_error("Fence PCI inventory unavailable");
@@ -69,14 +86,15 @@ class Fences {
 public:
     Fences() = default;
     Fences(const Fences&) = delete;
-    ~Fences() { for (const auto& mapping : mappings) munmap(mapping.second.page, 4096); }
+    ~Fences() { if (resource.fd >= 0) for (const auto& mapping : mappings) munmap(mapping.second.page, 4096); }
     void* map(std::uint32_t queue, std::uint64_t offset, const char* category = "paging") {
         if (!queue || offset % 8 || offset >= driver_bridge::FenceApertureBytes || mappings.count(queue))
             throw std::runtime_error("Invalid guest fence identity or offset");
-        if (resource.fd < 0) discover();
+        if (!slotCount) discover();
         if (offset >= slotCount * 4096ull || mappings.size() >= slotCount) throw std::runtime_error("Fence mapping exceeds configured aperture");
         const auto before = word(0x48);
-        auto page = mmap(nullptr, 4096, PROT_READ, MAP_SHARED, resource.fd, static_cast<off_t>(offset & ~4095ull));
+        auto page = kernel.enabled() ? kernel.map(WDDM_APERTURE_FENCE, offset & ~4095ull, 4096) :
+            mmap(nullptr, 4096, PROT_READ, MAP_SHARED, resource.fd, static_cast<off_t>(offset & ~4095ull));
         if (page == MAP_FAILED) throw std::runtime_error("Guest fence mapping failed");
         auto fence = reinterpret_cast<volatile std::uint64_t*>(static_cast<char*>(page) + (offset & 4095));
         // This is a diagnostic, not a polling API. Prove these reads bypass
@@ -86,7 +104,10 @@ public:
         try {
             if (word(0x48) != before) throw std::runtime_error("Guest fence reads were emulated");
             mappings.emplace(queue, Mapping{page, fence});
-        } catch (...) { munmap(page, 4096); throw; }
+        } catch (...) {
+            if (kernel.enabled()) kernel.unmap(page, 4096); else munmap(page, 4096);
+            throw;
+        }
         reads += 10000; ++created;
         std::fprintf(stderr, "LINUX_BRIDGE %sFenceMapped=true direct=true loads=10000 offset=%llu value=%llu\n",
                      category, static_cast<unsigned long long>(offset), static_cast<unsigned long long>(observed));
@@ -126,7 +147,8 @@ public:
     void unmap(std::uint32_t queue) {
         const auto found = mappings.find(queue);
         if (found == mappings.end()) throw std::runtime_error("Guest paging queue absent");
-        if (munmap(found->second.page, 4096)) throw std::runtime_error("Guest fence unmap failed");
+        if (kernel.enabled()) kernel.unmap(found->second.page, 4096);
+        else if (munmap(found->second.page, 4096)) throw std::runtime_error("Guest fence unmap failed");
         mappings.erase(found);
         std::fprintf(stderr, "LINUX_BRIDGE guestFenceUnmapped=true\n");
     }

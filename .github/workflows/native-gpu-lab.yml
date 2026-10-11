@@ -6,6 +6,17 @@ on:
 permissions:
   contents: read
 jobs:
+  guest-kernel-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - name: Compile the guest aperture driver; never load it on the runner
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends linux-headers-generic
+          headers=$(printf '%s\n' /usr/src/linux-headers-*-generic | sort -V | tail -n 1)
+          sh experimental/windows-native-gpu/build_guest_aperture.sh "$headers" "$RUNNER_TEMP/wddm-guest-kernel"
   windows-build:
     runs-on: windows-latest
     timeout-minutes: 15

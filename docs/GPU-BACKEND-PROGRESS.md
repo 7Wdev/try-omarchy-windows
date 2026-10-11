@@ -1,6 +1,6 @@
 # NVIDIA backend progress
 
-Updated 2026-10-11. **4 of 8 verification stages demonstrated.** This is a
+Updated 2026-10-12. **4 of 8 verification stages demonstrated.** This is a
 checklist count, not 50% of engineering effort or a product-readiness estimate.
 The largest integration tasks are still ahead.
 
@@ -8,6 +8,11 @@ Latest lab result: [Mesa OpenGL shader rendering](https://github.com/7Wdev/try-o
 now passes two independent 130×73 pixel audits through the Windows NVIDIA
 bridge. This is progress within the remaining API/device work; it does not
 complete a new roadmap stage.
+
+The [first guest kernel memory-lease component](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-KERNEL-APERTURE.md)
+now passes 581 isolation checks and two fresh OpenGL runs with complete kernel
+lease cleanup. It supplies restricted CPU-view FDs, not DRM or dma-buf buffers;
+stage 5 still requires the graphics ioctl/device and compositor integration.
 
 ![Four of eight verification stages demonstrated](images/gpu-backend-progress.svg)
 

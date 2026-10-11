@@ -2,6 +2,7 @@
 // Diagnostic process-local views of owned native NVIDIA CPU allocation locks.
 #pragma once
 #include "driver_wire.h"
+#include "guest_kernel_aperture.h"
 #include <dirent.h>
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -28,6 +29,7 @@ class Memory {
         }
     };
     File config, resource;
+    mutable guest_kernel::Aperture kernel;
     std::size_t slotCount = 0;
     struct Mapping { void* data; std::uint32_t bytes, references; std::uint64_t offset, generation; };
     std::map<std::uint32_t, Mapping> mappings;
@@ -35,11 +37,29 @@ class Memory {
     std::uint64_t loads = 0;
     static constexpr std::uint32_t Identity = 0x11fc1234, Magic = 0x31484c41;
     std::uint32_t word(unsigned offset) const {
+        if (kernel.enabled()) {
+            const auto info = kernel.info();
+            switch (offset) {
+            case 0: return Identity;
+            case 0x40: return Magic;
+            case 0x44: return info.allocation_slots;
+            case 0x48: return static_cast<std::uint32_t>(info.cpu_slot_bytes);
+            case 0x4c: return static_cast<std::uint32_t>(info.allocation_mmio_reads);
+            case 0x50: return static_cast<std::uint32_t>(info.allocation_mmio_writes);
+            default: throw std::runtime_error("Unknown kernel allocation layout field");
+            }
+        }
         std::uint32_t value{};
         if (pread(config.fd, &value, sizeof value, offset) != sizeof value) throw std::runtime_error("Allocation PCI config unavailable");
         return value;
     }
     void discover() {
+        if (kernel.enabled()) {
+            slotCount = kernel.info().allocation_slots;
+            std::fprintf(stderr, "LINUX_BRIDGE allocationCpuLayout=true slots=%zu stride=%llu kernel=true\n", slotCount,
+                         static_cast<unsigned long long>(driver_bridge::VendorCpuSlotBytes));
+            return;
+        }
         const char* directory = "/sys/bus/pci/devices";
         auto devices = opendir(directory);
         if (!devices) throw std::runtime_error("Allocation PCI inventory unavailable");
@@ -72,7 +92,7 @@ class Memory {
 public:
     Memory() = default;
     Memory(const Memory&) = delete;
-    ~Memory() { for (const auto& item : mappings) munmap(item.second.data, item.second.bytes); }
+    ~Memory() { if (resource.fd >= 0) for (const auto& item : mappings) munmap(item.second.data, item.second.bytes); }
     bool contains(std::uint32_t allocation) const { return mappings.count(allocation) != 0; }
     void* retain(std::uint32_t allocation) {
         auto& entry = mappings.at(allocation);
@@ -85,12 +105,13 @@ public:
         for (const auto& item : mappings)
             if (offset < item.second.offset + item.second.bytes && item.second.offset < offset + reply.bytes)
                 throw std::runtime_error("Overlapping allocation CPU views");
-        if (resource.fd < 0) discover();
+        if (!slotCount) discover();
         const auto apertureBytes = slotCount * driver_bridge::VendorCpuSlotBytes;
         if (offset >= apertureBytes || reply.bytes > apertureBytes - offset || mappings.size() >= slotCount)
             throw std::runtime_error("Allocation CPU lease exceeds configured aperture");
         const auto beforeRead = word(0x4c), beforeWrite = word(0x50);
-        auto data = mmap(nullptr, reply.bytes, PROT_READ | PROT_WRITE, MAP_SHARED, resource.fd, static_cast<off_t>(offset));
+        auto data = kernel.enabled() ? kernel.map(WDDM_APERTURE_ALLOCATION, offset, reply.bytes, reply.generation) :
+            mmap(nullptr, reply.bytes, PROT_READ | PROT_WRITE, MAP_SHARED, resource.fd, static_cast<off_t>(offset));
         if (data == MAP_FAILED) throw std::runtime_error("Allocation CPU view failed");
         const auto first = static_cast<volatile const std::uint64_t*>(data);
         const auto last = reinterpret_cast<volatile const std::uint64_t*>(static_cast<const char*>(data) + reply.bytes - 8);
@@ -98,7 +119,10 @@ public:
         try {
             if (word(0x4c) != beforeRead || word(0x50) != beforeWrite) throw std::runtime_error("Allocation CPU reads were emulated");
             mappings.emplace(allocation, Mapping{data, reply.bytes, 1, offset, reply.generation});
-        } catch (...) { munmap(data, reply.bytes); throw; }
+        } catch (...) {
+            if (kernel.enabled()) kernel.unmap(data, reply.bytes); else munmap(data, reply.bytes);
+            throw;
+        }
         loads += 10000; ++created;
         std::fprintf(stderr, "LINUX_BRIDGE allocationCpuMapped=true direct=true loads=10000 bytes=%u offset=%llu generation=%llu\n",
                      reply.bytes, static_cast<unsigned long long>(offset), static_cast<unsigned long long>(reply.generation));
@@ -121,7 +145,8 @@ public:
             std::fprintf(stderr, "LINUX_BRIDGE allocationCpuStoreTest=true firstLastReadback=true bytes=%u\n", entry->second.bytes);
         }
         if (word(0x4c) || word(0x50)) throw std::runtime_error("Allocation CPU access used MMIO emulation");
-        if (munmap(entry->second.data, entry->second.bytes)) throw std::runtime_error("Allocation CPU unmap failed");
+        if (kernel.enabled()) kernel.unmap(entry->second.data, entry->second.bytes);
+        else if (munmap(entry->second.data, entry->second.bytes)) throw std::runtime_error("Allocation CPU unmap failed");
         const auto bytes = entry->second.bytes;
         mappings.erase(entry); ++unmapped;
         std::fprintf(stderr, "LINUX_BRIDGE allocationCpuUnmapped=true direct=true mmioReads=0 mmioWrites=0 bytes=%u\n", bytes);

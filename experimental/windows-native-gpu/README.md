@@ -1,5 +1,11 @@
 # Native Windows GPU experiment
 
+The optional [guest kernel aperture component](guest-kernel/README.md) now
+manages restricted native-memory leases, with two real OpenGL runs and
+cross-process FD revocation [verified in QEMU](../../docs/LIVE-GPU-KERNEL-APERTURE.md).
+It is not DRM, dma-buf or a kernel implementation of graphics ioctls. Its kernel
+source is GPL-2.0-only; the userspace ABI and contract probe are MIT.
+
 The separate [4K lab profile](../../docs/LIVE-GPU-4K.md) now renders and verifies
 3840×2160 shader frames and native backbuffer copies. One presentation run passes
 both statistics receipts; subsequent stale-counter failures remain preserved.

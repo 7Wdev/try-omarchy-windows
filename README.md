@@ -16,6 +16,8 @@ The largest integration work remains. [See the roadmap and evidence](docs/GPU-BA
 
 Latest lab result: [two independently verified OpenGL shader frames](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-OPENGL.md)
 through Mesa and the NVIDIA bridge. Full Omarchy/Hyprland acceleration remains pending.
+The [first guest kernel memory-lease component](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-KERNEL-APERTURE.md)
+also passes FD isolation/revocation checks and two fresh OpenGL runs. DRM and compositor integration remain pending.
 
 | Stage | Status | What must be demonstrated |
 | --- | --- | --- |

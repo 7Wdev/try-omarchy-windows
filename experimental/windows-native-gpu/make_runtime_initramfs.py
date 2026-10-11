@@ -25,6 +25,8 @@ def main():
     parser.add_argument('--dependency-directory', type=pathlib.Path, action='append', default=[], help='Optional local ELF dependencies; mapped to the guest library directory')
     parser.add_argument('--extra-runtime', type=pathlib.Path, action='append', default=[], help='Installed library loaded dynamically; preserves its absolute guest path')
     parser.add_argument('--mesa-runtime-directory', type=pathlib.Path, help='Private non-GLVND Mesa install for the explicit OpenGL probe; relocated to /opt/wddm-mesa')
+    parser.add_argument('--guest-aperture-module', type=pathlib.Path, help='Explicit guest-only wddm_aperture.ko built against the matching guest kernel')
+    parser.add_argument('--guest-aperture-contract', type=pathlib.Path, help='Static guest isolation probe, required with the aperture module')
     parser.add_argument('--runtime-workload', choices=('init', 'copy', 'clear', 'triangle', 'shared', 'consume', 'native', 'native-stream', 'opengl'), default='init', help='Explicit guest workload; OpenGL is a separate Mesa frontend probe')
     args = parser.parse_args()
     if sys.platform != 'linux':
@@ -36,6 +38,15 @@ def main():
         parser.error('Invalid Linux UMD module basename')
     files = {'init': args.init, 'guest-probe': args.probe, 'linux-ioctl-bridge.so': args.shim}
     roots = [args.probe, args.shim, args.linux_umd, args.d3d12, args.d3d12core, args.dxcore]
+    if bool(args.guest_aperture_module) != bool(args.guest_aperture_contract):
+        parser.error('The guest aperture module and contract probe must be supplied together')
+    if args.guest_aperture_module:
+        data = args.guest_aperture_module.read_bytes()
+        if not 64 <= len(data) <= 16 * 1024 * 1024 or data[:6] != b'\x7fELF\x02\x01' or \
+                data[16:20] != b'\x01\x00\x3e\x00' or b'name=wddm_aperture\0' not in data:
+            parser.error('The aperture module must be a bounded x64 ELF relocatable named wddm_aperture')
+        files['wddm-aperture.ko'] = args.guest_aperture_module
+        files['aperture-contract'] = args.guest_aperture_contract
     relocated = {}
     if (args.runtime_workload == 'opengl') != bool(args.mesa_runtime_directory):
         parser.error('The OpenGL workload requires --mesa-runtime-directory, exclusive to that workload')
@@ -60,7 +71,7 @@ def main():
     if args.strace:
         files['runtime-tracer'] = args.strace
         roots.append(args.strace)
-    for path in [args.init] + roots:
+    for path in [args.init] + ([args.guest_aperture_contract] if args.guest_aperture_contract else []) + roots:
         data = path.read_bytes()
         if data[:6] != b'\x7fELF\x02\x01' or data[18:20] != b'\x3e\x00':
             parser.error(f'{path} must be a little-endian x64 Linux ELF file')
@@ -116,6 +127,7 @@ def main():
     entry('dev/console', stat.S_IFCHR | 0o600, major=5, minor=1)
     manifest = {'schema': 1, 'privateImage': True, 'vendorBinariesIncluded': True,
                 'redistributionApproved': False, 'runtimeWorkload': args.runtime_workload,
+                'kernelApertureIncluded': bool(args.guest_aperture_module),
                 'mesaFrontendIncluded': bool(args.mesa_runtime_directory), 'files': []}
     for name, path in sorted(files.items()):
         data = path.read_bytes()
@@ -123,6 +135,8 @@ def main():
         manifest['files'].append({'path': '/' + name, 'bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest()})
     entry('linux-umd-name', stat.S_IFREG | 0o600, module.encode())
     entry('runtime-workload', stat.S_IFREG | 0o600, args.runtime_workload.encode())
+    if args.guest_aperture_module:
+        entry('kernel-aperture-required', stat.S_IFREG | 0o600, b'1')
     entry('TRAILER!!!', 0)
     packed = gzip.compress(archive, mtime=0)
     with args.output.open('xb') as destination:
