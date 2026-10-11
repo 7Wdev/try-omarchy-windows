@@ -14,6 +14,9 @@ through QEMU/WHPX. Full acceleration of the Omarchy/Hyprland desktop through thi
 **4/8 verification stages demonstrated.** This counts the stages below; it is not an estimate of engineering work completed.
 The largest integration work remains. [See the roadmap and evidence](docs/GPU-BACKEND-PROGRESS.md).
 
+Latest lab result: [two independently verified OpenGL shader frames](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-OPENGL.md)
+through Mesa and the NVIDIA bridge. Full Omarchy/Hyprland acceleration remains pending.
+
 | Stage | Status | What must be demonstrated |
 | --- | --- | --- |
 | Fork and upstream updates | Demonstrated | Preserve upstream fixes and the custom QEMU work. |

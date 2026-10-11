@@ -4,6 +4,11 @@ Updated 2026-10-11. **4 of 8 verification stages demonstrated.** This is a
 checklist count, not 50% of engineering effort or a product-readiness estimate.
 The largest integration tasks are still ahead.
 
+Latest lab result: [Mesa OpenGL shader rendering](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-OPENGL.md)
+now passes two independent 130×73 pixel audits through the Windows NVIDIA
+bridge. This is progress within the remaining API/device work; it does not
+complete a new roadmap stage.
+
 ![Four of eight verification stages demonstrated](images/gpu-backend-progress.svg)
 
 The normal upstream Try Omarchy desktop is already available. This roadmap
