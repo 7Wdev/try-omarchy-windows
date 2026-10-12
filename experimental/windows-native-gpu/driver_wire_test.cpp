@@ -324,7 +324,7 @@ int main() {
             caps.flags |= AsyncHwSubmitCapability | SyncCapability | GpuReservationCapability | UINT32_C(0x80000000);
             caps.flags &= ~missing; return caps;
         }
-        OpenGlProfile beginOpenGl() override { ++begins; return profile; }
+        OpenGlProfile beginOpenGl(std::uint32_t = 1) override { ++begins; return profile; }
     };
     {
         OpenGlFake f; f.reservationEnabled = true; Session s(f);
@@ -361,6 +361,61 @@ int main() {
         OpenGlFake f; Session s(f); s.dispatch(hello());
         require(header(s.dispatch(request(Op::OpenAdapter))).handle != 0);
         require(header(s.dispatch(request(Op::BeginOpenGl))).status == -16 && !f.begins);
+    }
+    {
+        OpenGlFake f; Session s(f);
+        require(s.objectLimit() == MaxObjects);
+        require(header(s.dispatch(request(Op::BeginOpenGl, 0, std::uint32_t{2}))).status == -71);
+        s.dispatch(hello());
+        for (const auto version : {0u, 1u, 3u, UINT32_MAX})
+            require(header(s.dispatch(request(Op::BeginOpenGl, 0, version))).status == -93 && !f.begins);
+        for (unsigned field = 0; field < 8; ++field) {
+            std::uint32_t words[8]{}; std::memcpy(words, &GuestOpenGlFenceProfile, sizeof words); ++words[field];
+            std::memcpy(&f.profile, words, sizeof words);
+            require(header(s.dispatch(request(Op::BeginOpenGl, 0, std::uint32_t{2}))).status == -95);
+            require(s.objectLimit() == MaxObjects);
+        }
+        f.profile = GuestOpenGlProfile;
+        require(header(s.dispatch(request(Op::BeginOpenGl, 0, std::uint32_t{2}))).status == -95);
+        f.profile = GuestOpenGlFenceProfile;
+        const auto out = s.dispatch(request(Op::BeginOpenGl, 0, std::uint32_t{2}));
+        OpenGlProfile profile{};
+        require(!header(out).status && out.size() == sizeof(Header) + sizeof profile);
+        std::memcpy(&profile, out.data() + sizeof(Header), sizeof profile);
+        require(validOpenGlFenceProfile(profile) && s.objectLimit() == 384 && MaxObjects == 256);
+        const auto before = f.begins;
+        require(header(s.dispatch(request(Op::BeginOpenGl))).status == -16 && f.begins == before);
+        require(header(s.dispatch(request(Op::BeginOpenGl, 0, std::uint32_t{2}))).status == -16 && f.begins == before);
+        require(header(s.dispatch(request(Op::BeginStreaming))).status == -16);
+        for (std::size_t i = 0; i < s.objectLimit(); ++i)
+            require(header(s.dispatch(request(Op::OpenAdapter))).handle != 0);
+        const auto calls = f.calls;
+        require(s.objectCount() == 384 && header(s.dispatch(request(Op::OpenAdapter))).status == -24 && f.calls == calls);
+    }
+    for (const auto version : {1u, 2u}) {
+        OpenGlFake f;
+        f.contextsEnabled = f.hwQueuesEnabled = f.vendorEnabled = f.expandedVendorObjectsEnabled = true;
+        f.profile = version == 2 ? GuestOpenGlFenceProfile : GuestOpenGlProfile;
+        Session s(f); s.dispatch(hello());
+        require(!header(s.dispatch(version == 2 ? request(Op::BeginOpenGl, 0, version) : request(Op::BeginOpenGl))).status);
+        require(s.hwQueueLimit() == (version == 2 ? 16u : 8u));
+        require(s.vendorObjectLimit() == (version == 2 ? 192u : 128u));
+        const auto adapter = header(s.dispatch(request(Op::OpenAdapter))).handle;
+        const auto device = header(s.dispatch(request(Op::CreateDevice, adapter))).handle;
+        auto contextPacket = request(Op::CreateContext, device, ContextDesc{0,1,16,12,4,0});
+        contextPacket.insert(contextPacket.end(), {1,2,3,4});
+        const auto context = header(s.dispatch(contextPacket)).handle;
+        auto queuePacket = request(Op::CreateHwQueue, context, HwQueueDesc{0,4,0,0});
+        queuePacket.insert(queuePacket.end(), {37,38,39,40});
+        for (std::size_t i = 0; i < s.hwQueueLimit(); ++i) require(header(s.dispatch(queuePacket)).handle != 0);
+        auto before = f.calls;
+        require(header(s.dispatch(queuePacket)).status == -24 && f.calls == before);
+        auto allocationPacket = request(Op::CreateVendorAllocation, device, VendorAllocationDesc{0,0,0,1,0,0});
+        allocationPacket.push_back(37);
+        for (std::size_t i = 0; i < s.vendorObjectLimit(); ++i) require(header(s.dispatch(allocationPacket)).handle != 0);
+        before = f.calls;
+        require(header(s.dispatch(allocationPacket)).status == -24 && f.calls == before);
+        require(MaxHwQueues == 8 && ExpandedVendorAllocations == 128);
     }
     struct StreamFake : Fake {
         StreamProfile profile = GuestStreamProfile;

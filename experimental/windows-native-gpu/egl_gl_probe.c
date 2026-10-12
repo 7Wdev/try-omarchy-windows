@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Guest OpenGL integration probe. This does not create a desktop or display.
+#define _POSIX_C_SOURCE 200809L
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 #include <GL/glcorearb.h>
@@ -28,6 +29,9 @@ enum { Width = 130, Height = 73, Frames = 2 };
 #ifdef WDDM_BRIDGE_SYNC_FD_TEST
 extern int wddm_sync_fd_test(void);
 #endif
+#ifdef WDDM_BRIDGE_MESA_FENCE_FD_TEST
+extern int wddm_mesa_fence_fd_test(EGLDisplay, EGLContext);
+#endif
 static int fail(const char* stage) {
     printf("OPENGL_FAILURE stage=%s eglError=%04x\n", stage, eglGetError());
     return 1;
@@ -50,8 +54,17 @@ static GLuint shader(GLenum type, const char* source) {
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
+#ifdef WDDM_BRIDGE_MESA_FENCE_FD_TEST
+    // Explicit private lab opt-in, before Mesa initializes screen caps.
+    if (setenv("D3D12_EXPERIMENTAL_FENCE_FD", "true", 1)) return fail("FenceFdOptIn");
+#endif
     puts("OPENGL_TEST_BEGIN api=OpenGL requested=3.3 width=130 height=73 frames=2 display=false");
-    int (*begin_profile)(void) = (int (*)(void))dlsym(RTLD_DEFAULT, "wddm_bridge_begin_opengl");
+#ifdef WDDM_BRIDGE_MESA_FENCE_FD_TEST
+    const char* begin_name = "wddm_bridge_begin_opengl_fences";
+#else
+    const char* begin_name = "wddm_bridge_begin_opengl";
+#endif
+    int (*begin_profile)(void) = (int (*)(void))dlsym(RTLD_DEFAULT, begin_name);
     if (!begin_profile || begin_profile()) return fail("BridgeProfile");
     EGLDisplay display = eglGetPlatformDisplay(EGL_PLATFORM_SURFACELESS_MESA, EGL_DEFAULT_DISPLAY, NULL);
     EGLint major = 0, minor = 0;
@@ -132,6 +145,9 @@ int main(void) {
     }
 #ifdef WDDM_BRIDGE_SYNC_FD_TEST
     if (wddm_sync_fd_test()) return fail("SharedSyncFd");
+#endif
+#ifdef WDDM_BRIDGE_MESA_FENCE_FD_TEST
+    if (wddm_mesa_fence_fd_test(display, context)) return fail("MesaFenceFd");
 #endif
     glDeleteVertexArrays(1, &array); glUseProgram(0); glDeleteProgram(program);
     glDeleteShader(vertex); glDeleteShader(fragment);

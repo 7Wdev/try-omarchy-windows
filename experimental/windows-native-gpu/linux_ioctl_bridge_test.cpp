@@ -10,6 +10,7 @@
 #include <unistd.h>
 #include <cerrno>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <dlfcn.h>
 #include <pthread.h>
@@ -73,7 +74,8 @@ int main(int argc, char** argv) {
     }
     if (!std::strncmp(mode,"opengl-profile-",15)) {
         using Begin = int (*)();
-        const auto begin = reinterpret_cast<Begin>(dlsym(RTLD_DEFAULT,"wddm_bridge_begin_opengl"));
+        const auto begin = reinterpret_cast<Begin>(dlsym(RTLD_DEFAULT, std::getenv("OPENGL_EXTENDED_PROFILE") ?
+            "wddm_bridge_begin_opengl_fences" : "wddm_bridge_begin_opengl"));
         if (!begin) return failed("OpenGL hook absent");
         if (!std::strcmp(mode,"opengl-profile-late")) {
             D3DKMT_OPENADAPTERFROMLUID adapter{}; adapter.AdapterLuid.LowPart = 0x57475055;

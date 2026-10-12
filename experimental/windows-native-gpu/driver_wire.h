@@ -387,7 +387,7 @@ public:
     virtual ~Driver() = default;
     virtual native_gpu::Capabilities capabilities() const = 0;
     virtual StreamProfile beginStreaming() { return {}; }
-    virtual OpenGlProfile beginOpenGl() { return {}; }
+    virtual OpenGlProfile beginOpenGl(std::uint32_t = 1) { return {}; }
     virtual Result consumeStreamingTexture(std::uint32_t, std::uint32_t, SharedTextureConsumeDesc) {
         return {static_cast<std::int32_t>(0xc00000bbu), 0, 0};
     }
@@ -527,6 +527,8 @@ class Session {
     bool negotiated = false;
     bool streamingNegotiated = false;
     bool openglNegotiated = false;
+    bool openglFenceNegotiated = false;
+    std::size_t wireObjectLimit = MaxObjects;
     bool syncSharingNegotiated = false;
     static std::vector<std::uint8_t> reply(Header h, std::int32_t error,
                                          std::uint32_t id = 0, const Result* result = nullptr) {
@@ -552,6 +554,9 @@ class Session {
 public:
     explicit Session(Driver& d) : driver(d) {}
     std::size_t objectCount() const { return objects.size(); }
+    std::size_t objectLimit() const { return wireObjectLimit; }
+    std::size_t hwQueueLimit() const { return openglFenceNegotiated ? OpenGlFenceHwQueues : MaxHwQueues; }
+    std::size_t vendorObjectLimit() const { return openglFenceNegotiated ? OpenGlFenceVendorAllocations : vendorAllocationObjectLimit(driver.capabilities().flags); }
     unsigned requestLimit() const { return streamingNegotiated ? GuestStreamProfile.requestLimit : 10000; }
     Session(const Session&) = delete;
     Session& operator=(const Session&) = delete;
@@ -586,6 +591,8 @@ public:
             if (!objects.empty()) return reply(h, -16);
             std::uint32_t version{}; std::memcpy(&version, packet.data() + sizeof h, 4);
             negotiated = false; streamingNegotiated = false; openglNegotiated = false; syncSharingNegotiated = false;
+            wireObjectLimit = MaxObjects;
+            openglFenceNegotiated = false;
             if (version != Version) return reply(h, -93);
             const auto caps = driver.capabilities();
             if (caps.version != Version) return reply(h, -93);
@@ -610,13 +617,20 @@ public:
         }
         if (op == Op::BeginOpenGl) {
             if (!negotiated) return reply(h, -71);
-            if (h.handle || packet.size() != sizeof h) return reply(h, -22);
+            if (h.handle || (packet.size() != sizeof h && packet.size() != sizeof h + sizeof(std::uint32_t))) return reply(h, -22);
+            std::uint32_t version = 1;
+            if (packet.size() != sizeof h) {
+                std::memcpy(&version, packet.data() + sizeof h, sizeof version);
+                if (version != 2) return reply(h, -93);
+            }
             if (openglNegotiated || streamingNegotiated || !objects.empty()) return reply(h, -16);
             const auto required = AsyncHwSubmitCapability | SyncCapability | GpuReservationCapability | UINT32_C(0x80000000);
             if ((driver.capabilities().flags & required) != required) return reply(h, -95);
-            const auto profile = driver.beginOpenGl();
-            if (!validOpenGlProfile(profile)) return reply(h, -95);
+            const auto profile = driver.beginOpenGl(version);
+            if (version == 1 ? !validOpenGlProfile(profile) : !validOpenGlFenceProfile(profile)) return reply(h, -95);
             openglNegotiated = true;
+            openglFenceNegotiated = version == 2;
+            if (version == 2) wireObjectLimit = profile.objectLimit;
             auto out = reply(h, 0); out.resize(sizeof h + sizeof profile);
             std::memcpy(out.data() + sizeof h, &profile, sizeof profile); return out;
         }
@@ -697,7 +711,7 @@ public:
             if (packet.size() < sizeof h + sizeof(ContextDesc)) return reply(h, -22);
             ContextDesc desc{}; std::memcpy(&desc, packet.data() + sizeof h, sizeof desc);
             if (!validContext(desc) || packet.size() != sizeof h + sizeof desc + desc.privateBytes) return reply(h, -22);
-            if (objects.size() >= MaxObjects || nextId == UINT32_MAX) return reply(h, -24);
+            if (objects.size() >= objectLimit() || nextId == UINT32_MAX) return reply(h, -24);
             std::vector<std::uint8_t> data(packet.begin() + sizeof h + sizeof desc, packet.end());
             const auto result = driver.createContext(entry->second.nativeHandle, desc, data);
             if (data.size() != desc.privateBytes) {
@@ -714,7 +728,7 @@ public:
             if (packet.size() != sizeof h) return reply(h, -22);
             const auto device = objects.find(h.handle);
             if (device == objects.end() || device->second.kind != Kind::Device) return reply(h, -9);
-            if (objects.size() > MaxObjects - 2 || nextId >= UINT32_MAX - 1) return reply(h, -24);
+            if (objects.size() > objectLimit() - 2 || nextId >= UINT32_MAX - 1) return reply(h, -24);
             const auto native = driver.createGuestPagingQueue(device->second.nativeHandle);
             if (native.queue.ntstatus < 0) return reply(h, 0, 0, &native.queue);
             if (!native.queue.nativeHandle || !native.sync || native.queue.value ||
@@ -761,7 +775,7 @@ public:
             if ((desc.flags & NoBroadcastSignalHwQueueFlag) && !(driver.capabilities().flags & NoBroadcastSignalHwQueueCapability)) return reply(h, -95);
             if ((desc.flags & NoBroadcastWaitHwQueueFlag) && !(driver.capabilities().flags & NoBroadcastWaitHwQueueCapability)) return reply(h, -95);
             const auto count = std::count_if(objects.begin(), objects.end(), [](const auto& item) { return item.second.kind == Kind::HwQueue; });
-            if (objects.size() > MaxObjects - 2 || nextId >= UINT32_MAX - 1 || static_cast<std::size_t>(count) >= MaxHwQueues) return reply(h, -24);
+            if (objects.size() > objectLimit() - 2 || nextId >= UINT32_MAX - 1 || static_cast<std::size_t>(count) >= hwQueueLimit()) return reply(h, -24);
             std::vector<std::uint8_t> data(packet.begin() + sizeof h + sizeof desc, packet.end());
             const auto native = driver.createHwQueue(entry->second.nativeHandle, desc, data);
             if (data.size() != desc.privateBytes || native.queue.value ||
@@ -895,7 +909,7 @@ public:
                 if (!result.ntstatus) objects.erase(entry);
                 return reply(h, 0, h.handle, &result);
             }
-            if (objects.size() >= MaxObjects || nextId == UINT32_MAX) return reply(h, -24);
+            if (objects.size() >= objectLimit() || nextId == UINT32_MAX) return reply(h, -24);
             if (op == Op::ExportSync) {
                 if (packet.size() != sizeof h) return reply(h, -22);
                 if (entry->second.syncType != 5 || !entry->second.shared) return reply(h, -22);
@@ -961,7 +975,7 @@ public:
             if (!validSync(desc)) return reply(h, -22);
             if (desc.flags == NtSharedGpuSyncFlags && !syncSharingNegotiated) return reply(h, -71);
             const auto count = std::count_if(objects.begin(), objects.end(), [](const auto& item) { return item.second.kind == Kind::Sync; });
-            if (objects.size() >= MaxObjects || nextId == UINT32_MAX || static_cast<std::size_t>(count) >= MaxSyncObjects) return reply(h, -24);
+            if (objects.size() >= objectLimit() || nextId == UINT32_MAX || static_cast<std::size_t>(count) >= MaxSyncObjects) return reply(h, -24);
             const auto native = driver.createSync(entry->second.nativeHandle, desc);
             if (native.object.value || (native.object.ntstatus >= 0 && (native.object.ntstatus != 0 || !native.object.nativeHandle ||
                     (desc.type == 1 && (native.output.offset || native.output.gpuAddress)) ||
@@ -1120,7 +1134,7 @@ public:
             const auto dataBytes = desc.privateBytes + (sharedResource ? sharedDesc.runtimeBytes : 0);
             if (!validVendorAllocation(desc) || packet.size() != sizeof h + descriptorBytes + dataBytes) return reply(h, -22);
             const auto count = std::count_if(objects.begin(), objects.end(), [](const auto& item) { return item.second.kind == Kind::VendorAllocation; });
-            if (objects.size() > MaxObjects - (withResource ? 2 : 1) || nextId >= UINT32_MAX - (withResource ? 1 : 0) || static_cast<std::size_t>(count) >= vendorAllocationObjectLimit(driver.capabilities().flags)) return reply(h, -24);
+            if (objects.size() > objectLimit() - (withResource ? 2 : 1) || nextId >= UINT32_MAX - (withResource ? 1 : 0) || static_cast<std::size_t>(count) >= vendorObjectLimit()) return reply(h, -24);
             std::vector<std::uint8_t> data(packet.begin() + sizeof h + descriptorBytes, packet.end());
             const auto created = nativeTexture ? driver.createNativeSharedVendorResourceAllocation(device->second.nativeHandle, nativeDesc, data) :
                                 sharedResource ? driver.createSharedVendorResourceAllocation(device->second.nativeHandle, sharedDesc, data) :
@@ -1311,7 +1325,7 @@ public:
             GpuReservationDesc desc{}; std::memcpy(&desc, packet.data() + sizeof h, sizeof desc);
             if (!validGpuReservation(desc)) return reply(h, -22);
             const auto count = std::count_if(objects.begin(), objects.end(), [](const auto& item) { return item.second.kind == Kind::GpuReservation; });
-            if (objects.size() >= MaxObjects || nextId == UINT32_MAX ||
+            if (objects.size() >= objectLimit() || nextId == UINT32_MAX ||
                 static_cast<std::size_t>(count) >= (openglNegotiated ? GuestOpenGlProfile.reservationLimit : MaxGpuReservations) ||
                 desc.bytes > MaxGpuReservedBytes - gpuReservedBytes) return reply(h, -24);
             if (desc.base) for (const auto& item : objects)
@@ -1424,7 +1438,7 @@ public:
         if (!negotiated) return reply(h, -71);
         if (op == Op::OpenAdapter) {
             if (h.handle) return reply(h, -22);
-            if (objects.size() >= MaxObjects || nextId == UINT32_MAX) return reply(h, -24);
+            if (objects.size() >= objectLimit() || nextId == UINT32_MAX) return reply(h, -24);
             return insert(h, Kind::Adapter, 0, driver.openAdapter());
         }
         const auto entry = objects.find(h.handle);
@@ -1459,7 +1473,7 @@ public:
                         live.second.guestOffset < range.offset + size) return reply(h, -16);
             }
             if (!size || size % 4096 || size > MaxAllocation) return reply(h, -22);
-            if (objects.size() >= MaxObjects || nextId == UINT32_MAX || size > MaxAllocatedBytes - allocatedBytes)
+            if (objects.size() >= objectLimit() || nextId == UINT32_MAX || size > MaxAllocatedBytes - allocatedBytes)
                 return reply(h, -24);
             const auto result = shared ? driver.createSharedAllocation(object.nativeHandle, range)
                                        : driver.createAllocation(object.nativeHandle, size);
@@ -1499,7 +1513,7 @@ public:
             return reply(h, 0, h.handle, &result);
         }
         if (op == Op::CreateDevice || op == Op::CreatePagingQueue) {
-            if (objects.size() >= MaxObjects || nextId == UINT32_MAX) return reply(h, -24);
+            if (objects.size() >= objectLimit() || nextId == UINT32_MAX) return reply(h, -24);
             const auto result = op == Op::CreateDevice ? driver.createDevice(object.nativeHandle)
                                                        : driver.createPagingQueue(object.nativeHandle);
             return insert(h, op == Op::CreateDevice ? Kind::Device : Kind::PagingQueue, h.handle, result);

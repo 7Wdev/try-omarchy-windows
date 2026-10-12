@@ -6,12 +6,20 @@ namespace driver_bridge {
 struct OpenGlProfile {
     std::uint32_t version, frames, commandLimit, reservationLimit;
     std::uint64_t reservedBytes;
-    std::uint32_t requestLimit, reserved;
+    // Version 1 reserves the final word as zero; version 2 carries its cap.
+    std::uint32_t requestLimit, objectLimit;
 };
 static_assert(sizeof(OpenGlProfile) == 32, "fixed OpenGL lab negotiation");
 constexpr OpenGlProfile GuestOpenGlProfile{1, 2, 64, 16, 16ull * 1024 * 1024 * 1024, 10000, 0};
+constexpr OpenGlProfile GuestOpenGlFenceProfile{2, 2, 64, 16, 16ull * 1024 * 1024 * 1024, 10000, 384};
+constexpr std::uint32_t OpenGlFenceHwQueues = 16;
+constexpr std::uint32_t OpenGlFenceVendorAllocations = 192;
 inline bool validOpenGlProfile(OpenGlProfile p) {
     return p.version == 1 && p.frames == 2 && p.commandLimit == 64 && p.reservationLimit == 16 &&
-           p.reservedBytes == 16ull * 1024 * 1024 * 1024 && p.requestLimit == 10000 && !p.reserved;
+           p.reservedBytes == 16ull * 1024 * 1024 * 1024 && p.requestLimit == 10000 && !p.objectLimit;
+}
+inline bool validOpenGlFenceProfile(OpenGlProfile p) {
+    return p.version == 2 && p.frames == 2 && p.commandLimit == 64 && p.reservationLimit == 16 &&
+           p.reservedBytes == 16ull * 1024 * 1024 * 1024 && p.requestLimit == 10000 && p.objectLimit == 384;
 }
 }

@@ -49,6 +49,7 @@ class KmtDriver : public Driver {
     bool submitEnabled = false;
     bool asyncSubmitEnabled = false;
     bool openglEnabled = false;
+    bool openglFencesEnabled = false;
     struct PendingSubmission { unsigned index; std::uint32_t queue, bytes, privateBytes; std::uint64_t target; };
     std::vector<PendingSubmission> pendingSubmissions;
     unsigned acceptedAsyncSubmissions = 0, peakPendingSubmissions = 0;
@@ -518,7 +519,7 @@ public:
     HwQueueResult createHwQueue(std::uint32_t context, HwQueueDesc desc, std::vector<std::uint8_t>& data) override {
         const auto parent = contextOwners.find(context);
         if (!hwQueuesEnabled || !runtime || !validHwQueue(desc) || data.size() != desc.privateBytes ||
-            parent == contextOwners.end() || parent->second.flags != 16 || hwQueues.size() >= MaxHwQueues)
+            parent == contextOwners.end() || parent->second.flags != 16 || hwQueues.size() >= (openglFencesEnabled ? OpenGlFenceHwQueues : MaxHwQueues))
             return {{Invalid, 0, 0}, 0, 0, 0};
         if (!reportedGpuUsageAcceptable()) return {{static_cast<std::int32_t>(0xc0000017u), 0, 0}, 0, 0, 0};
         D3DKMT_CREATEHWQUEUE a{}; a.hHwContext = context; a.Flags.Value = desc.flags;
@@ -575,13 +576,17 @@ public:
         std::cerr << "{\"guestStreamNegotiated\":true,\"version\":1,\"frames\":64,\"pendingCommands\":16,\"pendingSignals\":16,\"totalCommands\":1024,\"totalSignals\":256,\"requestLimit\":50000}\n";
         return GuestStreamProfile;
     }
-    OpenGlProfile beginOpenGl() override {
+    OpenGlProfile beginOpenGl(std::uint32_t version = 1) override {
         if (!gpu_diagnostic::HighResolution || openglEnabled || streamingEnabled || !asyncSubmitEnabled || !syncEnabled || !reservationEnabled ||
             !runtime || runtime->hasStopped() || !ownedAdapters.empty() || !deviceAdapters.empty() ||
-            !pendingSubmissions.empty() || !pendingHwSignals.empty()) return {};
+            !pendingSubmissions.empty() || !pendingHwSignals.empty() || (version != 1 && version != 2)) return {};
         openglEnabled = true;
-        std::cerr << "{\"openGlProfileNegotiated\":true,\"version\":1,\"frames\":2,\"commandLimit\":64,\"pendingCommands\":16,\"reservationLimit\":16,\"reservedByteLimit\":17179869184,\"requestLimit\":10000}\n";
-        return GuestOpenGlProfile;
+        openglFencesEnabled = version == 2;
+        std::cerr << "{\"openGlProfileNegotiated\":true,\"version\":" << version << ",\"frames\":2,\"commandLimit\":64,\"pendingCommands\":16,\"reservationLimit\":16,\"reservedByteLimit\":17179869184,\"requestLimit\":10000";
+        if (version == 2) std::cerr << ",\"objectLimit\":" << GuestOpenGlFenceProfile.objectLimit
+            << ",\"hwQueueLimit\":" << OpenGlFenceHwQueues << ",\"vendorObjectLimit\":" << OpenGlFenceVendorAllocations;
+        std::cerr << "}\n";
+        return version == 2 ? GuestOpenGlFenceProfile : GuestOpenGlProfile;
     }
     Result submitNativeHwCommand(std::uint32_t handle, HwSubmitDesc desc, const std::vector<std::uint8_t>& data, bool asynchronous) {
         if (!collectRetiredSubmissions()) throw std::runtime_error("Native asynchronous retirement failed");
@@ -985,7 +990,7 @@ public:
     Result createVendorAllocationImpl(std::uint32_t device, VendorAllocationDesc desc, std::vector<std::uint8_t>& data, bool withResource, std::uint32_t runtimeBytes = 0, const NativeTextureDesc* texture = nullptr) {
         if (!allocationsEnabled || !validVendorAllocation(desc) || data.size() != desc.privateBytes + runtimeBytes ||
             (runtimeBytes && (!withResource || !sharedResourcesEnabled || !validSharedVendorAllocation({desc, runtimeBytes, 0})))) return {Invalid, 0, 0};
-        if (vendorAllocations.size() >= vendorAllocationObjectLimit(capabilities().flags) || !reportedGpuUsageAcceptable())
+        if (vendorAllocations.size() >= (openglFencesEnabled ? OpenGlFenceVendorAllocations : vendorAllocationObjectLimit(capabilities().flags)) || !reportedGpuUsageAcceptable())
             return {static_cast<std::int32_t>(0xc0000017u), 0, 0};
         D3DDDI_ALLOCATIONINFO2 info{}; info.Flags.Value = desc.flags; info.Priority = desc.priority;
         static_assert(UninitializedDisplaySource == D3DDDI_ID_UNINITIALIZED && D3DDDI_ID_NOTAPPLICABLE == 0,
@@ -1781,7 +1786,7 @@ public:
                   << ",\"failedAdapterQueries\":" << failedQueries
                   << ",\"liveVendorAllocations\":" << vendorAllocations.size()
                   << ",\"peakVendorAllocationObjects\":" << peakVendorAllocationObjects
-                  << ",\"vendorAllocationObjectLimit\":" << vendorAllocationObjectLimit(capabilities().flags)
+                  << ",\"vendorAllocationObjectLimit\":" << (openglFencesEnabled ? OpenGlFenceVendorAllocations : vendorAllocationObjectLimit(capabilities().flags))
                   << ",\"vendorCpuSlotLimit\":" << (runtime ? runtime->allocationSlotLimit() : DefaultVendorCpuSlots)
                   << ",\"vendorCpuMappedByteLimit\":" << vendorCpuByteLimit(capabilities().flags)
                   << ",\"vendorCpuSlotQuotaRejections\":" << vendorCpuSlotQuotaRejections
@@ -1888,7 +1893,7 @@ static void serve(Stream& stream, const std::string& sectionName = {}, std::uint
             if (response.status == -24)
                 std::cerr << "{\"wireQuotaRejection\":true,\"op\":" << response.type
                           << ",\"liveObjects\":" << session.objectCount()
-                          << ",\"objectLimit\":" << MaxObjects << "}\n";
+                          << ",\"objectLimit\":" << session.objectLimit() << "}\n";
         }
         size = static_cast<std::uint32_t>(reply.size()); stream.write(&size, sizeof size);
         stream.write(reply.data(), reply.size());
@@ -1897,7 +1902,7 @@ static void serve(Stream& stream, const std::string& sectionName = {}, std::uint
       } catch (...) { failure = std::current_exception(); }
       std::cerr << "{\"wireObjectSummary\":true,\"peakLiveObjects\":" << peakWireObjects
                 << ",\"liveObjectsBeforeDisconnect\":" << session.objectCount()
-                << ",\"objectLimit\":" << MaxObjects << "}\n";
+                << ",\"objectLimit\":" << session.objectLimit() << "}\n";
       // Session destruction releases queue pages. A transport failure must
       // first stop the owned VM; graceful EOF waits for its normal poweroff.
       if (runtime) runtime->stop(failure ? 0 : 5000);

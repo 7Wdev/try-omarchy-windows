@@ -33,7 +33,9 @@ def validate_opengl(report, guest, records):
     require(exact(report, runtimeWorkload='opengl', hostBridgeExit=0), 'Wrong workload or host exit')
     validate_opengl_cleanup(report, records)
     profile = [r for r in records if 'openGlProfileNegotiated' in r]
-    require(len(profile) == 1 and exact(profile[0], openGlProfileNegotiated=True, version=1, frames=2,
+    require(len(profile) == 1 and (exact(profile[0], version=1) or
+            exact(profile[0], version=2, objectLimit=384, hwQueueLimit=16, vendorObjectLimit=192)) and
+            exact(profile[0], openGlProfileNegotiated=True, frames=2,
             commandLimit=64, pendingCommands=16, reservationLimit=16, reservedByteLimit=17179869184,
             requestLimit=10000), 'Missing bounded OpenGL profile')
     for key, marker in (('nativeAsyncSubmissionAcceptances', 'nativeAsyncSubmissionAccepted'),
