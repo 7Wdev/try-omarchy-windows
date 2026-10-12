@@ -23,11 +23,11 @@ There is no reliable completion date yet; the remaining work includes substantia
 | Desktop gate | Status | Acceptance requirement |
 | --- | --- | --- |
 | Guest graphics integration | In progress | Hyprland can access the graphics device and safely share buffers and synchronization. |
-| First Hyprland frame | Pending | Independently verify a correctly displayed compositor frame in the Windows app. |
+| First Hyprland frame | Pending | Independently verify a correctly displayed compositor frame in the Windows app, capture its image and update PR #2 with the result. |
 | Interactive desktop | Pending | Continuously display real apps with input, multiple windows, resizing and fullscreen up to 4K. |
 | Stable, near-native product | Pending | Pass long runs, bounded-memory and recovery checks, plus matched benchmarks meeting ≥93% of native performance. |
 
-Vulkan, CUDA and video acceleration need separate real-application acceptance tests as part of the wider goal.
+Vulkan, CUDA, video acceleration, NVIDIA-specific features and concurrent Windows/guest GPU use need separate real-application acceptance tests as part of the wider goal.
 
 Latest lab result: [two independently verified OpenGL shader frames](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-OPENGL.md)
 through Mesa and the NVIDIA bridge. Full Omarchy/Hyprland acceleration remains pending.
@@ -42,6 +42,9 @@ now passes genuine OpenGL semaphore import, GPU signals and a future GPU wait in
 The [process-exit lifetime fix](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-EXIT-LIFETIME.md)
 also passes three fresh finalizer tests and two Mesa timeline regressions. Compositor synchronization, full desktop integration,
 general stability and a separate legacy capacity rejection remain open.
+The [native texture-FD diagnostic](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-RESOURCE-FD.md)
+now passes full 4K storage checks through an imported resource, including after source/FD release, in two fresh guests.
+This advances buffer sharing; dma-buf, GBM and Hyprland integration remain pending. A large contiguous CPU readback still exhausts the current aperture.
 
 Download links below refer to official upstream releases.
 
