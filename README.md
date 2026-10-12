@@ -25,7 +25,10 @@ through Mesa and the NVIDIA bridge. Full Omarchy/Hyprland acceleration remains p
 The [first guest kernel memory-lease component](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-KERNEL-APERTURE.md)
 also passes FD isolation/revocation checks and two fresh OpenGL runs. DRM and compositor integration remain pending.
 The [native fence-sharing diagnostic](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-SYNC-FD.md)
-now preserves native fence ownership through guest kernel FDs; Mesa semaphore import and GPU queue waits remain pending.
+now preserves native fence ownership through guest kernel FDs.
+The [guest D3D12 timeline diagnostic](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-TIMELINE.md)
+also passes native fence import, nonblocking GPU signals and a future queue wait released by a second queue.
+Mesa semaphore import, compositor synchronization and full desktop integration remain pending.
 
 | Stage | Status | What must be demonstrated |
 | --- | --- | --- |
