@@ -45,6 +45,21 @@ We do not yet have the Linux graphics/display integration that lets Hyprland use
 that path. Reaching the first real Hyprland frame is the next major integration
 milestone, followed by interactive use and sustained correctness.
 
+The remaining desktop work has these acceptance gates. They are not equally
+sized, and some implementation can overlap.
+
+| Gate | Current evidence | What closes the gate |
+| --- | --- | --- |
+| Guest graphics device, buffers and synchronization | Partial: a kernel memory-lease component, native fence ownership through FDs, and isolated Mesa OpenGL draws. | The compositor can access the backend through a supported guest device path, import/export its buffers, and synchronize their use correctly. |
+| First Hyprland frame | Pending. No Omarchy/Hyprland session has rendered through this backend. | Boot the real guest session and independently verify a correctly displayed compositor frame in the Windows app. |
+| Usable interactive desktop | Pending. Bounded shader diagnostics do not exercise a desktop session. | Continuously display real apps and multiple windows, with working input, focus, resizing and fullscreen up to 4K. |
+| Stable and performant product | Pending. No matched near-native result or long desktop run has passed. | Sustain desktop workloads, recover from failures, keep memory bounded, and meet ≥93% of matched native performance on the agreed workloads. |
+
+The first three gates describe the route to a usable desktop. The fourth is
+required for the stable, near-native product goal. Vulkan, CUDA and video
+acceleration also need separate implementation and real application tests;
+a visible desktop alone will not complete those API requirements.
+
 There is no defensible completion date yet. Kernel/device integration and the
 guest graphics APIs are substantial systems work; their compatibility has not
 been established by the current diagnostic. Counting completed stages cannot
