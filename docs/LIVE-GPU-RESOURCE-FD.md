@@ -77,9 +77,11 @@ its native resources and owned VM still clean up normally.
 The earlier full-buffer diagnostic also remains in the evidence as a failure:
 a contiguous 33 MB CPU mapping exhausts the 128-slot aperture, and the UMD
 reports device removal after that allocation failure. The final banded
-diagnostic avoids that large lease. **General CPU aperture fragmentation and
-capacity have not been fixed.** A successful banded check must not be used to
-claim that arbitrary 4K readbacks or long desktop sessions are stable.
+diagnostic avoids that large lease. A subsequent [capacity comparison](CPU-APERTURE-CAPACITY.md)
+reproduces the old failure and passes the full-buffer workload in two fresh
+256-slot guests with unchanged physical quotas. General aperture fragmentation,
+arbitrary 4K readbacks and long desktop sessions remain unverified; the original
+banded captures here retain their narrower acceptance scope.
 
 The legacy initialization wrapper returns 1 and retains
 `diagnosticAccepted=false` for these captures. It expects a different runtime

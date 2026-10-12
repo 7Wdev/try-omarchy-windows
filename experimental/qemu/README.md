@@ -108,7 +108,10 @@ Commands outside the selected count are rejected. Portable capacity/parser
 checks cover all five capacities. The 256-slot profile reserves a larger guest
 virtual BAR to fit a full 4K map beside many small UMD views. It retains the
 4K host's 96 MiB mapped-memory and 64 MiB per-view bounds; the extra virtual
-space does not allocate host memory. Physical 256-slot acceptance is pending.
+space does not allocate host memory. Two fresh 256-slot guests now pass the
+[bounded full-buffer comparison](../../docs/CPU-APERTURE-CAPACITY.md), with the
+old 128-slot failure retained and identical native bridge/guest/kernel inputs.
+This is not general fragmentation, desktop stability or performance acceptance.
 Earlier 128-slot rendering evidence is linked from the GPU roadmap. The fixed
 native owner controls `allocation-mapping` over QMP with
 `map:slot:source-address:bytes:generation` and `unmap:slot:generation`.

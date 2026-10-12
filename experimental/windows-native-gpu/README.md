@@ -95,6 +95,14 @@ synchronization objects and 256 aggregate wire objects; the
 default read-only fence BAR has 64 pages. Earlier hardware acceptance includes repeat, owned
 VM exit, old-guest, capacity-rejection and restored CPU write controls.
 
+The explicit [256-slot virtual layout](../../docs/CPU-APERTURE-CAPACITY.md)
+keeps the corresponding 128-slot profile's physical/object quotas. The 4K
+profile's CPU limit remains 96 MiB with a 64 MiB per-view bound; its GPU mapping
+limit remains 256 MiB. Two actual guests now verify a full 33 MB resource-FD
+readback using that layout. Older profiles retain their existing limits.
+This bounded comparison does not establish general fragmentation handling or
+desktop stability.
+
 [Allocation retirement](../../docs/LIVE-ALLOCATION-RETIREMENT.md),
 [bounded command submission](../../docs/LIVE-COMMAND-SUBMISSION.md),
 [GPU reservations](../../docs/LIVE-GPU-RESERVATION.md) and
