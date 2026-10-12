@@ -1,7 +1,7 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="800" height="94" viewBox="0 0 800 94" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="112" viewBox="0 0 800 112" role="img" aria-labelledby="title desc">
   <title id="title">NVIDIA backend: 4 of 8 verification stages demonstrated</title>
   <desc id="desc">Four stages demonstrated in the lab. Linux graphics integration, Hyprland desktop, required APIs and performance validation remain pending. Stage counts do not measure engineering effort.</desc>
-  <rect width="800" height="94" rx="10" fill="#141b24"/>
+  <rect width="800" height="112" rx="10" fill="#141b24"/>
   <text x="20" y="28" fill="#eef4fc" font-family="sans-serif" font-size="17">NVIDIA backend · verified stages 4/8</text>
   <g transform="translate(20 42)">
     <rect width="88" height="18" rx="4" fill="#51c38b"/><rect x="96" width="88" height="18" rx="4" fill="#51c38b"/>
@@ -9,5 +9,6 @@
     <rect x="384" width="88" height="18" rx="4" fill="#3b4657"/><rect x="480" width="88" height="18" rx="4" fill="#3b4657"/>
     <rect x="576" width="88" height="18" rx="4" fill="#3b4657"/><rect x="672" width="88" height="18" rx="4" fill="#3b4657"/>
   </g>
-  <text x="20" y="81" fill="#bac7d9" font-family="sans-serif" font-size="12">Green: demonstrated in the lab · Gray: pending · Updated 2026-10-12</text>
+  <text x="20" y="81" fill="#eef4fc" font-family="sans-serif" font-size="14">Next milestone: first correctly displayed Hyprland frame</text>
+  <text x="20" y="101" fill="#bac7d9" font-family="sans-serif" font-size="12">Green: demonstrated in the lab · Gray: pending · Updated 2026-10-12</text>
 </svg>

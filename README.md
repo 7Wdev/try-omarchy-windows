@@ -14,6 +14,12 @@ through QEMU/WHPX. Full acceleration of the Omarchy/Hyprland desktop through thi
 **4/8 verification stages demonstrated.** This counts the stages below; it is not an estimate of engineering work completed.
 The largest integration work remains. [See the roadmap and evidence](docs/GPU-BACKEND-PROGRESS.md).
 
+**Distance to the full desktop:** the new backend renders verified test workloads, but has not yet rendered an Omarchy/Hyprland session.
+The next major milestone is the **first correctly displayed Hyprland frame**. Getting there requires a guest graphics device path,
+compositor-compatible buffers and synchronization, and continuous presentation into the Windows app.
+Interactive use, long-run stability and the ≥93% native-performance target then need their own acceptance tests.
+There is no reliable completion date yet; the remaining work includes substantial driver and compositor integration.
+
 Latest lab result: [two independently verified OpenGL shader frames](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-OPENGL.md)
 through Mesa and the NVIDIA bridge. Full Omarchy/Hyprland acceleration remains pending.
 The [first guest kernel memory-lease component](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-KERNEL-APERTURE.md)
