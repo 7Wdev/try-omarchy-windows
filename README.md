@@ -28,7 +28,9 @@ The [native fence-sharing diagnostic](https://github.com/7Wdev/try-omarchy-windo
 now preserves native fence ownership through guest kernel FDs.
 The [guest D3D12 timeline diagnostic](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-TIMELINE.md)
 also passes native fence import, nonblocking GPU signals and a future queue wait released by a second queue.
-Mesa semaphore import, compositor synchronization and full desktop integration remain pending.
+The [opt-in Mesa native timeline FD test](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-MESA-FENCE-FD.md)
+now passes genuine OpenGL semaphore import, GPU signals and a future GPU wait in two fresh guests.
+Compositor synchronization and full desktop integration remain pending; one intermittent legacy teardown failure is still under investigation.
 
 | Stage | Status | What must be demonstrated |
 | --- | --- | --- |
