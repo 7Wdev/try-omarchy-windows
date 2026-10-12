@@ -27,7 +27,7 @@ also passes genuine OpenGL semaphore imports, signals and a future GPU wait in
 two fresh guests. Binary Vulkan interoperability, `sync_file` and compositor
 integration remain pending; this advances stage 5 without completing it.
 
-![Four of eight verification stages demonstrated](images/gpu-backend-progress.svg)
+![Four of eight verification stages demonstrated; zero of four desktop acceptance gates complete](images/gpu-backend-progress.svg)
 
 The normal upstream Try Omarchy desktop is already available. This roadmap
 tracks the new QEMU/Windows-native NVIDIA backend requested for this fork.
@@ -39,7 +39,7 @@ Its results currently come from isolated diagnostic workloads.
 | 2. Windows bridge and D3D12 initialization | Demonstrated in the lab | Genuine Linux NVIDIA runtime initializes through QEMU and creates owned Windows KMT objects. |
 | 3. 4K guest shaders and shared GPU textures | Demonstrated in the lab | [Independent 4K pixel checks, GPU copies and fence retirement](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-4K.md). |
 | 4. Repeated guest rendering | Demonstrated in the bounded lab | [64-frame guest runs](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-GUEST-STREAM.md), safe allocator/texture reuse, first/last audits and complete cleanup. This does not establish long-run stability or all-frame display. |
-| 5. Guest graphics/device integration | Pending | Replace the diagnostic interposer with a usable guest device/driver path. Integrate graphics buffers, memory ownership, synchronization and the compositor's DRM/GBM/display requirements. |
+| 5. Guest graphics/device integration | In progress | Replace the diagnostic interposer with a usable guest device/driver path. Integrate graphics buffers, memory ownership, synchronization and the compositor's DRM/GBM/display requirements. |
 | 6. Interactive Omarchy/Hyprland desktop | Pending | Boot Omarchy through the new backend and validate real apps, cursor/keyboard input, focus, resizing, fullscreen, multiple windows and correct continuously displayed frames. |
 | 7. Required APIs | Pending | Test OpenGL, Vulkan, CUDA and video acceleration in real guest applications. D3D12 shader success does not establish support for these APIs. |
 | 8. Reliability and ≥93% native performance | Pending | Matched guest/native benchmarks across resolutions up to 4K, long runs, stable memory use, and device/VM failure recovery. |
@@ -51,12 +51,14 @@ We do not yet have the Linux graphics/display integration that lets Hyprland use
 that path. Reaching the first real Hyprland frame is the next major integration
 milestone, followed by interactive use and sustained correctness.
 
-The remaining desktop work has these acceptance gates. They are not equally
-sized, and some implementation can overlap.
+**0 of 4 desktop acceptance gates are complete.** Guest graphics integration is
+in progress. The gates below are not equally sized, and some implementation can
+overlap. Amber in the progress graphic marks work in progress without assigning
+an unmeasured partial percentage.
 
 | Gate | Current evidence | What closes the gate |
 | --- | --- | --- |
-| Guest graphics device, buffers and synchronization | Partial: kernel memory leases, imported native fences with GPU ordering, isolated Mesa OpenGL draws, and opt-in GL native timeline FDs. | The compositor can access the backend through a supported guest device path, import/export its buffers, and synchronize their use correctly. |
+| Guest graphics device, buffers and synchronization | In progress: kernel memory leases, imported native fences with GPU ordering, isolated Mesa OpenGL draws, and opt-in GL native timeline FDs. | The compositor can access the backend through a supported guest device path, import/export its buffers, and synchronize their use correctly. |
 | First Hyprland frame | Pending. No Omarchy/Hyprland session has rendered through this backend. | Boot the real guest session and independently verify a correctly displayed compositor frame in the Windows app. |
 | Usable interactive desktop | Pending. Bounded shader diagnostics do not exercise a desktop session. | Continuously display real apps and multiple windows, with working input, focus, resizing and fullscreen up to 4K. |
 | Stable and performant product | Pending. No matched near-native result or long desktop run has passed. | Sustain desktop workloads, recover from failures, keep memory bounded, and meet ≥93% of matched native performance on the agreed workloads. |

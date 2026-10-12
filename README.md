@@ -9,16 +9,25 @@
 The NVIDIA bridge has demonstrated [4K guest shaders and GPU texture handoffs](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-4K.md)
 through QEMU/WHPX. Full acceleration of the Omarchy/Hyprland desktop through this new backend remains under development.
 
-![NVIDIA backend progress: 4 of 8 verification stages demonstrated](docs/images/gpu-backend-progress.svg)
+![NVIDIA backend: 4 of 8 verification stages demonstrated; Omarchy desktop: 0 of 4 acceptance gates complete](docs/images/gpu-backend-progress.svg)
 
-**4/8 verification stages demonstrated.** This counts the stages below; it is not an estimate of engineering work completed.
-The largest integration work remains. [See the roadmap and evidence](docs/GPU-BACKEND-PROGRESS.md).
+**4/8 verification stages demonstrated; 0/4 desktop acceptance gates complete.** These are checklist counts, not percentages of engineering work completed.
+Guest graphics integration is in progress. The largest integration work remains. [See the roadmap and evidence](docs/GPU-BACKEND-PROGRESS.md).
 
 **Distance to the full desktop:** the new backend renders verified test workloads, but has not yet rendered an Omarchy/Hyprland session.
 The next major milestone is the **first correctly displayed Hyprland frame**. Getting there requires a guest graphics device path,
 compositor-compatible buffers and synchronization, and continuous presentation into the Windows app.
 Interactive use, long-run stability and the ≥93% native-performance target then need their own acceptance tests.
 There is no reliable completion date yet; the remaining work includes substantial driver and compositor integration.
+
+| Desktop gate | Status | Acceptance requirement |
+| --- | --- | --- |
+| Guest graphics integration | In progress | Hyprland can access the graphics device and safely share buffers and synchronization. |
+| First Hyprland frame | Pending | Independently verify a correctly displayed compositor frame in the Windows app. |
+| Interactive desktop | Pending | Continuously display real apps with input, multiple windows, resizing and fullscreen up to 4K. |
+| Stable, near-native product | Pending | Pass long runs, bounded-memory and recovery checks, plus matched benchmarks meeting ≥93% of native performance. |
+
+Vulkan, CUDA and video acceleration need separate real-application acceptance tests as part of the wider goal.
 
 Latest lab result: [two independently verified OpenGL shader frames](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-OPENGL.md)
 through Mesa and the NVIDIA bridge. Full Omarchy/Hyprland acceleration remains pending.
@@ -31,17 +40,6 @@ also passes native fence import, nonblocking GPU signals and a future queue wait
 The [opt-in Mesa native timeline FD test](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-MESA-FENCE-FD.md)
 now passes genuine OpenGL semaphore import, GPU signals and a future GPU wait in two fresh guests.
 Compositor synchronization and full desktop integration remain pending; one intermittent legacy teardown failure is still under investigation.
-
-| Stage | Status | What must be demonstrated |
-| --- | --- | --- |
-| Fork and upstream updates | Demonstrated | Preserve upstream fixes and the custom QEMU work. |
-| Windows driver bridge and D3D12 initialization | Demonstrated in the lab | Genuine NVIDIA Linux runtime initializes through QEMU and owned native Windows driver objects. |
-| 4K shaders and shared GPU textures | Demonstrated in the lab | Independent pixel checks and retired GPU texture handoffs. |
-| Repeated guest rendering | Demonstrated in the bounded lab | 64-frame 4K draws, safe storage reuse, two pixel audits, and complete VM/host cleanup. Display stability and long runs remain open. |
-| Linux graphics and display integration | Pending | Kernel/DRM render-node access, buffer sharing and synchronization usable by Linux graphics applications. |
-| Full Omarchy/Hyprland desktop | Pending | Interactive desktop, correct frames, resizing, fullscreen, and display/input integration through this backend. |
-| Required graphics, compute and video APIs | Pending | OpenGL, Vulkan, CUDA, and video acceleration work in the guest with real application tests. |
-| Reliability and ≥93% native performance | Pending | Repeated long runs, recovery tests, and matched native/guest benchmarks across resolutions up to 4K. |
 
 Download links below refer to official upstream releases.
 
