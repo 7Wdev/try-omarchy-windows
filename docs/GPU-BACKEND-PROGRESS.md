@@ -42,6 +42,13 @@ now passes the full 33 MB readback in two fresh 256-slot guests, retaining the
 128-slot failure and the same 96 MiB physical mapping limit. General aperture
 fragmentation, desktop stability and performance remain unverified.
 
+The [guest broker peer boundary](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/GUEST-GRAPHICS-BROKER.md)
+now authenticates real client processes and tracks their kernel lifetime through
+socket disconnect, library finalizers and a zombie leader with a live thread.
+Its contract passes as UID 65534 in the guest before a successful full 4K GPU
+regression. GPU routing and cross-process native imports remain unimplemented;
+this is a component of stage 5 and closes no desktop gate.
+
 ![Four of eight verification stages demonstrated; zero of four desktop acceptance gates complete](images/gpu-backend-progress.svg)
 
 The normal upstream Try Omarchy desktop is already available. This roadmap
