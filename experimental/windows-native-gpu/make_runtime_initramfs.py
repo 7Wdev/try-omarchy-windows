@@ -22,6 +22,7 @@ def main():
     for name in ('d3d12', 'd3d12core', 'dxcore'):
         parser.add_argument('--' + name, type=pathlib.Path, default=pathlib.Path('/usr/lib/wsl/lib/lib' + name + '.so'))
     parser.add_argument('--strace', type=pathlib.Path, help='Optional locally supplied syscall tracer; failed calls only')
+    parser.add_argument('--exit-lifetime-probe', type=pathlib.Path, help='Optional guest-only DSO finalizer diagnostic, exclusive to the OpenGL workload')
     parser.add_argument('--dependency-directory', type=pathlib.Path, action='append', default=[], help='Optional local ELF dependencies; mapped to the guest library directory')
     parser.add_argument('--extra-runtime', type=pathlib.Path, action='append', default=[], help='Installed library loaded dynamically; preserves its absolute guest path')
     parser.add_argument('--mesa-runtime-directory', type=pathlib.Path, help='Private non-GLVND Mesa install for the explicit OpenGL probe; relocated to /opt/wddm-mesa')
@@ -38,6 +39,11 @@ def main():
         parser.error('Invalid Linux UMD module basename')
     files = {'init': args.init, 'guest-probe': args.probe, 'linux-ioctl-bridge.so': args.shim}
     roots = [args.probe, args.shim, args.linux_umd, args.d3d12, args.d3d12core, args.dxcore]
+    if args.exit_lifetime_probe:
+        if args.runtime_workload != 'opengl':
+            parser.error('The exit-lifetime DSO requires the explicit OpenGL workload')
+        files['runtime-exit-probe.so'] = args.exit_lifetime_probe
+        roots.append(args.exit_lifetime_probe)
     if bool(args.guest_aperture_module) != bool(args.guest_aperture_contract):
         parser.error('The guest aperture module and contract probe must be supplied together')
     if args.guest_aperture_module:

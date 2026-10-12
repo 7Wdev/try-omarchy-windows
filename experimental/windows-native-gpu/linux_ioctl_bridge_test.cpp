@@ -15,6 +15,23 @@
 #include <dlfcn.h>
 #include <pthread.h>
 static int failed(const char* message) { std::fprintf(stderr, "FAIL: %s errno=%d\n", message, errno); return 1; }
+static int exitDescriptor = -1;
+__attribute__((destructor)) static void lateDescriptorFinalizer() {
+    if (exitDescriptor < 0) return;
+    if (fcntl(exitDescriptor, F_GETFD) < 0) { failed("client FD closed before library finalizer"); _exit(90); }
+    if (open("/dev/dxg", O_RDONLY | O_CLOEXEC) != -1 || errno != ESHUTDOWN) {
+        failed("new finalizer device open forwarded"); _exit(91);
+    }
+    D3DKMT_OPENADAPTERFROMLUID adapter{}; adapter.AdapterLuid.LowPart = 0x57475055;
+    if (ioctl(exitDescriptor, _IOWR('G', 1, D3DKMT_OPENADAPTERFROMLUID), &adapter) != -1 || errno != ESHUTDOWN) {
+        failed("late finalizer ioctl forwarded"); _exit(92);
+    }
+    using Begin = int (*)();
+    const auto begin = reinterpret_cast<Begin>(dlsym(RTLD_DEFAULT, "wddm_bridge_begin_opengl"));
+    if (!begin || begin() != -1 || errno != ESHUTDOWN) { failed("late profile hook forwarded"); _exit(93); }
+    if (close(exitDescriptor)) { failed("late original FD close failed"); _exit(94); }
+    std::fprintf(stderr, "EXIT_DESCRIPTOR_FINALIZER_PASS liveUntilFinalizer=true requestsRejected=true close=true\n");
+}
 int main(int argc, char** argv) {
     if (argc != 2) return 2;
     const auto mode = argv[1];
@@ -24,6 +41,7 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (fd < 0) return failed("open");
+    if (!std::strcmp(mode, "exit-lifetime-fd")) { exitDescriptor = fd; return 0; }
     if (!std::strncmp(mode,"hw-wait-",8) || !std::strncmp(mode,"context-wait-",13)) {
         const bool contextStream = !std::strncmp(mode,"context-wait-",13);
         const D3DKMT_HANDLE object=1; const UINT64 value=5;

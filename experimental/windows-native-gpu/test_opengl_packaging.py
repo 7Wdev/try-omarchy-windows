@@ -37,6 +37,22 @@ class OpenGlPackaging(unittest.TestCase):
             with self.subTest(extra=extra), self.assertRaises(SystemExit): self.run_packer(*extra)
         self.assertFalse(self.output.exists())
 
+    def test_exit_probe_requires_opengl_and_valid_elf(self):
+        with self.assertRaises(SystemExit): self.run_packer('--exit-lifetime-probe', str(self.input))
+        bad = self.base/'bad-exit-probe.so'; bad.write_bytes(b'not an ELF')
+        with self.assertRaises(SystemExit):
+            self.run_packer('--runtime-workload', 'opengl', '--mesa-runtime-directory', str(self.mesa),
+                            '--exit-lifetime-probe', str(bad))
+        self.assertFalse(self.output.exists())
+
+    def test_exit_probe_is_explicitly_packaged_and_hashed(self):
+        self.run_packer('--runtime-workload', 'opengl', '--mesa-runtime-directory', str(self.mesa),
+                        '--exit-lifetime-probe', str(self.input))
+        manifest = json.loads(self.output.with_suffix('.manifest.json').read_text())
+        probe = next(f for f in manifest['files'] if f['path'] == '/runtime-exit-probe.so')
+        self.assertEqual(probe['bytes'], len(self.elf))
+        self.assertEqual(len(probe['sha256']), 64)
+
     def test_bounded_relocation_manifest(self):
         self.run_packer('--runtime-workload','opengl','--mesa-runtime-directory',str(self.mesa))
         manifest = json.loads(self.output.with_suffix('.manifest.json').read_text())

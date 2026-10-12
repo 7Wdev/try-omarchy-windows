@@ -154,6 +154,13 @@ int main(void) {
     if (!eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT) ||
         !eglDestroyContext(display, context) || !eglDestroySurface(display, surface) || !eglTerminate(display))
         return fail("Teardown");
+#ifdef WDDM_BRIDGE_EXIT_LIFETIME_TEST
+    // Leave the DSO loaded. Its ELF finalizer runs after the bridge's atexit
+    // hook; retaining an existing CPU fence view must remain safe until exit.
+    void* lifetime = dlopen("/runtime-exit-probe.so", RTLD_NOW | RTLD_LOCAL);
+    int (*arm_lifetime)(void) = lifetime ? (int (*)(void))dlsym(lifetime, "wddm_exit_lifetime_arm") : NULL;
+    if (!arm_lifetime || arm_lifetime()) return fail("ExitLifetime");
+#endif
     puts("OPENGL_TEST_COMPLETE frames=2 independentPixelAudit=pending desktop=false");
     return 0;
 }

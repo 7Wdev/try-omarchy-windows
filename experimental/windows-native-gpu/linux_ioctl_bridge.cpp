@@ -113,7 +113,8 @@ class Transport {
         input = output = -1;
     }
 public:
-    ~Transport() {
+    ~Transport() { finish(); }
+    void finish() {
         disconnect();
         if (child <= 0) return;
         int status = 0;
@@ -122,6 +123,7 @@ public:
             const auto result = waitpid(child, &status, WNOHANG);
             if (result == child) {
                 std::fprintf(stderr, "LINUX_BRIDGE workerReaped=true exit=%d\n", WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+                child = -1;
                 return;
             }
             if (result < 0 && errno != EINTR) {
@@ -208,6 +210,7 @@ public:
     void fail() { broken = true; disconnect(); }
 };
 struct Response { Header header; Reply result; std::vector<std::uint8_t> data; };
+std::atomic<bool> bridgeStopped{false};
 class Bridge {
     Transport transport;
     guest_paging::Fences pagingFences;
@@ -361,7 +364,7 @@ class Bridge {
     }
 public:
     std::mutex guard;
-    ~Bridge() {
+    void finish() {
         std::fprintf(stderr, "LINUX_BRIDGE summary completedQueries=%u privateQueries=%u nativeContexts=%u realDxgForwarding=false\n",
                      completedQueries, privateQueries, contexts);
         std::fprintf(stderr, "LINUX_BRIDGE pagingSummary queues=%u directLoads=%llu\n", pagingFences.total(),
@@ -370,10 +373,18 @@ public:
                      allocationMemory.total(), allocationMemory.released(), static_cast<unsigned long long>(allocationMemory.directLoads()));
         for (unsigned n = 0; n < 256; ++n)
             if (counts[n]) std::fprintf(stderr, "LINUX_BRIDGE ioctlSummary nr=%u count=%u\n", n, counts[n]);
-        for (const auto& entry : descriptors) rawClose(entry.first);
+        // Driver DSO finalizers and other threads can still read existing CPU
+        // views after this atexit hook. Keep mappings/controllers and client
+        // descriptors alive; exit_group closes/revokes them after all finalizers.
+        // Closing client FDs here also permits reuse before a late DSO closes
+        // its original descriptor. The bounded bridge allocation is process-owned.
+        std::fprintf(stderr, "LINUX_BRIDGE processExitViewsRetained=true pagingFences=%zu hwQueueFences=%zu syncFences=%zu allocationViews=%zu release=kernel-process-exit\n",
+                     pagingFences.active(), hwQueueFences.active(), syncFences.active(), allocationMemory.active());
+        transport.finish();
     }
     int openDevice(int flags) {
         std::lock_guard<std::mutex> lock(guard);
+        if (bridgeStopped) throw Error(ESHUTDOWN);
         if ((flags & O_CREAT) || (flags & O_TRUNC) || (flags & O_TMPFILE) == O_TMPFILE) throw Error(EINVAL);
         negotiate();
         const auto fd = static_cast<int>(syscall(SYS_memfd_create, "wddm-bridge-diagnostic", (flags & O_CLOEXEC) ? MFD_CLOEXEC : 0));
@@ -1438,14 +1449,16 @@ public:
     }
     void protocolFailed() { transport.fail(); }
 };
-// Some runtime DSO finalizers close descriptors after C++ exit handlers have
-// run. Preserve the allocation for their libc hooks, but explicitly destroy
-// owned bridge state once and bypass it in later finalizers.
-std::atomic<bool> bridgeStopped{false};
+// The process owns the bridge until the kernel destroys its address space.
+// Stop forwarding under the same mutex used by every hook, but preserve state
+// and CPU views for late DSO finalizers. Explicit object destruction during
+// normal execution still releases its mappings and native references promptly.
 Bridge* bridgeInstance = nullptr;
 void stopBridge() {
-    bridgeStopped = true;
-    if (bridgeInstance) bridgeInstance->~Bridge();
+    if (!bridgeInstance) return;
+    std::lock_guard<std::mutex> lock(bridgeInstance->guard);
+    if (bridgeStopped.exchange(true)) return;
+    bridgeInstance->finish();
 }
 Bridge& bridge() {
     static Bridge* instance = [] {
@@ -1471,6 +1484,7 @@ bool modeArgument(int flags) { return (flags & O_CREAT) || (flags & O_TMPFILE) =
 extern "C" int wddm_bridge_prepare_native_texture(std::uint32_t width, std::uint32_t height, std::uint32_t format, std::uint32_t flags) {
     if (bridgeStopped) { errno = ESHUTDOWN; return -1; }
     auto& state = bridge(); std::lock_guard<std::mutex> lock(state.guard);
+    if (bridgeStopped) { errno = ESHUTDOWN; return -1; }
     try { state.prepareNativeTexture({width,height,format,flags}); return 0; }
     catch (const Error& error) { errno = error.number; }
     catch (...) { state.protocolFailed(); errno = EIO; }
@@ -1481,6 +1495,7 @@ extern "C" int wddm_bridge_prepare_native_texture(std::uint32_t width, std::uint
 extern "C" int wddm_bridge_begin_streaming() {
     if (bridgeStopped) { errno = ESHUTDOWN; return -1; }
     auto& state = bridge(); std::lock_guard<std::mutex> lock(state.guard);
+    if (bridgeStopped) { errno = ESHUTDOWN; return -1; }
     try { state.beginStreaming(); return 0; }
     catch (const Error& error) { errno = error.number; }
     catch (...) { state.protocolFailed(); errno = EIO; }
@@ -1489,6 +1504,7 @@ extern "C" int wddm_bridge_begin_streaming() {
 extern "C" int wddm_bridge_begin_opengl() {
     if (bridgeStopped) { errno = ESHUTDOWN; return -1; }
     auto& state = bridge(); std::lock_guard<std::mutex> lock(state.guard);
+    if (bridgeStopped) { errno = ESHUTDOWN; return -1; }
     try { state.beginOpenGl(); return 0; }
     catch (const Error& error) { errno = error.number; }
     catch (...) { state.protocolFailed(); errno = EIO; }
@@ -1497,6 +1513,7 @@ extern "C" int wddm_bridge_begin_opengl() {
 extern "C" int wddm_bridge_begin_opengl_fences() {
     if (bridgeStopped) { errno = ESHUTDOWN; return -1; }
     auto& state = bridge(); std::lock_guard<std::mutex> lock(state.guard);
+    if (bridgeStopped) { errno = ESHUTDOWN; return -1; }
     try { state.beginOpenGl(true); return 0; }
     catch (const Error& error) { errno = error.number; }
     catch (...) { state.protocolFailed(); errno = EIO; }
@@ -1505,6 +1522,7 @@ extern "C" int wddm_bridge_begin_opengl_fences() {
 extern "C" int wddm_bridge_consume_streaming_texture(std::uint64_t target, std::uint64_t* hash) {
     if (bridgeStopped || !hash) { errno = EINVAL; return -1; }
     auto& state = bridge(); std::lock_guard<std::mutex> lock(state.guard);
+    if (bridgeStopped) { errno = ESHUTDOWN; return -1; }
     try { *hash = state.consumeSharedTexture(target, true); return 0; }
     catch (const Error& error) { errno = error.number; }
     catch (...) { state.protocolFailed(); errno = EIO; }
@@ -1513,6 +1531,7 @@ extern "C" int wddm_bridge_consume_streaming_texture(std::uint64_t target, std::
 extern "C" int wddm_bridge_consume_shared_texture(std::uint64_t target, std::uint64_t* hash) {
     if (bridgeStopped || !hash) { errno = EINVAL; return -1; }
     auto& state = bridge(); std::lock_guard<std::mutex> lock(state.guard);
+    if (bridgeStopped) { errno = ESHUTDOWN; return -1; }
     try { *hash = state.consumeSharedTexture(target); return 0; }
     catch (const Error& error) { errno = error.number; }
     catch (...) { state.protocolFailed(); errno = EIO; }
@@ -1536,7 +1555,7 @@ extern "C" int openat(int directory, const char* path, int flags, ...) {
 extern "C" int close(int fd) {
     if (bridgeStopped) return rawClose(fd);
     const auto saved = errno;
-    { auto& state = bridge(); std::lock_guard<std::mutex> lock(state.guard); state.closed(fd); }
+    { auto& state = bridge(); std::lock_guard<std::mutex> lock(state.guard); if (!bridgeStopped) state.closed(fd); }
     errno = saved; return rawClose(fd);
 }
 extern "C" int ioctl(int fd, unsigned long requestNumber, ...) noexcept {
@@ -1545,6 +1564,7 @@ extern "C" int ioctl(int fd, unsigned long requestNumber, ...) noexcept {
     va_list a; va_start(a, requestNumber); void* pointer = va_arg(a, void*); va_end(a);
     if (bridgeStopped) { errno = ESHUTDOWN; return -1; }
     auto& state = bridge(); std::lock_guard<std::mutex> lock(state.guard);
+    if (bridgeStopped) { errno = ESHUTDOWN; return -1; }
     const auto saved = errno;
     if (!state.owns(fd)) { errno = saved; return static_cast<int>(syscall(SYS_ioctl, fd, requestNumber, pointer)); }
     try { return state.dispatch(requestNumber, pointer); }

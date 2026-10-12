@@ -29,7 +29,12 @@ def validate_opengl_cleanup(report, records):
                 'Report/cleanup receipt mismatch')
 
 
-def validate_opengl(report, guest, records):
+def validate_opengl_rendering(report, guest, records):
+    """Audit the actual draws and native/VM cleanup independently of guest exit.
+
+    A caller testing an intentional process crash must validate that signal and
+    exit separately. Normal success must use validate_opengl below.
+    """
     require(exact(report, runtimeWorkload='opengl', hostBridgeExit=0), 'Wrong workload or host exit')
     validate_opengl_cleanup(report, records)
     profile = [r for r in records if 'openGlProfileNegotiated' in r]
@@ -62,7 +67,6 @@ def validate_opengl(report, guest, records):
             for r in records for flags in (131, 1155)), 'Missing native NT-shareable fence creation')
     def matches(pattern):
         return re.findall(r'^' + pattern + r'[ \t\r]*$', guest, re.M)
-    require(matches(r'BRIDGE_RUNTIME_EXIT=(\d+)') == ['0'], 'Guest runtime did not finish normally')
     require(guest.splitlines().count('OPENGL_TEST_BEGIN api=OpenGL requested=3.3 width=130 height=73 frames=2 display=false') == 1,
             'Wrong OpenGL probe profile')
     require(guest.splitlines().count('OPENGL_TEST_COMPLETE frames=2 independentPixelAudit=pending desktop=false') == 1,
@@ -106,6 +110,13 @@ def validate_opengl(report, guest, records):
             'openGlConformanceVerified': False, 'openGl4kVerified': False, 'nearNativePerformanceVerified': False,
             'renderer': renderer[0], 'version': version[0], 'frames': audited,
             'retiredNativeCommands': len(report['nativeAsyncSubmissionRetirements'])}
+
+
+def validate_opengl(report, guest, records):
+    require(re.findall(r'^BRIDGE_RUNTIME_EXIT=(\d+)[ \t\r]*$', guest, re.M) == ['0'],
+            'Guest runtime did not finish normally')
+    require('BRIDGE_RUNTIME_SIGNAL' not in guest, 'Unexpected guest runtime signal')
+    return validate_opengl_rendering(report, guest, records)
 
 
 def main():

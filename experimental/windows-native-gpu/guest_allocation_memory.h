@@ -91,6 +91,7 @@ class Memory {
     }
 public:
     Memory() = default;
+    std::size_t active() const { return mappings.size(); }
     Memory(const Memory&) = delete;
     ~Memory() { if (resource.fd >= 0) for (const auto& item : mappings) munmap(item.second.data, item.second.bytes); }
     bool contains(std::uint32_t allocation) const { return mappings.count(allocation) != 0; }

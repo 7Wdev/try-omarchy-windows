@@ -179,7 +179,11 @@ int main(void) {
         if (child > 0) {
             struct sigaction action = {0}; action.sa_handler = timeout_handler;
             sigaction(SIGALRM, &action, NULL); alarm(runtime_deadline);
-            if (waitpid(child, &status, 0) == child) status = WIFEXITED(status) ? WEXITSTATUS(status) : 128;
+            if (waitpid(child, &status, 0) == child) {
+                if (WIFSIGNALED(status))
+                    printf("BRIDGE_RUNTIME_SIGNAL number=%d coreDumped=%s\n", WTERMSIG(status), WCOREDUMP(status) ? "true" : "false");
+                status = WIFEXITED(status) ? WEXITSTATUS(status) : 128;
+            }
             else { kill(child, SIGKILL); waitpid(child, NULL, 0); status = 124; }
             alarm(0);
         }

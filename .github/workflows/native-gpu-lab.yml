@@ -102,6 +102,7 @@ jobs:
           c++ -std=c++17 -Wall -Wextra -Werror -isystem .runtime-headers/include -isystem .runtime-headers/include/wsl/stubs -isystem .runtime-dxg/include experimental/windows-native-gpu/linux_ioctl_bridge_test.cpp -ldl -o /tmp/linux-ioctl-bridge-test
           c++ -std=c++17 -Wall -Wextra -Werror -isystem .runtime-headers/include -isystem .runtime-headers/include/wsl/stubs -c experimental/windows-native-gpu/umd_context_probe.cpp -o /tmp/runtime-probe.o
           c++ -std=c++17 -Wall -Wextra -Werror -isystem .runtime-headers/include -isystem .runtime-headers/include/wsl/stubs -isystem .runtime-dxg/include -c experimental/windows-native-gpu/sync_fd_probe.cpp -o /tmp/sync-fd-probe.o
+          c++ -std=c++17 -Wall -Wextra -Werror -shared -fPIC -isystem .runtime-headers/include -isystem .runtime-headers/include/wsl/stubs -isystem .runtime-dxg/include experimental/windows-native-gpu/exit_lifetime_probe.cpp -o /tmp/exit-lifetime-probe.so
           c++ -std=c++17 -Wall -Wextra -Werror -DWDDM_BRIDGE_4K_LAB=1 -isystem .runtime-headers/include -isystem .runtime-headers/include/wsl/stubs -isystem .runtime-dxg/include -shared -fPIC experimental/windows-native-gpu/linux_ioctl_bridge.cpp -pthread -o /tmp/linux-ioctl-bridge-4k.so
           c++ -std=c++17 -Wall -Wextra -Werror -DWDDM_BRIDGE_4K_LAB=1 -isystem .runtime-headers/include -isystem .runtime-headers/include/wsl/stubs -c experimental/windows-native-gpu/umd_context_probe.cpp -o /tmp/runtime-probe-4k.o
           c++ -std=c++17 -Wall -Wextra -Werror -DWDDM_BRIDGE_4K_LAB=1 -DWDDM_BRIDGE_TEST_GPU_TIMELINE=1 -isystem .runtime-headers/include -isystem .runtime-headers/include/wsl/stubs -c experimental/windows-native-gpu/umd_context_probe.cpp -o /tmp/runtime-probe-timeline.o
@@ -121,6 +122,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libegl-dev libgl-dev
           cc -std=c11 -O2 -Wall -Wextra -Werror experimental/windows-native-gpu/egl_gl_probe.c -lEGL -ldl -o /tmp/egl-gl-probe
+          cc -std=c11 -O2 -Wall -Wextra -Werror -DWDDM_BRIDGE_EXIT_LIFETIME_TEST=1 experimental/windows-native-gpu/egl_gl_probe.c -lEGL -ldl -o /tmp/egl-gl-exit-probe
       - name: Verify the pinned experimental Mesa patch and compile its fence-FD probe
         run: |
           curl --fail --location --retry 2 https://archive.mesa3d.org/mesa-26.0.8.tar.xz -o /tmp/mesa-26.0.8.tar.xz

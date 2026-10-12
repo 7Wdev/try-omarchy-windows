@@ -91,6 +91,12 @@ unresolved**, and the failed run is retained separately rather than counted as
 a success. Native and VM cleanup passed even on that failure. Stable teardown
 must be established before product acceptance.
 
+A subsequent [late-finalizer investigation](LIVE-GPU-EXIT-LIFETIME.md) confirms
+and fixes premature CPU-view teardown with a deterministic failing control and
+three passing fresh guests. Two further Mesa timeline regressions pass. The
+original exit-128 run had no signal receipt, so its attribution remains unproven;
+the follow-up does not establish general teardown or desktop stability.
+
 Validation passed: standard, 4K and stream MSVC `/W4 /WX` builds with seven native
 contracts each; 203 Linux ioctl fault cases; 21 enabled transport cases for each
 OpenGL profile plus both disabled-profile checks; 112 milestone tests including

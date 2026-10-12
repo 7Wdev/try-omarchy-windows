@@ -272,6 +272,7 @@ if mode == 'reservation-quota': assert operations.count(0x2080) == 8, operations
 if mode == 'reservation-byte-quota': assert operations.count(0x2080) == 4, operations
 if mode in ('reservation-duplicate','reservation-reply-overlap'): assert operations.count(0x2080) == 2, operations
 print('FAKE_WORKER_EOF=true',file=sys.stderr)
+if mode == 'exit-lifetime-fd': assert operations == [0x2000], operations
 '''
 
 
@@ -283,7 +284,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix='wddm-ioctl-fault-') as directory:
         worker = pathlib.Path(directory) / 'owned-worker'
         worker.write_text(WORKER, encoding='utf-8'); worker.chmod(0o700)
-        for mode in ('context-wait-disabled', 'context-wait-invalid', 'context-wait-unowned', 'hw-wait-disabled', 'hw-wait-invalid', 'hw-wait-unowned', 'share-attributes', 'native-resource-normal', 'native-resource-disabled', 'native-resource-invalid',
+        for mode in ('exit-lifetime-fd', 'context-wait-disabled', 'context-wait-invalid', 'context-wait-unowned', 'hw-wait-disabled', 'hw-wait-invalid', 'hw-wait-unowned', 'share-attributes', 'native-resource-normal', 'native-resource-disabled', 'native-resource-invalid',
                      'native-resource-unowned', 'native-resource-duplicate', 'native-resource-retry', 'native-resource-thread', 'consume-disabled', 'consume-unowned', 'consume-null', 'no-worker', 'wrong-version', 'reuse', 'bad-reply', 'closed-worker', 'normal',
                      'cpu-wait-invalid', 'cpu-wait-unowned',
                      'shared-resource-normal', 'shared-resource-disabled', 'shared-resource-invalid',
@@ -337,6 +338,8 @@ def main():
                                     capture_output=True, text=True, timeout=20)
             if result.returncode or 'realDxgForwarding=true' in result.stderr:
                 raise RuntimeError(f'{mode} failed ({result.returncode}): {result.stderr}')
+            if mode == 'exit-lifetime-fd' and 'EXIT_DESCRIPTOR_FINALIZER_PASS liveUntilFinalizer=true requestsRejected=true close=true' not in result.stderr:
+                raise RuntimeError('Late descriptor finalizer did not execute')
             if mode != 'no-worker' and ('workerReaped=true exit=0' not in result.stderr or 'FAKE_WORKER_EOF=true' not in result.stderr):
                 raise RuntimeError(f'{mode}: owned worker did not terminate cleanly: {result.stderr}')
             print('PASS: Linux ioctl diagnostic ' + mode)

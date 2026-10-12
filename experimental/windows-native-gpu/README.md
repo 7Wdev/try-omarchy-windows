@@ -1,5 +1,11 @@
 # Native Windows GPU experiment
 
+The [process-exit lifetime fix](../../docs/LIVE-GPU-EXIT-LIFETIME.md) now keeps
+native CPU views valid through late driver-library finalizers. The old bridge
+segfaults in a deterministic real-fence control; three fixed guests pass, along
+with two fresh Mesa timeline FD regressions. Long-run stability, the separate
+legacy V1 capacity rejection and full desktop integration remain open.
+
 The optional [guest kernel aperture component](guest-kernel/README.md) now
 manages restricted native-memory leases, with two real OpenGL runs and
 cross-process FD revocation [verified in QEMU](../../docs/LIVE-GPU-KERNEL-APERTURE.md).

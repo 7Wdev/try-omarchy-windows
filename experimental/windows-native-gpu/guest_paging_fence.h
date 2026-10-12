@@ -85,6 +85,7 @@ class Fences {
     }
 public:
     Fences() = default;
+    std::size_t active() const { return mappings.size(); }
     Fences(const Fences&) = delete;
     ~Fences() { if (resource.fd >= 0) for (const auto& mapping : mappings) munmap(mapping.second.page, 4096); }
     void* map(std::uint32_t queue, std::uint64_t offset, const char* category = "paging") {
