@@ -39,7 +39,9 @@ The [guest D3D12 timeline diagnostic](https://github.com/7Wdev/try-omarchy-windo
 also passes native fence import, nonblocking GPU signals and a future queue wait released by a second queue.
 The [opt-in Mesa native timeline FD test](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-MESA-FENCE-FD.md)
 now passes genuine OpenGL semaphore import, GPU signals and a future GPU wait in two fresh guests.
-Compositor synchronization and full desktop integration remain pending; one intermittent legacy teardown failure is still under investigation.
+The [process-exit lifetime fix](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-EXIT-LIFETIME.md)
+also passes three fresh finalizer tests and two Mesa timeline regressions. Compositor synchronization, full desktop integration,
+general stability and a separate legacy capacity rejection remain open.
 
 Download links below refer to official upstream releases.
 

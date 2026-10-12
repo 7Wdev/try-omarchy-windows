@@ -27,6 +27,11 @@ also passes genuine OpenGL semaphore imports, signals and a future GPU wait in
 two fresh guests. Binary Vulkan interoperability, `sync_file` and compositor
 integration remain pending; this advances stage 5 without completing it.
 
+The [process-exit lifetime fix](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-EXIT-LIFETIME.md)
+now passes three fresh late-finalizer tests and two further Mesa regressions.
+The old bridge segfaults in the deterministic control. General desktop stability
+and a separate legacy V1 capacity rejection remain open; no new gate is closed.
+
 ![Four of eight verification stages demonstrated; zero of four desktop acceptance gates complete](images/gpu-backend-progress.svg)
 
 The normal upstream Try Omarchy desktop is already available. This roadmap
@@ -92,9 +97,13 @@ their own implementation and application evidence as well.
 - **Synchronization frontend:** a pinned, opt-in Mesa patch now passes the
   private native D3D12 timeline FD diagnostic. Binary Vulkan interoperability,
   compositor synchronization and `sync_file` support remain unverified.
-- **Teardown:** an unchanged legacy OpenGL/FD image terminated abnormally after
-  completing its workload in one run. A repeated run and the old-host control
-  passed; the cause remains unresolved. This prevents a stable-teardown claim.
+- **Teardown:** a confirmed premature CPU-view teardown bug is fixed and passes
+  three fresh late-finalizer tests plus two Mesa regressions. The original
+  intermittent legacy exit-128 run had no signal receipt, so its attribution
+  remains unproven. General teardown and long-run stability still need testing.
+- **Legacy capacity:** an unchanged V1 OpenGL/FD image reached the 256 aggregate
+  object limit in a separate run. Its rejection is retained as a failure;
+  reliable capacity/lifetime handling for that workload remains open.
 - **Product integration:** no accelerated Hyprland desktop, general OpenGL,
   Vulkan, CUDA or video test has passed through this backend yet.
 
