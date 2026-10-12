@@ -4,7 +4,7 @@ from functools import lru_cache
 import json
 from pathlib import Path
 import re
-from verify_4k_capture import require
+from verify_4k_capture import exact, require
 from verify_kernel_aperture_capture import validate_kernel_aperture
 from verify_opengl_capture import validate_opengl_cleanup
 from test_owned_runtime_qemu import async_submissions_complete
@@ -107,9 +107,29 @@ def validate_resource_fds(report, guest, records, *, full_readback=False):
                 cleanup.get('vendorCpuMappedByteLimit') == 96 * 1024 * 1024 and
                 33177600 <= cleanup.get('peakVendorCpuBytes', 0) <= 96 * 1024 * 1024,
                 'Wrong virtual capacity or increased physical memory budget')
-        require(re.search(r'^LINUX_BRIDGE kernelApertureLease=true kind=2 bytes=(?:33177600|33554432) cookie=[1-9]\d*[ \t\r]*$', guest, re.M),
-                'Missing full-buffer kernel CPU lease')
+        # Lock2 exposes the owned native allocation extent, including driver
+        # padding, rather than the tightly packed pixel count. Match all three
+        # guest receipts and the native committed region; do not guess padding.
+        mappings = re.findall(
+            r'^LINUX_BRIDGE kernelApertureLease=true kind=2 bytes=(\d+) cookie=[1-9]\d*\n'
+            r'LINUX_BRIDGE allocationCpuMapped=true direct=true loads=10000 bytes=(\d+) offset=(\d+) generation=([1-9]\d*)\n'
+            r'LINUX_BRIDGE nativeVendorCpuLocked=true bytes=(\d+)$',
+            '\n'.join(lines[imported:lines.index(receipts[0])]), re.M)
+        full_mappings = [m for m in mappings if int(m[0]) >= readback_bytes]
+        require(len(full_mappings) == 1, 'Missing or ambiguous full-buffer kernel CPU lease')
+        lease_bytes, map_bytes, offset, _, lock_bytes = map(int, full_mappings[0])
+        require(readback_bytes <= lease_bytes <= 64 * 1024 * 1024 and lease_bytes % 4096 == 0 and
+                lease_bytes == map_bytes == lock_bytes and offset % (1024 * 1024) == 0 and
+                offset + lease_bytes <= allocation_slots * 1024 * 1024,
+                'Full-buffer lease differs from its bounded owned mapping')
+        native_regions = [r for r in records if r.get('vendorCpuRegionCandidate') is True and
+                          r.get('expectedBytes') == lease_bytes]
+        require(len(native_regions) == 1 and exact(native_regions[0],
+                     status=0, regionBytes=lease_bytes, type=131072, state=4096, protection=4,
+                     baseMatches=True, allocationBaseMatches=True, regionBaseOffsetBytes=0,
+                     exportedRangeContained=True), 'Missing bounded committed native full-buffer region')
         result.update(fullBufferReadbackVerified=True, cpuVirtualSlots=256, cpuMappedByteLimit=96 * 1024 * 1024,
+                      nativeFullBufferMappingBytes=lease_bytes,
                       generalApertureFragmentationSolved=False, desktopStabilityVerified=False)
     return result
 
