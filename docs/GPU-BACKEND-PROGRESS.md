@@ -14,6 +14,13 @@ now passes 581 isolation checks and two fresh OpenGL runs with complete kernel
 lease cleanup. It supplies restricted CPU-view FDs, not DRM or dma-buf buffers;
 stage 5 still requires the graphics ioctl/device and compositor integration.
 
+The [native fence-sharing diagnostic](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-SYNC-FD.md)
+also passes two fresh guest runs: kernel FDs retain a native fence after its
+original object/device are destroyed, allow import and re-export, and clean up
+every reference. Separate native probes verify 16 GPU queue signals. Guest GPU
+timeline updates, Mesa semaphore FD import and GPU queue waits remain pending;
+this advances stage 5 without completing it.
+
 ![Four of eight verification stages demonstrated](images/gpu-backend-progress.svg)
 
 The normal upstream Try Omarchy desktop is already available. This roadmap
@@ -59,6 +66,9 @@ their own implementation and application evidence as well.
 - **Throughput:** the first guest stream serializes host consumption and guest
   reuse. It is a correctness baseline; a synchronized buffer ring and GPU-side
   waits are still needed before measuring near-native throughput.
+- **Synchronization frontend:** Mesa 26.0.8's D3D12 path lacks the FD-import
+  callback needed by the GL semaphore FD frontend. The new opaque kernel FDs
+  establish ownership, not usable compositor semaphore or sync_file support.
 - **Product integration:** no accelerated Hyprland desktop, general OpenGL,
   Vulkan, CUDA or video test has passed through this backend yet.
 
