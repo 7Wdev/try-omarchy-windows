@@ -47,6 +47,9 @@ now passes full 4K storage checks through an imported resource, including after 
 The [CPU aperture capacity fix](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/CPU-APERTURE-CAPACITY.md)
 now passes that full 33 MB readback in two fresh guests using 256 virtual slots and the same 96 MiB physical mapping limit.
 The old 128-slot failure is retained. General fragmentation, dma-buf, GBM and Hyprland integration remain pending.
+The [guest broker peer boundary](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/GUEST-GRAPHICS-BROKER.md)
+now passes real client-credential, descriptor and process-finalizer checks in the guest, followed by the full 4K GPU regression.
+The shared GPU router and cross-process native resource store remain to be integrated.
 
 Download links below refer to official upstream releases.
 
