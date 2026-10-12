@@ -22,8 +22,10 @@ The [genuine guest D3D12 timeline diagnostic](https://github.com/7Wdev/try-omarc
 now also passes two fresh runs with native fence import, eight retired GPU
 signals, and a future queue wait that gates a dependent signal until a second
 queue releases it. Two separate OpenGL/FD regressions pass with this change.
-Mesa semaphore FD import and compositor integration remain pending; this
-advances stage 5 without completing it.
+The [opt-in Mesa native timeline FD test](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-MESA-FENCE-FD.md)
+also passes genuine OpenGL semaphore imports, signals and a future GPU wait in
+two fresh guests. Binary Vulkan interoperability, `sync_file` and compositor
+integration remain pending; this advances stage 5 without completing it.
 
 ![Four of eight verification stages demonstrated](images/gpu-backend-progress.svg)
 
@@ -54,7 +56,7 @@ sized, and some implementation can overlap.
 
 | Gate | Current evidence | What closes the gate |
 | --- | --- | --- |
-| Guest graphics device, buffers and synchronization | Partial: a kernel memory-lease component, imported native fences with GPU queue ordering, and isolated Mesa OpenGL draws. | The compositor can access the backend through a supported guest device path, import/export its buffers, and synchronize their use correctly. |
+| Guest graphics device, buffers and synchronization | Partial: kernel memory leases, imported native fences with GPU ordering, isolated Mesa OpenGL draws, and opt-in GL native timeline FDs. | The compositor can access the backend through a supported guest device path, import/export its buffers, and synchronize their use correctly. |
 | First Hyprland frame | Pending. No Omarchy/Hyprland session has rendered through this backend. | Boot the real guest session and independently verify a correctly displayed compositor frame in the Windows app. |
 | Usable interactive desktop | Pending. Bounded shader diagnostics do not exercise a desktop session. | Continuously display real apps and multiple windows, with working input, focus, resizing and fullscreen up to 4K. |
 | Stable and performant product | Pending. No matched near-native result or long desktop run has passed. | Sustain desktop workloads, recover from failures, keep memory bounded, and meet ≥93% of matched native performance on the agreed workloads. |
@@ -85,9 +87,12 @@ their own implementation and application evidence as well.
 - **Throughput:** the first guest stream serializes host consumption and guest
   reuse. It is a correctness baseline; the proven GPU-side waits still need
   integration into a synchronized buffer ring before measuring near-native throughput.
-- **Synchronization frontend:** Mesa 26.0.8's D3D12 path lacks the FD-import
-  callback needed by the GL semaphore FD frontend. The new opaque kernel FDs
-  establish ownership, not usable compositor semaphore or sync_file support.
+- **Synchronization frontend:** a pinned, opt-in Mesa patch now passes the
+  private native D3D12 timeline FD diagnostic. Binary Vulkan interoperability,
+  compositor synchronization and `sync_file` support remain unverified.
+- **Teardown:** an unchanged legacy OpenGL/FD image terminated abnormally after
+  completing its workload in one run. A repeated run and the old-host control
+  passed; the cause remains unresolved. This prevents a stable-teardown claim.
 - **Product integration:** no accelerated Hyprland desktop, general OpenGL,
   Vulkan, CUDA or video test has passed through this backend yet.
 
