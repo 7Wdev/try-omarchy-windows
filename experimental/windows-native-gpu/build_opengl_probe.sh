@@ -73,5 +73,11 @@ else
         "$base/egl_gl_probe.c" -L"$mesa/lib" -Wl,-rpath-link,"$mesa/lib" -l:libEGL.so.1 \
         -ldl -o "$output/egl-gl-probe"
 fi
+if [ "${WDDM_BRIDGE_TEST_BROKER_PEER:-0}" = 1 ]; then
+    "${CXX:-c++}" -std=c++17 -O2 -Wall -Wextra -Werror -shared -fPIC \
+        "$base/guest_broker_finalizer_probe.cpp" -o "$output/broker-finalizer-probe.so"
+    "${CXX:-c++}" -std=c++17 -O2 -Wall -Wextra -Werror -pthread \
+        "$base/guest_broker_peer_test.cpp" -ldl -o "$output/broker-peer-contract"
+fi
 "${CC:-cc}" -static -std=c11 -O2 -Wall -Wextra -Werror \
     "$base/runtime_guest_init.c" -o "$output/runtime-init"

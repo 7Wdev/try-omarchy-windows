@@ -17,6 +17,23 @@
 #include <unistd.h>
 #include "guest-kernel/wddm_aperture.h"
 static void timeout_handler(int signal_number) { (void)signal_number; }
+static int broker_peer_start(void) {
+    if (access("/broker-peer-required", F_OK)) return 0;
+    pid_t child = fork();
+    if (!child) {
+        signal(SIGALRM, SIG_DFL); alarm(30);
+        unsetenv("LD_PRELOAD");
+        setenv("LD_LIBRARY_PATH", "/usr/lib/x86_64-linux-gnu", 1);
+        execl("/broker-peer-contract", "/broker-peer-contract", "/broker-finalizer-probe.so", (char*)NULL);
+        _exit(127);
+    }
+    int status = 0;
+    if (child < 0 || waitpid(child, &status, 0) != child || !WIFEXITED(status) || WEXITSTATUS(status)) {
+        puts("BROKER_PEER_START failed=true"); return -1;
+    }
+    puts("BROKER_PEER_START contracts=true gpuRouting=false");
+    return 0;
+}
 static int kernel_aperture_start(void) {
     if (access("/kernel-aperture-required", F_OK)) return 0;
     const int module = open("/wddm-aperture.ko", O_RDONLY | O_CLOEXEC);
@@ -109,7 +126,7 @@ int main(void) {
     const int hwqueue_wait_eof_test = hwqueue_wait_option &&
         (hwqueue_wait_option[hwqueue_wait_bytes] == 0 || hwqueue_wait_option[hwqueue_wait_bytes] == ' ' || hwqueue_wait_option[hwqueue_wait_bytes] == '\n');
     for (int i = 0; i < 200 && access(port, F_OK); ++i) usleep(50000);
-    const int kernel_aperture = kernel_aperture_start();
+    const int kernel_aperture = broker_peer_start() ? -1 : kernel_aperture_start();
     char module[130] = {0};
     FILE* name = fopen("/linux-umd-name", "rb");
     int status = 127;

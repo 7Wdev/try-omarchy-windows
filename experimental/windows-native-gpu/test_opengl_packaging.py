@@ -58,7 +58,25 @@ class OpenGlPackaging(unittest.TestCase):
         manifest = json.loads(self.output.with_suffix('.manifest.json').read_text())
         self.assertTrue(manifest['mesaFrontendIncluded'])
         self.assertFalse(manifest['redistributionApproved'])
+        self.assertFalse(manifest['guestBrokerContractIncluded'])
         self.assertEqual([f['path'] for f in manifest['files'] if f['path'].startswith('/opt/')], ['/opt/wddm-mesa/lib/libEGL.so.1'])
+
+    def test_broker_contract_requires_paired_bounded_elf_inputs(self):
+        for key in ('--guest-broker-contract', '--guest-broker-finalizer'):
+            with self.subTest(key=key), self.assertRaises(SystemExit): self.run_packer(key,str(self.input))
+        invalid=self.base/'invalid-broker.so'; invalid.write_bytes(b'not an ELF')
+        with self.assertRaises(SystemExit):
+            self.run_packer('--guest-broker-contract',str(self.input),'--guest-broker-finalizer',str(invalid))
+        self.assertFalse(self.output.exists())
+
+    def test_broker_contract_is_explicitly_packaged_and_hashed(self):
+        self.run_packer('--guest-broker-contract',str(self.input),'--guest-broker-finalizer',str(self.input))
+        manifest=json.loads(self.output.with_suffix('.manifest.json').read_text())
+        self.assertTrue(manifest['guestBrokerContractIncluded'])
+        files={f['path']:f for f in manifest['files']}
+        for name in ('/broker-peer-contract','/broker-finalizer-probe.so'):
+            self.assertEqual(files[name]['bytes'],len(self.elf))
+            self.assertEqual(len(files[name]['sha256']),64)
 
     def test_external_library_symlink_rejected(self):
         (self.mesa/'lib/libOutside.so').symlink_to(self.input)

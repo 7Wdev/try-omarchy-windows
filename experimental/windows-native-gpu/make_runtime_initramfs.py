@@ -28,6 +28,8 @@ def main():
     parser.add_argument('--mesa-runtime-directory', type=pathlib.Path, help='Private non-GLVND Mesa install for the explicit OpenGL probe; relocated to /opt/wddm-mesa')
     parser.add_argument('--guest-aperture-module', type=pathlib.Path, help='Explicit guest-only wddm_aperture.ko built against the matching guest kernel')
     parser.add_argument('--guest-aperture-contract', type=pathlib.Path, help='Static guest isolation probe, required with the aperture module')
+    parser.add_argument('--guest-broker-contract', type=pathlib.Path, help='Optional real-process broker peer contract executable')
+    parser.add_argument('--guest-broker-finalizer', type=pathlib.Path, help='ELF finalizer DSO required with the broker peer contract')
     parser.add_argument('--runtime-workload', choices=('init', 'copy', 'clear', 'triangle', 'shared', 'consume', 'native', 'native-stream', 'opengl'), default='init', help='Explicit guest workload; OpenGL is a separate Mesa frontend probe')
     args = parser.parse_args()
     if sys.platform != 'linux':
@@ -39,6 +41,12 @@ def main():
         parser.error('Invalid Linux UMD module basename')
     files = {'init': args.init, 'guest-probe': args.probe, 'linux-ioctl-bridge.so': args.shim}
     roots = [args.probe, args.shim, args.linux_umd, args.d3d12, args.d3d12core, args.dxcore]
+    if bool(args.guest_broker_contract) != bool(args.guest_broker_finalizer):
+        parser.error('The broker contract executable and finalizer DSO must be supplied together')
+    if args.guest_broker_contract:
+        files['broker-peer-contract'] = args.guest_broker_contract
+        files['broker-finalizer-probe.so'] = args.guest_broker_finalizer
+        roots.extend((args.guest_broker_contract, args.guest_broker_finalizer))
     if args.exit_lifetime_probe:
         if args.runtime_workload != 'opengl':
             parser.error('The exit-lifetime DSO requires the explicit OpenGL workload')
@@ -134,6 +142,7 @@ def main():
     manifest = {'schema': 1, 'privateImage': True, 'vendorBinariesIncluded': True,
                 'redistributionApproved': False, 'runtimeWorkload': args.runtime_workload,
                 'kernelApertureIncluded': bool(args.guest_aperture_module),
+                'guestBrokerContractIncluded': bool(args.guest_broker_contract),
                 'mesaFrontendIncluded': bool(args.mesa_runtime_directory), 'files': []}
     for name, path in sorted(files.items()):
         data = path.read_bytes()
@@ -143,6 +152,8 @@ def main():
     entry('runtime-workload', stat.S_IFREG | 0o600, args.runtime_workload.encode())
     if args.guest_aperture_module:
         entry('kernel-aperture-required', stat.S_IFREG | 0o600, b'1')
+    if args.guest_broker_contract:
+        entry('broker-peer-required', stat.S_IFREG | 0o600, b'1')
     entry('TRAILER!!!', 0)
     packed = gzip.compress(archive, mtime=0)
     with args.output.open('xb') as destination:
