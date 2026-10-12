@@ -36,9 +36,11 @@ The [native texture-FD diagnostic](https://github.com/7Wdev/try-omarchy-windows/
 now passes two full 4K shared-storage rounds in two fresh guests, including after
 source and FD release. An actual wrong-color GPU control is rejected. This is
 connection-scoped NT-backed resource sharing; dma-buf/DRM PRIME, GBM and
-cross-process compositor/client ownership remain pending. The diagnostic uses
-a bounded readback band because a contiguous 33 MB map exhausts the current
-CPU aperture. That general capacity/fragmentation problem remains open.
+cross-process compositor/client ownership remain pending. A separate
+[CPU aperture capacity comparison](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/CPU-APERTURE-CAPACITY.md)
+now passes the full 33 MB readback in two fresh 256-slot guests, retaining the
+128-slot failure and the same 96 MiB physical mapping limit. General aperture
+fragmentation, desktop stability and performance remain unverified.
 
 ![Four of eight verification stages demonstrated; zero of four desktop acceptance gates complete](images/gpu-backend-progress.svg)
 
@@ -114,9 +116,9 @@ their own implementation and application evidence as well.
   reliable capacity/lifetime handling for that workload remains open.
 - **Resource buffers:** native texture FDs pass all-pixel 4K storage checks,
   source/FD-release lifetime and a wrong-color control. They are scoped to one
-  connection and are not dma-buf/DRM PRIME. A 33 MB contiguous CPU readback
-  exhausts the current aperture; banded diagnostic success does not fix that
-  general capacity/fragmentation limitation.
+  connection and are not dma-buf/DRM PRIME. The explicit 256-slot virtual layout
+  now passes a full 33 MB CPU readback in two fresh guests with unchanged physical
+  quotas. This fixes that reproduced workload; general fragmentation remains open.
 - **Product integration:** no accelerated Hyprland desktop, general OpenGL,
   Vulkan, CUDA or video test has passed through this backend yet.
 
