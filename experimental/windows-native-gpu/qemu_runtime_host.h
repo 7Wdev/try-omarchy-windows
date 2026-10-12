@@ -158,7 +158,7 @@ class Runtime {
     std::filesystem::path logfile;
 public:
     Runtime(unsigned short driverPort, const qemu_fence::Paths& paths, bool enableCpu = false, bool cpuStoreTest = false, bool cpuEofTest = false, bool hwQueueEofTest = false, std::size_t cpuSlots = driver_bridge::DefaultVendorCpuSlots, bool syncEofTest = false, bool reservationEofTest = false, bool gpuStateEofTest = false, bool cpuSpanEofTest = false, bool syncNoMaxEofTest = false, bool hwQueueNoBroadcastEofTest = false, bool hwQueueNoBroadcastWaitEofTest = false)
-        : fenceSlots(cpuSlots == 128 ? driver_bridge::MaxFenceSlots : driver_bridge::DefaultFenceSlots),
+        : fenceSlots(cpuSlots >= driver_bridge::ExpandedVendorCpuSlots ? driver_bridge::MaxFenceSlots : driver_bridge::DefaultFenceSlots),
           allocationSlots(cpuSlots), allocationAperture(cpuSlots), allocationsEnabled(enableCpu), logfile(std::filesystem::absolute(paths.log)) {
         if (!driver_bridge::validVendorCpuSlots(cpuSlots) || (!enableCpu && cpuSlots != driver_bridge::DefaultVendorCpuSlots))
             throw std::runtime_error("Invalid configured allocation aperture capacity");

@@ -101,12 +101,15 @@ remain unverified or unimplemented; the result is partial initialization.
 ## Writable allocation hub
 
 `wddm-allocation-hub` adds 16 initially unmapped slots by default. The host
-may select 32, 64 or 128 with `slot-count`; other counts are rejected. Each slot
+may select 32, 64, 128 or 256 with `slot-count`; other counts are rejected. Each slot
 keeps a 1 MiB stride in a separate bounded PCI BAR (`1234:11fc`, layout
 `ALH1`). The aperture has no backing memory until owned pages are mapped.
 Commands outside the selected count are rejected. Portable capacity/parser
-checks cover all four capacities. The 128-slot profile is an opt-in graphics
-startup experiment; physical rendering acceptance is still pending. The fixed
+checks cover all five capacities. The 256-slot profile reserves a larger guest
+virtual BAR to fit a full 4K map beside many small UMD views. It retains the
+4K host's 96 MiB mapped-memory and 64 MiB per-view bounds; the extra virtual
+space does not allocate host memory. Physical 256-slot acceptance is pending.
+Earlier 128-slot rendering evidence is linked from the GPU roadmap. The fixed
 native owner controls `allocation-mapping` over QMP with
 `map:slot:source-address:bytes:generation` and `unmap:slot:generation`.
 Source and byte count must be aligned to 4 KiB; each active range is at most

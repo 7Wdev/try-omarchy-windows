@@ -81,6 +81,8 @@ jobs:
           /tmp/sync-sharing-wire-test
           c++ -std=c++17 -Wall -Wextra -Werror experimental/windows-native-gpu/cpu_aperture_test.cpp -o /tmp/cpu-aperture-test
           /tmp/cpu-aperture-test
+          c++ -std=c++17 -Wall -Wextra -Werror -DWDDM_BRIDGE_4K_LAB=1 experimental/windows-native-gpu/cpu_capacity_test.cpp -o /tmp/cpu-capacity-test
+          /tmp/cpu-capacity-test
           c++ -std=c++17 -O2 -Wall -Wextra -Werror experimental/windows-native-gpu/diagnostic_profile_test.cpp -o /tmp/profile-test
           /tmp/profile-test
           c++ -std=c++17 -O2 -Wall -Wextra -Werror -DWDDM_BRIDGE_4K_LAB=1 experimental/windows-native-gpu/diagnostic_profile_test.cpp -o /tmp/profile-4k-test

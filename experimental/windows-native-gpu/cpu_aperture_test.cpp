@@ -73,7 +73,7 @@ int main() {
     }, [&] { require(!unmapFailure.canMap(4096) && unmapFailure.groups() == 15); ++stopped; }); });
     require(stopped == 2 && attempts == 2 && unmapFailure.groups() == 0 && unmapFailure.chunks() == 0);
     require(unmapFailure.unmaps() == 0 && unmapFailure.chunkUnmaps() == 1);
-    for (const auto slots : {16u,32u,64u,128u}) {
+    for (const auto slots : {16u,32u,64u,128u,256u}) {
         Aperture capacity(slots); std::vector<Lease> smallViews;
         for (unsigned n = 0; n < slots - 4; ++n) smallViews.push_back(capacity.map(4096,map,stop));
         const auto tail = capacity.map(4*stride,map,stop);

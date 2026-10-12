@@ -780,8 +780,8 @@ int main() {
         require(header(s.dispatch(request(Op::FreeGpuReservation, owned, FreeGpuReservationDesc{adapter, 0}))).status == -9);
     }
     require(reservationMapped.reservationParents.empty() && reservationMapped.vendorOwners.empty());
-    require(validVendorCpuSlots(16) && validVendorCpuSlots(32) && validVendorCpuSlots(64) && validVendorCpuSlots(128));
-    for (const auto slots : {0u, 1u, 8u, 15u, 17u, 31u, 33u, 63u, 65u, 127u, 129u, 256u, UINT32_MAX}) require(!validVendorCpuSlots(slots));
+    require(validVendorCpuSlots(16) && validVendorCpuSlots(32) && validVendorCpuSlots(64) && validVendorCpuSlots(128) && validVendorCpuSlots(256));
+    for (const auto slots : {0u, 1u, 8u, 15u, 17u, 31u, 33u, 63u, 65u, 127u, 129u, 255u, 257u, 512u, UINT32_MAX}) require(!validVendorCpuSlots(slots));
     require(vendorCpuByteLimit(0) == 16777216 && vendorCpuByteLimit(NoBroadcastSignalHwQueueCapability) == 16777216);
     require(vendorCpuByteLimit(ExpandedVendorCpuCapability) == 33554432);
     for (const auto capabilities : {0u,ExpandedVendorCpuCapability}) {

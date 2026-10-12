@@ -220,7 +220,7 @@ def main():
     parser.add_argument('--driver-residency', action='store_true')
     parser.add_argument('--minimum-vendor-residency-requests', type=int, default=0)
     parser.add_argument('--driver-cpu', action='store_true')
-    parser.add_argument('--driver-cpu-slots', type=int, choices=(16, 32, 64, 128), default=16)
+    parser.add_argument('--driver-cpu-slots', type=int, choices=(16, 32, 64, 128, 256), default=16)
     parser.add_argument('--minimum-expanded-cpu-mappings', type=int, default=0)
     parser.add_argument('--expected-cpu-slot-quota-rejections', type=int)
     parser.add_argument('--minimum-vendor-cpu-locks', type=int, default=0)
@@ -517,7 +517,7 @@ def main():
                     control.get('ownedQemuExited') is True and control.get('qemuExit') == 0 and
                     control.get('qemuForcedStop') is False and control.get('fenceControlFailed') is False and
                     control.get('liveFenceMappings') == 0 and control.get('fenceMappingsCreated') == total_fence_mappings and
-                    control.get('fenceApertureSlots',64) == (128 if args.driver_cpu_slots == 128 else 64) and
+                    control.get('fenceApertureSlots',64) == (128 if args.driver_cpu_slots >= 128 else 64) and
                     control.get('fenceUnmapAcknowledgements') == (late_fence_unmaps if late_guest_eof else 0 if early_guest_eof else total_fence_mappings) and
                     cleanup.get('driverCleanupVerified') is True and cleanup.get('failedAdapterQueries') == 0 and
                     len(context_priorities) >= args.minimum_context_priority_changes and
@@ -556,7 +556,7 @@ def main():
             accepted = (accepted and len(gpuva) >= args.minimum_vendor_gpuva_maps and (12 not in unsupported or (not args.driver_gpu_state and args.expected_unimplemented_ioctl == 12)) and
                         cleanup.get('completedVendorGpuVaMaps') == len(gpuva) and cleanup.get('failedVendorGpuVaMaps') == 0 and
                         cleanup.get('completedVendorGpuVaWaits') == len(gpuva) and cleanup.get('liveVendorMappedPages') == 0 and
-                        cleanup.get('vendorGpuMappedByteLimit') == (67108864 if args.driver_cpu_slots == 128 else 33554432) and
+                        cleanup.get('vendorGpuMappedByteLimit') == (67108864 if args.driver_cpu_slots >= 128 else 33554432) and
                         len(map_retirements) == len(gpuva) and
                         all(retired['target'] == mapped['fence'] and retired['observed'] >= mapped['fence'] for retired, mapped in zip(map_retirements, gpuva)))
         if args.driver_translation:
@@ -627,7 +627,7 @@ def main():
                             r['regionBaseOffsetBytes'] <= r['regionBytes'] - r['expectedBytes'] for r in cpu_regions) and
                         cpu_layouts == [{'slots': args.driver_cpu_slots, 'stride': 1048576}] and
                         cleanup.get('vendorCpuSlotLimit') == control.get('allocationApertureSlots') == args.driver_cpu_slots and
-                        cleanup.get('vendorCpuMappedByteLimit', 16777216) == (33554432 if args.driver_cpu_slots == 128 else 16777216) and
+                        cleanup.get('vendorCpuMappedByteLimit', 16777216) == (33554432 if args.driver_cpu_slots >= 128 else 16777216) and
                         len(expanded_cpu) >= args.minimum_expanded_cpu_mappings and
                         cpu_unlocks + cpu_released_after_exit == len(cpu) and cpu_unmaps == cpu_unlocks and
                         (not early_guest_eof or cpu_unlocks == 0) and

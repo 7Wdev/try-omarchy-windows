@@ -418,9 +418,9 @@ public:
                 (queriesEnabled ? QueryCapability : 0u) | (runtime ? GuestPagingCapability : 0u) |
                 (allocationsEnabled ? VendorAllocationCapability : 0u) | (gpuVaEnabled ? VendorGpuVaCapability : 0u) |
                 (residencyEnabled ? VendorResidencyCapability : 0u) | (cpuEnabled ? VendorCpuCapability : 0u) |
-                (cpuEnabled && runtime && runtime->allocationSlotLimit() == 128 ? ExpandedVendorCpuCapability : 0u) |
-                (gpuVaEnabled && runtime && runtime->allocationSlotLimit() == 128 ? ExpandedVendorGpuCapability : 0u) |
-                (allocationsEnabled && runtime && runtime->allocationSlotLimit() == 128 ? ExpandedVendorObjectsCapability : 0u) |
+                (cpuEnabled && runtime && runtime->allocationSlotLimit() >= ExpandedVendorCpuSlots ? ExpandedVendorCpuCapability : 0u) |
+                (gpuVaEnabled && runtime && runtime->allocationSlotLimit() >= ExpandedVendorCpuSlots ? ExpandedVendorGpuCapability : 0u) |
+                (allocationsEnabled && runtime && runtime->allocationSlotLimit() >= ExpandedVendorCpuSlots ? ExpandedVendorObjectsCapability : 0u) |
                 (translationEnabled ? VendorTranslationCapability : 0u) | (hwQueuesEnabled ? HwQueueCapability : 0u) |
                 (hwQueuesEnabled ? NoBroadcastSignalHwQueueCapability : 0u) |
                 (hwQueuesEnabled ? NoBroadcastWaitHwQueueCapability : 0u) |
@@ -2062,8 +2062,8 @@ int main(int argc, char** argv) {
         while (argc > 1) {
             if (argc > 2 && std::string(argv[argc - 2]) == "--driver-cpu-slots") {
                 const auto value = std::string(argv[argc - 1]);
-                if (cpuSlotsConfigured || (value != "16" && value != "32" && value != "64" && value != "128"))
-                    throw std::runtime_error("CPU aperture slots must be specified once as 16, 32, 64 or 128");
+                if (cpuSlotsConfigured || (value != "16" && value != "32" && value != "64" && value != "128" && value != "256"))
+                    throw std::runtime_error("CPU aperture slots must be specified once as 16, 32, 64, 128 or 256");
                 cpuSlots = static_cast<std::size_t>(std::stoul(value)); cpuSlotsConfigured = true;
                 argc -= 2; continue;
             }
@@ -2100,9 +2100,9 @@ int main(int argc, char** argv) {
             --argc;
         }
         if (gpu_diagnostic::HighResolution) {
-            if (!nativeMetadata || !consumeShared || !cpu || cpuSlots != 128 ||
+            if (!nativeMetadata || !consumeShared || !cpu || cpuSlots < ExpandedVendorCpuSlots ||
                 argc != 7 || std::string(argv[1]) != "--run-qemu")
-                throw std::runtime_error("4K lab build requires native metadata, consumption and 128 CPU slots in an owned QEMU runtime");
+                throw std::runtime_error("4K lab build requires native metadata, consumption and 128 or 256 CPU slots in an owned QEMU runtime");
             (void)driver_capture::directory(); // Validate capture destination before GPU work.
         }
         if (allocations && (!contexts || !queries)) throw std::runtime_error("Vendor allocations require explicit query/context opt-ins");
@@ -2159,7 +2159,7 @@ int main(int argc, char** argv) {
         const bool ownedRuntime = argc == 7 && std::string(argv[1]) == "--run-qemu";
         if (!ownedRuntime && ((argc != 3 && argc != 7) || std::string(argv[1]) != "--listen")) {
             std::cerr << "Usage: driver-bridge.exe --stdio | --listen port [--guest-section name --guest-ram-bytes count] "
-                "[--driver-contexts] [--driver-queries] [--driver-allocations] [--driver-gpuva] [--driver-residency] [--driver-cpu] [--driver-cpu-slots 16|32|64|128] [--driver-translation] [--driver-hwqueues] [--driver-syncs] [--driver-submit] [--driver-async-submit] [--driver-retirement] [--driver-reservation] [--driver-gpu-state] [--cpu-store-test | --cpu-eof-test | --cpu-span-eof-test | --hwqueue-eof-test | --hwqueue-no-broadcast-eof-test | --hwqueue-no-broadcast-wait-eof-test | --sync-eof-test | --sync-no-max-eof-test | --reservation-eof-test | --gpu-state-eof-test]\n"
+                "[--driver-contexts] [--driver-queries] [--driver-allocations] [--driver-gpuva] [--driver-residency] [--driver-cpu] [--driver-cpu-slots 16|32|64|128|256] [--driver-translation] [--driver-hwqueues] [--driver-syncs] [--driver-submit] [--driver-async-submit] [--driver-retirement] [--driver-reservation] [--driver-gpu-state] [--cpu-store-test | --cpu-eof-test | --cpu-span-eof-test | --hwqueue-eof-test | --hwqueue-no-broadcast-eof-test | --hwqueue-no-broadcast-wait-eof-test | --sync-eof-test | --sync-no-max-eof-test | --reservation-eof-test | --gpu-state-eof-test]\n"
                 "       driver-bridge.exe --run-qemu qemu firmware kernel initramfs fresh-log --driver-contexts --driver-queries\n"; return 2;
         }
         if (ownedRuntime && (!contexts || !queries)) throw std::runtime_error("Owned QEMU runtime requires explicit query/context opt-ins");

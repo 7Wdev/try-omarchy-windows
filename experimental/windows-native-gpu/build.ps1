@@ -44,6 +44,10 @@ cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\cpu_aperture_test.cpp" /F
 if not "%errorlevel%"=="0" exit /b %errorlevel%
 cpu-aperture-test.exe
 if not "%errorlevel%"=="0" exit /b %errorlevel%
+cl /nologo /std:c++17 /EHsc /W4 /WX /O2 /DWDDM_BRIDGE_4K_LAB=1 "$PSScriptRoot\cpu_capacity_test.cpp" /Fe:cpu-capacity-test.exe
+if not "%errorlevel%"=="0" exit /b %errorlevel%
+cpu-capacity-test.exe
+if not "%errorlevel%"=="0" exit /b %errorlevel%
 cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\qmp_protocol_test.cpp" /Fe:qmp-protocol-test.exe
 if not "%errorlevel%"=="0" exit /b %errorlevel%
 qmp-protocol-test.exe

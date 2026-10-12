@@ -40,14 +40,18 @@ inline std::size_t vendorAllocationObjectLimit(std::uint32_t capabilities) {
     return capabilities & ExpandedVendorObjectsCapability ? ExpandedVendorAllocations : MaxVendorAllocations;
 }
 constexpr std::size_t DefaultVendorCpuSlots = 16;
-constexpr std::size_t MaxVendorCpuSlots = 128;
+// Slots reserve guest virtual MMIO space; they do not raise the physical CPU
+// byte budget. Many small UMD views otherwise consume the 128-slot layout
+// before a full 4K readback can obtain a contiguous range.
+constexpr std::size_t ExpandedVendorCpuSlots = 128;
+constexpr std::size_t MaxVendorCpuSlots = 256;
 inline bool validVendorCpuSlots(std::size_t slots) {
     return slots >= DefaultVendorCpuSlots && slots <= MaxVendorCpuSlots && !(slots & (slots - 1));
 }
 constexpr std::uint32_t VendorGpuVaCapability = 512;
 constexpr std::uint32_t VendorResidencyCapability = 1024;
 constexpr std::uint32_t VendorCpuCapability = 2048;
-// Only the explicitly selected 128-slot native profile advertises this budget.
+// Only explicitly selected 128/256-slot native profiles advertise this budget.
 // Preserve standard allocation and 16/32/64-slot vendor CPU budgets.
 constexpr std::uint32_t ExpandedVendorCpuCapability = 4194304;
 constexpr std::uint32_t ExpandedVendorCpuBytes = gpu_diagnostic::ExpandedCpuBytes;

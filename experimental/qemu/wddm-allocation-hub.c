@@ -143,7 +143,7 @@ static void hub_realize(PCIDevice *pci, Error **errp)
     WddmAllocationHub *s = WDDM_ALLOCATION_HUB(pci);
     HMODULE whp = GetModuleHandleW(L"WinHvPlatform.dll");
     if (!wddm_allocation_slots_valid(s->slot_count)) {
-        error_setg(errp, "WDDM allocation slot-count must be 16, 32, 64 or 128");
+        error_setg(errp, "WDDM allocation slot-count must be 16, 32, 64, 128 or 256");
         return;
     }
     if (!whpx_enabled() || !whp || !GetProcAddress(whp, "WHvMapGpaRange2")) {

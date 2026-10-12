@@ -302,7 +302,7 @@ static int aperture_probe(struct pci_dev *pci, const struct pci_device_id *id)
 	bytes = fence ? (u64)slots * 4096 : (u64)slots * CPU_STRIDE;
 	if ((fence && (magic != FENCE_MAGIC || (slots != 64 && slots != 128))) ||
 	    (!fence && (magic != CPU_MAGIC || stride != CPU_STRIDE || slots < 16 ||
-		       slots > 128 || !is_power_of_2(slots))) ||
+		       slots > 256 || !is_power_of_2(slots))) ||
 	    !(pci_resource_flags(pci, 0) & IORESOURCE_MEM) ||
 	    pci_resource_len(pci, 0) != bytes || !IS_ALIGNED(pci_resource_start(pci, 0), PAGE_SIZE)) {
 		result = -ENODEV; goto disable;

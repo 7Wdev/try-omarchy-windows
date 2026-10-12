@@ -111,7 +111,7 @@ int main(void)
     struct wddm_aperture_info layout=info(control);
     REQUIRE(layout.version==1 && (layout.fence_slots==64 || layout.fence_slots==128) &&
         layout.fence_bytes==(uint64_t)layout.fence_slots*4096 &&
-        layout.allocation_slots>=16 && layout.allocation_slots<=128 &&
+        layout.allocation_slots>=16 && layout.allocation_slots<=256 &&
         !(layout.allocation_slots&(layout.allocation_slots-1)) &&
         layout.cpu_slot_bytes==1048576 &&
         layout.allocation_bytes==(uint64_t)layout.allocation_slots*layout.cpu_slot_bytes &&
