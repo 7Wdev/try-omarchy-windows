@@ -29,6 +29,15 @@ static unsigned fdCount() {
     while (auto* entry = readdir(dir)) if (entry->d_name[0] != '.') ++count;
     closedir(dir); return count;
 }
+static void closeInherited(int socket, int memory, int commands, int notices) {
+    auto* dir=opendir("/proc/self/fd"); CHECK(dir);
+    while (auto* entry=readdir(dir)) {
+        if (entry->d_name[0]=='.') continue;
+        const auto fd=std::atoi(entry->d_name);
+        if (fd>2 && fd!=dirfd(dir) && fd!=socket && fd!=memory && fd!=commands && fd!=notices) ::close(fd);
+    }
+    closedir(dir);
+}
 static Received receive(Peer& peer) {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
     for (;;) {
@@ -113,6 +122,7 @@ public:
                 CHECK(!connect(connection,reinterpret_cast<sockaddr*>(&address),length));
                 const int memory=memfd_create("owned-broker-contract",MFD_CLOEXEC); CHECK(memory>=0);
                 const std::uint64_t value=UINT64_C(0x793251624435feda); CHECK(write(memory,&value,sizeof(value))==sizeof(value));
+                closeInherited(connection,memory,go[0],notes[1]);
                 CHECK(readByte(go[0])=='S');
                 if (mode==Mode::Descendant) {
                     const auto descendant=fork(); CHECK(descendant>=0);
