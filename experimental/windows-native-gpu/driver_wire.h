@@ -69,6 +69,16 @@ constexpr std::uint32_t NoGpuAccessSyncFlag = 128;
 // NT-shareable monitored fences have no global D3DKMT handle. Exporting an
 // NT handle is a separate operation; creation must preserve these flags.
 constexpr std::uint32_t NtSharedNoGpuAccessSyncFlags = 1 | 2 | NoGpuAccessSyncFlag;
+constexpr std::uint32_t NtSharedGpuSyncFlags = 1 | 2;
+constexpr std::size_t MaxSharedSyncHandles = 16;
+struct SyncSharingProfile { std::uint32_t version, handleLimit, importFlags, syncLimit; };
+constexpr SyncSharingProfile GuestSyncSharingProfile{1, MaxSharedSyncHandles, NoGpuAccessSyncFlag, MaxSyncObjects};
+inline bool validSyncSharingProfile(SyncSharingProfile p) {
+    return p.version == 1 && p.handleLimit == MaxSharedSyncHandles && p.importFlags == NoGpuAccessSyncFlag && p.syncLimit == MaxSyncObjects;
+}
+struct SharedSyncOpenDesc { std::uint32_t device, flags, affinity, reserved; };
+static_assert(sizeof(SyncSharingProfile) == 16 && sizeof(SharedSyncOpenDesc) == 16, "fixed shared fence negotiation");
+inline bool validSharedSyncOpen(SharedSyncOpenDesc d) { return d.device && (d.flags == 0 || d.flags == NoGpuAccessSyncFlag) && d.affinity <= 1 && !d.reserved; }
 constexpr std::uint32_t UnwaitCpuWaitersOnlyOnDestroySyncFlag = 1024;
 inline bool packetSignalSyncFlags(std::uint32_t flags) {
     return flags == NoGpuAccessSyncFlag || flags == NtSharedNoGpuAccessSyncFlags ||
@@ -84,7 +94,7 @@ struct SyncReply { std::uint64_t offset, gpuAddress; };
 static_assert(sizeof(SyncDesc) == 24 && sizeof(SyncReply) == 16, "fixed synchronization layouts");
 inline bool validSync(SyncDesc d) {
     return !d.reserved && ((d.type == 1 && !d.flags && !d.affinity && d.initial <= 1) ||
-           (d.type == 5 && (d.flags == 0 || d.flags == NoSignalMaxValueOnTdrSyncFlag || packetSignalSyncFlags(d.flags)) && d.affinity <= 1));
+           (d.type == 5 && (d.flags == 0 || d.flags == NtSharedGpuSyncFlags || d.flags == NoSignalMaxValueOnTdrSyncFlag || packetSignalSyncFlags(d.flags)) && d.affinity <= 1));
 }
 constexpr std::size_t MaxHwQueues = 8;
 constexpr std::uint32_t HwQueueSignalCapability = 134217728;
@@ -314,9 +324,10 @@ enum class Op : std::uint32_t {
     BeginOpenGl,
     CreateHwQueue = 0x2060, DestroyHwQueue, SubmitHwQueue, QueueHwCommand,
     CreateSync = 0x2070, DestroySync, SignalContextSync, QueueHwQueueSignal,
+    BeginSyncSharing, ExportSync, ImportSync, CloseSharedSync,
     ReserveGpuAddress = 0x2080, FreeGpuReservation, MapGpuState
 };
-enum class Kind { Adapter, Device, PagingQueue, Allocation, Context, PagingSync, VendorAllocation, HwQueue, HwQueueSync, Sync, GpuReservation, VendorResource };
+enum class Kind { Adapter, Device, PagingQueue, Allocation, Context, PagingSync, VendorAllocation, HwQueue, HwQueueSync, Sync, GpuReservation, VendorResource, SharedSync };
 struct ContextDesc {
     std::uint32_t node, engine, flags, clientHint, privateBytes, reserved;
 };
@@ -422,6 +433,11 @@ public:
     virtual SyncResult createSync(std::uint32_t, SyncDesc) {
         return {{static_cast<std::int32_t>(0xc00000bbu), 0, 0}, {0, 0}};
     }
+    virtual SyncSharingProfile beginSyncSharing() { return {}; }
+    virtual Result exportSync(std::uint32_t) { return {static_cast<std::int32_t>(0xc00000bbu), 0, 0}; }
+    virtual SyncResult importSync(std::uint32_t, SharedSyncOpenDesc) {
+        return {{static_cast<std::int32_t>(0xc00000bbu), 0, 0}, {0, 0}};
+    }
     virtual Result signalContextSync(std::uint32_t, std::uint32_t, ContextSignalDesc) {
         return {static_cast<std::int32_t>(0xc00000bbu), 0, 0};
     }
@@ -489,6 +505,7 @@ class Session {
     bool negotiated = false;
     bool streamingNegotiated = false;
     bool openglNegotiated = false;
+    bool syncSharingNegotiated = false;
     static std::vector<std::uint8_t> reply(Header h, std::int32_t error,
                                          std::uint32_t id = 0, const Result* result = nullptr) {
         h.handle = id; h.status = error; h.padding = 0;
@@ -546,7 +563,7 @@ public:
             if (h.handle || packet.size() != sizeof h + 4) return reply(h, -22);
             if (!objects.empty()) return reply(h, -16);
             std::uint32_t version{}; std::memcpy(&version, packet.data() + sizeof h, 4);
-            negotiated = false; streamingNegotiated = false; openglNegotiated = false;
+            negotiated = false; streamingNegotiated = false; openglNegotiated = false; syncSharingNegotiated = false;
             if (version != Version) return reply(h, -93);
             const auto caps = driver.capabilities();
             if (caps.version != Version) return reply(h, -93);
@@ -789,6 +806,78 @@ public:
             if (native.ntstatus == 0) queue->second.submittedFence = desc.fence;
             return reply(h, 0, h.handle, &native);
         }
+        if (op == Op::BeginSyncSharing) {
+            if (!negotiated) return reply(h, -71);
+            if (h.handle || packet.size() != sizeof h) return reply(h, -22);
+            if (syncSharingNegotiated) return reply(h, -16);
+            const auto profile = driver.beginSyncSharing();
+            if (!validSyncSharingProfile(profile)) return reply(h, -95);
+            auto out = reply(h, 0); const auto start = out.size(); out.resize(start + sizeof profile);
+            std::memcpy(out.data() + start, &profile, sizeof profile);
+            syncSharingNegotiated = true;
+            return out;
+        }
+        if (op == Op::ExportSync || op == Op::ImportSync || op == Op::CloseSharedSync) {
+            if (!negotiated || !syncSharingNegotiated) return reply(h, -71);
+            const auto entry = objects.find(h.handle);
+            const auto expected = op == Op::ExportSync ? Kind::Sync : Kind::SharedSync;
+            if (entry == objects.end() || entry->second.kind != expected) return reply(h, -9);
+            if (op == Op::CloseSharedSync) {
+                if (packet.size() != sizeof h) return reply(h, -22);
+                const auto result = driver.destroy(Kind::SharedSync, entry->second.nativeHandle);
+                if (result.ntstatus > 0 || result.nativeHandle || result.value) return reply(h, -5);
+                if (!result.ntstatus) objects.erase(entry);
+                return reply(h, 0, h.handle, &result);
+            }
+            if (objects.size() >= MaxObjects || nextId == UINT32_MAX) return reply(h, -24);
+            if (op == Op::ExportSync) {
+                if (packet.size() != sizeof h) return reply(h, -22);
+                if (entry->second.syncType != 5 || !entry->second.shared) return reply(h, -22);
+                const auto count = std::count_if(objects.begin(), objects.end(), [](const auto& item) { return item.second.kind == Kind::SharedSync; });
+                if (static_cast<std::size_t>(count) >= MaxSharedSyncHandles) return reply(h, -24);
+                const auto result = driver.exportSync(entry->second.nativeHandle);
+                if (result.ntstatus > 0 || result.value || (result.ntstatus < 0 ? result.nativeHandle != 0 : result.nativeHandle == 0)) {
+                    if (result.nativeHandle) driver.destroy(Kind::SharedSync, result.nativeHandle);
+                    return reply(h, -5);
+                }
+                // The NT reference outlives the original device. Its adapter
+                // remains owned; destroying the original sync does not revoke it.
+                const auto adapter = objects.at(entry->second.parent).parent;
+                const auto id = result.ntstatus == 0 ? nextId++ : 0;
+                try {
+                    auto out = reply(h, 0, id, &result);
+                    if (id) { Object shared{Kind::SharedSync, adapter, result.nativeHandle, 0, 0, true};
+                        shared.syncFlags = entry->second.syncFlags; objects.emplace(id, shared); }
+                    return out;
+                } catch (...) { if (result.nativeHandle) driver.destroy(Kind::SharedSync, result.nativeHandle); throw; }
+            }
+            if (packet.size() != sizeof h + sizeof(SharedSyncOpenDesc)) return reply(h, -22);
+            SharedSyncOpenDesc desc{}; std::memcpy(&desc, packet.data() + sizeof h, sizeof desc);
+            if (!validSharedSyncOpen(desc)) return reply(h, -22);
+            const auto device = objects.find(desc.device);
+            if (device == objects.end() || device->second.kind != Kind::Device || device->second.parent != entry->second.parent) return reply(h, -9);
+            const auto count = std::count_if(objects.begin(), objects.end(), [](const auto& item) { return item.second.kind == Kind::Sync; });
+            if (static_cast<std::size_t>(count) >= MaxSyncObjects) return reply(h, -24);
+            const auto parent = desc.device; desc.device = device->second.nativeHandle;
+            const auto native = driver.importSync(entry->second.nativeHandle, desc);
+            const SyncDesc importedDesc{5, desc.flags, desc.affinity, 0, 0};
+            if (native.object.ntstatus > 0 || native.object.value ||
+                (native.object.ntstatus < 0 ? (native.object.nativeHandle || native.output.offset || native.output.gpuAddress) :
+                 (!native.object.nativeHandle || native.output.offset % 8 || native.output.offset >= FenceApertureBytes ||
+                  !validSyncGpuAddress(importedDesc, native.output.gpuAddress)))) {
+                if (native.object.nativeHandle) driver.destroy(Kind::Sync, native.object.nativeHandle);
+                return reply(h, -5);
+            }
+            const auto id = native.object.ntstatus == 0 ? nextId++ : 0;
+            try {
+                auto out = reply(h, 0, id, &native.object);
+                const auto start = out.size(); out.resize(start + sizeof native.output);
+                std::memcpy(out.data() + start, &native.output, sizeof native.output);
+                if (id) { Object owned{Kind::Sync, parent, native.object.nativeHandle, 0, 0, true};
+                    owned.syncType = 5; owned.syncFlags = desc.flags; objects.emplace(id, owned); }
+                return out;
+            } catch (...) { if (native.object.nativeHandle) driver.destroy(Kind::Sync, native.object.nativeHandle); throw; }
+        }
         if (op == Op::CreateSync || op == Op::DestroySync) {
             if (!negotiated) return reply(h, -71);
             if (!(driver.capabilities().flags & SyncCapability)) return reply(h, -95);
@@ -804,6 +893,7 @@ public:
             if (packet.size() != sizeof h + sizeof(SyncDesc)) return reply(h, -22);
             SyncDesc desc{}; std::memcpy(&desc, packet.data() + sizeof h, sizeof desc);
             if (!validSync(desc)) return reply(h, -22);
+            if (desc.flags == NtSharedGpuSyncFlags && !syncSharingNegotiated) return reply(h, -71);
             const auto count = std::count_if(objects.begin(), objects.end(), [](const auto& item) { return item.second.kind == Kind::Sync; });
             if (objects.size() >= MaxObjects || nextId == UINT32_MAX || static_cast<std::size_t>(count) >= MaxSyncObjects) return reply(h, -24);
             const auto native = driver.createSync(entry->second.nativeHandle, desc);
@@ -822,7 +912,7 @@ public:
                 std::memcpy(out.data() + start, &native.output, sizeof native.output);
                 if (id) {
                     Object owned{Kind::Sync, h.handle, native.object.nativeHandle, 0, 0, false}; owned.syncType = desc.type;
-                    owned.syncFlags = desc.flags; owned.submittedFence = desc.initial;
+                    owned.syncFlags = desc.flags; owned.submittedFence = desc.initial; owned.shared = (desc.flags & 3) == 3;
                     objects.emplace(id, owned);
                 }
                 return out;

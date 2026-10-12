@@ -36,6 +36,10 @@ cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\driver_wire_test.cpp" /Fe
 if not "%errorlevel%"=="0" exit /b %errorlevel%
 driver-wire-test.exe
 if not "%errorlevel%"=="0" exit /b %errorlevel%
+cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\sync_sharing_wire_test.cpp" /Fe:sync-sharing-wire-test.exe
+if not "%errorlevel%"=="0" exit /b %errorlevel%
+sync-sharing-wire-test.exe
+if not "%errorlevel%"=="0" exit /b %errorlevel%
 cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\cpu_aperture_test.cpp" /Fe:cpu-aperture-test.exe
 if not "%errorlevel%"=="0" exit /b %errorlevel%
 cpu-aperture-test.exe
@@ -66,6 +70,8 @@ if not "%errorlevel%"=="0" exit /b %errorlevel%
 cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\queue_dependency_probe.cpp" /Fe:queue-dependency-probe.exe /link dxgi.lib gdi32.lib WinHvPlatform.lib
 if not "%errorlevel%"=="0" exit /b %errorlevel%
 cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\vendor_lock_probe.cpp" /Fe:vendor-lock-probe.exe /link dxgi.lib gdi32.lib WinHvPlatform.lib
+if not "%errorlevel%"=="0" exit /b %errorlevel%
+cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\sync_sharing_probe.cpp" /Fe:sync-sharing-probe.exe /link d3d12.lib dxgi.lib gdi32.lib
 if not "%errorlevel%"=="0" exit /b %errorlevel%
 cl /nologo /std:c++17 /EHsc /W4 /WX /O2 /DUNICODE /D_UNICODE "$PSScriptRoot\native_gpu.cpp" /Fe:native-gpu.exe /link d3d12.lib dxgi.lib user32.lib gdi32.lib
 exit /b %errorlevel%

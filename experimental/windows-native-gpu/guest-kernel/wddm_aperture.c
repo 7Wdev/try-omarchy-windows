@@ -16,6 +16,7 @@
 #include <linux/slab.h>
 #include <linux/uaccess.h>
 #include "wddm_aperture.h"
+#include "wddm_object_fd.h"
 
 #define CPU_STRIDE (1024ULL * 1024)
 #define FENCE_MAGIC 0x31484e46
@@ -26,7 +27,7 @@ struct aperture_hub {
 	resource_size_t start, bytes;
 	u32 slots;
 };
-struct aperture_owner { unsigned int unused; };
+struct aperture_owner { u64 id; };
 struct aperture_lease {
 	struct list_head link;
 	struct aperture_owner *owner;
@@ -40,6 +41,7 @@ static DEFINE_MUTEX(aperture_lock);
 static LIST_HEAD(aperture_leases);
 static struct aperture_hub fence_hub, cpu_hub;
 static u64 next_cookie, active_cpu_bytes;
+static u64 next_owner;
 static u32 active_leases;
 
 static vm_fault_t lease_fault(struct vm_fault *fault)
@@ -235,7 +237,8 @@ static long control_ioctl(struct file *control, unsigned int request, unsigned l
 		revoke_file(file);
 		return 0;
 	}
-	if (request != WDDM_APERTURE_INFO) return -ENOTTY;
+	if (request != WDDM_APERTURE_INFO)
+		return object_ioctl(((struct aperture_owner *)control->private_data)->id, request, pointer);
 	if (copy_from_user(&info, pointer, sizeof(info))) return -EFAULT;
 	if (info.version != WDDM_APERTURE_VERSION) return -EINVAL;
 	memset(&info, 0, sizeof(info));
@@ -258,12 +261,19 @@ static long control_ioctl(struct file *control, unsigned int request, unsigned l
 }
 static int control_open(struct inode *inode, struct file *file)
 {
-	file->private_data = kzalloc(sizeof(struct aperture_owner), GFP_KERNEL);
-	return file->private_data ? 0 : -ENOMEM;
+	struct aperture_owner *owner = kzalloc(sizeof(*owner), GFP_KERNEL);
+	if (!owner) return -ENOMEM;
+	mutex_lock(&aperture_lock);
+	if (next_owner == U64_MAX) { mutex_unlock(&aperture_lock); kfree(owner); return -ENOSPC; }
+	owner->id = ++next_owner;
+	mutex_unlock(&aperture_lock);
+	file->private_data = owner;
+	return 0;
 }
 static int control_release(struct inode *inode, struct file *file)
 {
 	revoke_owner(file->private_data);
+	objects_close_owner(((struct aperture_owner *)file->private_data)->id);
 	kfree(file->private_data);
 	return 0;
 }

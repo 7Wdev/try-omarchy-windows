@@ -7,6 +7,7 @@
 #include "adapter_query_client.h"
 #include "guest_paging_fence.h"
 #include "guest_allocation_memory.h"
+#include "guest_kernel_object.h"
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -212,6 +213,9 @@ class Bridge {
     guest_paging::Fences hwQueueFences;
     guest_paging::Fences syncFences;
     guest_allocation::Memory allocationMemory;
+    guest_kernel::Objects kernelObjects;
+    bool sharedFencesNegotiated = false;
+    std::set<std::uint32_t> exportedSyncTickets, importedShareableSyncs;
     std::set<std::uint32_t> cpuLocks;
     bool negotiated = false;
     bool streamingNegotiated = false;
@@ -243,6 +247,33 @@ class Bridge {
     std::map<std::uint32_t, BorrowedFence> borrowedFences;
     struct Synchronization { std::uint32_t device, type, flags; std::uint64_t lastSignal = 0; };
     std::map<std::uint32_t, Synchronization> syncObjects;
+    void reapObjectTickets() {
+        std::uint32_t ticket = 0;
+        for (;;) {
+            const auto found = kernelObjects.reap(ticket);
+            if (found < 0) throw Error(errno);
+            if (!found) return;
+            if (!exportedSyncTickets.count(ticket)) { transport.fail(); throw Error(EPROTO); }
+            const auto result = call(request(Op::CloseSharedSync, ticket), 0, true);
+            if (result.header.handle != ticket || result.result.ntstatus > 0 || result.result.value) { transport.fail(); throw Error(EPROTO); }
+            checkNt(result.result.ntstatus);
+            exportedSyncTickets.erase(ticket);
+            std::fprintf(stderr, "LINUX_BRIDGE kernelObjectReaped=true ticket=%u\n", ticket);
+        }
+    }
+    void beginSharedFences() {
+        if (sharedFencesNegotiated) return;
+        if (!kernelObjects.available()) throw Error(errno);
+        const auto packet = transport.exchange(request(Op::BeginSyncSharing, 0));
+        if (packet.size() != sizeof(Header) + sizeof(SyncSharingProfile)) { transport.fail(); throw Error(EPROTO); }
+        Header h{}; SyncSharingProfile profile{};
+        std::memcpy(&h, packet.data(), sizeof h); std::memcpy(&profile, packet.data() + sizeof h, sizeof profile);
+        if (h.type != static_cast<std::uint32_t>(Op::BeginSyncSharing) || h.handle || h.status || h.padding || !validSyncSharingProfile(profile)) {
+            transport.fail(); throw Error(EPROTO);
+        }
+        sharedFencesNegotiated = true;
+        std::fprintf(stderr, "LINUX_BRIDGE nativeSyncSharingNegotiated=true kernelObjectFds=true\n");
+    }
     static constexpr std::uint32_t GuestLuidLow = 0x57475055;
     static constexpr std::int32_t GuestLuidHigh = 0;
     Response call(const std::vector<std::uint8_t>& requestPacket, std::uint32_t bytes = 0, bool preserveNativeFailure = false) {
@@ -362,8 +393,84 @@ public:
     void closed(int fd) { descriptors.erase(fd); }
     int dispatch(unsigned long requestNumber, void* pointer) {
         if (_IOC_TYPE(requestNumber) != 'G' || !pointer || _IOC_DIR(requestNumber) != (_IOC_READ | _IOC_WRITE)) throw Error(EINVAL);
+        reapObjectTickets();
         const auto nr = static_cast<unsigned>(_IOC_NR(requestNumber)); ++counts[nr];
         switch (nr) {
+            case 63: {
+                const auto& a = args<D3DKMT_SHAREOBJECTS>(requestNumber, pointer);
+                if (a.ObjectCount != 1 || !a.ObjectHandleArray || !a.pSharedNtHandle || a.DesiredAccess != UINT32_C(0x10000000)) throw Error(EINVAL);
+                if (a.pObjectAttributes) {
+                    struct Attributes { std::uint32_t length, pad; std::uint64_t root, name; std::uint32_t flags, pad2; std::uint64_t security, qos; } attributes{};
+                    static_assert(sizeof attributes == 48, "x64 object attributes");
+                    std::memcpy(&attributes, a.pObjectAttributes, sizeof attributes);
+                    if (attributes.length != 48 || attributes.pad || attributes.root || attributes.name || attributes.flags || attributes.pad2 || attributes.security || attributes.qos) throw Error(ENOSYS);
+                }
+                const auto object = a.ObjectHandleArray[0];
+                const auto source = syncObjects.find(object);
+                if (source == syncObjects.end() || source->second.type != 5 ||
+                    ((source->second.flags & 3) != 3 && !importedShareableSyncs.count(object))) throw Error(EINVAL);
+                beginSharedFences();
+                const auto result = call(request(Op::ExportSync, object), 0, true);
+                if (result.result.ntstatus > 0 || result.result.value ||
+                    (result.result.ntstatus < 0 ? result.header.handle != 0 : !result.header.handle || exportedSyncTickets.count(result.header.handle))) {
+                    transport.fail(); throw Error(EPROTO);
+                }
+                checkNt(result.result.ntstatus);
+                const auto ticket = result.header.handle;
+                int fd = -1;
+                try {
+                    // Allocate bookkeeping before publishing a kernel FD:
+                    // allocation failure must not queue a ticket already
+                    // closed by rollback for a second native close.
+                    if (!exportedSyncTickets.insert(ticket).second) { transport.fail(); throw Error(EPROTO); }
+                    fd = kernelObjects.create(ticket);
+                    if (fd < 0) throw Error(errno);
+                } catch (...) {
+                    if (fd >= 0) rawClose(fd);
+                    exportedSyncTickets.erase(ticket);
+                    destroy(Op::CloseSharedSync, ticket);
+                    throw;
+                }
+                *a.pSharedNtHandle = reinterpret_cast<HANDLE>(static_cast<std::intptr_t>(fd));
+                return 0;
+            }
+            case 64: {
+                auto& a = args<D3DKMT_OPENSYNCOBJECTFROMNTHANDLE2>(requestNumber, pointer);
+                const auto handle = reinterpret_cast<std::intptr_t>(a.hNtHandle);
+                SharedSyncOpenDesc desc{a.hDevice, a.Flags.Value, a.MonitoredFence.EngineAffinity, 0};
+                if (handle < 0 || handle > INT32_MAX || !validSharedSyncOpen(desc) || a.hSyncObject ||
+                    a.MonitoredFence.FenceValueCPUVirtualAddress || a.MonitoredFence.FenceValueGPUVirtualAddress ||
+                    std::any_of(std::begin(a.Reserved) + 3, std::end(a.Reserved), [](auto value) { return value != 0; }) ||
+                    (a.Reserved[2] >> 32)) throw Error(EINVAL);
+                if (!deviceAdapters.count(a.hDevice)) throw Error(EBADF);
+                beginSharedFences();
+                std::uint32_t ticket = 0;
+                if (!kernelObjects.resolve(static_cast<int>(handle), ticket)) throw Error(errno);
+                if (!exportedSyncTickets.count(ticket)) { transport.fail(); throw Error(EPROTO); }
+                if (syncObjects.size() >= MaxSyncObjects) throw Error(EMFILE);
+                const auto result = call(request(Op::ImportSync, ticket, desc), sizeof(SyncReply), true);
+                SyncReply output{}; std::memcpy(&output, result.data.data(), sizeof output);
+                if (result.result.ntstatus > 0 || result.result.value ||
+                    (result.result.ntstatus < 0 ? (result.header.handle || output.offset || output.gpuAddress) :
+                     (!result.header.handle || syncObjects.count(result.header.handle) || output.offset % 8 || output.offset >= FenceApertureBytes ||
+                      !validSyncGpuAddress({5, desc.flags, desc.affinity, 0, 0}, output.gpuAddress)))) { transport.fail(); throw Error(EPROTO); }
+                checkNt(result.result.ntstatus);
+                void* fence = nullptr;
+                try {
+                    fence = syncFences.map(result.header.handle, output.offset, "imported-monitored");
+                    syncObjects.emplace(result.header.handle, Synchronization{desc.device,5,desc.flags,0});
+                    importedShareableSyncs.insert(result.header.handle);
+                } catch (...) {
+                    if (fence) syncFences.unmap(result.header.handle);
+                    syncObjects.erase(result.header.handle); importedShareableSyncs.erase(result.header.handle);
+                    destroy(Op::DestroySync, result.header.handle); throw;
+                }
+                a.hSyncObject = result.header.handle;
+                a.MonitoredFence.FenceValueCPUVirtualAddress = fence;
+                a.MonitoredFence.FenceValueGPUVirtualAddress = output.gpuAddress;
+                std::fprintf(stderr, "LINUX_BRIDGE nativeSyncFdImported=true gpuMapped=%u\n", output.gpuAddress ? 1u : 0u);
+                return 0;
+            }
             case 62: {
                 auto& a = args<D3DKMT_ENUMADAPTERS3>(requestNumber, pointer);
                 if (a.Filter.Value & ~7ull) throw Error(EINVAL);
@@ -966,6 +1073,7 @@ public:
                     if (a.Info.MonitoredFence.Padding) throw Error(EINVAL);
                 } else throw Error(ENOSYS);
                 if (!validSync(desc) || a.Info.SharedHandle) throw Error(EINVAL);
+                if (desc.flags == NtSharedGpuSyncFlags) beginSharedFences();
                 if (!deviceAdapters.count(a.hDevice)) throw Error(EBADF);
                 if (syncObjects.size() >= MaxSyncObjects) throw Error(EMFILE);
                 const auto result = call(request(Op::CreateSync, a.hDevice, desc), sizeof(SyncReply), true);
@@ -1092,7 +1200,7 @@ public:
                 if (result.header.handle != a.hSyncObject || result.result.value || result.result.ntstatus > 0) { transport.fail(); throw Error(EPROTO); }
                 checkNt(result.result.ntstatus);
                 std::fprintf(stderr, "LINUX_BRIDGE nativeSynchronizationDestroyed=true type=%u\n", owned->second.type);
-                syncObjects.erase(owned); return 0;
+                importedShareableSyncs.erase(a.hSyncObject); syncObjects.erase(owned); return 0;
             }
             case 53: {
                 const auto& a=args<D3DKMT_SUBMITSIGNALSYNCOBJECTSTOHWQUEUE>(requestNumber,pointer);

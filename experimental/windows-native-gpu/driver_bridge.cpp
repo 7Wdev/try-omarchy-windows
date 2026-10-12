@@ -20,6 +20,7 @@
 #include <array>
 #include "driver_wire.h"
 #include "shared_resource_probe.h"
+#include "shared_sync_handle.h"
 #include "shared_texture_consumer.h"
 #include "native_texture_metadata.h"
 #include "qemu_runtime_host.h"
@@ -119,8 +120,13 @@ class KmtDriver : public Driver {
         std::uint64_t gpuAddress;
         std::optional<driver_qemu::FenceLease> lease;
         std::uint64_t lastSignal = 0;
+        bool shared = false;
     };
     std::map<std::uint32_t, Synchronization> syncObjects;
+    std::map<std::uint32_t, driver_shared::SyncHandle> sharedSyncHandles;
+    std::uint32_t nextSharedSync = 1;
+    bool syncSharingEnabled = false;
+    unsigned exportedSyncHandles = 0, closedSyncHandles = 0, importedSyncObjects = 0;
     bool syncEnabled = false;
     unsigned completedSyncs = 0, destroyedSyncs = 0, failedSyncs = 0, monitoredSyncs = 0, mutexSyncs = 0;
     unsigned syncsReleasedAfterVmExit = 0;
@@ -702,9 +708,60 @@ public:
         ++completedGpuStateMaps; ++completedGpuStateWaits;
         return {{status, 0, a.VirtualAddress}, a.PagingFenceValue};
     }
+    SyncSharingProfile beginSyncSharing() override {
+        if (!syncEnabled || !runtime || runtime->hasStopped() || syncSharingEnabled) return {};
+        syncSharingEnabled = true;
+        std::cerr << "{\"nativeSyncSharingNegotiated\":true,\"handleLimit\":" << MaxSharedSyncHandles << "}\n";
+        return GuestSyncSharingProfile;
+    }
+    Result exportSync(std::uint32_t sync) override {
+        const auto source = syncObjects.find(sync);
+        if (!syncSharingEnabled || !runtime || runtime->hasStopped() || source == syncObjects.end() ||
+            source->second.type != 5 || !source->second.shared ||
+            sharedSyncHandles.size() >= MaxSharedSyncHandles || nextSharedSync == UINT32_MAX) return {Invalid, 0, 0};
+        driver_shared::SyncHandle shared;
+        const auto status = shared.share(sync);
+        if (status) return {status, 0, 0};
+        const auto ticket = nextSharedSync++;
+        if (!sharedSyncHandles.emplace(ticket, std::move(shared)).second) throw std::runtime_error("Shared sync ticket collision");
+        ++exportedSyncHandles;
+        std::cerr << "{\"nativeSyncHandleExported\":true,\"rawHandleExposed\":false}\n";
+        return {0, ticket, 0};
+    }
+    SyncResult importSync(std::uint32_t ticket, SharedSyncOpenDesc desc) override {
+        const auto shared = sharedSyncHandles.find(ticket);
+        if (!syncSharingEnabled || !runtime || runtime->hasStopped() || !validSharedSyncOpen(desc) ||
+            shared == sharedSyncHandles.end() || !deviceAdapters.count(desc.device) || syncObjects.size() >= MaxSyncObjects)
+            return {{Invalid, 0, 0}, {0, 0}};
+        if (!runtime->canMapFence()) return {{static_cast<std::int32_t>(0xc0000017u), 0, 0}, {0, 0}};
+        D3DKMT_OPENSYNCOBJECTFROMNTHANDLE2 a{};
+        const auto status = shared->second.open(desc.device, desc.flags, desc.affinity, a);
+        if (status) return {{status, 0, 0}, {0, 0}};
+        Synchronization owned{desc.device, 5, desc.flags,
+            static_cast<volatile std::uint64_t*>(a.MonitoredFence.FenceValueCPUVirtualAddress),
+            a.MonitoredFence.FenceValueGPUVirtualAddress, std::nullopt};
+        owned.shared = true;
+        try {
+            if (!a.hSyncObject || syncObjects.count(a.hSyncObject) || !owned.fence ||
+                !validSyncGpuAddress({5, desc.flags, desc.affinity, 0, 0}, owned.gpuAddress))
+                throw std::runtime_error("Unexpected imported native synchronization output");
+            owned.lease = runtime->map(owned.fence);
+            if (!syncObjects.emplace(a.hSyncObject, owned).second) throw std::runtime_error("Imported sync identity collision");
+        } catch (...) {
+            if (owned.lease) { try { runtime->unmap(*owned.lease); } catch (...) { runtime->stop(0); } }
+            D3DKMT_DESTROYSYNCHRONIZATIONOBJECT cleanup{}; cleanup.hSyncObject = a.hSyncObject;
+            if (D3DKMTDestroySynchronizationObject(&cleanup) < 0) ++cleanupFailures;
+            throw;
+        }
+        ++completedSyncs; ++monitoredSyncs; ++importedSyncObjects;
+        if (desc.flags & NoGpuAccessSyncFlag) ++noGpuAccessSyncs;
+        std::cerr << "{\"nativeSyncHandleImported\":true,\"gpuMapped\":" << (owned.gpuAddress ? "true" : "false") << "}\n";
+        return {{0, a.hSyncObject, 0}, {owned.lease->offset, owned.gpuAddress}};
+    }
     SyncResult createSync(std::uint32_t device, SyncDesc desc) override {
         if (!syncEnabled || !runtime || !validSync(desc) || !deviceAdapters.count(device) || syncObjects.size() >= MaxSyncObjects)
             return {{Invalid, 0, 0}, {0, 0}};
+        if (desc.flags == NtSharedGpuSyncFlags && !syncSharingEnabled) return {{Invalid, 0, 0}, {0, 0}};
         if (desc.type == 5 && !runtime->canMapFence())
             return {{static_cast<std::int32_t>(0xc0000017u), 0, 0}, {0, 0}};
         D3DKMT_CREATESYNCHRONIZATIONOBJECT2 a{}; a.hDevice = device;
@@ -724,6 +781,7 @@ public:
         if (status < 0) { ++failedSyncs; return {{status, 0, 0}, {0, 0}}; }
         Synchronization owned{device, desc.type, desc.flags, nullptr, 0, std::nullopt};
         owned.lastSignal = desc.initial;
+        owned.shared = (desc.flags & 3) == 3;
         if (desc.type == 5) {
             owned.fence = static_cast<volatile std::uint64_t*>(a.Info.MonitoredFence.FenceValueCPUVirtualAddress);
             owned.gpuAddress = a.Info.MonitoredFence.FenceValueGPUVirtualAddress;
@@ -1460,6 +1518,12 @@ public:
                 gpuStates.release(handle); gpuReservedBytes -= range.bytes; gpuReservations.erase(entry); ++freedReservations;
                 if (runtime->hasStopped()) ++reservationsReleasedAfterVmExit;
             }
+        } else if (kind == Kind::SharedSync) {
+            const auto shared = sharedSyncHandles.find(handle);
+            if (shared == sharedSyncHandles.end()) return {Invalid, 0, 0};
+            if (!shared->second.close()) return {static_cast<std::int32_t>(0xc0000001u), 0, 0};
+            sharedSyncHandles.erase(shared); ++closedSyncHandles; status = 0;
+            std::cerr << "{\"nativeSyncHandleClosed\":true}\n";
         } else if (kind == Kind::Sync) {
             const auto object = syncObjects.find(handle);
             if (object == syncObjects.end() || !runtime) return {Invalid, 0, 0};
@@ -1511,13 +1575,15 @@ public:
     bool clean() const {
         return !asyncRetirementFailed && pendingSubmissions.empty() && pendingHwSignals.empty() && !activeAdapters && !activeDevices && !activeContexts && pagingFences.empty() && allocations.empty() && vendorAllocations.empty() &&
                !vendorMappedPages && !vendorResidencyAttempts && !vendorCpuBytes && deviceAdapters.empty() && translatedAllocations.empty() &&
-               sharedResourceIds.empty() && textureConsumers.empty() && contextOwners.empty() && hwQueues.empty() && syncObjects.empty() && gpuReservations.empty() && !gpuReservedBytes && gpuStates.empty() && ownedAdapters.empty() &&
+               sharedResourceIds.empty() && textureConsumers.empty() && contextOwners.empty() && hwQueues.empty() && syncObjects.empty() && sharedSyncHandles.empty() && gpuReservations.empty() && !gpuReservedBytes && gpuStates.empty() && ownedAdapters.empty() &&
                !guestMemory && !guestSection && !copyDevice && !copyHeap && !copyQueue && !copyFence && !copyEvent && !cleanupFailures;
     }
     void reportCleanup() const {
         std::cerr << "{\"driverCleanupVerified\":" << (clean() ? "true" : "false")
                   << ",\"liveAdapters\":" << activeAdapters << ",\"liveDevices\":" << activeDevices
                   << ",\"liveContexts\":" << activeContexts
+                  << ",\"liveSharedSyncHandles\":" << sharedSyncHandles.size() << ",\"exportedSyncHandles\":" << exportedSyncHandles
+                  << ",\"closedSyncHandles\":" << closedSyncHandles << ",\"importedSyncObjects\":" << importedSyncObjects
                   << ",\"liveTextureConsumers\":" << textureConsumers.size()
                   << ",\"openedTextureConsumers\":" << openedTextureConsumers
                   << ",\"releasedTextureConsumers\":" << releasedTextureConsumers

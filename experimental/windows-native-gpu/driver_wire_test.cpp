@@ -1668,7 +1668,7 @@ int main() {
             require(header(s.dispatch(request(Op::DestroySync, sharedFence))).status == 0);
         }
         for (std::uint32_t flags = 0; flags < 4096; ++flags) {
-            require(validSync({5, flags, 0, 0, 0}) == (flags == 0 || flags == 64 || flags == 128 || flags == 131 || flags == 1155));
+            require(validSync({5, flags, 0, 0, 0}) == (flags == 0 || flags == 3 || flags == 64 || flags == 128 || flags == 131 || flags == 1155));
             require(validSync({1, flags, 0, 0, 0}) == (flags == 0));
         }
         for (std::size_t n = 1; n < MaxSyncObjects; ++n)

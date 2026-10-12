@@ -37,11 +37,18 @@ static int kernel_aperture_stop(void) {
     const int fd = open("/dev/wddm-aperture", O_RDWR | O_CLOEXEC);
     struct wddm_aperture_info info = {.version=WDDM_APERTURE_VERSION};
     const int result = fd < 0 ? -1 : ioctl(fd, WDDM_APERTURE_INFO, &info);
+    struct wddm_object_stats objects = {.version=WDDM_APERTURE_VERSION};
+    const int object_result = fd < 0 ? -1 : ioctl(fd, WDDM_OBJECT_STATS, &objects);
+    const int object_error = errno;
     if (fd >= 0) close(fd);
     if (result || info.active_leases || info.active_cpu_bytes || info.fence_mmio_reads ||
         info.allocation_mmio_reads || info.allocation_mmio_writes) {
         puts("KERNEL_APERTURE_EXIT cleanup=false"); return -1;
     }
+    if ((!object_result && (objects.held || objects.active)) || (object_result && object_error != ENOTTY)) {
+        puts("KERNEL_OBJECT_EXIT cleanup=false"); return -1;
+    }
+    if (!object_result) puts("KERNEL_OBJECT_EXIT held=0 active=0 cleanup=true");
     for (unsigned attempt = 0; attempt < 20; ++attempt) {
         if (!syscall(SYS_delete_module, "wddm_aperture", O_NONBLOCK)) {
             puts("KERNEL_APERTURE_EXIT activeLeases=0 activeCpuBytes=0 mmioReads=0 mmioWrites=0 unloaded=true");

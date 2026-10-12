@@ -25,6 +25,9 @@ GL_FUNCTIONS(DECLARE_GL)
 #undef DECLARE_GL
 
 enum { Width = 130, Height = 73, Frames = 2 };
+#ifdef WDDM_BRIDGE_SYNC_FD_TEST
+extern int wddm_sync_fd_test(void);
+#endif
 static int fail(const char* stage) {
     printf("OPENGL_FAILURE stage=%s eglError=%04x\n", stage, eglGetError());
     return 1;
@@ -127,6 +130,9 @@ int main(void) {
             putchar('\n');
         }
     }
+#ifdef WDDM_BRIDGE_SYNC_FD_TEST
+    if (wddm_sync_fd_test()) return fail("SharedSyncFd");
+#endif
     glDeleteVertexArrays(1, &array); glUseProgram(0); glDeleteProgram(program);
     glDeleteShader(vertex); glDeleteShader(fragment);
     if (!eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT) ||

@@ -11,6 +11,8 @@
 #define WDDM_APERTURE_WRITE 1
 #define WDDM_APERTURE_MAX_LEASES 256
 #define WDDM_APERTURE_CPU_LIMIT (96ULL * 1024 * 1024)
+#define WDDM_OBJECT_SYNC 1
+#define WDDM_OBJECT_MAX 256
 
 struct wddm_aperture_info {
 	__u32 version, fence_slots, allocation_slots, active_leases;
@@ -32,4 +34,33 @@ struct wddm_aperture_revoke {
 #define WDDM_APERTURE_INFO _IOWR('W', 0x40, struct wddm_aperture_info)
 #define WDDM_APERTURE_CREATE _IOWR('W', 0x41, struct wddm_aperture_create)
 #define WDDM_APERTURE_REVOKE _IOW('W', 0x42, struct wddm_aperture_revoke)
+
+/* Opaque bridge-session tickets, never native HANDLEs, CPU mappings,
+ * dma-bufs or sync_files. Only the trusted controller can resolve/reap. */
+struct wddm_object_create {
+	__u32 version, kind;
+	__u64 cookie;
+	__u32 ticket;
+	__s32 fd;
+	__u64 reserved[2];
+};
+struct wddm_object_resolve {
+	__u32 version, kind;
+	__s32 fd;
+	__u32 ticket;
+	__u64 cookie, reserved;
+};
+struct wddm_object_reap {
+	__u32 version, kind, ticket, reserved;
+	__u64 cookie;
+};
+struct wddm_object_stats {
+	__u32 version, held, active, reserved;
+	__u64 created, closed, revoked;
+};
+#define WDDM_OBJECT_CREATE _IOWR('W', 0x43, struct wddm_object_create)
+#define WDDM_OBJECT_RESOLVE _IOWR('W', 0x44, struct wddm_object_resolve)
+#define WDDM_OBJECT_REVOKE _IOW('W', 0x45, struct wddm_aperture_revoke)
+#define WDDM_OBJECT_REAP _IOWR('W', 0x46, struct wddm_object_reap)
+#define WDDM_OBJECT_STATS _IOWR('W', 0x47, struct wddm_object_stats)
 #endif

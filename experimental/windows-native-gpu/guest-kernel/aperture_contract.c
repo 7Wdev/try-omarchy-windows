@@ -13,6 +13,7 @@
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
+#include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -44,6 +45,7 @@ static void bus_signal(int signal_number)
 {
     _exit(signal_number == SIGBUS ? 74 : 75);
 }
+#include "object_contract.h"
 static void transfer_and_revoke_lease(int control)
 {
     int sockets[2], status;
@@ -67,6 +69,9 @@ static void transfer_and_revoke_lease(int control)
         int fd; memcpy(&fd,CMSG_DATA(header),sizeof(fd));
         struct wddm_aperture_create denied=fence();
         errno=0; REQUIRE(ioctl(control,WDDM_APERTURE_CREATE,&denied)==-1 && errno==EPERM);
+        struct wddm_object_create denied_object={.version=1,.kind=WDDM_OBJECT_SYNC,.ticket=5000};
+        errno=0; REQUIRE(ioctl(control,WDDM_OBJECT_CREATE,&denied_object)==-1 && errno==EPERM);
+        puts("OBJECT_CONTRACT_UNPRIVILEGED_CREATE denied=true");
         void* view=mmap(NULL,4096,PROT_READ,MAP_SHARED,fd,0);
         REQUIRE(view!=MAP_FAILED);
         errno=0; REQUIRE(mprotect(view,4096,PROT_READ|PROT_WRITE)==-1 && errno==EACCES);
@@ -186,6 +191,7 @@ int main(void)
         REQUIRE(info(control).active_cpu_bytes==WDDM_APERTURE_CPU_LIMIT);
         revoke_lease(control,cpu.cookie); close(cpu.fd);
     }
+    object_contract(control);
     transfer_and_revoke_lease(control);
     /* Controller close revokes a recipient FD even when that FD stays open. */
     arg=fence(); REQUIRE(!ioctl(control,WDDM_APERTURE_CREATE,&arg));
