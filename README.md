@@ -44,7 +44,9 @@ also passes three fresh finalizer tests and two Mesa timeline regressions. Compo
 general stability and a separate legacy capacity rejection remain open.
 The [native texture-FD diagnostic](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-RESOURCE-FD.md)
 now passes full 4K storage checks through an imported resource, including after source/FD release, in two fresh guests.
-This advances buffer sharing; dma-buf, GBM and Hyprland integration remain pending. A large contiguous CPU readback still exhausts the current aperture.
+The [CPU aperture capacity fix](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/CPU-APERTURE-CAPACITY.md)
+now passes that full 33 MB readback in two fresh guests using 256 virtual slots and the same 96 MiB physical mapping limit.
+The old 128-slot failure is retained. General fragmentation, dma-buf, GBM and Hyprland integration remain pending.
 
 Download links below refer to official upstream releases.
 
