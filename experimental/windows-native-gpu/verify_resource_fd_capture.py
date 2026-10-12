@@ -21,8 +21,11 @@ def uniform_digest(rgba):
     return f'{value:016x}'
 
 
-def validate_resource_fds(report, guest, records):
-    result = validate_kernel_aperture(report, guest, records)
+def validate_resource_fds(report, guest, records, *, full_readback=False):
+    require(type(full_readback) is bool, 'Full-readback audit selection must be explicit')
+    allocation_slots = 256 if full_readback else 128
+    bands, readback_bytes = (1, 33177600) if full_readback else (5, 7864320)
+    result = validate_kernel_aperture(report, guest, records, allocation_slots=allocation_slots)
     lines = guest.splitlines()
     def exactly(line):
         require(lines.count(line) == 1, 'Missing or duplicated resource-FD receipt: ' + line)
@@ -33,11 +36,15 @@ def validate_resource_fds(report, guest, records):
     imported = exactly('MESA_RESOURCE_FD_IMPORTED fdClosed=true descriptionMatches=true')
     complete = exactly('MESA_RESOURCE_FD_COMPLETE rounds=2 pixelsPerRound=8294400 native=true dmaBuf=false desktop=false')
     exactly('RESOURCE_FD_CONTRACT_PASS checks=15 held=0 active=0 typeIsolation=true ownerIsolation=true dupLifetime=true dmaBuf=false')
+    if full_readback:
+        exactly('MESA_RESOURCE_FD_READBACK_PROFILE fullBuffer=true bandsPerRound=1 bytes=33177600')
+    else:
+        require('MESA_RESOURCE_FD_READBACK_PROFILE' not in guest, 'Full-buffer run requires explicit audit selection')
     require(not any(token in guest for token in ('MESA_RESOURCE_FD_FAILURE', 'MESA_RESOURCE_FD_NEGATIVE_CONTROL', 'RESOURCE_FD_CONTRACT_FAIL', 'D3D12: Removing Device.')),
             'Resource-FD or device failure')
     pattern = (r'^MESA_RESOURCE_FD_SHARED_STORAGE round=(\d+) writer=(source|imported) importedRead=true '
                r'sourceReleased=(true|false) fdClosed=true width=3840 height=2160 pixels=8294400 '
-               r'rgba=([0-9a-f]{8}) bands=5 readbackBytes=7864320 fnv1a=([0-9a-f]{16})$')
+               rf'rgba=([0-9a-f]{{8}}) bands={bands} readbackBytes={readback_bytes} fnv1a=([0-9a-f]{{16}})$')
     receipts = [line for line in lines if line.startswith('MESA_RESOURCE_FD_SHARED_STORAGE')]
     require(len(receipts) == 2, 'Missing or duplicated shared-storage round')
     rounds = []
@@ -53,7 +60,7 @@ def validate_resource_fds(report, guest, records):
             'Invalid export/import/storage ordering')
     block = '\n'.join(lines[imported:complete])
     targets = re.findall(r'^LINUX_BRIDGE nativeHwQueueSignalQueued=true flags=4 queues=1 target=(\d+) observedAtReturn=\d+ noGpuAccess=true$', block, re.M)
-    require([int(n) for n in targets] == list(range(1, 11)), 'Missing or reordered band retirement signals')
+    require([int(n) for n in targets] == list(range(1, 2 * bands + 1)), 'Missing or reordered band retirement signals')
     tickets = re.findall(r'^LINUX_BRIDGE kernelObjectExported=true kind=resource ticket=(\d+) cookie=(\d+)$', guest, re.M)
     require(len(tickets) == 1 and all(int(n) > 0 for n in tickets[0]), 'Missing typed resource FD export')
     ticket, _ = tickets[0]
@@ -91,10 +98,19 @@ def validate_resource_fds(report, guest, records):
             cleanup.get('liveSharedResourceHandles') == 0 and cleanup.get('vendorCpuSlotQuotaRejections') == 0,
             'Resource handle leak or CPU aperture exhaustion')
     result.update(nativeResourceFdVerified=True, sharedStorageVerified=True, width=3840, height=2160,
-                  rounds=rounds, readbackBandsPerRound=5, diagnosticReadbackBytes=7864320,
+                  rounds=rounds, readbackBandsPerRound=bands, diagnosticReadbackBytes=readback_bytes,
                   sourceAndFdReleaseVerified=True, resourceFdContractChecks=15,
                   drmDeviceVerified=False, dmaBufVerified=False, desktopVerified=False,
                   openGl4kVerified=False, nearNativePerformanceVerified=False)
+    if full_readback:
+        require(report.get('configuredCpuApertureSlots') == cleanup.get('vendorCpuSlotLimit') == 256 and
+                cleanup.get('vendorCpuMappedByteLimit') == 96 * 1024 * 1024 and
+                33177600 <= cleanup.get('peakVendorCpuBytes', 0) <= 96 * 1024 * 1024,
+                'Wrong virtual capacity or increased physical memory budget')
+        require(re.search(r'^LINUX_BRIDGE kernelApertureLease=true kind=2 bytes=(?:33177600|33554432) cookie=[1-9]\d*[ \t\r]*$', guest, re.M),
+                'Missing full-buffer kernel CPU lease')
+        result.update(fullBufferReadbackVerified=True, cpuVirtualSlots=256, cpuMappedByteLimit=96 * 1024 * 1024,
+                      generalApertureFragmentationSolved=False, desktopStabilityVerified=False)
     return result
 
 
@@ -136,12 +152,15 @@ def main():
     parser.add_argument('--report', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--wrong-color-control', action='store_true')
+    parser.add_argument('--full-readback', action='store_true')
     args = parser.parse_args()
+    if args.wrong_color_control and args.full_readback:
+        parser.error('Select one explicit audit profile')
     report = json.loads(args.report.read_text())
     guest = args.report.with_suffix('.log').read_text()
     records = [json.loads(line) for line in args.report.with_suffix('.host.log').read_text().splitlines() if line.startswith('{')]
-    validator = validate_resource_fd_control if args.wrong_color_control else validate_resource_fds
-    result = validator(report, guest, records)
+    result = (validate_resource_fd_control(report, guest, records) if args.wrong_color_control else
+              validate_resource_fds(report, guest, records, full_readback=args.full_readback))
     with args.output.open('x', encoding='utf-8') as destination:
         json.dump(result, destination, indent=2); destination.write('\n')
     print(json.dumps(result, indent=2))

@@ -74,11 +74,18 @@ extern "C" int wddm_mesa_resource_fd_test(EGLDisplay display, EGLContext context
     if (rows != 2160 || rowBytes != 3840 * 4 || footprint.Offset || footprint.Footprint.RowPitch < rowBytes ||
         footprint.Footprint.RowPitch % 256 || totalBytes > 32u * 1024 * 1024 || !totalBytes)
         return failed("ReadbackFootprint", E_FAIL);
-    // Readback is an acceptance diagnostic, not the display path. Reuse one
-    // bounded band so all 4K pixels can be checked without a 33 MB contiguous
-    // CPU aperture lease competing with the live UMD's many small mappings.
+    // Readback is an acceptance diagnostic, not the display path. The normal
+    // probe uses a bounded band; the separate full-buffer build reproduces
+    // the aperture capacity failure without changing the rendered workload.
+#ifdef WDDM_BRIDGE_RESOURCE_FD_FULL_READBACK
+    constexpr unsigned BandRows = 2160;
+#else
     constexpr unsigned BandRows = 512;
+#endif
     const auto readbackBytes = static_cast<UINT64>(footprint.Footprint.RowPitch) * BandRows;
+#ifdef WDDM_BRIDGE_RESOURCE_FD_FULL_READBACK
+    std::printf("MESA_RESOURCE_FD_READBACK_PROFILE fullBuffer=true bandsPerRound=1 bytes=%llu\n", static_cast<unsigned long long>(readbackBytes));
+#endif
     D3D12_RESOURCE_DESC buffer{}; buffer.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER; buffer.Width = readbackBytes;
     buffer.Height = buffer.DepthOrArraySize = buffer.MipLevels = buffer.SampleDesc.Count = 1;
     buffer.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;

@@ -36,6 +36,31 @@ class ResourceFdMilestone(unittest.TestCase):
         self.assertEqual(self.evidence['knownFullReadbackFailure']['proof']['report']['disconnectCleanup']['vendorCpuSlotQuotaRejections'], 1)
         with self.assertRaises(ValueError): self.check(self.evidence['knownFullReadbackFailure']['proof'])
 
+    def test_banded_evidence_cannot_be_promoted_to_full_readback(self):
+        for run in self.evidence['runs']:
+            p = run['proof']
+            with self.assertRaises(ValueError):
+                validate_resource_fds(p['report'], '\n'.join(p['guestLines']), p['records'], full_readback=True)
+        with self.assertRaises(ValueError):
+            p = self.evidence['knownFullReadbackFailure']['proof']
+            validate_resource_fds(p['report'], '\n'.join(p['guestLines']), p['records'], full_readback=True)
+
+    def test_allocation_layout_must_match_the_selected_audit(self):
+        from verify_opengl_capture import validate_opengl_cleanup
+        for slots in (256, 512, True, '128'):
+            with self.assertRaises(ValueError):
+                validate_opengl_cleanup(self.proof['report'], self.proof['records'], allocation_slots=slots)
+        with self.assertRaises(ValueError):
+            validate_resource_fds(self.proof['report'], '\n'.join(self.proof['guestLines']), self.proof['records'], full_readback='yes')
+
+    def test_mixed_or_changed_kernel_layout_rejected(self):
+        for line in ('LINUX_BRIDGE allocationCpuLayout=true slots=256 stride=1048576 kernel=true',
+                     'LINUX_BRIDGE allocationCpuLayout=true slots=128 stride=65536 kernel=true',
+                     'LINUX_BRIDGE fenceHubLayout=true slots=256 stride=4096 readonly=true kernel=true'):
+            p = copy.deepcopy(self.proof)
+            p['guestLines'].append(line)
+            with self.assertRaises(ValueError): self.check(p)
+
     def test_missing_and_duplicate_receipts_rejected(self):
         for prefix in ('MESA_RESOURCE_FD_BEGIN','MESA_RESOURCE_FD_TEXTURE_CREATED','MESA_RESOURCE_FD_EXPORTED',
                        'MESA_RESOURCE_FD_IMPORTED','MESA_RESOURCE_FD_SHARED_STORAGE round=1',

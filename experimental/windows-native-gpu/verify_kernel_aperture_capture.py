@@ -7,8 +7,8 @@ from verify_4k_capture import require
 from verify_opengl_capture import validate_opengl
 
 
-def validate_kernel_aperture(report, guest, records):
-    result = validate_opengl(report, guest, records)
+def validate_kernel_aperture(report, guest, records, *, allocation_slots=128):
+    result = validate_opengl(report, guest, records, allocation_slots=allocation_slots)
     lines = guest.splitlines()
     for line in (
             'APERTURE_CONTRACT fdTransfer=true unprivilegedMap=true readOnly=true revokeSigbus=true',
@@ -25,8 +25,11 @@ def validate_kernel_aperture(report, guest, records):
             'Invalid kernel/probe/cleanup ordering')
     layouts = [line for line in lines if line.startswith(('LINUX_BRIDGE fenceHubLayout=', 'LINUX_BRIDGE allocationCpuLayout='))]
     require(layouts and all(line.endswith(' kernel=true') for line in layouts), 'Raw sysfs aperture path used')
-    require(any('fenceHubLayout=true slots=128 ' in line for line in layouts) and
-            any('allocationCpuLayout=true slots=128 ' in line for line in layouts), 'Missing kernel hub layouts')
+    for prefix, expected in (
+            ('LINUX_BRIDGE fenceHubLayout=', 'LINUX_BRIDGE fenceHubLayout=true slots=128 stride=4096 readonly=true kernel=true'),
+            ('LINUX_BRIDGE allocationCpuLayout=', f'LINUX_BRIDGE allocationCpuLayout=true slots={allocation_slots} stride=1048576 kernel=true')):
+        observed = [line for line in layouts if line.startswith(prefix)]
+        require(observed and all(line == expected for line in observed), 'Missing or inconsistent kernel hub layout')
     leases = re.findall(r'^LINUX_BRIDGE kernelApertureLease=true kind=([12]) bytes=(\d+) cookie=(\d+)[ \t\r]*$', guest, re.M)
     require(len(leases) == guest.count('LINUX_BRIDGE kernelApertureLease='), 'Malformed kernel lease receipt')
     cookies = [int(cookie) for _, _, cookie in leases]

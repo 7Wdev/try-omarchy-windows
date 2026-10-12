@@ -9,14 +9,15 @@ from test_owned_runtime_qemu import async_submissions_complete
 from verify_4k_capture import LIVE_COUNTERS, exact, require
 
 
-def validate_opengl_cleanup(report, records):
+def validate_opengl_cleanup(report, records, *, allocation_slots=128):
+    require(type(allocation_slots) is int and allocation_slots in (128, 256), 'Unsupported explicit allocation layout')
     cleanup, vm = report['disconnectCleanup'], report['ownedQemuControl']
     require(exact(cleanup, driverCleanupVerified=True, cleanupFailures=0, pendingNativeSubmissions=0,
             pendingHwQueueSignals=0, **{'live'+k: 0 for k in LIVE_COUNTERS}), 'Native cleanup not verified')
     require(all(type(v) is int and v == 0 for k, v in cleanup.items() if k.startswith('live')), 'Invalid live counter')
     require(exact(vm, ownedQemuExited=True, qemuExit=0, qemuForcedStop=False, fenceControlFailed=False,
             liveFenceMappings=0, liveAllocationMappings=0, liveAllocationMappedBytes=0, liveAllocationSlotMappings=0,
-            fenceApertureSlots=128, allocationApertureSlots=128), 'Owned VM cleanup not verified')
+            fenceApertureSlots=128, allocationApertureSlots=allocation_slots), 'Owned VM cleanup not verified')
     for created, acknowledged, after_exit in (
             ('fenceMappingsCreated', 'fenceUnmapAcknowledgements', 'fenceMappingsReleasedAfterVmExit'),
             ('allocationMappingsCreated', 'allocationUnmapAcknowledgements', 'allocationMappingsReleasedAfterVmExit'),
@@ -29,14 +30,14 @@ def validate_opengl_cleanup(report, records):
                 'Report/cleanup receipt mismatch')
 
 
-def validate_opengl_rendering(report, guest, records):
+def validate_opengl_rendering(report, guest, records, *, allocation_slots=128):
     """Audit the actual draws and native/VM cleanup independently of guest exit.
 
     A caller testing an intentional process crash must validate that signal and
     exit separately. Normal success must use validate_opengl below.
     """
     require(exact(report, runtimeWorkload='opengl', hostBridgeExit=0), 'Wrong workload or host exit')
-    validate_opengl_cleanup(report, records)
+    validate_opengl_cleanup(report, records, allocation_slots=allocation_slots)
     profile = [r for r in records if 'openGlProfileNegotiated' in r]
     require(len(profile) == 1 and (exact(profile[0], version=1) or
             exact(profile[0], version=2, objectLimit=384, hwQueueLimit=16, vendorObjectLimit=192)) and
@@ -112,11 +113,11 @@ def validate_opengl_rendering(report, guest, records):
             'retiredNativeCommands': len(report['nativeAsyncSubmissionRetirements'])}
 
 
-def validate_opengl(report, guest, records):
+def validate_opengl(report, guest, records, *, allocation_slots=128):
     require(re.findall(r'^BRIDGE_RUNTIME_EXIT=(\d+)[ \t\r]*$', guest, re.M) == ['0'],
             'Guest runtime did not finish normally')
     require('BRIDGE_RUNTIME_SIGNAL' not in guest, 'Unexpected guest runtime signal')
-    return validate_opengl_rendering(report, guest, records)
+    return validate_opengl_rendering(report, guest, records, allocation_slots=allocation_slots)
 
 
 def main():
