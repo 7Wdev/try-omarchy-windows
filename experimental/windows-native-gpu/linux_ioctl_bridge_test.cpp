@@ -23,6 +23,54 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (fd < 0) return failed("open");
+    if (!std::strncmp(mode,"hw-wait-",8) || !std::strncmp(mode,"context-wait-",13)) {
+        const bool contextStream = !std::strncmp(mode,"context-wait-",13);
+        const D3DKMT_HANDLE object=1; const UINT64 value=5;
+        auto invoke = [&](unsigned count, bool hasObjects, bool hasValues) {
+            if (contextStream) {
+                D3DKMT_WAITFORSYNCHRONIZATIONOBJECTFROMGPU a{};
+                a.hContext=1; a.ObjectCount=count; a.ObjectHandleArray=hasObjects?&object:nullptr; a.MonitoredFenceValueArray=hasValues?&value:nullptr;
+                return ioctl(fd,_IOWR('G',59,D3DKMT_WAITFORSYNCHRONIZATIONOBJECTFROMGPU),&a);
+            }
+            D3DKMT_SUBMITWAITFORSYNCOBJECTSTOHWQUEUE a{};
+            a.hHwQueue=1; a.ObjectCount=count; a.ObjectHandleArray=hasObjects?&object:nullptr; a.FenceValueArray=hasValues?&value:nullptr;
+            return ioctl(fd,_IOWR('G',54,D3DKMT_SUBMITWAITFORSYNCOBJECTSTOHWQUEUE),&a);
+        };
+        if (!std::strcmp(mode,"hw-wait-invalid") || !std::strcmp(mode,"context-wait-invalid")) {
+            for (unsigned test=0; test<4; ++test) {
+                const auto count=test==0?0:test==1?driver_bridge::MaxHwQueueWaitObjects+1:1;
+                if (invoke(count,test!=2,test!=3)!=-1 || errno!=EINVAL)
+                    return failed("malformed GPU queue wait forwarded");
+            }
+        } else if (invoke(1,true,true)!=-1 ||
+                   errno!=(!std::strcmp(mode,"hw-wait-disabled") || !std::strcmp(mode,"context-wait-disabled")?ENOSYS:EBADF))
+            return failed("disabled or unowned GPU queue wait forwarded");
+        return 0;
+    }
+    if (!std::strcmp(mode,"share-attributes")) {
+        struct Attributes { std::uint32_t length,pad; std::uint64_t root,name; std::uint32_t flags,pad2; std::uint64_t security,qos; };
+        const D3DKMT_HANDLE object=1; HANDLE output=nullptr;
+        for (unsigned test=0;test<8;++test) {
+            Attributes attributes{}; attributes.length=test ? 48u : 0u;
+            // Actual Linux D3D12 empty attributes leave C ABI padding
+            // undefined. It must not be interpreted as a security field.
+            attributes.pad=32620; attributes.pad2=UINT32_MAX;
+            switch(test) {
+                case 2: attributes.length=44; break;
+                case 3: attributes.root=1; break;
+                case 4: attributes.name=1; break;
+                case 5: attributes.flags=2; break;
+                case 6: attributes.security=1; break;
+                case 7: attributes.qos=1; break;
+            }
+            D3DKMT_SHAREOBJECTS args{}; args.ObjectCount=1; args.ObjectHandleArray=&object;
+            args.pObjectAttributes=&attributes; args.DesiredAccess=UINT32_C(0x10000000); args.pSharedNtHandle=&output;
+            errno=0;
+            if (ioctl(fd,_IOWR('G',63,D3DKMT_SHAREOBJECTS),&args)!=-1 || errno!=(test<2?EINVAL:ENOSYS) || output)
+                return failed("sharing attributes accepted unsupported security or rejected ABI padding");
+        }
+        return 0;
+    }
     if (!std::strncmp(mode,"opengl-profile-",15)) {
         using Begin = int (*)();
         const auto begin = reinterpret_cast<Begin>(dlsym(RTLD_DEFAULT,"wddm_bridge_begin_opengl"));

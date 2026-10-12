@@ -70,16 +70,26 @@ constexpr std::uint32_t NoGpuAccessSyncFlag = 128;
 // NT handle is a separate operation; creation must preserve these flags.
 constexpr std::uint32_t NtSharedNoGpuAccessSyncFlags = 1 | 2 | NoGpuAccessSyncFlag;
 constexpr std::uint32_t NtSharedGpuSyncFlags = 1 | 2;
+constexpr std::uint32_t UnwaitCpuWaitersOnlyOnDestroySyncFlag = 1024;
+constexpr std::uint32_t SharedSyncImportFlags = NtSharedNoGpuAccessSyncFlags | UnwaitCpuWaitersOnlyOnDestroySyncFlag;
 constexpr std::size_t MaxSharedSyncHandles = 16;
-struct SyncSharingProfile { std::uint32_t version, handleLimit, importFlags, syncLimit; };
-constexpr SyncSharingProfile GuestSyncSharingProfile{1, MaxSharedSyncHandles, NoGpuAccessSyncFlag, MaxSyncObjects};
+constexpr std::uint32_t MaxPendingHwQueueWaits = 16, MaxHwQueueWaitObjects = 32;
+struct SyncSharingProfile { std::uint32_t version, handleLimit, importFlags, syncLimit, pendingWaitLimit; };
+constexpr SyncSharingProfile GuestSyncSharingProfile{2, MaxSharedSyncHandles, SharedSyncImportFlags, MaxSyncObjects, MaxPendingHwQueueWaits};
 inline bool validSyncSharingProfile(SyncSharingProfile p) {
-    return p.version == 1 && p.handleLimit == MaxSharedSyncHandles && p.importFlags == NoGpuAccessSyncFlag && p.syncLimit == MaxSyncObjects;
+    return p.version == 2 && p.handleLimit == MaxSharedSyncHandles && p.importFlags == SharedSyncImportFlags &&
+           p.syncLimit == MaxSyncObjects && p.pendingWaitLimit == MaxPendingHwQueueWaits;
 }
 struct SharedSyncOpenDesc { std::uint32_t device, flags, affinity, reserved; };
-static_assert(sizeof(SyncSharingProfile) == 16 && sizeof(SharedSyncOpenDesc) == 16, "fixed shared fence negotiation");
-inline bool validSharedSyncOpen(SharedSyncOpenDesc d) { return d.device && (d.flags == 0 || d.flags == NoGpuAccessSyncFlag) && d.affinity <= 1 && !d.reserved; }
-constexpr std::uint32_t UnwaitCpuWaitersOnlyOnDestroySyncFlag = 1024;
+struct SharedSyncInfoDesc { std::uint32_t device, reserved; };
+static_assert(sizeof(SyncSharingProfile) == 20 && sizeof(SharedSyncOpenDesc) == 16 && sizeof(SharedSyncInfoDesc) == 8, "fixed shared fence negotiation");
+struct HwQueueWaitDesc { std::uint32_t count, reserved; };
+struct HwQueueWaitItem { std::uint32_t sync, reserved; std::uint64_t fence; };
+static_assert(sizeof(HwQueueWaitDesc) == 8 && sizeof(HwQueueWaitItem) == 16, "fixed GPU queue wait layout");
+inline bool validSharedSyncOpen(SharedSyncOpenDesc d) {
+    return d.device && (d.flags == 0 || d.flags == NoGpuAccessSyncFlag || d.flags == NtSharedGpuSyncFlags ||
+           d.flags == NtSharedNoGpuAccessSyncFlags || d.flags == SharedSyncImportFlags) && d.affinity <= 1 && !d.reserved;
+}
 inline bool packetSignalSyncFlags(std::uint32_t flags) {
     return flags == NoGpuAccessSyncFlag || flags == NtSharedNoGpuAccessSyncFlags ||
            flags == (NtSharedNoGpuAccessSyncFlags | UnwaitCpuWaitersOnlyOnDestroySyncFlag);
@@ -324,7 +334,7 @@ enum class Op : std::uint32_t {
     BeginOpenGl,
     CreateHwQueue = 0x2060, DestroyHwQueue, SubmitHwQueue, QueueHwCommand,
     CreateSync = 0x2070, DestroySync, SignalContextSync, QueueHwQueueSignal,
-    BeginSyncSharing, ExportSync, ImportSync, CloseSharedSync,
+    BeginSyncSharing, ExportSync, ImportSync, CloseSharedSync, QuerySharedSyncInfo, QueueHwQueueWait, QueueContextSync, QueueContextWait,
     ReserveGpuAddress = 0x2080, FreeGpuReservation, MapGpuState
 };
 enum class Kind { Adapter, Device, PagingQueue, Allocation, Context, PagingSync, VendorAllocation, HwQueue, HwQueueSync, Sync, GpuReservation, VendorResource, SharedSync };
@@ -438,7 +448,19 @@ public:
     virtual SyncResult importSync(std::uint32_t, SharedSyncOpenDesc) {
         return {{static_cast<std::int32_t>(0xc00000bbu), 0, 0}, {0, 0}};
     }
+    virtual Result querySharedSyncInfo(std::uint32_t, std::uint32_t) {
+        return {static_cast<std::int32_t>(0xc00000bbu), 0, 0};
+    }
+    virtual Result queueHwQueueWait(std::uint32_t, const std::vector<HwQueueWaitItem>&) {
+        return {static_cast<std::int32_t>(0xc00000bbu), 0, 0};
+    }
+    virtual Result queueContextWait(std::uint32_t, const std::vector<HwQueueWaitItem>&) {
+        return {static_cast<std::int32_t>(0xc00000bbu), 0, 0};
+    }
     virtual Result signalContextSync(std::uint32_t, std::uint32_t, ContextSignalDesc) {
+        return {static_cast<std::int32_t>(0xc00000bbu), 0, 0};
+    }
+    virtual Result queueContextSync(std::uint32_t, std::uint32_t, ContextSignalDesc) {
         return {static_cast<std::int32_t>(0xc00000bbu), 0, 0};
     }
     virtual Result submitHwQueue(std::uint32_t, HwSubmitDesc, const std::vector<std::uint8_t>&) {
@@ -817,6 +839,50 @@ public:
             syncSharingNegotiated = true;
             return out;
         }
+        if (op == Op::QueueHwQueueWait || op == Op::QueueContextWait) {
+            const bool contextStream = op == Op::QueueContextWait;
+            if (!negotiated || !syncSharingNegotiated) return reply(h, -71);
+            const auto required = (contextStream ? ContextCapability : HwQueueCapability) | AsyncHwSubmitCapability | SyncCapability;
+            if ((driver.capabilities().flags & required) != required) return reply(h, -95);
+            if (packet.size() < sizeof h + sizeof(HwQueueWaitDesc)) return reply(h, -22);
+            HwQueueWaitDesc desc{}; std::memcpy(&desc, packet.data() + sizeof h, sizeof desc);
+            if (!desc.count || desc.count > MaxHwQueueWaitObjects || desc.reserved ||
+                packet.size() != sizeof h + sizeof desc + desc.count * sizeof(HwQueueWaitItem)) return reply(h, -22);
+            const auto queue = objects.find(h.handle);
+            if (queue == objects.end() || queue->second.kind != (contextStream ? Kind::Context : Kind::HwQueue) ||
+                (contextStream && queue->second.contextFlags != 16)) return reply(h, -9);
+            const auto device = contextStream ? queue->second.parent : objects.at(queue->second.parent).parent;
+            std::vector<HwQueueWaitItem> items(desc.count);
+            std::memcpy(items.data(), packet.data() + sizeof h + sizeof desc, items.size() * sizeof(items[0]));
+            for (std::size_t n = 0; n < items.size(); ++n) {
+                const auto sync = objects.find(items[n].sync);
+                if (items[n].reserved || items[n].fence == UINT64_MAX) return reply(h, -22);
+                if (sync == objects.end() || sync->second.kind != Kind::Sync || sync->second.syncType != 5 ||
+                    sync->second.parent != device) return reply(h, -9);
+                for (std::size_t previous = 0; previous < n; ++previous)
+                    if (items[previous].sync == sync->second.nativeHandle) return reply(h, -22);
+                items[n].sync = sync->second.nativeHandle;
+            }
+            const auto result = contextStream ? driver.queueContextWait(queue->second.nativeHandle, items) :
+                                                driver.queueHwQueueWait(queue->second.nativeHandle, items);
+            if (result.ntstatus > 0 || result.nativeHandle || result.value) return reply(h, -5);
+            return reply(h, 0, h.handle, &result);
+        }
+        if (op == Op::QuerySharedSyncInfo) {
+            if (!negotiated || !syncSharingNegotiated) return reply(h, -71);
+            if (packet.size() != sizeof h + sizeof(SharedSyncInfoDesc)) return reply(h, -22);
+            SharedSyncInfoDesc desc{}; std::memcpy(&desc, packet.data() + sizeof h, sizeof desc);
+            if (!desc.device || desc.reserved) return reply(h, -22);
+            const auto ticket = objects.find(h.handle), device = objects.find(desc.device);
+            if (ticket == objects.end() || ticket->second.kind != Kind::SharedSync ||
+                device == objects.end() || device->second.kind != Kind::Device ||
+                device->second.parent != ticket->second.parent) return reply(h, -9);
+            const auto result = driver.querySharedSyncInfo(ticket->second.nativeHandle, device->second.nativeHandle);
+            // This ticket is a monitored fence, never a resource. Preserve
+            // the native failure used by D3D12 to select its fence import.
+            if (result.ntstatus >= 0 || result.nativeHandle || result.value) return reply(h, -5);
+            return reply(h, 0, h.handle, &result);
+        }
         if (op == Op::ExportSync || op == Op::ImportSync || op == Op::CloseSharedSync) {
             if (!negotiated || !syncSharingNegotiated) return reply(h, -71);
             const auto entry = objects.find(h.handle);
@@ -949,8 +1015,11 @@ public:
             if (result.ntstatus == 0) sync->second.submittedFence = desc.fence;
             return reply(h,0,h.handle,&result);
         }
-        if (op == Op::SignalContextSync) {
+        if (op == Op::SignalContextSync || op == Op::QueueContextSync) {
+            const bool asynchronous = op == Op::QueueContextSync;
             if (!negotiated) return reply(h, -71);
+            if (asynchronous && !syncSharingNegotiated) return reply(h, -71);
+            if (asynchronous && !(driver.capabilities().flags & AsyncHwSubmitCapability)) return reply(h, -95);
             if (!(driver.capabilities().flags & ContextSignalCapability)) return reply(h, -95);
             if (packet.size() != sizeof h + sizeof(ContextSignalDesc)) return reply(h, -22);
             ContextSignalDesc desc{}; std::memcpy(&desc, packet.data() + sizeof h, sizeof desc);
@@ -963,9 +1032,10 @@ public:
             if (streamingNegotiated ? contextSignalAttempts + hwQueueSignalAttempts >= GuestStreamProfile.totalSignals :
                                       contextSignalAttempts >= MaxContextSignals) return reply(h, -24);
             ++contextSignalAttempts;
-            const auto result = driver.signalContextSync(context->second.nativeHandle, sync->second.nativeHandle, desc);
+            const auto result = asynchronous ? driver.queueContextSync(context->second.nativeHandle, sync->second.nativeHandle, desc) :
+                                               driver.signalContextSync(context->second.nativeHandle, sync->second.nativeHandle, desc);
             if (result.ntstatus > 0 || result.nativeHandle ||
-                (result.ntstatus == 0 && (result.value < desc.fence || result.value == UINT64_MAX)) ||
+                (result.ntstatus == 0 && ((!asynchronous && result.value < desc.fence) || result.value == UINT64_MAX)) ||
                 (result.ntstatus < 0 && result.value)) return reply(h, -5);
             if (result.ntstatus == 0) sync->second.submittedFence = desc.fence;
             return reply(h, 0, h.handle, &result);

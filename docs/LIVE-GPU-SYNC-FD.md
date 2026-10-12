@@ -1,5 +1,9 @@
 # Native fence sharing through guest kernel FDs
 
+Later on the same day, the [genuine guest D3D12 timeline diagnostic](LIVE-GPU-TIMELINE.md)
+also verified GPU signals and future queue ordering through an imported alias.
+The captures below retain their original, narrower ownership-test scope.
+
 On 2026-10-12, two fresh owned QEMU/WHPX guests exported a native NVIDIA
 monitored fence as a kernel-authenticated Linux FD, transferred it through an
 unprivileged child, and imported it into another device in the original broker

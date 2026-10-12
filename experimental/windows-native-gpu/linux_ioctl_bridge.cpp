@@ -47,6 +47,7 @@ int ntErrno(std::int32_t status) {
         case 0xc0000008: return EBADF;
         case 0xc000000d: return EINVAL;
         case 0xc0000017: return ENOMEM;
+        case 0xc0000024: return EPROTOTYPE; // libdxg preserves STATUS_OBJECT_TYPE_MISMATCH
         case 0xc0000034: return ENOENT;
         case 0xc00000bb: return ENOSYS;
         case 0xc00000b5: return EAGAIN;
@@ -403,7 +404,14 @@ public:
                     struct Attributes { std::uint32_t length, pad; std::uint64_t root, name; std::uint32_t flags, pad2; std::uint64_t security, qos; } attributes{};
                     static_assert(sizeof attributes == 48, "x64 object attributes");
                     std::memcpy(&attributes, a.pObjectAttributes, sizeof attributes);
-                    if (attributes.length != 48 || attributes.pad || attributes.root || attributes.name || attributes.flags || attributes.pad2 || attributes.security || attributes.qos) throw Error(ENOSYS);
+                    std::fprintf(stderr, "LINUX_BRIDGE shareAttributes length=%u flags=%u hasRoot=%u hasName=%u hasSecurity=%u hasQos=%u\n",
+                        attributes.length, attributes.flags, attributes.root ? 1u : 0u,
+                        attributes.name ? 1u : 0u, attributes.security ? 1u : 0u, attributes.qos ? 1u : 0u);
+                    // The real Linux D3D12 runtime passes length zero for
+                    // empty attributes and leaves C ABI padding undefined.
+                    // Normalize only that empty request; names, security
+                    // descriptors, inheritance and rooted opens stay denied.
+                    if ((attributes.length != 0 && attributes.length != 48) || attributes.root || attributes.name || attributes.flags || attributes.security || attributes.qos) throw Error(ENOSYS);
                 }
                 const auto object = a.ObjectHandleArray[0];
                 const auto source = syncObjects.find(object);
@@ -434,14 +442,33 @@ public:
                 *a.pSharedNtHandle = reinterpret_cast<HANDLE>(static_cast<std::intptr_t>(fd));
                 return 0;
             }
+            case 65: {
+                const auto& a = args<D3DKMT_QUERYRESOURCEINFOFROMNTHANDLE>(requestNumber, pointer);
+                const auto handle = reinterpret_cast<std::intptr_t>(a.hNtHandle);
+                if (handle < 0 || handle > INT32_MAX || a.pPrivateRuntimeData || a.PrivateRuntimeDataSize ||
+                    a.TotalPrivateDriverDataSize || a.ResourcePrivateDriverDataSize || a.NumAllocations) throw Error(EINVAL);
+                if (!deviceAdapters.count(a.hDevice)) throw Error(EBADF);
+                beginSharedFences();
+                std::uint32_t ticket = 0;
+                if (!kernelObjects.resolve(static_cast<int>(handle), ticket)) throw Error(errno);
+                if (!exportedSyncTickets.count(ticket)) { transport.fail(); throw Error(EPROTO); }
+                const auto result = call(request(Op::QuerySharedSyncInfo, ticket, SharedSyncInfoDesc{a.hDevice, 0}), 0, true);
+                if (result.header.handle != ticket || result.result.ntstatus >= 0 || result.result.value) {
+                    transport.fail(); throw Error(EPROTO);
+                }
+                std::fprintf(stderr, "LINUX_BRIDGE nativeSyncResourceQueryRejected=true ntstatus=%d\n", result.result.ntstatus);
+                checkNt(result.result.ntstatus);
+                throw Error(EPROTO);
+            }
             case 64: {
                 auto& a = args<D3DKMT_OPENSYNCOBJECTFROMNTHANDLE2>(requestNumber, pointer);
                 const auto handle = reinterpret_cast<std::intptr_t>(a.hNtHandle);
                 SharedSyncOpenDesc desc{a.hDevice, a.Flags.Value, a.MonitoredFence.EngineAffinity, 0};
-                if (handle < 0 || handle > INT32_MAX || !validSharedSyncOpen(desc) || a.hSyncObject ||
-                    a.MonitoredFence.FenceValueCPUVirtualAddress || a.MonitoredFence.FenceValueGPUVirtualAddress ||
-                    std::any_of(std::begin(a.Reserved) + 3, std::end(a.Reserved), [](auto value) { return value != 0; }) ||
-                    (a.Reserved[2] >> 32)) throw Error(EINVAL);
+                std::fprintf(stderr, "LINUX_BRIDGE nativeSyncFdImportInput flags=%u affinity=%u outputFieldsIgnored=true\n", desc.flags, desc.affinity);
+                // The active MonitoredFence union contains two out-only
+                // addresses and input EngineAffinity; its inactive Reserved
+                // arm and ABI padding are not input validation fields.
+                if (handle < 0 || handle > INT32_MAX || !validSharedSyncOpen(desc)) throw Error(EINVAL);
                 if (!deviceAdapters.count(a.hDevice)) throw Error(EBADF);
                 beginSharedFences();
                 std::uint32_t ticket = 0;
@@ -1174,16 +1201,58 @@ public:
                 if (!validContextSignal(desc)) throw Error(EINVAL);
                 const auto context = contextOwners.find(a.BroadcastContextArray[0]); const auto sync = syncObjects.find(a.ObjectHandleArray[0]);
                 if (context == contextOwners.end() || context->second.flags != 16 || sync == syncObjects.end() ||
-                    sync->second.type != 5 || sync->second.flags != NoGpuAccessSyncFlag || sync->second.device != context->second.device) throw Error(EBADF);
+                    sync->second.type != 5 || !packetSignalSyncFlags(sync->second.flags) || sync->second.device != context->second.device) throw Error(EBADF);
                 if (desc.fence <= sync->second.lastSignal) throw Error(EINVAL);
-                const auto result = call(request(Op::SignalContextSync, context->first, desc), 0, true);
+                const bool asynchronous = sharedFencesNegotiated && (caps.flags & AsyncHwSubmitCapability);
+                const auto result = call(request(asynchronous ? Op::QueueContextSync : Op::SignalContextSync, context->first, desc), 0, true);
                 if (result.header.handle != context->first || result.result.ntstatus > 0 ||
-                    (result.result.ntstatus == 0 && (result.result.value < desc.fence || result.result.value == UINT64_MAX)) ||
+                    (result.result.ntstatus == 0 && ((!asynchronous && result.result.value < desc.fence) || result.result.value == UINT64_MAX)) ||
                     (result.result.ntstatus < 0 && result.result.value)) { transport.fail(); throw Error(EPROTO); }
                 checkNt(result.result.ntstatus);
-                syncFences.verifyRetired(sync->first, desc.fence, "context-signal"); sync->second.lastSignal = desc.fence;
-                std::fprintf(stderr, "LINUX_BRIDGE nativeContextSignalSubmitted=true flags=%u target=%llu observed=%llu noGpuAccess=true\n",
-                    desc.flags,static_cast<unsigned long long>(desc.fence),static_cast<unsigned long long>(result.result.value));
+                if (!asynchronous) syncFences.verifyRetired(sync->first, desc.fence, "context-signal");
+                sync->second.lastSignal = desc.fence;
+                std::fprintf(stderr, "LINUX_BRIDGE nativeContextSignalSubmitted=true flags=%u target=%llu observed=%llu noGpuAccess=true asynchronous=%u\n",
+                    desc.flags,static_cast<unsigned long long>(desc.fence),static_cast<unsigned long long>(result.result.value), asynchronous ? 1u : 0u);
+                return 0;
+            }
+            case 54: case 59: {
+                const bool contextStream = nr == 59;
+                std::uint32_t owner = 0, count = 0;
+                const D3DKMT_HANDLE* objects = nullptr; const UINT64* values = nullptr;
+                if (contextStream) {
+                    const auto& a = args<D3DKMT_WAITFORSYNCHRONIZATIONOBJECTFROMGPU>(requestNumber, pointer);
+                    owner = a.hContext; count = a.ObjectCount; objects = a.ObjectHandleArray; values = a.MonitoredFenceValueArray;
+                    // The pointer arm is active. Do not interpret inactive
+                    // union bytes; the native structure is rebuilt as zeroed.
+                } else {
+                    const auto& a = args<D3DKMT_SUBMITWAITFORSYNCOBJECTSTOHWQUEUE>(requestNumber, pointer);
+                    owner = a.hHwQueue; count = a.ObjectCount; objects = a.ObjectHandleArray; values = a.FenceValueArray;
+                }
+                const auto required = (contextStream ? ContextCapability : HwQueueCapability) | AsyncHwSubmitCapability | SyncCapability;
+                if ((caps.flags & required) != required) throw Error(ENOSYS);
+                if (!count || count > MaxHwQueueWaitObjects || !objects || !values)
+                    throw Error(EINVAL);
+                const auto queue = hwQueueContexts.find(owner);
+                const auto context = contextOwners.find(contextStream ? owner : queue == hwQueueContexts.end() ? 0 : queue->second);
+                if (context == contextOwners.end() || context->second.flags != 16) throw Error(EBADF);
+                const auto device = context->second.device;
+                std::vector<HwQueueWaitItem> items; items.reserve(count);
+                for (std::uint32_t n = 0; n < count; ++n) {
+                    const auto sync = syncObjects.find(objects[n]);
+                    if (values[n] == UINT64_MAX) throw Error(EINVAL);
+                    if (sync == syncObjects.end() || sync->second.type != 5 || sync->second.device != device) throw Error(EBADF);
+                    for (const auto& previous : items) if (previous.sync == sync->first) throw Error(EINVAL);
+                    items.push_back({sync->first, 0, values[n]});
+                }
+                beginSharedFences();
+                auto packet = request(contextStream ? Op::QueueContextWait : Op::QueueHwQueueWait, owner, HwQueueWaitDesc{count, 0});
+                const auto bytes = reinterpret_cast<const std::uint8_t*>(items.data());
+                packet.insert(packet.end(), bytes, bytes + items.size() * sizeof(items[0]));
+                const auto result = call(packet, 0, true);
+                if (result.header.handle != owner || result.result.ntstatus > 0 || result.result.value) { transport.fail(); throw Error(EPROTO); }
+                checkNt(result.result.ntstatus);
+                std::fprintf(stderr, "LINUX_BRIDGE nativeGpuQueueWaitQueued=true objects=%u firstTarget=%llu contextStream=%u cpuWait=false\n",
+                    count, static_cast<unsigned long long>(items[0].fence), contextStream ? 1u : 0u);
                 return 0;
             }
             case 29: {
@@ -1213,7 +1282,7 @@ public:
                 const HwQueueSignalDesc desc{a.Flags.Value,a.BroadcastHwQueueCount,a.FenceValueArray[0]};
                 if (!validHwQueueSignal(desc)) throw Error(EINVAL);
                 const auto sync=syncObjects.find(a.ObjectHandleArray[0]);
-                if (sync == syncObjects.end() || sync->second.type != 5 || sync->second.flags != NoGpuAccessSyncFlag) throw Error(EBADF);
+                if (sync == syncObjects.end() || sync->second.type != 5 || !packetSignalSyncFlags(sync->second.flags)) throw Error(EBADF);
                 if (desc.fence <= sync->second.lastSignal) throw Error(EINVAL);
                 std::vector<std::uint32_t> queues(a.BroadcastHwQueueArray,a.BroadcastHwQueueArray+desc.count);
                 for (std::size_t n=0;n<queues.size();++n) {

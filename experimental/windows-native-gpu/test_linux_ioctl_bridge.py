@@ -40,6 +40,8 @@ def send(op, handle, value=0, data=b'', padding=0, hello=False, ntstatus=0):
     caps |= 16384 if mode.startswith('sync-') and mode != 'sync-disabled' else 0
     caps |= 32768 if mode.startswith('submit-') and mode != 'submit-disabled' else 0
     caps |= 134217728 if mode.startswith('hw-signal-') and mode != 'hw-signal-disabled' else 0
+    caps |= 8192 | 16384 | 33554432 if mode.startswith('hw-wait-') and mode != 'hw-wait-disabled' else 0
+    caps |= 32 | 16384 | 33554432 if mode.startswith('context-wait-') and mode != 'context-wait-disabled' else 0
     caps |= 131072 if mode.startswith('reservation-') and mode != 'reservation-disabled' else 0
     caps |= 512 if mode.startswith('gpu-state-') else 0
     caps |= 262144 if mode.startswith('gpu-state-') and mode != 'gpu-state-disabled' else 0
@@ -237,6 +239,7 @@ if mode.startswith('allocation-destroy-'): assert operations.count(0x2051) == 1,
 if mode.startswith('gpuva-'): assert operations == [0x2000], operations
 if mode.startswith('cpu-wait-'): assert operations == [0x2000], operations
 if mode.startswith('context-signal-'): assert operations == [0x2000], operations
+if mode.startswith(('hw-wait-','context-wait-')) or mode == 'share-attributes': assert operations == [0x2000], operations
 if mode == 'glon12-normal': assert operations == [0x2000,0x2001,0x2004,0x2020,0x2021], operations
 if mode in ('resource-disabled','resource-invalid'): assert 0x2057 not in operations, operations
 if mode in ('shared-resource-disabled','shared-resource-invalid'): assert 0x2059 not in operations, operations
@@ -280,7 +283,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix='wddm-ioctl-fault-') as directory:
         worker = pathlib.Path(directory) / 'owned-worker'
         worker.write_text(WORKER, encoding='utf-8'); worker.chmod(0o700)
-        for mode in ('native-resource-normal', 'native-resource-disabled', 'native-resource-invalid',
+        for mode in ('context-wait-disabled', 'context-wait-invalid', 'context-wait-unowned', 'hw-wait-disabled', 'hw-wait-invalid', 'hw-wait-unowned', 'share-attributes', 'native-resource-normal', 'native-resource-disabled', 'native-resource-invalid',
                      'native-resource-unowned', 'native-resource-duplicate', 'native-resource-retry', 'native-resource-thread', 'consume-disabled', 'consume-unowned', 'consume-null', 'no-worker', 'wrong-version', 'reuse', 'bad-reply', 'closed-worker', 'normal',
                      'cpu-wait-invalid', 'cpu-wait-unowned',
                      'shared-resource-normal', 'shared-resource-disabled', 'shared-resource-invalid',

@@ -57,6 +57,17 @@ class KmtDriver : public Driver {
         std::array<std::uint32_t,MaxHwQueues> queues;
     };
     std::vector<PendingHwSignal> pendingHwSignals;
+    struct PendingHwWait {
+        unsigned index; std::uint32_t queue, count;
+        bool contextStream;
+        std::array<std::uint32_t, MaxHwQueueWaitObjects> syncs;
+        std::array<std::uint64_t, MaxHwQueueWaitObjects> targets;
+    };
+    std::vector<PendingHwWait> pendingHwWaits;
+    struct PendingContextSignal { unsigned index; std::uint32_t context, sync; std::uint64_t target; };
+    std::vector<PendingContextSignal> pendingContextSignals;
+    unsigned acceptedContextSignals = 0, retiredAsyncContextSignals = 0, peakPendingContextSignals = 0;
+    unsigned acceptedHwQueueWaits = 0, satisfiedHwQueueWaits = 0, failedHwQueueWaits = 0, peakPendingHwQueueWaits = 0;
     unsigned hwQueueSignalAttempts = 0, acceptedHwQueueSignals = 0, completedHwQueueSignals = 0, failedHwQueueSignals = 0;
     unsigned peakPendingHwQueueSignals = 0;
     bool asyncRetirementFailed = false;
@@ -104,6 +115,38 @@ class KmtDriver : public Driver {
                       << ",\"queues\":" << it->count << ",\"target\":" << it->target << ",\"observed\":" << observed
                       << ",\"noGpuAccess\":true,\"cpuValueWrittenByBridge\":false}\n";
             it = pendingHwSignals.erase(it);
+        }
+        for (auto it = pendingContextSignals.begin(); it != pendingContextSignals.end();) {
+            const auto sync = syncObjects.find(it->sync);
+            if (sync == syncObjects.end() || !sync->second.fence) {
+                asyncRetirementFailed = true; ++failedContextSignals; return false;
+            }
+            MemoryBarrier(); const auto observed = *sync->second.fence;
+            if (observed == UINT64_MAX) { asyncRetirementFailed = true; ++failedContextSignals; return false; }
+            if (observed < it->target) { ++it; continue; }
+            ++completedContextSignals; ++retiredAsyncContextSignals;
+            std::cerr << "{\"nativeAsyncContextSignalRetired\":true,\"index\":" << it->index
+                      << ",\"target\":" << it->target << ",\"observed\":" << observed
+                      << ",\"noGpuAccess\":true,\"cpuValueWrittenByBridge\":false}\n";
+            it = pendingContextSignals.erase(it);
+        }
+        for (auto it = pendingHwWaits.begin(); it != pendingHwWaits.end();) {
+            bool satisfied = true;
+            for (std::uint32_t n = 0; n < it->count; ++n) {
+                const auto sync = syncObjects.find(it->syncs[n]);
+                if (sync == syncObjects.end() || !sync->second.fence) {
+                    asyncRetirementFailed = true; ++failedHwQueueWaits; return false;
+                }
+                MemoryBarrier(); const auto observed = *sync->second.fence;
+                if (observed == UINT64_MAX) { asyncRetirementFailed = true; ++failedHwQueueWaits; return false; }
+                if (observed < it->targets[n]) satisfied = false;
+            }
+            if (!satisfied) { ++it; continue; }
+            ++satisfiedHwQueueWaits;
+            std::cerr << "{\"nativeGpuQueueWaitDependenciesSatisfied\":true,\"index\":" << it->index
+                      << ",\"contextStream\":" << (it->contextStream ? "true" : "false")
+                      << ",\"objects\":" << it->count << ",\"queueRetirementVerified\":false}\n";
+            it = pendingHwWaits.erase(it);
         }
         return true;
     }
@@ -318,6 +361,8 @@ public:
         nativeMetadataEnabled = enableNativeMetadata;
         pendingSubmissions.reserve(MaxHwSubmissions);
         pendingHwSignals.reserve(MaxHwQueueSignals);
+        pendingHwWaits.reserve(MaxPendingHwQueueWaits);
+        pendingContextSignals.reserve(MaxContextSignals);
         retirementEnabled = enableRetirement;
         reservationEnabled = enableReservation;
         gpuStateEnabled = enableGpuState;
@@ -644,6 +689,49 @@ public:
         if (!collectRetiredSubmissions()) throw std::runtime_error("Native hardware queue signal retirement failed");
         return {status,0,observed};
     }
+    Result queueHwQueueWait(std::uint32_t queueId, const std::vector<HwQueueWaitItem>& items) override {
+        return queueGpuWait(queueId, items, false);
+    }
+    Result queueContextWait(std::uint32_t contextId, const std::vector<HwQueueWaitItem>& items) override {
+        return queueGpuWait(contextId, items, true);
+    }
+    Result queueGpuWait(std::uint32_t queueId, const std::vector<HwQueueWaitItem>& items, bool contextStream) {
+        if (!collectRetiredSubmissions()) return {Invalid, 0, 0};
+        const auto queue = hwQueues.find(queueId);
+        const auto context = contextOwners.find(queueId);
+        if (!syncSharingEnabled || !asyncSubmitEnabled || !runtime || runtime->hasStopped() ||
+            (contextStream ? context == contextOwners.end() || context->second.flags != 16 : queue == hwQueues.end()) ||
+            items.empty() || items.size() > MaxHwQueueWaitObjects) return {Invalid, 0, 0};
+        if (pendingHwWaits.size() >= MaxPendingHwQueueWaits) return {static_cast<std::int32_t>(0xc0000017u), 0, 0};
+        const auto device = contextStream ? context->second.device : queue->second.device;
+        PendingHwWait pending{}; pending.queue = queueId; pending.count = static_cast<std::uint32_t>(items.size()); pending.contextStream = contextStream;
+        for (std::size_t n = 0; n < items.size(); ++n) {
+            const auto sync = syncObjects.find(items[n].sync);
+            if (items[n].reserved || items[n].fence == UINT64_MAX || sync == syncObjects.end() || sync->second.type != 5 ||
+                sync->second.device != device || !sync->second.lease || !sync->second.fence ||
+                std::find(pending.syncs.begin(), pending.syncs.begin() + n, items[n].sync) != pending.syncs.begin() + n) return {Invalid, 0, 0};
+            pending.syncs[n] = items[n].sync; pending.targets[n] = items[n].fence;
+        }
+        D3DKMT_SUBMITWAITFORSYNCOBJECTSTOHWQUEUE wait{};
+        wait.hHwQueue = queueId; wait.ObjectCount = pending.count;
+        wait.ObjectHandleArray = pending.syncs.data(); wait.FenceValueArray = pending.targets.data();
+        D3DKMT_WAITFORSYNCHRONIZATIONOBJECTFROMGPU contextWait{};
+        contextWait.hContext = queueId; contextWait.ObjectCount = pending.count;
+        contextWait.ObjectHandleArray = pending.syncs.data(); contextWait.MonitoredFenceValueArray = pending.targets.data();
+        const auto before = GetTickCount64();
+        const auto status = contextStream ? D3DKMTWaitForSynchronizationObjectFromGpu(&contextWait) :
+                                            D3DKMTSubmitWaitForSyncObjectsToHwQueue(&wait);
+        const auto elapsed = GetTickCount64() - before;
+        if (status < 0) { ++failedHwQueueWaits; return {status, 0, 0}; }
+        if (status != 0) { ++failedHwQueueWaits; throw std::runtime_error("Unexpected native GPU queue wait status"); }
+        pending.index = ++acceptedHwQueueWaits; pendingHwWaits.push_back(pending);
+        std::cerr << "{\"nativeGpuQueueWaitAccepted\":true,\"index\":" << pending.index << ",\"objects\":" << pending.count
+                  << ",\"contextStream\":" << (contextStream ? "true" : "false")
+                  << ",\"firstTarget\":" << pending.targets[0] << ",\"nativeCallMs\":" << elapsed << ",\"cpuWait\":false}\n";
+        peakPendingHwQueueWaits = (std::max)(peakPendingHwQueueWaits, static_cast<unsigned>(pendingHwWaits.size()));
+        if (!collectRetiredSubmissions()) throw std::runtime_error("Native GPU wait dependency failure");
+        return {0, 0, 0};
+    }
     Result reserveGpuAddress(std::uint32_t adapter, GpuReservationDesc desc) override {
         if (!reservationEnabled || !runtime || !ownedAdapters.count(adapter) || !validGpuReservation(desc) ||
             gpuReservations.size() >= (openglEnabled ? GuestOpenGlProfile.reservationLimit : MaxGpuReservations) || nextGpuReservation == UINT32_MAX ||
@@ -727,6 +815,19 @@ public:
         ++exportedSyncHandles;
         std::cerr << "{\"nativeSyncHandleExported\":true,\"rawHandleExposed\":false}\n";
         return {0, ticket, 0};
+    }
+    Result querySharedSyncInfo(std::uint32_t ticket, std::uint32_t device) override {
+        const auto shared = sharedSyncHandles.find(ticket);
+        if (!syncSharingEnabled || !runtime || runtime->hasStopped() ||
+            shared == sharedSyncHandles.end() || !deviceAdapters.count(device)) return {Invalid, 0, 0};
+        D3DKMT_QUERYRESOURCEINFOFROMNTHANDLE info{};
+        info.hDevice = device; info.hNtHandle = shared->second.get();
+        const auto status = D3DKMTQueryResourceInfoFromNtHandle(&info);
+        std::cerr << "{\"nativeSyncResourceInfoQueried\":true,\"ntstatus\":" << status << "}\n";
+        if (status >= 0 || info.PrivateRuntimeDataSize || info.TotalPrivateDriverDataSize ||
+            info.ResourcePrivateDriverDataSize || info.NumAllocations)
+            throw std::runtime_error("Native fence unexpectedly described as a resource");
+        return {status, 0, 0};
     }
     SyncResult importSync(std::uint32_t ticket, SharedSyncOpenDesc desc) override {
         const auto shared = sharedSyncHandles.find(ticket);
@@ -813,6 +914,15 @@ public:
         }
     }
     Result signalContextSync(std::uint32_t context, std::uint32_t sync, ContextSignalDesc desc) override {
+        return signalContextSyncImpl(context, sync, desc, false);
+    }
+    Result queueContextSync(std::uint32_t context, std::uint32_t sync, ContextSignalDesc desc) override {
+        return signalContextSyncImpl(context, sync, desc, true);
+    }
+    Result signalContextSyncImpl(std::uint32_t context, std::uint32_t sync, ContextSignalDesc desc, bool asynchronous) {
+        if (!collectRetiredSubmissions()) return {Invalid, 0, 0};
+        if (asynchronous && (!asyncSubmitEnabled || !syncSharingEnabled || pendingContextSignals.size() >= MaxContextSignals))
+            return {Invalid, 0, 0};
         const auto owner = contextOwners.find(context); const auto object = syncObjects.find(sync);
         if (!submitEnabled || !syncEnabled || !runtime || runtime->hasStopped() || !validContextSignal(desc) ||
             owner == contextOwners.end() || owner->second.flags != 16 || object == syncObjects.end() ||
@@ -830,6 +940,15 @@ public:
         if (status < 0) { ++failedContextSignals; return {status,0,0}; }
         object->second.lastSignal = desc.fence;
         if (status != 0) { ++failedContextSignals; throw std::runtime_error("Unexpected native context signal status"); }
+        if (asynchronous) {
+            pendingContextSignals.push_back({++acceptedContextSignals, context, sync, desc.fence});
+            peakPendingContextSignals = (std::max)(peakPendingContextSignals, static_cast<unsigned>(pendingContextSignals.size()));
+            MemoryBarrier(); const auto observed = *object->second.fence;
+            std::cerr << "{\"nativeAsyncContextSignalAccepted\":true,\"index\":" << acceptedContextSignals
+                      << ",\"target\":" << desc.fence << ",\"observed\":" << observed << ",\"cpuWait\":false}\n";
+            if (!collectRetiredSubmissions()) throw std::runtime_error("Native context signal retirement failed");
+            return {0, 0, observed};
+        }
         const auto deadline = GetTickCount64() + 5000;
         std::uint64_t observed = 0;
         do {
@@ -1472,6 +1591,13 @@ public:
             if (std::any_of(pendingHwSignals.begin(),pendingHwSignals.end(),[handle](const PendingHwSignal& p) {
                 return std::find(p.queues.begin(),p.queues.begin()+p.count,handle) != p.queues.begin()+p.count;
             })) return {Invalid,0,0};
+            if (std::any_of(pendingHwWaits.begin(), pendingHwWaits.end(), [handle,&queue](const PendingHwWait& p) {
+                return p.contextStream ? p.queue == queue->second.context : p.queue == handle;
+            }))
+                return {Invalid, 0, 0};
+            if (std::any_of(pendingContextSignals.begin(), pendingContextSignals.end(), [&queue](const PendingContextSignal& p) {
+                return p.context == queue->second.context;
+            })) return {Invalid, 0, 0};
             const bool afterVmExit = runtime->hasStopped();
             if (queue->second.lease) {
                 try { runtime->unmap(*queue->second.lease); }
@@ -1527,6 +1653,11 @@ public:
         } else if (kind == Kind::Sync) {
             const auto object = syncObjects.find(handle);
             if (object == syncObjects.end() || !runtime) return {Invalid, 0, 0};
+            if (std::any_of(pendingHwWaits.begin(), pendingHwWaits.end(), [handle](const PendingHwWait& p) {
+                return std::find(p.syncs.begin(), p.syncs.begin() + p.count, handle) != p.syncs.begin() + p.count;
+            }) || std::any_of(pendingContextSignals.begin(), pendingContextSignals.end(), [handle](const PendingContextSignal& p) {
+                return p.sync == handle;
+            })) return {Invalid, 0, 0};
             const bool afterVmExit = runtime->hasStopped();
             if (object->second.lease) {
                 try { runtime->unmap(*object->second.lease); }
@@ -1541,6 +1672,12 @@ public:
             }
         } else if (kind == Kind::Context) {
             if (!contextOwners.count(handle)) return {Invalid, 0, 0};
+            if (std::any_of(pendingHwWaits.begin(), pendingHwWaits.end(), [handle](const PendingHwWait& p) {
+                return p.contextStream && p.queue == handle;
+            })) return {Invalid, 0, 0};
+            if (std::any_of(pendingContextSignals.begin(), pendingContextSignals.end(), [handle](const PendingContextSignal& p) {
+                return p.context == handle;
+            })) return {Invalid, 0, 0};
             for (const auto& queue : hwQueues) if (queue.second.context == handle) return {Invalid, 0, 0};
             D3DKMT_DESTROYCONTEXT a{}; a.hContext = handle; status = D3DKMTDestroyContext(&a);
             if (status >= 0) { --activeContexts; contextOwners.erase(handle); }
@@ -1573,7 +1710,7 @@ public:
         }
     }
     bool clean() const {
-        return !asyncRetirementFailed && pendingSubmissions.empty() && pendingHwSignals.empty() && !activeAdapters && !activeDevices && !activeContexts && pagingFences.empty() && allocations.empty() && vendorAllocations.empty() &&
+        return !asyncRetirementFailed && pendingSubmissions.empty() && pendingHwSignals.empty() && pendingHwWaits.empty() && pendingContextSignals.empty() && !activeAdapters && !activeDevices && !activeContexts && pagingFences.empty() && allocations.empty() && vendorAllocations.empty() &&
                !vendorMappedPages && !vendorResidencyAttempts && !vendorCpuBytes && deviceAdapters.empty() && translatedAllocations.empty() &&
                sharedResourceIds.empty() && textureConsumers.empty() && contextOwners.empty() && hwQueues.empty() && syncObjects.empty() && sharedSyncHandles.empty() && gpuReservations.empty() && !gpuReservedBytes && gpuStates.empty() && ownedAdapters.empty() &&
                !guestMemory && !guestSection && !copyDevice && !copyHeap && !copyQueue && !copyFence && !copyEvent && !cleanupFailures;
@@ -1608,6 +1745,8 @@ public:
                   << ",\"completedNativeContextSignals\":" << completedContextSignals
                   << ",\"failedNativeContextSignals\":" << failedContextSignals
                   << ",\"nativeContextSignalTimeouts\":" << contextSignalTimeouts
+                  << ",\"acceptedAsyncContextSignals\":" << acceptedContextSignals << ",\"retiredAsyncContextSignals\":" << retiredAsyncContextSignals
+                  << ",\"pendingAsyncContextSignals\":" << pendingContextSignals.size() << ",\"peakPendingAsyncContextSignals\":" << peakPendingContextSignals
                   << ",\"syncObjectsReleasedAfterVmExit\":" << syncsReleasedAfterVmExit
                   << ",\"liveGpuReservations\":" << gpuReservations.size() << ",\"liveGpuReservedBytes\":" << gpuReservedBytes
                   << ",\"peakGpuReservedBytes\":" << peakGpuReservedBytes << ",\"completedGpuReservations\":" << completedReservations
@@ -1626,6 +1765,9 @@ public:
                   << ",\"nativeHwQueueSignalAttempts\":" << hwQueueSignalAttempts << ",\"acceptedHwQueueSignals\":" << acceptedHwQueueSignals
                   << ",\"completedHwQueueSignals\":" << completedHwQueueSignals << ",\"failedHwQueueSignals\":" << failedHwQueueSignals
                   << ",\"pendingHwQueueSignals\":" << pendingHwSignals.size() << ",\"peakPendingHwQueueSignals\":" << peakPendingHwQueueSignals
+                  << ",\"acceptedGpuQueueWaits\":" << acceptedHwQueueWaits << ",\"satisfiedGpuQueueWaits\":" << satisfiedHwQueueWaits
+                  << ",\"failedGpuQueueWaits\":" << failedHwQueueWaits << ",\"pendingGpuQueueWaits\":" << pendingHwWaits.size()
+                  << ",\"peakPendingGpuQueueWaits\":" << peakPendingHwQueueWaits
                   << ",\"nativeSubmissionAttempts\":" << submissionAttempts << ",\"completedNativeSubmissions\":" << completedSubmissions
                   << ",\"failedNativeSubmissions\":" << failedSubmissions << ",\"nativeSubmissionTimeouts\":" << submissionTimeouts
                   << ",\"submittedCommandBytes\":" << submittedCommandBytes

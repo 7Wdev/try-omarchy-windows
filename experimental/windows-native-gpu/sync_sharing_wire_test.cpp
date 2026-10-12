@@ -2,9 +2,11 @@
 #include "driver_wire.h"
 #include <iostream>
 #include <set>
+#include <string>
 using namespace driver_bridge;
 static unsigned checks = 0;
-static void require(bool good) { ++checks; if (!good) throw std::runtime_error("Shared sync wire regression"); }
+static void requireAt(bool good, int line) { ++checks; if (!good) throw std::runtime_error("Shared sync wire regression at line " + std::to_string(line)); }
+#define require(good) requireAt((good), __LINE__)
 static Header header(const std::vector<std::uint8_t>& data) {
     require(data.size() >= sizeof(Header)); Header h{}; memcpy(&h, data.data(), sizeof h); return h;
 }
@@ -13,17 +15,46 @@ struct Fake : Driver {
     unsigned exports = 0, imports = 0, calls = 0;
     bool supported = true, fail = false;
     int badExport = 0, badImport = 0;
+    unsigned infoQueries = 0;
+    Result infoReply{static_cast<std::int32_t>(0xc0000024u),0,0};
+    std::uint32_t capabilityFlags = 7 | SyncCapability;
+    unsigned waits = 0, queuedSignals = 0;
+    Result waitReply{0,0,0}, signalReply{0,0,0};
+    std::vector<HwQueueWaitItem> waited;
+    std::set<std::uint32_t> borrowed;
     std::map<std::uint32_t, Kind> live;
     Result create(Kind kind) { ++calls; const auto id = ++next; live.emplace(id, kind); return {0, id, 0}; }
-    native_gpu::Capabilities capabilities() const override { return {Version, 7 | SyncCapability, 0x10de, 1}; }
+    native_gpu::Capabilities capabilities() const override { return {Version, capabilityFlags, 0x10de, 1}; }
     SyncSharingProfile beginSyncSharing() override { ++calls; return supported ? GuestSyncSharingProfile : SyncSharingProfile{}; }
     Result openAdapter() override { return create(Kind::Adapter); }
     Result queryVersion(std::uint32_t) override { return {0, 0, 31}; }
     Result queryAdapter(std::uint32_t, QueryDesc, std::vector<std::uint8_t>&) override { return {-1, 0, 0}; }
     Result createDevice(std::uint32_t) override { return create(Kind::Device); }
-    Result createContext(std::uint32_t, ContextDesc, std::vector<std::uint8_t>&) override { return {-1, 0, 0}; }
+    Result createContext(std::uint32_t device, ContextDesc d, std::vector<std::uint8_t>& bytes) override {
+        require(live.at(device) == Kind::Device && validContext(d) && bytes.size() == d.privateBytes);
+        return create(Kind::Context);
+    }
+    HwQueueResult createHwQueue(std::uint32_t context, HwQueueDesc d, std::vector<std::uint8_t>& bytes) override {
+        require(live.at(context) == Kind::Context && validHwQueue(d) && bytes.size() == d.privateBytes);
+        const auto queue = create(Kind::HwQueue); const auto sync = ++next; borrowed.insert(sync);
+        return {queue, sync, 8192, 65536};
+    }
+    Result queueHwQueueWait(std::uint32_t queue, const std::vector<HwQueueWaitItem>& items) override {
+        require(live.at(queue) == Kind::HwQueue);
+        for (const auto& item : items) require(live.at(item.sync) == Kind::Sync);
+        ++waits; waited = items; return waitReply;
+    }
+    Result queueContextWait(std::uint32_t context, const std::vector<HwQueueWaitItem>& items) override {
+        require(live.at(context) == Kind::Context);
+        for (const auto& item : items) require(live.at(item.sync) == Kind::Sync);
+        ++waits; waited = items; return waitReply;
+    }
+    Result queueContextSync(std::uint32_t context, std::uint32_t sync, ContextSignalDesc) override {
+        require(live.at(context) == Kind::Context && live.at(sync) == Kind::Sync);
+        ++queuedSignals; return signalReply;
+    }
     SyncResult createSync(std::uint32_t, SyncDesc d) override {
-        auto r = create(Kind::Sync); return {r, {4096, d.flags & 128 ? 0ull : 65536ull}};
+        auto r = create(Kind::Sync); return d.type == 1 ? SyncResult{r,{0,0}} : SyncResult{r,{4096,d.flags & 128 ? 0ull : 65536ull}};
     }
     Result exportSync(std::uint32_t id) override {
         require(live.at(id) == Kind::Sync); ++exports;
@@ -45,6 +76,10 @@ struct Fake : Driver {
         if (badImport == 6) output.gpuAddress = MaxGpuAddress;
         return {r, output};
     }
+    Result querySharedSyncInfo(std::uint32_t id, std::uint32_t device) override {
+        require(live.at(id) == Kind::SharedSync && live.at(device) == Kind::Device);
+        ++infoQueries; return infoReply;
+    }
     Result createPagingQueue(std::uint32_t) override { return {-1, 0, 0}; }
     Result readPagingFence(std::uint32_t) override { return {-1, 0, 0}; }
     Result createAllocation(std::uint32_t, std::uint32_t) override { return {-1, 0, 0}; }
@@ -56,6 +91,7 @@ struct Fake : Driver {
     Result mapAllocation(std::uint32_t, std::uint32_t) override { return {-1, 0, 0}; }
     Result queryResidency(std::uint32_t) override { return {-1, 0, 0}; }
     Result destroy(Kind kind, std::uint32_t id) override {
+        if (kind == Kind::HwQueueSync) { require(borrowed.erase(id) == 1); return {0,0,0}; }
         require(live.at(id) == kind); live.erase(id); return {0, 0, 0};
     }
 };
@@ -71,6 +107,92 @@ static std::uint32_t add(Session& s, Op op, std::uint32_t parent) {
 static std::uint32_t sync(Session& s, std::uint32_t device, std::uint32_t flags = 3) {
     const auto h = header(s.dispatch(request(Op::CreateSync, device, SyncDesc{5, flags, 1, 0, 0})));
     require(h.status == 0 && h.handle); return h.handle;
+}
+static std::vector<std::uint8_t> waitPacket(std::uint32_t queue, std::vector<HwQueueWaitItem> items) {
+    auto packet = request(Op::QueueHwQueueWait, queue, HwQueueWaitDesc{static_cast<std::uint32_t>(items.size()),0});
+    const auto bytes = reinterpret_cast<const std::uint8_t*>(items.data());
+    if (!items.empty()) packet.insert(packet.end(), bytes, bytes + items.size()*sizeof(items[0]));
+    return packet;
+}
+static void queueDependencies() {
+    Fake fake;
+    fake.capabilityFlags |= ContextCapability | HwQueueCapability | AsyncHwSubmitCapability | ContextSignalCapability;
+    {
+        Session s(fake);
+        require(header(s.dispatch(waitPacket(1,{{1,0,5}}))).status == -71);
+        negotiate(s);
+        require(header(s.dispatch(waitPacket(1,{{1,0,5}}))).status == -71);
+        require(header(s.dispatch(request(Op::QueueContextSync,1,ContextSignalDesc{1,4,5}))).status == -71);
+        begin(s);
+        const auto adapter = add(s,Op::OpenAdapter,0), device = add(s,Op::CreateDevice,adapter);
+        const auto otherDevice = add(s,Op::CreateDevice,adapter);
+        auto createContext = request(Op::CreateContext,device,ContextDesc{0,1,16,12,1,0}); createContext.push_back(37);
+        const auto context = header(s.dispatch(createContext)).handle; require(context);
+        auto createQueue = request(Op::CreateHwQueue,context,HwQueueDesc{0,1,0,0}); createQueue.push_back(37);
+        const auto queue = header(s.dispatch(createQueue)).handle; require(queue);
+        const auto first = sync(s,device,SharedSyncImportFlags), second = sync(s,device,NoGpuAccessSyncFlag);
+        const auto foreign = sync(s,otherDevice,NoGpuAccessSyncFlag);
+        const auto mutex = header(s.dispatch(request(Op::CreateSync,device,SyncDesc{1,0,0,0,0}))).handle; require(mutex);
+        auto valid = waitPacket(queue,{{first,0,5},{second,0,9}});
+        for (const auto missing : {HwQueueCapability,AsyncHwSubmitCapability,SyncCapability}) {
+            fake.capabilityFlags ^= missing;
+            require(header(s.dispatch(valid)).status == -95); fake.capabilityFlags ^= missing;
+        }
+        require(header(s.dispatch(request(Op::QueueHwQueueWait,queue))).status == -22);
+        for (auto packet : {waitPacket(queue,{}),waitPacket(queue,std::vector<HwQueueWaitItem>(MaxHwQueueWaitObjects+1,{first,0,5})),
+                            waitPacket(queue,{{first,1,5}}),waitPacket(queue,{{first,0,UINT64_MAX}}),
+                            waitPacket(queue,{{first,0,5},{first,0,6}})}) require(header(s.dispatch(packet)).status == -22);
+        auto bad = valid; bad.push_back(0); require(header(s.dispatch(bad)).status == -22);
+        bad = valid; bad.pop_back(); require(header(s.dispatch(bad)).status == -22);
+        bad = valid; bad[20]=1; require(header(s.dispatch(bad)).status == -22);
+        require(header(s.dispatch(waitPacket(device,{{first,0,5}}))).status == -9);
+        for (auto id : {foreign,mutex,device,UINT32_MAX}) require(header(s.dispatch(waitPacket(queue,{{id,0,5}}))).status == -9);
+        require(!fake.waits);
+        for (auto result : {Result{259,0,0},Result{0,1,0},Result{0,0,1},Result{-123,0,1}}) {
+            fake.waitReply=result; require(header(s.dispatch(valid)).status == -5);
+        }
+        fake.waitReply={-123,0,0}; auto out=s.dispatch(valid); Reply reply{}; memcpy(&reply,out.data()+sizeof(Header),sizeof reply);
+        require(header(out).status == 0 && reply.ntstatus == -123 && !reply.value);
+        fake.waitReply={0,0,0}; out=s.dispatch(valid);
+        require(header(out).status == 0 && header(out).handle == queue && fake.waited.size() == 2);
+        require(fake.waited[0].sync > 1000 && fake.waited[0].sync != first && fake.waited[0].fence == 5 && fake.waited[1].fence == 9);
+        require(header(s.dispatch(waitPacket(queue,{{first,0,0}}))).status == 0);
+        auto contextWait = valid;
+        Header contextHeader{static_cast<std::uint32_t>(Op::QueueContextWait),context,0,0};
+        memcpy(contextWait.data(),&contextHeader,sizeof contextHeader);
+        for (const auto missing : {ContextCapability,AsyncHwSubmitCapability,SyncCapability}) {
+            fake.capabilityFlags ^= missing;
+            require(header(s.dispatch(contextWait)).status == -95); fake.capabilityFlags ^= missing;
+        }
+        contextHeader.handle=queue; memcpy(contextWait.data(),&contextHeader,sizeof contextHeader);
+        require(header(s.dispatch(contextWait)).status == -9);
+        contextHeader.handle=context; memcpy(contextWait.data(),&contextHeader,sizeof contextHeader);
+        for (auto result : {Result{259,0,0},Result{0,1,0},Result{0,0,1},Result{-123,0,1}}) {
+            fake.waitReply=result; require(header(s.dispatch(contextWait)).status == -5);
+        }
+        fake.waitReply={-123,0,0}; out=s.dispatch(contextWait); memcpy(&reply,out.data()+sizeof(Header),sizeof reply);
+        require(header(out).status == 0 && reply.ntstatus == -123);
+        fake.waitReply={0,0,0}; require(header(s.dispatch(contextWait)).status == 0);
+        // Queued signals may return before their target. Invalid replies must
+        // not advance the session's per-fence monotonic signal tracking.
+        auto signal=request(Op::QueueContextSync,context,ContextSignalDesc{first,4,5});
+        fake.capabilityFlags ^= AsyncHwSubmitCapability;
+        require(header(s.dispatch(signal)).status == -95); fake.capabilityFlags ^= AsyncHwSubmitCapability;
+        fake.capabilityFlags ^= ContextSignalCapability;
+        require(header(s.dispatch(signal)).status == -95); fake.capabilityFlags ^= ContextSignalCapability;
+        require(header(s.dispatch(request(Op::QueueContextSync,queue,ContextSignalDesc{first,4,5}))).status == -9);
+        require(header(s.dispatch(request(Op::QueueContextSync,context,ContextSignalDesc{foreign,4,5}))).status == -9);
+        for (auto result : {Result{259,0,0},Result{0,1,0},Result{0,0,UINT64_MAX},Result{-123,0,1}}) {
+            fake.signalReply=result; require(header(s.dispatch(signal)).status == -5);
+        }
+        fake.signalReply={-123,0,0}; out=s.dispatch(signal); memcpy(&reply,out.data()+sizeof(Header),sizeof reply);
+        require(header(out).status == 0 && reply.ntstatus == -123);
+        fake.signalReply={0,0,0}; require(header(s.dispatch(signal)).status == 0);
+        const auto calls=fake.queuedSignals;
+        require(header(s.dispatch(signal)).status == -22 && fake.queuedSignals == calls);
+        require(header(s.dispatch(request(Op::QueueContextSync,context,ContextSignalDesc{first,4,6}))).status == 0);
+    }
+    require(fake.live.empty() && fake.borrowed.empty());
 }
 int main() {
     try {
@@ -106,6 +228,20 @@ int main() {
             require(header(s.dispatch(request(Op::DestroyDevice, sourceDevice))).status == 0);
             require(header(s.dispatch(request(Op::CloseAdapter, adapter))).status == -16);
             const auto otherAdapter = add(s, Op::OpenAdapter, 0), otherDevice = add(s, Op::CreateDevice, otherAdapter);
+            require(header(s.dispatch(request(Op::QuerySharedSyncInfo,ticket))).status == -22);
+            require(header(s.dispatch(request(Op::QuerySharedSyncInfo,ticket,SharedSyncInfoDesc{device,1}))).status == -22);
+            require(header(s.dispatch(request(Op::QuerySharedSyncInfo,adapter,SharedSyncInfoDesc{device,0}))).status == -9);
+            require(header(s.dispatch(request(Op::QuerySharedSyncInfo,ticket,SharedSyncInfoDesc{otherDevice,0}))).status == -9);
+            require(!fake.infoQueries);
+            for (auto badReply : {Result{0,0,0},Result{259,0,0},Result{-123,1,0},Result{-123,0,1}}) {
+                fake.infoReply=badReply;
+                require(header(s.dispatch(request(Op::QuerySharedSyncInfo,ticket,SharedSyncInfoDesc{device,0}))).status == -5);
+            }
+            fake.infoReply={static_cast<std::int32_t>(0xc0000024u),0,0};
+            const auto info=s.dispatch(request(Op::QuerySharedSyncInfo,ticket,SharedSyncInfoDesc{device,0}));
+            require(header(info).status == 0 && header(info).handle == ticket && info.size() == sizeof(Header)+sizeof(Reply));
+            Reply infoOutput{}; memcpy(&infoOutput,info.data()+sizeof(Header),sizeof infoOutput);
+            require(infoOutput.ntstatus == fake.infoReply.ntstatus && !infoOutput.value && fake.infoQueries == 5);
             const auto beforeCalls = fake.imports;
             for (auto desc : {SharedSyncOpenDesc{0,0,1,0}, SharedSyncOpenDesc{device,1,1,0},
                               SharedSyncOpenDesc{device,0,2,0}, SharedSyncOpenDesc{device,0,1,1}})
@@ -134,6 +270,7 @@ int main() {
             // Disconnect must close every remaining NT reference and KMT object.
         }
         require(fake.live.empty());
+        queueDependencies();
         std::cout << "PASS: " << checks << " shared-fence protocol checks, scoped tickets, cross-device ownership, quotas, malformed replies and cleanup\n";
     } catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }
 }

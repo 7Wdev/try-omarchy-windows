@@ -14,6 +14,9 @@
 #include <string>
 #include <link.h>
 #include "triangle_workload.h"
+#ifdef WDDM_BRIDGE_TEST_GPU_TIMELINE
+#include "guest_gpu_timeline.h"
+#endif
 using Microsoft::WRL::ComPtr;
 static constexpr std::size_t CopyBytes = 65536;
 static constexpr unsigned CopyRounds = 2;
@@ -232,6 +235,9 @@ int main() {
         D3D12_COMMAND_QUEUE_DESC q{}; q.Type=D3D12_COMMAND_LIST_TYPE_COPY;
         ComPtr<ID3D12CommandQueue> queue; hr=device->CreateCommandQueue(&q,IID_PPV_ARGS(&queue));
         std::printf("copyQueue=%08x\n",static_cast<unsigned>(hr)); if (FAILED(hr)) return 1;
+#ifdef WDDM_BRIDGE_TEST_GPU_TIMELINE
+        if (const auto result = guest_gpu_timeline::run(device.Get(), queue.Get())) return result;
+#endif
         const char* workload = std::getenv("WDDM_BRIDGE_RUNTIME_WORKLOAD");
         if (workload && !std::strcmp(workload, "native-stream")) { queue.Reset(); return gpu_triangle::run(device.Get(), true, true, true, true); }
         if (workload && !std::strcmp(workload, "native")) { queue.Reset(); return gpu_triangle::run(device.Get(), true, true, true); }

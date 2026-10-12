@@ -30,7 +30,7 @@ public:
     NTSTATUS open(D3DKMT_HANDLE device, UINT flags, UINT affinity,
                   D3DKMT_OPENSYNCOBJECTFROMNTHANDLE2& result) const {
         result = {};
-        if (!value || !device || (flags != 0 && flags != 128) || affinity > 1)
+        if (!value || !device || (flags != 0 && flags != 3 && flags != 128 && flags != 131 && flags != 1155) || affinity > 1)
             return static_cast<NTSTATUS>(0xc000000du);
         result.hNtHandle = value; result.hDevice = device; result.Flags.Value = flags;
         result.MonitoredFence.EngineAffinity = affinity;

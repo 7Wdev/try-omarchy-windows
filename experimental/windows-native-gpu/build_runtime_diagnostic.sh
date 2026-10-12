@@ -11,6 +11,10 @@ dxg=$(CDPATH= cd -- "$2" && pwd)
 mkdir -p "$3"
 output=$(CDPATH= cd -- "$3" && pwd)
 profile_define=
+timeline_define=
+if [ "${WDDM_BRIDGE_TEST_GPU_TIMELINE:-0}" = 1 ]; then
+    timeline_define=-DWDDM_BRIDGE_TEST_GPU_TIMELINE=1
+fi
 if [ "$#" -eq 4 ]; then
     case "$4" in
         4k) profile_define=-DWDDM_BRIDGE_4K_LAB=1 ;;
@@ -21,7 +25,7 @@ fi
 "${CXX:-c++}" -std=c++17 -O2 -Wall -Wextra -Werror $profile_define \
     -isystem "$headers/include" -isystem "$headers/include/wsl/stubs" -isystem "$dxg/include" \
     -shared -fPIC "$base/linux_ioctl_bridge.cpp" -ldl -pthread -o "$output/linux-ioctl-bridge.so"
-"${CXX:-c++}" -std=c++17 -O2 -Wall -Wextra -Werror $profile_define \
+"${CXX:-c++}" -std=c++17 -O2 -Wall -Wextra -Werror $profile_define $timeline_define \
     -isystem "$headers/include" -isystem "$headers/include/wsl/stubs" \
     "$base/umd_context_probe.cpp" "$headers/src/dxguids.cpp" \
     -L/usr/lib/wsl/lib -Wl,-rpath,/usr/lib/wsl/lib -ld3d12 -ldxcore -ldl -o "$output/runtime-probe"
