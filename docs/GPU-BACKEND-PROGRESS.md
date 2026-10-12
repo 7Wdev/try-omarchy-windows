@@ -32,6 +32,14 @@ now passes three fresh late-finalizer tests and two further Mesa regressions.
 The old bridge segfaults in the deterministic control. General desktop stability
 and a separate legacy V1 capacity rejection remain open; no new gate is closed.
 
+The [native texture-FD diagnostic](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-RESOURCE-FD.md)
+now passes two full 4K shared-storage rounds in two fresh guests, including after
+source and FD release. An actual wrong-color GPU control is rejected. This is
+connection-scoped NT-backed resource sharing; dma-buf/DRM PRIME, GBM and
+cross-process compositor/client ownership remain pending. The diagnostic uses
+a bounded readback band because a contiguous 33 MB map exhausts the current
+CPU aperture. That general capacity/fragmentation problem remains open.
+
 ![Four of eight verification stages demonstrated; zero of four desktop acceptance gates complete](images/gpu-backend-progress.svg)
 
 The normal upstream Try Omarchy desktop is already available. This roadmap
@@ -45,9 +53,9 @@ Its results currently come from isolated diagnostic workloads.
 | 3. 4K guest shaders and shared GPU textures | Demonstrated in the lab | [Independent 4K pixel checks, GPU copies and fence retirement](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-4K.md). |
 | 4. Repeated guest rendering | Demonstrated in the bounded lab | [64-frame guest runs](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-GUEST-STREAM.md), safe allocator/texture reuse, first/last audits and complete cleanup. This does not establish long-run stability or all-frame display. |
 | 5. Guest graphics/device integration | In progress | Replace the diagnostic interposer with a usable guest device/driver path. Integrate graphics buffers, memory ownership, synchronization and the compositor's DRM/GBM/display requirements. |
-| 6. Interactive Omarchy/Hyprland desktop | Pending | Boot Omarchy through the new backend and validate real apps, cursor/keyboard input, focus, resizing, fullscreen, multiple windows and correct continuously displayed frames. |
-| 7. Required APIs | Pending | Test OpenGL, Vulkan, CUDA and video acceleration in real guest applications. D3D12 shader success does not establish support for these APIs. |
-| 8. Reliability and ≥93% native performance | Pending | Matched guest/native benchmarks across resolutions up to 4K, long runs, stable memory use, and device/VM failure recovery. |
+| 6. Interactive Omarchy/Hyprland desktop | Pending | Capture the first correctly displayed Hyprland session and update PR #2, then validate real apps, cursor/keyboard input, focus, resizing, fullscreen, multiple windows and correct continuously displayed frames. |
+| 7. Required APIs and NVIDIA features | Pending | Test OpenGL, Vulkan, CUDA, video acceleration and NVIDIA-specific capabilities in real guest applications. Device identity and D3D12 shader success do not establish feature support. |
+| 8. Reliability and ≥93% native performance | Pending | Matched guest/native benchmarks across resolutions up to 4K, concurrent Windows/guest GPU workloads, long runs, stable memory use, and device/VM failure recovery. |
 
 ## How much work remains?
 
@@ -104,6 +112,11 @@ their own implementation and application evidence as well.
 - **Legacy capacity:** an unchanged V1 OpenGL/FD image reached the 256 aggregate
   object limit in a separate run. Its rejection is retained as a failure;
   reliable capacity/lifetime handling for that workload remains open.
+- **Resource buffers:** native texture FDs pass all-pixel 4K storage checks,
+  source/FD-release lifetime and a wrong-color control. They are scoped to one
+  connection and are not dma-buf/DRM PRIME. A 33 MB contiguous CPU readback
+  exhausts the current aperture; banded diagnostic success does not fix that
+  general capacity/fragmentation limitation.
 - **Product integration:** no accelerated Hyprland desktop, general OpenGL,
   Vulkan, CUDA or video test has passed through this backend yet.
 
