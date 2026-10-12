@@ -21,6 +21,7 @@
 #include "driver_wire.h"
 #include "shared_resource_probe.h"
 #include "shared_sync_handle.h"
+#include "shared_resource_handle.h"
 #include "shared_texture_consumer.h"
 #include "native_texture_metadata.h"
 #include "qemu_runtime_host.h"
@@ -203,6 +204,12 @@ class KmtDriver : public Driver {
         std::optional<driver_qemu::AllocationLease> cpuLease;
     };
     std::map<std::uint32_t, VendorAllocation> vendorAllocations;
+    std::map<std::uint32_t, std::vector<std::uint8_t>> resourceGuestRuntime;
+    struct SharedResource { driver_shared::ResourceHandle handle; std::vector<std::uint8_t> guestRuntime; };
+    std::map<std::uint32_t, SharedResource> sharedResourceHandles;
+    std::uint32_t nextSharedResource = 1;
+    bool resourceSharingEnabled = false;
+    unsigned exportedResourceHandles = 0, closedResourceHandles = 0, importedResourceFdObjects = 0;
     unsigned completedVendorResources = 0, destroyedVendorResources = 0;
     unsigned sharedResourceProbes = 0, importedSharedResources = 0, failedSharedResourceProbes = 0;
     void probeSharedResource(std::uint32_t resource, std::uint32_t runtimeBytes) {
@@ -801,6 +808,125 @@ public:
         ++completedGpuStateMaps; ++completedGpuStateWaits;
         return {{status, 0, a.VirtualAddress}, a.PagingFenceValue};
     }
+    ResourceSharingProfile beginResourceSharing() override {
+        if (!nativeMetadataEnabled || !sharedResourcesEnabled || !runtime || runtime->hasStopped() || resourceSharingEnabled) return {};
+        resourceSharingEnabled = true;
+        std::cerr << "{\"nativeResourceSharingNegotiated\":true,\"handleLimit\":" << MaxSharedResourceHandles << "}\n";
+        return GuestResourceSharingProfile;
+    }
+    Result exportResource(std::uint32_t resource) override {
+        const auto source = resourceGuestRuntime.find(resource);
+        if (!resourceSharingEnabled || !runtime || runtime->hasStopped() || source == resourceGuestRuntime.end() ||
+            !sharedResourceIds.count(resource) || sharedResourceHandles.size() >= MaxSharedResourceHandles ||
+            nextSharedResource == UINT32_MAX) return {Invalid, 0, 0};
+        SharedResource shared;
+        shared.guestRuntime = source->second;
+        const auto status = shared.handle.share(resource);
+        if (status) return {status, 0, 0};
+        const auto ticket = nextSharedResource++;
+        if (!sharedResourceHandles.emplace(ticket, std::move(shared)).second) throw std::runtime_error("Shared resource ticket collision");
+        ++exportedResourceHandles;
+        std::cerr << "{\"nativeResourceHandleExported\":true,\"rawHandleExposed\":false}\n";
+        return {0, ticket, 0};
+    }
+    Result querySharedResourceInfo(std::uint32_t ticket, std::uint32_t device, SharedResourceInfo& info, std::vector<std::uint8_t>& guestRuntime) override {
+        const auto shared = sharedResourceHandles.find(ticket);
+        if (!resourceSharingEnabled || !runtime || runtime->hasStopped() || shared == sharedResourceHandles.end() || !deviceAdapters.count(device))
+            return {Invalid, 0, 0};
+        D3DKMT_QUERYRESOURCEINFOFROMNTHANDLE query{}; query.hDevice = device; query.hNtHandle = shared->second.handle.get();
+        const auto status = D3DKMTQueryResourceInfoFromNtHandle(&query);
+        if (status < 0) return {status, 0, 0};
+        SharedResourceInfo output{static_cast<std::uint32_t>(shared->second.guestRuntime.size()),
+            query.TotalPrivateDriverDataSize, query.ResourcePrivateDriverDataSize, query.NumAllocations};
+        if (status != 0 || !validSharedResourceInfo(output)) return {Invalid, 0, 0};
+        // Windows runtime metadata describes the host D3D12 ABI. Return the
+        // original Linux runtime metadata, while keeping native driver sizes.
+        guestRuntime = shared->second.guestRuntime; info = output;
+        std::cerr << "{\"nativeResourceInfoQueried\":true,\"guestRuntimeBytes\":" << output.runtimeBytes
+                  << ",\"hostRuntimeBytes\":" << query.PrivateRuntimeDataSize << ",\"driverBytes\":" << output.driverBytes
+                  << ",\"resourceDriverBytes\":" << output.resourceDriverBytes << ",\"allocations\":" << output.allocations << "}\n";
+        return {0, 0, 0};
+    }
+    SharedResourceOpenResult importResource(std::uint32_t ticket, SharedResourceOpenDesc desc, std::vector<std::uint8_t>& data) override {
+        std::cerr << "{\"nativeResourceFdOpenBegin\":true,\"runtimeBytes\":" << desc.runtimeBytes << ",\"driverBytes\":" << desc.driverBytes << "}\n";
+        const auto shared = sharedResourceHandles.find(ticket);
+        if (!resourceSharingEnabled || !runtime || runtime->hasStopped() || shared == sharedResourceHandles.end() ||
+            !deviceAdapters.count(desc.device) || !validSharedResourceOpen(desc) || !reportedGpuUsageAcceptable() ||
+            vendorAllocations.size() >= (openglFencesEnabled ? OpenGlFenceVendorAllocations : vendorAllocationObjectLimit(capabilities().flags)))
+            return {{Invalid, 0, 0}, {}};
+        D3DKMT_QUERYRESOURCEINFOFROMNTHANDLE query{}; query.hDevice = desc.device; query.hNtHandle = shared->second.handle.get();
+        auto status = D3DKMTQueryResourceInfoFromNtHandle(&query);
+        if (status < 0) return {{status, 0, 0}, {}};
+        if (status || query.NumAllocations != 1 || query.PrivateRuntimeDataSize > MaxVendorPrivateBytes ||
+            desc.runtimeBytes != shared->second.guestRuntime.size() || desc.driverBytes != query.TotalPrivateDriverDataSize ||
+            desc.resourceDriverBytes != query.ResourcePrivateDriverDataSize || data.size() != desc.runtimeBytes + desc.driverBytes + desc.resourceDriverBytes)
+            return {{Invalid, 0, 0}, {}};
+        // Native D3D12 runtime metadata is consumed on Windows only. The Linux
+        // runtime receives the bytes captured from its original creation call.
+        std::vector<std::uint8_t> hostRuntime(query.PrivateRuntimeDataSize), resourceData(desc.resourceDriverBytes), driverData(desc.driverBytes);
+        D3DDDI_OPENALLOCATIONINFO2 allocation{};
+        D3DKMT_OPENRESOURCEFROMNTHANDLE open{};
+        open.hDevice = desc.device; open.hNtHandle = shared->second.handle.get(); open.NumAllocations = 1; open.pOpenAllocationInfo2 = &allocation;
+        open.PrivateRuntimeDataSize = query.PrivateRuntimeDataSize; open.pPrivateRuntimeData = hostRuntime.data();
+        open.ResourcePrivateDriverDataSize = desc.resourceDriverBytes; open.pResourcePrivateDriverData = resourceData.data();
+        open.TotalPrivateDriverDataBufferSize = desc.driverBytes; open.pTotalPrivateDriverDataBuffer = driverData.data();
+        status = D3DKMTOpenResourceFromNtHandle(&open);
+        std::cerr << "{\"nativeResourceFdOpenReturned\":true,\"ntstatus\":" << status
+                  << ",\"hasResource\":" << (open.hResource ? "true" : "false") << ",\"hasAllocation\":" << (allocation.hAllocation ? "true" : "false")
+                  << ",\"hasKeyedMutex\":" << (open.hKeyedMutex ? "true" : "false") << ",\"hasSync\":" << (open.hSyncObject ? "true" : "false")
+                  << ",\"runtimeBytes\":" << open.PrivateRuntimeDataSize << ",\"driverBytes\":" << open.TotalPrivateDriverDataBufferSize
+                  << ",\"allocationDriverBytes\":" << allocation.PrivateDriverDataSize << ",\"resourceDriverBytes\":" << open.ResourcePrivateDriverDataSize << "}\n";
+        if (status < 0) return {{status, 0, 0}, {}};
+        const auto rollback = [&] {
+            if (open.hKeyedMutex) {
+                D3DKMT_DESTROYKEYEDMUTEX close{}; close.hKeyedMutex = open.hKeyedMutex;
+                if (D3DKMTDestroyKeyedMutex(&close) != 0) ++cleanupFailures;
+            }
+            if (open.hSyncObject) {
+                D3DKMT_DESTROYSYNCHRONIZATIONOBJECT close{}; close.hSyncObject = open.hSyncObject;
+                if (D3DKMTDestroySynchronizationObject(&close) != 0) ++cleanupFailures;
+            }
+            D3DKMT_DESTROYALLOCATION2 release{}; release.hDevice = desc.device; release.hResource = open.hResource;
+            release.Flags.SynchronousDestroy = 1;
+            if (!release.hResource) { release.phAllocationList = &allocation.hAllocation; release.AllocationCount = 1; }
+            if (D3DKMTDestroyAllocation2(&release) != 0) ++cleanupFailures;
+        };
+        const auto pointer = reinterpret_cast<std::uintptr_t>(allocation.pPrivateDriverData);
+        const auto start = reinterpret_cast<std::uintptr_t>(driverData.data());
+        const auto offset = pointer >= start ? pointer - start : UINTPTR_MAX;
+        if (status || !open.hResource || !allocation.hAllocation || open.hResource == allocation.hAllocation ||
+            open.hKeyedMutex || open.hSyncObject || open.NumAllocations != 1 || open.PrivateRuntimeDataSize != query.PrivateRuntimeDataSize ||
+            open.ResourcePrivateDriverDataSize != desc.resourceDriverBytes || open.TotalPrivateDriverDataBufferSize != desc.driverBytes ||
+            allocation.GpuVirtualAddress % 4096 || allocation.GpuVirtualAddress >= MaxGpuAddress ||
+            !allocation.PrivateDriverDataSize || offset > driverData.size() || allocation.PrivateDriverDataSize > driverData.size() - offset) {
+            rollback(); return {{Invalid, 0, 0}, {}};
+        }
+        if (vendorAllocations.count(allocation.hAllocation) || sharedResourceIds.count(open.hResource) || resourceGuestRuntime.count(open.hResource)) {
+            // VidMm must return a separate opened resource instance; never
+            // overwrite the source allocation's ownership bookkeeping.
+            rollback(); throw std::runtime_error("Native resource import reused an owned identity");
+        }
+        try {
+            VendorAllocation owned{}; owned.device = desc.device; owned.resource = open.hResource; owned.address = allocation.GpuVirtualAddress;
+            vendorAllocations.emplace(allocation.hAllocation, owned);
+            resourceGuestRuntime.emplace(open.hResource, shared->second.guestRuntime);
+            sharedResourceIds.insert(open.hResource);
+            auto output = data.begin();
+            output = std::copy(shared->second.guestRuntime.begin(), shared->second.guestRuntime.end(), output);
+            output = std::copy(resourceData.begin(), resourceData.end(), output);
+            std::copy(driverData.begin(), driverData.end(), output);
+        } catch (...) {
+            vendorAllocations.erase(allocation.hAllocation); resourceGuestRuntime.erase(open.hResource); sharedResourceIds.erase(open.hResource);
+            rollback(); throw;
+        }
+        ++completedVendorAllocations; ++completedVendorResources;
+        ++importedResourceFdObjects;
+        peakVendorAllocationObjects = (std::max)(peakVendorAllocationObjects, vendorAllocations.size());
+        std::cerr << "{\"nativeResourceFdImported\":true,\"allocations\":1,\"guestRuntimeBytes\":" << desc.runtimeBytes
+                  << ",\"driverBytes\":" << desc.driverBytes << ",\"rawHandleExposed\":false}\n";
+        return {{0, allocation.hAllocation, allocation.GpuVirtualAddress},
+            {open.hResource, allocation.PrivateDriverDataSize, static_cast<std::uint32_t>(offset), 0}};
+    }
     SyncSharingProfile beginSyncSharing() override {
         if (!syncEnabled || !runtime || runtime->hasStopped() || syncSharingEnabled) return {};
         syncSharingEnabled = true;
@@ -1030,8 +1156,11 @@ public:
         try {
             VendorAllocation owned{}; owned.device = device; owned.address = info.GpuVirtualAddress; owned.resource = a.hResource;
             vendorAllocations.emplace(info.hAllocation, owned);
+            if (texture) resourceGuestRuntime.emplace(a.hResource, std::vector<std::uint8_t>(data.begin() + desc.privateBytes, data.end()));
         }
         catch (...) {
+            vendorAllocations.erase(info.hAllocation);
+            resourceGuestRuntime.erase(a.hResource);
             D3DKMT_DESTROYALLOCATION2 release{}; release.hDevice = device; release.phAllocationList = &info.hAllocation;
             release.AllocationCount = 1; release.Flags.SynchronousDestroy = 1;
             if (a.hResource) { release.hResource = a.hResource; release.phAllocationList = nullptr; release.AllocationCount = 0; }
@@ -1094,7 +1223,7 @@ public:
         const auto status = D3DKMTDestroyAllocation2(&a);
         if (status > 0) throw std::runtime_error("Unexpected native allocation-destruction status");
         if (status == 0) {
-            if (resource) { ++destroyedVendorResources; sharedResourceIds.erase(resource); }
+            if (resource) { ++destroyedVendorResources; sharedResourceIds.erase(resource); resourceGuestRuntime.erase(resource); }
             for (const auto handle : handles) {
                 vendorMappedPages -= static_cast<std::uint32_t>(vendorAllocations.at(handle).pages);
                 vendorResidencyAttempts -= vendorAllocations.at(handle).residencyAttempts;
@@ -1649,6 +1778,12 @@ public:
                 gpuStates.release(handle); gpuReservedBytes -= range.bytes; gpuReservations.erase(entry); ++freedReservations;
                 if (runtime->hasStopped()) ++reservationsReleasedAfterVmExit;
             }
+        } else if (kind == Kind::SharedResource) {
+            const auto shared = sharedResourceHandles.find(handle);
+            if (shared == sharedResourceHandles.end()) return {Invalid, 0, 0};
+            if (!shared->second.handle.close()) return {static_cast<std::int32_t>(0xc0000001u), 0, 0};
+            sharedResourceHandles.erase(shared); ++closedResourceHandles; status = 0;
+            std::cerr << "{\"nativeResourceHandleClosed\":true}\n";
         } else if (kind == Kind::SharedSync) {
             const auto shared = sharedSyncHandles.find(handle);
             if (shared == sharedSyncHandles.end()) return {Invalid, 0, 0};
@@ -1717,13 +1852,16 @@ public:
     bool clean() const {
         return !asyncRetirementFailed && pendingSubmissions.empty() && pendingHwSignals.empty() && pendingHwWaits.empty() && pendingContextSignals.empty() && !activeAdapters && !activeDevices && !activeContexts && pagingFences.empty() && allocations.empty() && vendorAllocations.empty() &&
                !vendorMappedPages && !vendorResidencyAttempts && !vendorCpuBytes && deviceAdapters.empty() && translatedAllocations.empty() &&
-               sharedResourceIds.empty() && textureConsumers.empty() && contextOwners.empty() && hwQueues.empty() && syncObjects.empty() && sharedSyncHandles.empty() && gpuReservations.empty() && !gpuReservedBytes && gpuStates.empty() && ownedAdapters.empty() &&
+               sharedResourceIds.empty() && resourceGuestRuntime.empty() && sharedResourceHandles.empty() && textureConsumers.empty() && contextOwners.empty() && hwQueues.empty() && syncObjects.empty() && sharedSyncHandles.empty() && gpuReservations.empty() && !gpuReservedBytes && gpuStates.empty() && ownedAdapters.empty() &&
                !guestMemory && !guestSection && !copyDevice && !copyHeap && !copyQueue && !copyFence && !copyEvent && !cleanupFailures;
     }
     void reportCleanup() const {
         std::cerr << "{\"driverCleanupVerified\":" << (clean() ? "true" : "false")
                   << ",\"liveAdapters\":" << activeAdapters << ",\"liveDevices\":" << activeDevices
                   << ",\"liveContexts\":" << activeContexts
+                  << ",\"liveSharedResourceHandles\":" << sharedResourceHandles.size() << ",\"exportedResourceHandles\":" << exportedResourceHandles
+                  << ",\"closedResourceHandles\":" << closedResourceHandles
+                  << ",\"importedResourceFdObjects\":" << importedResourceFdObjects
                   << ",\"liveSharedSyncHandles\":" << sharedSyncHandles.size() << ",\"exportedSyncHandles\":" << exportedSyncHandles
                   << ",\"closedSyncHandles\":" << closedSyncHandles << ",\"importedSyncObjects\":" << importedSyncObjects
                   << ",\"liveTextureConsumers\":" << textureConsumers.size()

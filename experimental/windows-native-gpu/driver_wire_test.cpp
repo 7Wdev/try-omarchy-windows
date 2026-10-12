@@ -2,6 +2,7 @@
 #include "driver_wire.h"
 #include "adapter_query_client.h"
 #include <iostream>
+#include <set>
 #include <stdexcept>
 using namespace driver_bridge;
 static void require(bool good) { if (!good) throw std::runtime_error("driver wire regression"); }
@@ -66,6 +67,47 @@ struct Fake : Driver {
     std::vector<std::uint8_t> lastSharedRuntime;
     bool nativeTextureEnabled = false;
     unsigned nativeTextureCalls = 0;
+    bool resourceSharingSupported = true;
+    int badResourceExport = 0;
+    unsigned resourceExports = 0;
+    int badResourceInfo = 0;
+    int badResourceImport = 0;
+    std::set<std::uint32_t> resourceTickets;
+    ResourceSharingProfile beginResourceSharing() override {
+        return resourceSharingSupported ? GuestResourceSharingProfile : ResourceSharingProfile{};
+    }
+    Result exportResource(std::uint32_t resource) override {
+        require(std::any_of(vendorResources.begin(), vendorResources.end(),
+            [resource](const auto& item) { return item.second == resource; }));
+        ++resourceExports;
+        if (fail) return {-123, 0, 0};
+        const auto ticket = ++next; resourceTickets.insert(ticket);
+        return {badResourceExport == 1 ? 259 : 0, ticket, badResourceExport == 2 ? 1ull : 0ull};
+    }
+    Result querySharedResourceInfo(std::uint32_t ticket, std::uint32_t device, SharedResourceInfo& info, std::vector<std::uint8_t>& runtime) override {
+        require(resourceTickets.count(ticket) && device > 500);
+        if (fail) return {-123, 0, 0};
+        info = {4, 8, 0, 1}; runtime = {5,6,7,8};
+        if (badResourceInfo == 1) info.allocations = 2;
+        if (badResourceInfo == 2) info.runtimeBytes = MaxSharedResourceRuntimeBytes + 1;
+        if (badResourceInfo == 3) runtime.pop_back();
+        return {badResourceInfo == 4 ? 259 : 0, badResourceInfo == 5 ? 777u : 0u, badResourceInfo == 6 ? 1ull : 0ull};
+    }
+    SharedResourceOpenResult importResource(std::uint32_t ticket, SharedResourceOpenDesc desc, std::vector<std::uint8_t>& data) override {
+        require(resourceTickets.count(ticket) && desc.device > 500 && desc.runtimeBytes == 4 && desc.driverBytes == 8);
+        if (fail) return {{-123,0,0},{}};
+        const auto allocation = ++next, resource = ++next;
+        vendorOwners.emplace(allocation, desc.device); vendorResources.emplace(allocation, resource);
+        std::fill(data.begin(), data.end(), std::uint8_t{42});
+        SharedResourceOpenReply info{resource,8,0,0};
+        if (badResourceImport == 2) info.resource = 0;
+        if (badResourceImport == 3) info.resource = allocation;
+        if (badResourceImport == 4) info.allocationDriverOffset = 9;
+        if (badResourceImport == 5) info.allocationDriverBytes = 0;
+        if (badResourceImport == 6) info.reserved = 1;
+        if (badResourceImport == 7) data.pop_back();
+        return {{badResourceImport == 1 ? 259 : 0, allocation, badResourceImport == 8 ? 1ull : 0ull}, info};
+    }
     int badResourceReply = 0;
     bool contextSignalEnabled = false;
     int badContextSignalReply = 0;
@@ -309,6 +351,7 @@ struct Fake : Driver {
             if (k == Kind::Allocation) require(buffers.erase(h) == 1);
             if (k == Kind::HwQueue) require(hwQueueParents.erase(h) == 1);
             if (k == Kind::Sync) require(syncParents.erase(h) == 1);
+            if (k == Kind::SharedResource) require(resourceTickets.erase(h) == 1);
             if (k == Kind::GpuReservation) require(reservationParents.erase(h) == 1);
         }
         return {fail ? -123 : 0, 0, 0};
@@ -2178,6 +2221,116 @@ int main() {
         require(!header(session.dispatch(request(Op::DestroyVendorResource,resource.resource,device))).status);
         require(native.vendorOwners.empty() && native.vendorResources.empty());
     }
+    // Native resource references are separately negotiated and typed. They
+    // outlive the source resource/device but retain their owning adapter.
+    Fake exported; exported.vendorEnabled = exported.resourceEnabled = exported.sharedResourceEnabled = exported.nativeTextureEnabled = true;
+    {
+        Session session(exported);
+        require(header(session.dispatch(request(Op::BeginResourceSharing))).status == -71);
+        require(header(session.dispatch(request(Op::ExportResource, 1))).status == -71);
+        session.dispatch(hello());
+        auto malformed = request(Op::BeginResourceSharing); malformed.push_back(0);
+        require(header(session.dispatch(malformed)).status == -22);
+        exported.nativeTextureEnabled = false;
+        require(header(session.dispatch(request(Op::BeginResourceSharing))).status == -95);
+        exported.nativeTextureEnabled = true; exported.resourceSharingSupported = false;
+        require(header(session.dispatch(request(Op::BeginResourceSharing))).status == -95);
+        exported.resourceSharingSupported = true;
+        auto out = session.dispatch(request(Op::BeginResourceSharing));
+        ResourceSharingProfile profile{};
+        require(!header(out).status && out.size() == sizeof(Header) + sizeof profile);
+        std::memcpy(&profile, out.data() + sizeof(Header), sizeof profile);
+        require(validResourceSharingProfile(profile)); ++profile.handleLimit; require(!validResourceSharingProfile(profile));
+        require(header(session.dispatch(request(Op::BeginResourceSharing))).status == -16);
+        const auto adapter = header(session.dispatch(request(Op::OpenAdapter))).handle;
+        const auto device = header(session.dispatch(request(Op::CreateDevice, adapter))).handle;
+        NativeSharedVendorAllocationDesc desc{{{4,0x78100000,0,4,0,0},4,0},{130,73,28,1}};
+        auto packet = request(Op::CreateNativeSharedVendorResourceAllocation, device, desc);
+        packet.insert(packet.end(), {37,38,39,40,5,6,7,8});
+        out = session.dispatch(packet);
+        VendorResourceReply source{};
+        std::memcpy(&source, out.data() + sizeof(Header) + sizeof(Reply), sizeof source);
+        require(!header(out).status && source.resource);
+        const auto allocation = header(out).handle;
+        require(header(session.dispatch(request(Op::ExportResource, allocation))).status == -9);
+        require(header(session.dispatch(request(Op::CloseSharedResource, source.resource))).status == -9);
+        exported.fail = true;
+        out = session.dispatch(request(Op::ExportResource, source.resource));
+        Reply failure{}; std::memcpy(&failure, out.data() + sizeof(Header), sizeof failure);
+        require(!header(out).status && !header(out).handle && failure.ntstatus == -123 && exported.resourceTickets.empty());
+        exported.fail = false;
+        for (int bad = 1; bad <= 2; ++bad) {
+            exported.badResourceExport = bad;
+            require(header(session.dispatch(request(Op::ExportResource, source.resource))).status == -5 && exported.resourceTickets.empty());
+        }
+        exported.badResourceExport = 0;
+        std::vector<std::uint32_t> tickets;
+        for (std::size_t n = 0; n < MaxSharedResourceHandles; ++n) {
+            out = session.dispatch(request(Op::ExportResource, source.resource));
+            require(!header(out).status && header(out).handle);
+            tickets.push_back(header(out).handle);
+        }
+        const auto calls = exported.resourceExports;
+        require(header(session.dispatch(request(Op::ExportResource, source.resource))).status == -24 && exported.resourceExports == calls);
+        auto query = [&](std::uint32_t id, SharedResourceQueryDesc desc) { return session.dispatch(request(Op::QuerySharedResourceInfo, id, desc)); };
+        require(header(query(source.resource, {device,0})).status == -9);
+        require(header(query(tickets.front(), {allocation,0})).status == -9);
+        require(header(query(tickets.front(), {device,MaxSharedResourceRuntimeBytes+1})).status == -22);
+        const auto otherAdapter = header(session.dispatch(request(Op::OpenAdapter))).handle;
+        const auto otherDevice = header(session.dispatch(request(Op::CreateDevice, otherAdapter))).handle;
+        require(header(query(tickets.front(), {otherDevice,0})).status == -9);
+        require(!header(session.dispatch(request(Op::DestroyDevice, otherDevice))).status);
+        require(!header(session.dispatch(request(Op::CloseAdapter, otherAdapter))).status);
+        for (int bad = 1; bad <= 6; ++bad) {
+            exported.badResourceInfo = bad;
+            require(header(query(tickets.front(), {device,0})).status == -5);
+        }
+        exported.badResourceInfo = 0;
+        out = query(tickets.front(), {device,0});
+        SharedResourceInfo metadata{}; std::memcpy(&metadata, out.data()+sizeof(Header)+sizeof(Reply), sizeof metadata);
+        require(!header(out).status && validSharedResourceInfo(metadata) && metadata.runtimeBytes == 4 && out.size() == sizeof(Header)+sizeof(Reply)+sizeof metadata);
+        require(header(query(tickets.front(), {device,3})).status == -22);
+        out = query(tickets.front(), {device,4});
+        require(!header(out).status && out.back() == 8 && out.size() == sizeof(Header)+sizeof(Reply)+sizeof metadata+4);
+        exported.fail = true; out = query(tickets.front(), {device,4});
+        require(!header(out).status && out.back() == 0); exported.fail = false;
+        require(header(session.dispatch(request(Op::CloseSharedSync, tickets.front()))).status == -71);
+        malformed = request(Op::CloseSharedResource, tickets.front()); malformed.push_back(0);
+        require(header(session.dispatch(malformed)).status == -22);
+        exported.fail = true;
+        out = session.dispatch(request(Op::CloseSharedResource, tickets.front()));
+        require(!header(out).status && exported.resourceTickets.size() == MaxSharedResourceHandles);
+        exported.fail = false;
+        const auto importDevice = header(session.dispatch(request(Op::CreateDevice, adapter))).handle;
+        const SharedResourceOpenDesc importDesc{importDevice,4,8,0};
+        auto import = [&](SharedResourceOpenDesc d) { return session.dispatch(request(Op::ImportResource, tickets.front(), d)); };
+        auto badDesc = importDesc; badDesc.runtimeBytes = 0;
+        require(header(import(badDesc)).status == -22);
+        badDesc = importDesc; badDesc.device = allocation;
+        require(header(import(badDesc)).status == -9);
+        const auto vendorCount = exported.vendorOwners.size();
+        for (int bad = 1; bad <= 8; ++bad) {
+            exported.badResourceImport = bad;
+            require(header(import(importDesc)).status == -5 && exported.vendorOwners.size() == vendorCount);
+        }
+        exported.badResourceImport = 0; exported.fail = true;
+        out = import(importDesc); require(!header(out).status && !header(out).handle && out.back() == 0);
+        exported.fail = false; out = import(importDesc);
+        SharedResourceOpenReply imported{}; std::memcpy(&imported, out.data()+sizeof(Header)+sizeof(Reply), sizeof imported);
+        require(!header(out).status && header(out).handle && imported.resource && imported.allocationDriverBytes == 8 && out.back() == 42);
+        require(header(session.dispatch(request(Op::DestroyVendorResource, imported.resource, device))).status == -9);
+        require(!header(session.dispatch(request(Op::DestroyVendorResource, imported.resource, importDevice))).status);
+        require(!header(session.dispatch(request(Op::DestroyDevice, importDevice))).status);
+        require(!header(session.dispatch(request(Op::DestroyVendorResource, source.resource, device))).status);
+        require(!header(session.dispatch(request(Op::DestroyDevice, device))).status);
+        require(header(session.dispatch(request(Op::CloseAdapter, adapter))).status == -16);
+        require(!header(session.dispatch(request(Op::CloseSharedResource, tickets.front()))).status);
+        require(header(session.dispatch(request(Op::CloseSharedResource, tickets.front()))).status == -9);
+        // Leave the remaining references for disconnect cleanup after their
+        // source allocation and device have already been destroyed.
+    }
+    require(exported.resourceTickets.empty() && exported.vendorOwners.empty() && exported.vendorResources.empty());
+    std::cout << "PASS: typed native resource export negotiation, quota, rollback, adapter lifetime and disconnect cleanup\n";
     Fake consumer; consumer.vendorEnabled = consumer.resourceEnabled = consumer.sharedResourceEnabled = consumer.syncEnabled = true;
     {
         Session session(consumer);

@@ -50,7 +50,7 @@ static long object_create(u64 owner, void __user *pointer)
 	int fd, result = 0;
 	if (!capable(CAP_SYS_RAWIO)) return -EPERM;
 	if (copy_from_user(&arg, pointer, sizeof(arg))) return -EFAULT;
-	if (arg.version != WDDM_APERTURE_VERSION || arg.kind != WDDM_OBJECT_SYNC ||
+	if (arg.version != WDDM_APERTURE_VERSION || (arg.kind != WDDM_OBJECT_SYNC && arg.kind != WDDM_OBJECT_RESOURCE) ||
 	    !arg.ticket || arg.ticket == U32_MAX || arg.cookie || arg.fd || arg.reserved[0] || arg.reserved[1]) return -EINVAL;
 	object = kzalloc(sizeof(*object), GFP_KERNEL);
 	if (!object) return -ENOMEM;
@@ -92,7 +92,7 @@ static long object_ioctl(u64 owner, unsigned int request, void __user *pointer)
 	if (request == WDDM_OBJECT_RESOLVE) {
 		struct wddm_object_resolve arg;
 		if (copy_from_user(&arg, pointer, sizeof(arg))) return -EFAULT;
-		if (arg.version != WDDM_APERTURE_VERSION || arg.kind != WDDM_OBJECT_SYNC || arg.fd < 0 || arg.ticket || arg.cookie || arg.reserved) return -EINVAL;
+		if (arg.version != WDDM_APERTURE_VERSION || (arg.kind != WDDM_OBJECT_SYNC && arg.kind != WDDM_OBJECT_RESOURCE) || arg.fd < 0 || arg.ticket || arg.cookie || arg.reserved) return -EINVAL;
 		file = fget(arg.fd);
 		if (!file) return -EBADF;
 		if (file->f_op != &object_fops) { fput(file); return -EINVAL; }

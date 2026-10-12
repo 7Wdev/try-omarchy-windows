@@ -12,6 +12,7 @@
 #define WDDM_APERTURE_MAX_LEASES 256
 #define WDDM_APERTURE_CPU_LIMIT (96ULL * 1024 * 1024)
 #define WDDM_OBJECT_SYNC 1
+#define WDDM_OBJECT_RESOURCE 2
 #define WDDM_OBJECT_MAX 256
 
 struct wddm_aperture_info {

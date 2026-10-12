@@ -192,6 +192,7 @@ int main(void)
         revoke_lease(control,cpu.cookie); close(cpu.fd);
     }
     object_contract(control);
+    resource_object_contract(control);
     transfer_and_revoke_lease(control);
     /* Controller close revokes a recipient FD even when that FD stays open. */
     arg=fence(); REQUIRE(!ioctl(control,WDDM_APERTURE_CREATE,&arg));

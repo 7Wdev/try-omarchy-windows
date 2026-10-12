@@ -82,6 +82,29 @@ inline bool validSyncSharingProfile(SyncSharingProfile p) {
 }
 struct SharedSyncOpenDesc { std::uint32_t device, flags, affinity, reserved; };
 struct SharedSyncInfoDesc { std::uint32_t device, reserved; };
+constexpr std::size_t MaxSharedResourceHandles = 16;
+constexpr std::uint32_t MaxSharedResourceRuntimeBytes = 1024;
+struct ResourceSharingProfile { std::uint32_t version, handleLimit, allocationCount, runtimeByteLimit; };
+constexpr ResourceSharingProfile GuestResourceSharingProfile{1, MaxSharedResourceHandles, 1, MaxSharedResourceRuntimeBytes};
+inline bool validResourceSharingProfile(ResourceSharingProfile p) {
+    return p.version == 1 && p.handleLimit == MaxSharedResourceHandles && p.allocationCount == 1 &&
+           p.runtimeByteLimit == MaxSharedResourceRuntimeBytes;
+}
+static_assert(sizeof(ResourceSharingProfile) == 16, "fixed native resource sharing negotiation");
+struct SharedResourceQueryDesc { std::uint32_t device, runtimeCapacity; };
+struct SharedResourceInfo { std::uint32_t runtimeBytes, driverBytes, resourceDriverBytes, allocations; };
+inline bool validSharedResourceInfo(SharedResourceInfo info) {
+    return info.runtimeBytes && info.runtimeBytes <= MaxSharedResourceRuntimeBytes && info.allocations == 1 &&
+        info.driverBytes && info.driverBytes <= MaxVendorPrivateBytes && info.resourceDriverBytes <= MaxVendorPrivateBytes;
+}
+static_assert(sizeof(SharedResourceQueryDesc) == 8 && sizeof(SharedResourceInfo) == 16, "fixed resource metadata");
+struct SharedResourceOpenDesc { std::uint32_t device, runtimeBytes, driverBytes, resourceDriverBytes; };
+struct SharedResourceOpenReply { std::uint32_t resource, allocationDriverBytes, allocationDriverOffset, reserved; };
+inline bool validSharedResourceOpen(SharedResourceOpenDesc d) {
+    return d.device && validSharedResourceInfo({d.runtimeBytes, d.driverBytes, d.resourceDriverBytes, 1}) &&
+        d.runtimeBytes + d.driverBytes + d.resourceDriverBytes <= native_gpu::MaxPacket - sizeof(Header) - 16 - sizeof(SharedResourceOpenReply);
+}
+static_assert(sizeof(SharedResourceOpenDesc) == 16 && sizeof(SharedResourceOpenReply) == 16, "fixed resource open metadata");
 static_assert(sizeof(SyncSharingProfile) == 20 && sizeof(SharedSyncOpenDesc) == 16 && sizeof(SharedSyncInfoDesc) == 8, "fixed shared fence negotiation");
 struct HwQueueWaitDesc { std::uint32_t count, reserved; };
 struct HwQueueWaitItem { std::uint32_t sync, reserved; std::uint64_t fence; };
@@ -335,9 +358,10 @@ enum class Op : std::uint32_t {
     CreateHwQueue = 0x2060, DestroyHwQueue, SubmitHwQueue, QueueHwCommand,
     CreateSync = 0x2070, DestroySync, SignalContextSync, QueueHwQueueSignal,
     BeginSyncSharing, ExportSync, ImportSync, CloseSharedSync, QuerySharedSyncInfo, QueueHwQueueWait, QueueContextSync, QueueContextWait,
-    ReserveGpuAddress = 0x2080, FreeGpuReservation, MapGpuState
+    ReserveGpuAddress = 0x2080, FreeGpuReservation, MapGpuState,
+    BeginResourceSharing = 0x2090, ExportResource, CloseSharedResource, QuerySharedResourceInfo, ImportResource
 };
-enum class Kind { Adapter, Device, PagingQueue, Allocation, Context, PagingSync, VendorAllocation, HwQueue, HwQueueSync, Sync, GpuReservation, VendorResource, SharedSync };
+enum class Kind { Adapter, Device, PagingQueue, Allocation, Context, PagingSync, VendorAllocation, HwQueue, HwQueueSync, Sync, GpuReservation, VendorResource, SharedSync, SharedResource };
 struct ContextDesc {
     std::uint32_t node, engine, flags, clientHint, privateBytes, reserved;
 };
@@ -369,6 +393,7 @@ struct GpuVaResult { Result map; std::uint64_t fence; };
 struct ResidentResult { Result residency; ResidentReply output; };
 struct VendorCpuResult { Result lock; VendorCpuReply output; };
 struct VendorResourceResult { Result allocation; std::uint32_t resource; };
+struct SharedResourceOpenResult { Result allocation; SharedResourceOpenReply info; };
 // The synchronization object is borrowed from the paging queue. Destruction
 // of the queue owns its lifetime; no native handle is exposed to the guest.
 struct GuestPagingResult { Result queue; std::uint32_t sync; std::uint64_t offset; };
@@ -448,6 +473,10 @@ public:
     virtual SyncResult importSync(std::uint32_t, SharedSyncOpenDesc) {
         return {{static_cast<std::int32_t>(0xc00000bbu), 0, 0}, {0, 0}};
     }
+    virtual ResourceSharingProfile beginResourceSharing() { return {}; }
+    virtual Result querySharedResourceInfo(std::uint32_t, std::uint32_t, SharedResourceInfo&, std::vector<std::uint8_t>&) { return {-95, 0, 0}; }
+    virtual SharedResourceOpenResult importResource(std::uint32_t, SharedResourceOpenDesc, std::vector<std::uint8_t>&) { return {{-95, 0, 0}, {}}; }
+    virtual Result exportResource(std::uint32_t) { return {static_cast<std::int32_t>(0xc00000bbu), 0, 0}; }
     virtual Result querySharedSyncInfo(std::uint32_t, std::uint32_t) {
         return {static_cast<std::int32_t>(0xc00000bbu), 0, 0};
     }
@@ -530,6 +559,7 @@ class Session {
     bool openglFenceNegotiated = false;
     std::size_t wireObjectLimit = MaxObjects;
     bool syncSharingNegotiated = false;
+    bool resourceSharingNegotiated = false;
     static std::vector<std::uint8_t> reply(Header h, std::int32_t error,
                                          std::uint32_t id = 0, const Result* result = nullptr) {
         h.handle = id; h.status = error; h.padding = 0;
@@ -591,6 +621,7 @@ public:
             if (!objects.empty()) return reply(h, -16);
             std::uint32_t version{}; std::memcpy(&version, packet.data() + sizeof h, 4);
             negotiated = false; streamingNegotiated = false; openglNegotiated = false; syncSharingNegotiated = false;
+            resourceSharingNegotiated = false;
             wireObjectLimit = MaxObjects;
             openglFenceNegotiated = false;
             if (version != Version) return reply(h, -93);
@@ -881,6 +912,112 @@ public:
                                                 driver.queueHwQueueWait(queue->second.nativeHandle, items);
             if (result.ntstatus > 0 || result.nativeHandle || result.value) return reply(h, -5);
             return reply(h, 0, h.handle, &result);
+        }
+        if (op == Op::BeginResourceSharing) {
+            if (!negotiated) return reply(h, -71);
+            if (h.handle || packet.size() != sizeof h) return reply(h, -22);
+            if (resourceSharingNegotiated) return reply(h, -16);
+            const auto required = SharedVendorResourceCapability | NativeSharedTextureCapability;
+            if ((driver.capabilities().flags & required) != required) return reply(h, -95);
+            const auto profile = driver.beginResourceSharing();
+            if (!validResourceSharingProfile(profile)) return reply(h, -95);
+            resourceSharingNegotiated = true;
+            auto out = reply(h, 0); out.resize(sizeof h + sizeof profile);
+            std::memcpy(out.data() + sizeof h, &profile, sizeof profile);
+            return out;
+        }
+        if (op == Op::QuerySharedResourceInfo) {
+            if (!negotiated || !resourceSharingNegotiated) return reply(h, -71);
+            if (packet.size() != sizeof h + sizeof(SharedResourceQueryDesc)) return reply(h, -22);
+            SharedResourceQueryDesc desc{}; std::memcpy(&desc, packet.data() + sizeof h, sizeof desc);
+            if (!desc.device || desc.runtimeCapacity > MaxSharedResourceRuntimeBytes) return reply(h, -22);
+            const auto ticket = objects.find(h.handle), device = objects.find(desc.device);
+            if (ticket == objects.end() || ticket->second.kind != Kind::SharedResource || device == objects.end() ||
+                device->second.kind != Kind::Device || device->second.parent != ticket->second.parent) return reply(h, -9);
+            SharedResourceInfo info{}; std::vector<std::uint8_t> runtime;
+            const auto result = driver.querySharedResourceInfo(ticket->second.nativeHandle, device->second.nativeHandle, info, runtime);
+            if (result.ntstatus > 0 || result.nativeHandle || result.value ||
+                (result.ntstatus < 0 ? (info.runtimeBytes || info.driverBytes || info.resourceDriverBytes || info.allocations || !runtime.empty()) :
+                 (!validSharedResourceInfo(info) || runtime.size() != info.runtimeBytes))) return reply(h, -5);
+            if (!result.ntstatus && desc.runtimeCapacity && desc.runtimeCapacity != info.runtimeBytes) return reply(h, -22);
+            auto out = reply(h, 0, h.handle, &result);
+            out.resize(out.size() + sizeof info + desc.runtimeCapacity);
+            std::memcpy(out.data() + sizeof h + sizeof(Reply), &info, sizeof info);
+            if (!result.ntstatus && desc.runtimeCapacity)
+                std::memcpy(out.data() + sizeof h + sizeof(Reply) + sizeof info, runtime.data(), runtime.size());
+            return out;
+        }
+        if (op == Op::ImportResource) {
+            if (!negotiated || !resourceSharingNegotiated) return reply(h, -71);
+            if (packet.size() != sizeof h + sizeof(SharedResourceOpenDesc)) return reply(h, -22);
+            SharedResourceOpenDesc desc{}; std::memcpy(&desc, packet.data() + sizeof h, sizeof desc);
+            if (!validSharedResourceOpen(desc)) return reply(h, -22);
+            const auto ticket = objects.find(h.handle), device = objects.find(desc.device);
+            if (ticket == objects.end() || ticket->second.kind != Kind::SharedResource || device == objects.end() ||
+                device->second.kind != Kind::Device || device->second.parent != ticket->second.parent) return reply(h, -9);
+            const auto count = std::count_if(objects.begin(), objects.end(), [](const auto& item) { return item.second.kind == Kind::VendorAllocation; });
+            if (objects.size() > objectLimit() - 2 || nextId >= UINT32_MAX - 1 || static_cast<std::size_t>(count) >= vendorObjectLimit()) return reply(h, -24);
+            const auto dataBytes = desc.runtimeBytes + desc.resourceDriverBytes + desc.driverBytes;
+            std::vector<std::uint8_t> data(dataBytes);
+            auto nativeDesc = desc; nativeDesc.device = device->second.nativeHandle;
+            const auto opened = driver.importResource(ticket->second.nativeHandle, nativeDesc, data);
+            const auto result = opened.allocation; const auto& info = opened.info;
+            if (data.size() != dataBytes || result.ntstatus > 0 || info.reserved ||
+                (result.ntstatus < 0 ? (result.nativeHandle || result.value || info.resource || info.allocationDriverBytes || info.allocationDriverOffset) :
+                 (!result.nativeHandle || !info.resource || info.resource == result.nativeHandle || result.value % 4096 || result.value >= MaxGpuAddress ||
+                  !info.allocationDriverBytes || info.allocationDriverOffset > desc.driverBytes || info.allocationDriverBytes > desc.driverBytes - info.allocationDriverOffset))) {
+                if (result.nativeHandle) driver.destroy(Kind::VendorAllocation, result.nativeHandle);
+                return reply(h, -5);
+            }
+            const auto id = result.ntstatus == 0 ? nextId++ : 0;
+            const auto resourceId = id ? nextId++ : 0;
+            try {
+                auto out = reply(h, 0, id, &result);
+                auto output = info; output.resource = resourceId;
+                const auto bytes = reinterpret_cast<const std::uint8_t*>(&output);
+                out.insert(out.end(), bytes, bytes + sizeof output); out.insert(out.end(), data.begin(), data.end());
+                if (id) {
+                    Object allocation{Kind::VendorAllocation, desc.device, result.nativeHandle, 0, 0, false}; allocation.vendorResource = resourceId;
+                    if (!objects.emplace(id, allocation).second || !objects.emplace(resourceId, Object{Kind::VendorResource, id, info.resource, 0, 0, true}).second)
+                        throw std::runtime_error("Imported resource identity collision");
+                }
+                return out;
+            } catch (...) {
+                objects.erase(id); objects.erase(resourceId);
+                if (result.nativeHandle) driver.destroy(Kind::VendorAllocation, result.nativeHandle);
+                throw;
+            }
+        }
+        if (op == Op::ExportResource || op == Op::CloseSharedResource) {
+            if (!negotiated || !resourceSharingNegotiated) return reply(h, -71);
+            if (packet.size() != sizeof h) return reply(h, -22);
+            const auto source = objects.find(h.handle);
+            if (source == objects.end() || source->second.kind !=
+                (op == Op::ExportResource ? Kind::VendorResource : Kind::SharedResource)) return reply(h, -9);
+            if (op == Op::CloseSharedResource) {
+                const auto result = driver.destroy(Kind::SharedResource, source->second.nativeHandle);
+                if (result.ntstatus > 0 || result.nativeHandle || result.value) return reply(h, -5);
+                if (!result.ntstatus) objects.erase(source);
+                return reply(h, 0, h.handle, &result);
+            }
+            if (!source->second.shared) return reply(h, -22);
+            if (objects.size() >= objectLimit() || nextId == UINT32_MAX ||
+                static_cast<std::size_t>(std::count_if(objects.begin(), objects.end(), [](const auto& item) {
+                    return item.second.kind == Kind::SharedResource; })) >= MaxSharedResourceHandles) return reply(h, -24);
+            const auto result = driver.exportResource(source->second.nativeHandle);
+            if (result.ntstatus > 0 || result.value || (result.ntstatus < 0 ? result.nativeHandle != 0 : result.nativeHandle == 0)) {
+                if (result.nativeHandle) driver.destroy(Kind::SharedResource, result.nativeHandle);
+                return reply(h, -5);
+            }
+            const auto device = objects.at(source->second.parent).parent;
+            const auto adapter = objects.at(device).parent;
+            const auto id = result.ntstatus == 0 ? nextId++ : 0;
+            try {
+                auto out = reply(h, 0, id, &result);
+                if (id && !objects.emplace(id, Object{Kind::SharedResource, adapter, result.nativeHandle, 0, 0, true}).second)
+                    throw std::runtime_error("Shared resource identity collision");
+                return out;
+            } catch (...) { if (result.nativeHandle) driver.destroy(Kind::SharedResource, result.nativeHandle); throw; }
         }
         if (op == Op::QuerySharedSyncInfo) {
             if (!negotiated || !syncSharingNegotiated) return reply(h, -71);

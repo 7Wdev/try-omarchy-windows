@@ -220,6 +220,8 @@ class Bridge {
     guest_kernel::Objects kernelObjects;
     bool sharedFencesNegotiated = false;
     std::set<std::uint32_t> exportedSyncTickets, importedShareableSyncs;
+    bool sharedResourcesNegotiated = false;
+    std::set<std::uint32_t> exportedResourceTickets;
     std::set<std::uint32_t> cpuLocks;
     bool negotiated = false;
     bool streamingNegotiated = false;
@@ -253,16 +255,17 @@ class Bridge {
     struct Synchronization { std::uint32_t device, type, flags; std::uint64_t lastSignal = 0; };
     std::map<std::uint32_t, Synchronization> syncObjects;
     void reapObjectTickets() {
-        std::uint32_t ticket = 0;
+        std::uint32_t ticket = 0, kind = 0;
         for (;;) {
-            const auto found = kernelObjects.reap(ticket);
+            const auto found = kernelObjects.reap(ticket, &kind);
             if (found < 0) throw Error(errno);
             if (!found) return;
-            if (!exportedSyncTickets.count(ticket)) { transport.fail(); throw Error(EPROTO); }
-            const auto result = call(request(Op::CloseSharedSync, ticket), 0, true);
+            auto& tickets = kind == WDDM_OBJECT_SYNC ? exportedSyncTickets : exportedResourceTickets;
+            if (!tickets.count(ticket)) { transport.fail(); throw Error(EPROTO); }
+            const auto result = call(request(kind == WDDM_OBJECT_SYNC ? Op::CloseSharedSync : Op::CloseSharedResource, ticket), 0, true);
             if (result.header.handle != ticket || result.result.ntstatus > 0 || result.result.value) { transport.fail(); throw Error(EPROTO); }
             checkNt(result.result.ntstatus);
-            exportedSyncTickets.erase(ticket);
+            tickets.erase(ticket);
             std::fprintf(stderr, "LINUX_BRIDGE kernelObjectReaped=true ticket=%u\n", ticket);
         }
     }
@@ -278,6 +281,19 @@ class Bridge {
         }
         sharedFencesNegotiated = true;
         std::fprintf(stderr, "LINUX_BRIDGE nativeSyncSharingNegotiated=true kernelObjectFds=true\n");
+    }
+    void beginSharedResources() {
+        if (sharedResourcesNegotiated) return;
+        if (!kernelObjects.available()) throw Error(errno);
+        const auto packet = transport.exchange(request(Op::BeginResourceSharing, 0));
+        if (packet.size() != sizeof(Header) + sizeof(ResourceSharingProfile)) { transport.fail(); throw Error(EPROTO); }
+        Header h{}; ResourceSharingProfile profile{};
+        std::memcpy(&h, packet.data(), sizeof h); std::memcpy(&profile, packet.data() + sizeof h, sizeof profile);
+        if (h.type != static_cast<std::uint32_t>(Op::BeginResourceSharing) || h.handle || h.status || h.padding || !validResourceSharingProfile(profile)) {
+            transport.fail(); throw Error(EPROTO);
+        }
+        sharedResourcesNegotiated = true;
+        std::fprintf(stderr, "LINUX_BRIDGE nativeResourceSharingNegotiated=true kernelObjectFds=true dmaBuf=false\n");
     }
     static constexpr std::uint32_t GuestLuidLow = 0x57475055;
     static constexpr std::int32_t GuestLuidHigh = 0;
@@ -427,6 +443,33 @@ public:
                 }
                 const auto object = a.ObjectHandleArray[0];
                 const auto source = syncObjects.find(object);
+                std::fprintf(stderr, "LINUX_BRIDGE nativeShareObjectInput resource=%s sync=%s\n",
+                    vendorResources.count(object) ? "true" : "false", source != syncObjects.end() ? "true" : "false");
+                if (vendorResources.count(object)) {
+                    if (!sharedResources.count(object)) throw Error(EINVAL);
+                    beginSharedResources();
+                    const auto result = call(request(Op::ExportResource, object), 0, true);
+                    if (result.result.ntstatus > 0 || result.result.value ||
+                        (result.result.ntstatus < 0 ? result.header.handle != 0 : !result.header.handle ||
+                         exportedResourceTickets.count(result.header.handle) || exportedSyncTickets.count(result.header.handle))) {
+                        transport.fail(); throw Error(EPROTO);
+                    }
+                    checkNt(result.result.ntstatus);
+                    const auto ticket = result.header.handle;
+                    int fd = -1;
+                    try {
+                        if (!exportedResourceTickets.insert(ticket).second) { transport.fail(); throw Error(EPROTO); }
+                        fd = kernelObjects.create(ticket, WDDM_OBJECT_RESOURCE);
+                        if (fd < 0) throw Error(errno);
+                    } catch (...) {
+                        if (fd >= 0) rawClose(fd);
+                        exportedResourceTickets.erase(ticket);
+                        destroy(Op::CloseSharedResource, ticket);
+                        throw;
+                    }
+                    *a.pSharedNtHandle = reinterpret_cast<HANDLE>(static_cast<std::intptr_t>(fd));
+                    return 0;
+                }
                 if (source == syncObjects.end() || source->second.type != 5 ||
                     ((source->second.flags & 3) != 3 && !importedShareableSyncs.count(object))) throw Error(EINVAL);
                 beginSharedFences();
@@ -455,13 +498,32 @@ public:
                 return 0;
             }
             case 65: {
-                const auto& a = args<D3DKMT_QUERYRESOURCEINFOFROMNTHANDLE>(requestNumber, pointer);
+                auto& a = args<D3DKMT_QUERYRESOURCEINFOFROMNTHANDLE>(requestNumber, pointer);
                 const auto handle = reinterpret_cast<std::intptr_t>(a.hNtHandle);
-                if (handle < 0 || handle > INT32_MAX || a.pPrivateRuntimeData || a.PrivateRuntimeDataSize ||
-                    a.TotalPrivateDriverDataSize || a.ResourcePrivateDriverDataSize || a.NumAllocations) throw Error(EINVAL);
+                if (handle < 0 || handle > INT32_MAX) throw Error(EINVAL);
                 if (!deviceAdapters.count(a.hDevice)) throw Error(EBADF);
-                beginSharedFences();
                 std::uint32_t ticket = 0;
+                if (kernelObjects.resolve(static_cast<int>(handle), ticket, WDDM_OBJECT_RESOURCE)) {
+                    if (!exportedResourceTickets.count(ticket)) { transport.fail(); throw Error(EPROTO); }
+                    if ((a.pPrivateRuntimeData != nullptr) != (a.PrivateRuntimeDataSize != 0) || a.PrivateRuntimeDataSize > MaxSharedResourceRuntimeBytes)
+                        throw Error(EINVAL);
+                    const auto capacity = a.PrivateRuntimeDataSize;
+                    const auto result = call(request(Op::QuerySharedResourceInfo, ticket, SharedResourceQueryDesc{a.hDevice, capacity}), sizeof(SharedResourceInfo) + capacity, true);
+                    SharedResourceInfo info{}; std::memcpy(&info, result.data.data(), sizeof info);
+                    if (result.header.handle != ticket || result.result.ntstatus > 0 || result.result.value ||
+                        (result.result.ntstatus < 0 ? (info.runtimeBytes || info.driverBytes || info.resourceDriverBytes || info.allocations) :
+                         (!validSharedResourceInfo(info) || (capacity && capacity != info.runtimeBytes)))) { transport.fail(); throw Error(EPROTO); }
+                    checkNt(result.result.ntstatus);
+                    if (capacity) std::memcpy(a.pPrivateRuntimeData, result.data.data() + sizeof info, capacity);
+                    a.PrivateRuntimeDataSize = info.runtimeBytes; a.TotalPrivateDriverDataSize = info.driverBytes;
+                    a.ResourcePrivateDriverDataSize = info.resourceDriverBytes; a.NumAllocations = info.allocations;
+                    std::fprintf(stderr, "LINUX_BRIDGE nativeResourceInfoQueried=true runtimeBytes=%u driverBytes=%u resourceDriverBytes=%u allocations=%u copied=%u\n",
+                        info.runtimeBytes, info.driverBytes, info.resourceDriverBytes, info.allocations, capacity);
+                    return 0;
+                }
+                if (a.pPrivateRuntimeData || a.PrivateRuntimeDataSize || a.TotalPrivateDriverDataSize || a.ResourcePrivateDriverDataSize || a.NumAllocations)
+                    throw Error(EINVAL);
+                beginSharedFences();
                 if (!kernelObjects.resolve(static_cast<int>(handle), ticket)) throw Error(errno);
                 if (!exportedSyncTickets.count(ticket)) { transport.fail(); throw Error(EPROTO); }
                 const auto result = call(request(Op::QuerySharedSyncInfo, ticket, SharedSyncInfoDesc{a.hDevice, 0}), 0, true);
@@ -471,6 +533,79 @@ public:
                 std::fprintf(stderr, "LINUX_BRIDGE nativeSyncResourceQueryRejected=true ntstatus=%d\n", result.result.ntstatus);
                 checkNt(result.result.ntstatus);
                 throw Error(EPROTO);
+            }
+            case 66: {
+                auto& a = args<D3DKMT_OPENRESOURCEFROMNTHANDLE>(requestNumber, pointer);
+                std::fprintf(stderr, "LINUX_BRIDGE nativeResourceImportInput allocations=%u runtimeBytes=%u driverBytes=%u resourceDriverBytes=%u hasAllocationInfo=%u hasRuntime=%u hasDriver=%u hasResourceDriver=%u keyedRuntimeBytes=%u\n",
+                    a.NumAllocations, a.PrivateRuntimeDataSize, a.TotalPrivateDriverDataBufferSize, a.ResourcePrivateDriverDataSize,
+                    a.pOpenAllocationInfo2 ? 1u : 0u, a.pPrivateRuntimeData ? 1u : 0u, a.pTotalPrivateDriverDataBuffer ? 1u : 0u, a.pResourcePrivateDriverData ? 1u : 0u, a.KeyedMutexPrivateRuntimeDataSize);
+                const SharedResourceOpenDesc desc{a.hDevice, a.PrivateRuntimeDataSize, a.TotalPrivateDriverDataBufferSize, a.ResourcePrivateDriverDataSize};
+                const auto handle = reinterpret_cast<std::intptr_t>(a.hNtHandle);
+                // The Linux D3D12 runtime supplies a four-byte optional mutex
+                // initializer even for ordinary textures. This owned profile
+                // cannot create keyed mutexes; the native open must return no
+                // mutex or sync handle. Do not apply Linux private metadata
+                // to a Windows mutex or advertise keyed-mutex support.
+                if (handle < 0 || handle > INT32_MAX || !validSharedResourceOpen(desc) || a.NumAllocations != 1 || !a.pOpenAllocationInfo2 ||
+                    !a.pPrivateRuntimeData || !a.pTotalPrivateDriverDataBuffer || (desc.resourceDriverBytes && !a.pResourcePrivateDriverData) ||
+                    (a.KeyedMutexPrivateRuntimeDataSize && (a.KeyedMutexPrivateRuntimeDataSize != 4 || !a.pKeyedMutexPrivateRuntimeData))) throw Error(EINVAL);
+                if (!deviceAdapters.count(a.hDevice)) throw Error(EBADF);
+                std::uint32_t ticket = 0;
+                if (!kernelObjects.resolve(static_cast<int>(handle), ticket, WDDM_OBJECT_RESOURCE)) throw Error(errno);
+                if (!exportedResourceTickets.count(ticket)) { transport.fail(); throw Error(EPROTO); }
+                const auto dataBytes = desc.runtimeBytes + desc.driverBytes + desc.resourceDriverBytes;
+                std::fprintf(stderr, "LINUX_BRIDGE nativeResourceImportForwarded=true boundedBytes=%u\n", dataBytes);
+                const auto result = call(request(Op::ImportResource, ticket, desc), sizeof(SharedResourceOpenReply) + dataBytes, true);
+                SharedResourceOpenReply output{}; std::memcpy(&output, result.data.data(), sizeof output);
+                if (result.result.ntstatus > 0 || output.reserved ||
+                    (result.result.ntstatus < 0 ? (result.header.handle || result.result.value || output.resource || output.allocationDriverBytes || output.allocationDriverOffset) :
+                     (!result.header.handle || !output.resource || output.resource == result.header.handle || vendorResources.count(output.resource) ||
+                      result.result.value % 4096 || result.result.value >= MaxGpuAddress || !output.allocationDriverBytes ||
+                      output.allocationDriverOffset > desc.driverBytes || output.allocationDriverBytes > desc.driverBytes - output.allocationDriverOffset))) {
+                    transport.fail(); throw Error(EPROTO);
+                }
+                checkNt(result.result.ntstatus);
+                std::uint32_t alias = result.header.handle;
+                bool ownerAdded = false, wireAdded = false, resourceAdded = false, sharedAdded = false;
+                try {
+                    if (caps.flags & VendorTranslationCapability) {
+                        const auto translated = call(request(Op::TranslateVendorAllocation, result.header.handle,
+                            VendorTranslationDesc{a.hDevice, deviceAdapters.at(a.hDevice), 0, 0}), 0, true);
+                        if (translated.header.handle != result.header.handle || translated.result.ntstatus > 0 ||
+                            (translated.result.ntstatus < 0 ? translated.result.value != 0 : !translated.result.value || translated.result.value > UINT32_MAX)) {
+                            transport.fail(); throw Error(EPROTO);
+                        }
+                        checkNt(translated.result.ntstatus); alias = static_cast<std::uint32_t>(translated.result.value);
+                    }
+                    if (vendorOwners.count(alias) || vendorWireIds.count(alias)) { transport.fail(); throw Error(EPROTO); }
+                    ownerAdded = vendorOwners.emplace(alias, a.hDevice).second;
+                    wireAdded = vendorWireIds.emplace(alias, result.header.handle).second;
+                    resourceAdded = vendorResources.emplace(output.resource, alias).second;
+                    sharedAdded = sharedResources.insert(output.resource).second;
+                    if (!ownerAdded || !wireAdded || !resourceAdded || !sharedAdded) { transport.fail(); throw Error(EPROTO); }
+                } catch (...) {
+                    // EOF cleanup remains the backstop if the native worker
+                    // or malformed response has already closed the transport.
+                    if (ownerAdded) vendorOwners.erase(alias);
+                    if (wireAdded) vendorWireIds.erase(alias);
+                    if (resourceAdded) vendorResources.erase(output.resource);
+                    if (sharedAdded) sharedResources.erase(output.resource);
+                    try { const auto released = call(request(Op::DestroyVendorResource, output.resource, a.hDevice));
+                          if (released.header.handle != output.resource || released.result.value) transport.fail(); }
+                    catch (...) { transport.fail(); }
+                    throw;
+                }
+                auto data = result.data.data() + sizeof output;
+                std::memcpy(a.pPrivateRuntimeData, data, desc.runtimeBytes); data += desc.runtimeBytes;
+                if (desc.resourceDriverBytes) std::memcpy(a.pResourcePrivateDriverData, data, desc.resourceDriverBytes);
+                data += desc.resourceDriverBytes; std::memcpy(a.pTotalPrivateDriverDataBuffer, data, desc.driverBytes);
+                auto& allocation = a.pOpenAllocationInfo2[0]; allocation.hAllocation = alias;
+                allocation.pPrivateDriverData = static_cast<std::uint8_t*>(a.pTotalPrivateDriverDataBuffer) + output.allocationDriverOffset;
+                allocation.PrivateDriverDataSize = output.allocationDriverBytes; allocation.GpuVirtualAddress = result.result.value;
+                std::memset(allocation.Reserved, 0, sizeof allocation.Reserved);
+                a.hResource = output.resource; a.hKeyedMutex = 0; a.hSyncObject = 0;
+                std::fprintf(stderr, "LINUX_BRIDGE nativeResourceFdImported=true allocations=1 rawHostHandle=false\n");
+                return 0;
             }
             case 64: {
                 auto& a = args<D3DKMT_OPENSYNCOBJECTFROMNTHANDLE2>(requestNumber, pointer);

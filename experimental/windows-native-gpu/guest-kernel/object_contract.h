@@ -31,7 +31,7 @@ static void object_contract(int control)
         struct wddm_object_create bad=object_arg(500);
         switch(n) {
             case 0: bad.version=2; break;
-            case 1: bad.kind=2; break;
+            case 1: bad.kind=3; break;
             case 2: bad.ticket=0; break;
             case 3: bad.ticket=UINT32_MAX; break;
             case 4: bad.cookie=1; break;
@@ -107,3 +107,4 @@ static void object_contract(int control)
     object_empty_reap(control);
     printf("OBJECT_CONTRACT_PASS checks=%u held=0 active=0 forgedRejected=true ownerIsolation=true dupLifetime=true reapRollback=true\n",object_checks);
 }
+#include "resource_object_contract.h"

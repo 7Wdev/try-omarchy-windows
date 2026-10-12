@@ -32,6 +32,9 @@ extern int wddm_sync_fd_test(void);
 #ifdef WDDM_BRIDGE_MESA_FENCE_FD_TEST
 extern int wddm_mesa_fence_fd_test(EGLDisplay, EGLContext);
 #endif
+#ifdef WDDM_BRIDGE_MESA_RESOURCE_FD_TEST
+extern int wddm_mesa_resource_fd_test(EGLDisplay, EGLContext);
+#endif
 static int fail(const char* stage) {
     printf("OPENGL_FAILURE stage=%s eglError=%04x\n", stage, eglGetError());
     return 1;
@@ -59,7 +62,7 @@ int main(void) {
     if (setenv("D3D12_EXPERIMENTAL_FENCE_FD", "true", 1)) return fail("FenceFdOptIn");
 #endif
     puts("OPENGL_TEST_BEGIN api=OpenGL requested=3.3 width=130 height=73 frames=2 display=false");
-#ifdef WDDM_BRIDGE_MESA_FENCE_FD_TEST
+#if defined(WDDM_BRIDGE_MESA_FENCE_FD_TEST) || defined(WDDM_BRIDGE_MESA_RESOURCE_FD_TEST)
     const char* begin_name = "wddm_bridge_begin_opengl_fences";
 #else
     const char* begin_name = "wddm_bridge_begin_opengl";
@@ -151,6 +154,9 @@ int main(void) {
 #endif
     glDeleteVertexArrays(1, &array); glUseProgram(0); glDeleteProgram(program);
     glDeleteShader(vertex); glDeleteShader(fragment);
+#ifdef WDDM_BRIDGE_MESA_RESOURCE_FD_TEST
+    if (wddm_mesa_resource_fd_test(display, context)) return fail("SharedResourceFd");
+#endif
     if (!eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT) ||
         !eglDestroyContext(display, context) || !eglDestroySurface(display, surface) || !eglTerminate(display))
         return fail("Teardown");
