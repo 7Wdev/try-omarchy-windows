@@ -1,0 +1,182 @@
+From c50705bbc7e0c2101e30b41bd96682fa86b36087 Mon Sep 17 00:00:00 2001
+From: Try Omarchy Release <actions@users.noreply.github.com>
+Date: Mon, 12 Oct 2026 15:27:56 +0000
+Subject: [PATCH] Refresh the guest package lock
+
+aom 3.15.1-1 -> 3.15.2-1
+at-spi2-core 2.62.0.1-1 -> 2.62.1-1
+chromium 153.0.8010.52-1 -> 154.0.8037.97-1
+fzf 0.74.4-1 -> 0.74.5-1
+gst-plugins-bad-libs 1.28.7-3 -> 1.28.8-1
+gst-plugins-base-libs 1.28.7-3 -> 1.28.8-1
+gstreamer 1.28.7-3 -> 1.28.8-1
+imagemagick 7.1.2.32-1 -> 7.1.2.33-1
+libfdk-aac 2.0.3-2 -> 3.0.0-1
+libnautilus-extension 51.0.1-2 -> 51.1-1
+nautilus 51.0.1-2 -> 51.1-1
+neovim 0.12.5-1 -> 0.12.6-1
+oniguruma 6.9.10-1 -> 6.9.10-3
+perl 5.42.2-2 -> 5.42.3-1
+python 3.14.7-1 -> 3.14.8-1
+python-gobject 3.58.0-1 -> 3.58.1-1
+python-pyxdg 0.28-7 -> 0.28-8
+sqlite 3.53.4-1 -> 3.54.0-1
+srt 1.5.7-1 -> 1.5.7-2
+zbar 0.23.93-7 -> 0.23.95-1
+graphicsmagick 1.3.49-1 (new)
+---
+ guest/packages.lock.json | 41 ++++++++++++++++++++--------------------
+ 1 file changed, 21 insertions(+), 20 deletions(-)
+
+diff --git a/guest/packages.lock.json b/guest/packages.lock.json
+index 8b1c73e..6500b11 100644
+--- a/guest/packages.lock.json
++++ b/guest/packages.lock.json
+@@ -11,10 +11,10 @@
+     "alsa-lib": "1.2.16.1-1",
+     "alsa-topology-conf": "1.2.5.1-4",
+     "alsa-ucm-conf": "1.2.16.1-1",
+-    "aom": "3.15.1-1",
++    "aom": "3.15.2-1",
+     "aquamarine": "0.15.1-1",
+     "archlinux-keyring": "20260909-1",
+-    "at-spi2-core": "2.62.0.1-1",
++    "at-spi2-core": "2.62.1-1",
+     "attr": "2.6.0-1",
+     "audit": "4.2.1-1",
+     "autoconf": "2.73-1",
+@@ -37,7 +37,7 @@
+     "ca-certificates-mozilla": "3.131-1",
+     "ca-certificates-utils": "20240618-1",
+     "cairo": "1.18.6-1",
+-    "chromium": "153.0.8010.52-1",
++    "chromium": "154.0.8037.97-1",
+     "clang": "23.1.1-1",
+     "cmake": "4.4.4-1",
+     "compiler-rt": "23.1.1-1",
+@@ -91,7 +91,7 @@
+     "fribidi": "1.0.17-1",
+     "fuse-common": "3.18.3-1",
+     "fuse3": "3.18.3-1",
+-    "fzf": "0.74.4-1",
++    "fzf": "0.74.5-1",
+     "gawk": "5.4.1-1",
+     "gc": "8.2.12-1",
+     "gcc": "16.2.1+r23+gd564253eb6c8-1",
+@@ -131,6 +131,7 @@
+     "gpm": "1.20.7.r38.ge82d1a6-7",
+     "gpu-screen-recorder": "6.1.3-1",
+     "graphene": "1.10.8-2",
++    "graphicsmagick": "1.3.49-1",
+     "graphite": "1:1.3.15-1",
+     "graphviz": "16.1.0-1",
+     "grep": "3.12-2",
+@@ -141,9 +142,9 @@
+     "gsfonts": "20200910-6",
+     "gsm": "1.0.24-1",
+     "gssdp": "1.6.6-1",
+-    "gst-plugins-bad-libs": "1.28.7-3",
+-    "gst-plugins-base-libs": "1.28.7-3",
+-    "gstreamer": "1.28.7-3",
++    "gst-plugins-bad-libs": "1.28.8-1",
++    "gst-plugins-base-libs": "1.28.8-1",
++    "gstreamer": "1.28.8-1",
+     "gtest": "1.18.0-1",
+     "gtk-update-icon-cache": "1:4.24.1-1",
+     "gtk3": "1:3.24.52-2",
+@@ -179,7 +180,7 @@
+     "iana-etc": "20260617-1",
+     "icu": "78.3-1",
+     "ijs": "0.35-7",
+-    "imagemagick": "7.1.2.32-1",
++    "imagemagick": "7.1.2.33-1",
+     "imv": "5.0.1-2",
+     "iniparser": "4.3.2-1",
+     "inotify-tools": "4.26.270-1",
+@@ -259,7 +260,7 @@
+     "libevdev": "1.14.0-1",
+     "libevent": "2.1.13-2",
+     "libexif": "0.6.26-1",
+-    "libfdk-aac": "2.0.3-2",
++    "libfdk-aac": "3.0.0-1",
+     "libffi": "3.8.0-1",
+     "libfontenc": "1.1.9-1",
+     "libfreeaptx": "0.2.2-1",
+@@ -304,7 +305,7 @@
+     "libmodplug": "0.8.9.0-7",
+     "libmpc": "1.4.1-1",
+     "libmysofa": "1.3.5-1",
+-    "libnautilus-extension": "51.0.1-2",
++    "libnautilus-extension": "51.1-1",
+     "libndp": "1.9-1",
+     "libnetfilter_conntrack": "1.1.1-1",
+     "libnewt": "0.52.25-2",
+@@ -459,9 +460,9 @@
+     "mtdev": "1.1.7-1",
+     "mujs": "1.3.10-1",
+     "muparser": "2.3.5-2",
+-    "nautilus": "51.0.1-2",
++    "nautilus": "51.1-1",
+     "ncurses": "6.6-2",
+-    "neovim": "0.12.5-1",
++    "neovim": "0.12.6-1",
+     "netpbm": "10.86.51-1",
+     "nettle": "4.0-1",
+     "networkmanager": "1.58.1-2",
+@@ -479,7 +480,7 @@
+     "omarchy-keyring": "20251027-1",
+     "omarchy-nvim": "2026.8.13-1",
+     "omawrite": "0.5.0-1",
+-    "oniguruma": "6.9.10-1",
++    "oniguruma": "6.9.10-3",
+     "openal": "1.25.2-2",
+     "opencore-amr": "0.1.6-2",
+     "openh264": "2.6.0-2",
+@@ -504,7 +505,7 @@
+     "pcre": "8.45-5",
+     "pcre2": "10.49-1",
+     "pcsclite": "2.5.2-1",
+-    "perl": "5.42.2-2",
++    "perl": "5.42.3-1",
+     "perl-error": "0.17030-3",
+     "perl-mailtools": "2.22-3",
+     "perl-timedate": "2.35-1",
+@@ -526,11 +527,11 @@
+     "procps-ng": "4.0.7-1",
+     "psmisc": "23.7-2",
+     "pugixml": "1.16-1",
+-    "python": "3.14.7-1",
++    "python": "3.14.8-1",
+     "python-dbus": "1.5.0-1",
+     "python-docopt": "0.6.2-15",
+-    "python-gobject": "3.58.0-1",
+-    "python-pyxdg": "0.28-7",
++    "python-gobject": "3.58.1-1",
++    "python-pyxdg": "0.28-8",
+     "python-yaml": "6.0.3-2",
+     "qoi": "r350.4461cc3-1",
+     "qrencode": "4.1.1-4",
+@@ -570,9 +571,9 @@
+     "speex": "1.2.1-2",
+     "speexdsp": "1.2.1-2",
+     "spirv-tools": "1:1.4.363.0-1",
+-    "sqlite": "3.53.4-1",
++    "sqlite": "3.54.0-1",
+     "sratom": "0.6.22-1",
+-    "srt": "1.5.7-1",
++    "srt": "1.5.7-2",
+     "starship": "1.26.0-1",
+     "sudo": "1.9.17.p2-6",
+     "svt-av1": "4.2.0-1",
+@@ -667,7 +668,7 @@
+     "yay": "13.0.1-1",
+     "yoga": "3.2.1-1",
+     "yyjson": "0.13.0-1",
+-    "zbar": "0.23.93-7",
++    "zbar": "0.23.95-1",
+     "zeromq": "4.3.5-3",
+     "zimg": "3.0.6-2",
+     "zix": "0.8.2-1",
+-- 
+2.55.0
+
