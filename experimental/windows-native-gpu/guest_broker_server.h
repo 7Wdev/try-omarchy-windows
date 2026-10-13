@@ -2,6 +2,7 @@
 // Single authenticated GPU client; multiple native workers remain separate work.
 #pragma once
 #include "guest_broker_views.h"
+#include "guest_broker_objects.h"
 #include <cstdio>
 #include <sys/syscall.h>
 
@@ -14,6 +15,7 @@ class Kernel {
         if (control.get() < 0) throw std::system_error(errno,std::generic_category(),"Broker kernel controller open");
     }
 public:
+    void close() { control=Fd(); }
     wddm_aperture_info info() {
         open(); wddm_aperture_info value{}; value.version=WDDM_APERTURE_VERSION;
         if (syscall(SYS_ioctl,control.get(),WDDM_APERTURE_INFO,&value))
@@ -82,26 +84,35 @@ public:
         std::vector<std::uint8_t> reply(bytes); transfer(reply.data(),reply.size(),true,deadline); return reply;
     }
 };
-template<class Native,class Authority> int serve(Peer& peer, Native& native, Authority& kernel) {
+template<class Native,class Authority,class ObjectAuthority> int serve(Peer& peer, Native& native, Authority& kernel, ObjectAuthority& objectKernel) {
     Views views;
-    std::uint64_t calls=0,created=0,released=0,denied=0;
+    ObjectStore objects;
+    std::uint64_t calls=0,created=0,released=0,denied=0,recoverable=0;
     bool failed=false;
     try {
         while (peer.connected()) {
+            // Descendants may retain an inherited socket after the original
+            // producer exits. Its authenticated pidfd, rather than EOF, owns
+            // the memory lifetime and starts capability retention cleanup.
+            if (peer.processExited()) { peer.disconnect(); break; }
             auto received=peer.receive();
             if (received.state == ReceiveState::Disconnected) break;
             if (received.state == ReceiveState::Idle) { peer.waitReadable(100); continue; }
             const auto& message=received.message;
-            if (!message.fds.empty()) throw std::system_error(EPROTO,std::generic_category(),"Unsolicited broker descriptors");
+            bool expectedObjectError=false;
             try {
                 const auto operation=message.frame.operation;
+                if (operation!=Operation::DriverCall && operation!=Operation::ResolveObject && !message.fds.empty())
+                    throw std::system_error(EPROTO,std::generic_category(),"Unsolicited broker descriptors");
                 if (operation == Operation::Hello) {
                     if (!message.payload.empty()) throw std::system_error(EINVAL,std::generic_category(),"Broker hello payload");
                     peer.send(operation,message.frame.sequence,encode(kernel.info()));
                 } else if (operation == Operation::DriverCall) {
                     views.approve(message.payload);
+                    objects.authorize(message.payload,message.fds,objectKernel);
                     auto reply=native.exchange(message.payload); ++calls;
                     views.observe(message.payload,reply);
+                    objects.observe(message.payload,reply);
                     peer.send(operation,message.frame.sequence,reply);
                 } else if (operation == Operation::AcquireView) {
                     auto& grant=views.acquire(decode<ViewRequest>(message.payload));
@@ -111,8 +122,32 @@ template<class Native,class Authority> int serve(Peer& peer, Native& native, Aut
                     auto& grant=views.cookie(decode<ViewReply>(message.payload).cookie);
                     kernel.release(grant.cookie); grant.cookie=0; ++released;
                     peer.send(operation,message.frame.sequence,{});
+                } else if (operation == Operation::ObjectInfo) {
+                    if (!message.payload.empty()) throw std::system_error(EPROTO,std::generic_category(),"Object info payload");
+                    peer.send(operation,message.frame.sequence,encode(objectKernel.info()));
+                } else if (operation == Operation::CreateObject) {
+                    const auto request=decode<ObjectRequest>(message.payload);
+                    expectedObjectError=true;
+                    auto result=objects.create(request,objectKernel);
+                    peer.send(operation,message.frame.sequence,encode(result.second),{result.first.get()});
+                } else if (operation == Operation::ResolveObject) {
+                    const auto request=decode<ObjectRequest>(message.payload);
+                    if (message.fds.size()!=1 || request.ticket || request.reserved ||
+                        (request.kind!=WDDM_OBJECT_SYNC && request.kind!=WDDM_OBJECT_RESOURCE))
+                        throw std::system_error(EPROTO,std::generic_category(),"Invalid object resolution request");
+                    expectedObjectError=true;
+                    const auto result=objects.resolve(message.fds[0].get(),request.kind,objectKernel);
+                    peer.send(operation,message.frame.sequence,encode(result));
+                } else if (operation == Operation::ReapObject) {
+                    if (!message.payload.empty()) throw std::system_error(EPROTO,std::generic_category(),"Object reap payload");
+                    peer.send(operation,message.frame.sequence,encode(objects.reap(objectKernel)));
                 } else throw std::system_error(EOPNOTSUPP,std::generic_category(),"Broker operation not implemented");
             } catch (const std::system_error& error) {
+                if (expectedObjectError && recoverableObjectError(message.frame.operation,error.code().value())) {
+                    ++recoverable;
+                    peer.send(message.frame.operation,message.frame.sequence,{}, {},error.code().value());
+                    continue;
+                }
                 ++denied; failed=true;
                 std::fprintf(stderr,"BROKER_ROUTE rejected=true errno=%d operation=%u reason=%s\n",error.code().value(),static_cast<unsigned>(message.frame.operation),error.what());
                 peer.send(message.frame.operation,message.frame.sequence,{}, {},error.code().value());
@@ -132,9 +167,22 @@ template<class Native,class Authority> int serve(Peer& peer, Native& native, Aut
         }
         poll(nullptr,0,10);
     }
+    // CPU mappings end with their producer. Shared native references use a
+    // different controller and survive until the last recipient FD closes.
+    kernel.close();
+    try { objects.drain(native,objectKernel); }
+    catch (const std::exception& error) {
+        failed=true; std::fprintf(stderr,"BROKER_OBJECT failed=true producerExited=true reason=%s\n",error.what());
+    }
+    objects.report();
+    if (recoverable) std::fprintf(stderr,"BROKER_OBJECT recoverableErrors=%llu\n",static_cast<unsigned long long>(recoverable));
     std::fprintf(stderr,"BROKER_ROUTE_EXIT processExited=true retainedViews=%zu nativeCalls=%llu viewsCreated=%llu viewsReleased=%llu rejected=%llu multiClient=false\n",
                  retained,static_cast<unsigned long long>(calls),static_cast<unsigned long long>(created),
                  static_cast<unsigned long long>(released),static_cast<unsigned long long>(denied));
     return failed ? 1 : 0;
+}
+template<class Native,class Authority> int serve(Peer& peer, Native& native, Authority& kernel) {
+    KernelObjects objectKernel;
+    return serve(peer,native,kernel,objectKernel);
 }
 } // namespace guest_broker

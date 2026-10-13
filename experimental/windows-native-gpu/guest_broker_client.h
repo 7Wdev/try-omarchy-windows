@@ -2,6 +2,7 @@
 // Process-owned authenticated broker channel; no privileged controller FD.
 #pragma once
 #include "guest_broker_peer.h"
+#include "driver_wire.h"
 #include "guest-kernel/wddm_aperture.h"
 #include <cstdlib>
 #include <memory>
@@ -14,6 +15,19 @@ struct ViewRequest {
     std::uint64_t offset, bytes, generation;
 };
 struct ViewReply { std::uint64_t cookie; };
+struct ObjectRequest { std::uint32_t kind, ticket; std::uint64_t reserved; };
+struct ObjectRef { std::uint32_t kind=0, ticket=0; std::uint64_t cookie=0; };
+static_assert(sizeof(ObjectRequest)==16 && sizeof(ObjectRef)==16,"Fixed broker capability ABI");
+inline std::uint32_t importKind(driver_bridge::Op op) {
+    using driver_bridge::Op;
+    if (op==Op::ImportResource || op==Op::QuerySharedResourceInfo) return WDDM_OBJECT_RESOURCE;
+    if (op==Op::ImportSync || op==Op::QuerySharedSyncInfo) return WDDM_OBJECT_SYNC;
+    return 0;
+}
+inline bool recoverableObjectError(Operation operation,int error) {
+    return (operation==Operation::ResolveObject && (error==EBADF || error==EINVAL || error==EPERM || error==ENODEV)) ||
+           (operation==Operation::CreateObject && (error==ENOMEM || error==ENOSPC));
+}
 static_assert(sizeof(ViewRequest) == 32 && sizeof(ViewReply) == 8, "Fixed broker view ABI");
 template<class T> std::vector<std::uint8_t> encode(const T& value) {
     const auto* data = reinterpret_cast<const std::uint8_t*>(&value);
@@ -32,13 +46,15 @@ class Client {
     std::unique_ptr<Peer> peer;
     std::uint64_t sequence = 0;
     bool stopped = false;
+    struct Resolved { int fd=-1; ObjectRef ref; } resolved;
+    struct RemoteError : std::system_error { using std::system_error::system_error; };
     [[noreturn]] static void failed(int code, const char* message) {
         throw std::system_error(code, std::generic_category(), message);
     }
-    Message requestUnlocked(Operation operation, const std::vector<std::uint8_t>& payload) {
+    Message requestUnlocked(Operation operation, const std::vector<std::uint8_t>& payload, const std::vector<int>& fds={}) {
         if (!peer || !peer->connected() || sequence == UINT64_MAX) failed(ESHUTDOWN, "Broker channel unavailable");
         const auto current = ++sequence;
-        peer->send(operation, current, payload);
+        peer->send(operation, current, payload,fds);
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
         for (;;) {
             auto result = peer->receive();
@@ -47,7 +63,7 @@ class Client {
                 auto& message = result.message;
                 if (message.frame.operation != operation || message.frame.sequence != current)
                     failed(EPROTO, "Mismatched broker response");
-                if (message.frame.status) failed(message.frame.status, "Broker operation rejected");
+                if (message.frame.status) throw RemoteError(message.frame.status,std::generic_category(),"Broker operation rejected");
                 return std::move(message);
             }
             const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count();
@@ -75,13 +91,28 @@ class Client {
         (void)decode<wddm_aperture_info>(hello.payload);
     }
 public:
-    Message request(Operation operation, const std::vector<std::uint8_t>& payload = {}) {
+    Message request(Operation operation, const std::vector<std::uint8_t>& payload = {}, const std::vector<int>& fds={}) {
         std::lock_guard<std::mutex> lock(guard);
-        try { connectUnlocked(); return requestUnlocked(operation, payload); }
+        try { connectUnlocked(); return requestUnlocked(operation, payload,fds); }
+        catch (const RemoteError& error) {
+            if (!recoverableObjectError(operation,error.code().value())) { stopped=true; if (peer) peer->disconnect(); }
+            throw;
+        }
         catch (...) { stopped = true; if (peer) peer->disconnect(); throw; }
     }
     std::vector<std::uint8_t> driver(const std::vector<std::uint8_t>& packet) {
-        auto reply = request(Operation::DriverCall, packet);
+        std::vector<int> fds;
+        if (packet.size()>=sizeof(driver_bridge::Header)) {
+            driver_bridge::Header h{}; std::memcpy(&h,packet.data(),sizeof(h));
+            const auto kind=importKind(static_cast<driver_bridge::Op>(h.type));
+            if (kind) {
+                std::lock_guard<std::mutex> lock(guard);
+                if (resolved.fd<0 || resolved.ref.ticket!=h.handle || resolved.ref.kind!=kind)
+                    failed(EBADF,"Native import requires a resolved capability FD");
+                fds.push_back(resolved.fd); resolved=Resolved{};
+            }
+        }
+        auto reply = request(Operation::DriverCall, packet,fds);
         if (!reply.fds.empty()) { disconnect(); failed(EPROTO, "Driver reply carried unexpected descriptors"); }
         return std::move(reply.payload);
     }
@@ -100,6 +131,37 @@ public:
     void release(std::uint64_t cookie) {
         auto reply = request(Operation::ReleaseView, encode(ViewReply{cookie}));
         if (!reply.fds.empty() || !reply.payload.empty()) { disconnect(); failed(EPROTO, "Broker release response mismatch"); }
+    }
+    wddm_object_stats objectInfo() {
+        auto reply=request(Operation::ObjectInfo);
+        if (!reply.fds.empty()) { disconnect(); failed(EPROTO,"Object info carried descriptors"); }
+        return decode<wddm_object_stats>(reply.payload);
+    }
+    Message createObject(std::uint32_t ticket,std::uint32_t kind) {
+        auto reply=request(Operation::CreateObject,encode(ObjectRequest{kind,ticket,0}));
+        const auto ref=decode<ObjectRef>(reply.payload);
+        if (reply.fds.size()!=1 || ref.ticket!=ticket || ref.kind!=kind || !ref.cookie) {
+            disconnect(); failed(EPROTO,"Capability publication mismatch");
+        }
+        return reply;
+    }
+    ObjectRef resolveObject(int fd,std::uint32_t kind) {
+        { std::lock_guard<std::mutex> lock(guard); resolved=Resolved{}; }
+        if (fd<0 || fcntl(fd,F_GETFD)<0) failed(EBADF,"Capability descriptor is closed");
+        auto reply=request(Operation::ResolveObject,encode(ObjectRequest{kind,0,0}),{fd});
+        const auto ref=decode<ObjectRef>(reply.payload);
+        if (!reply.fds.empty() || ref.kind!=kind || !ref.ticket || !ref.cookie) {
+            disconnect(); failed(EPROTO,"Capability resolution mismatch");
+        }
+        std::lock_guard<std::mutex> lock(guard); resolved={fd,ref}; return ref;
+    }
+    ObjectRef reapObject() {
+        auto reply=request(Operation::ReapObject);
+        const auto ref=decode<ObjectRef>(reply.payload);
+        if (!reply.fds.empty() || (ref.ticket ? (!ref.cookie || (ref.kind!=WDDM_OBJECT_SYNC && ref.kind!=WDDM_OBJECT_RESOURCE)) : (ref.kind || ref.cookie))) {
+            disconnect(); failed(EPROTO,"Capability reap mismatch");
+        }
+        return ref;
     }
     void disconnect() {
         std::lock_guard<std::mutex> lock(guard);

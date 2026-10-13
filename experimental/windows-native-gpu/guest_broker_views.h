@@ -73,14 +73,8 @@ public:
     void approve(const std::vector<std::uint8_t>& packet) const {
         using namespace driver_bridge;
         require(packet.size() >= sizeof(Header) && packet.size() <= native_gpu::MaxPacket, "Native packet bounds");
-        const auto h = at<Header>(packet,0); const auto op = static_cast<Op>(h.type);
+        const auto h = at<Header>(packet,0);
         require(!h.status && !h.padding, "Invalid native request header");
-        // Until the retained capability store is connected, do not expose a
-        // native reference whose recipients could outlive this single client.
-        if ((op >= Op::BeginResourceSharing && op <= Op::ImportResource) ||
-            op == Op::BeginSyncSharing || op == Op::ExportSync || op == Op::ImportSync ||
-            op == Op::CloseSharedSync || op == Op::QuerySharedSyncInfo)
-            throw std::system_error(EOPNOTSUPP,std::generic_category(),"Broker native capability store pending");
         for (const auto target : retiring(packet)) for (const auto& entry : grants)
             if (entry.second.cookie && below(entry.first,target))
                 throw std::system_error(EBUSY,std::generic_category(),"Native owner still has a CPU view");
@@ -96,7 +90,8 @@ public:
         const bool creating = op == Op::OpenAdapter || op == Op::CreateDevice || op == Op::CreateContext ||
             op == Op::CreateVendorAllocation || op == Op::CreateVendorResourceAllocation ||
             op == Op::CreateSharedVendorResourceAllocation || op == Op::CreateNativeSharedVendorResourceAllocation ||
-            op == Op::CreateGuestPagingQueue || op == Op::CreateHwQueue || op == Op::CreateSync || op == Op::LockVendorAllocation;
+            op == Op::CreateGuestPagingQueue || op == Op::CreateHwQueue || op == Op::CreateSync || op == Op::LockVendorAllocation ||
+            op == Op::ImportResource || op == Op::ImportSync;
         // Other operations can have non-Reply payloads or legitimate pending
         // native statuses (GPU VA mapping). They confer no CPU-view authority.
         if (!creating && retired.empty()) return;
@@ -137,6 +132,25 @@ public:
                 require(response.size() == payload + sizeof(value) && !(value.offset % 8),"Native sync receipt");
                 grant(r.handle,{WDDM_APERTURE_FENCE,0,value.offset & ~4095ull,4096,0});
             }
+        }
+        if (op == Op::ImportSync) {
+            const auto desc=at<SharedSyncOpenDesc>(request,sizeof(Header));
+            const auto value=at<SyncReply>(response,payload);
+            require(request.size()==sizeof(Header)+sizeof(desc) && validSharedSyncOpen(desc) && !result.value &&
+                    response.size()==payload+sizeof(value) && !(value.offset%8) && value.offset<FenceApertureBytes &&
+                    validSyncGpuAddress(SyncDesc{5,desc.flags,desc.affinity,0,0},value.gpuAddress),"Native imported sync receipt");
+            parent(r.handle,desc.device);
+            grant(r.handle,{WDDM_APERTURE_FENCE,0,value.offset&~4095ull,4096,0});
+        }
+        if (op == Op::ImportResource) {
+            const auto desc=at<SharedResourceOpenDesc>(request,sizeof(Header));
+            const auto value=at<SharedResourceOpenReply>(response,payload);
+            require(request.size()==sizeof(Header)+sizeof(desc) && validSharedResourceOpen(desc) && !value.reserved &&
+                    response.size()==payload+sizeof(value)+desc.runtimeBytes+desc.driverBytes+desc.resourceDriverBytes &&
+                    !(result.value%4096) && result.value<MaxGpuAddress && value.allocationDriverBytes &&
+                    value.allocationDriverOffset<=desc.driverBytes && value.allocationDriverBytes<=desc.driverBytes-value.allocationDriverOffset,
+                    "Native imported resource receipt");
+            parent(r.handle,desc.device); parent(value.resource,r.handle); resources.emplace(value.resource,r.handle);
         }
         if (op == Op::LockVendorAllocation) {
             const auto value = at<VendorCpuReply>(response,payload);

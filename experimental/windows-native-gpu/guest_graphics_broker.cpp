@@ -35,7 +35,7 @@ int main(int argc,char** argv) {
         }
         listener=Fd(); // One process per native GPU worker until coordinator integration.
         Peer peer(std::move(accepted),uid,gid);
-        std::fprintf(stderr,"BROKER_ROUTE_START protocol=2 clientPid=%d clientUid=%u nativeWorkerClients=1 kernelControllersClient=false\n",peer.pid(),uid);
+        std::fprintf(stderr,"BROKER_ROUTE_START protocol=%u clientPid=%d clientUid=%u nativeWorkerClients=1 kernelControllersClient=false\n",Version,peer.pid(),uid);
         Port native(argv[2]); Kernel kernel;
         return serve(peer,native,kernel);
     } catch (const std::exception& error) {

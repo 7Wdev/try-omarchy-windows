@@ -59,8 +59,6 @@ static void viewPolicy() {
     CHECK(views.acquire(fence).cookie==0);
     views.observe(packet(Op::DestroyPagingQueue,3),receipt(Op::DestroyPagingQueue,3));
     denied([&]{views.acquire(fence);},EPERM);
-    for (auto op : {Op::BeginSyncSharing,Op::ExportSync,Op::ImportSync,Op::BeginResourceSharing,Op::ExportResource,Op::ImportResource})
-        denied([&]{views.approve(packet(op,1));},EOPNOTSUPP);
     {
         auto queued=base(); queued.observe(packet(Op::CreateContext,2),receipt(Op::CreateContext,3));
         auto desc=encode(HwQueueDesc{0,4,0,0}); desc.insert(desc.end(),{1,2,3,4});
@@ -113,6 +111,7 @@ struct NativeMock {
 };
 struct KernelMock {
     unsigned created=0,released=0;
+    void close() {}
     wddm_aperture_info info() { return {1,128,256,0,128*4096,256*1048576,1048576,0,0,0,0}; }
     std::pair<Fd,std::uint64_t> acquire(ViewRequest view) {
         CHECK(view.kind==WDDM_APERTURE_FENCE && view.offset==4096 && view.bytes==4096 && !view.generation);
