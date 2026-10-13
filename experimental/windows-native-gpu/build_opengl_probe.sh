@@ -33,6 +33,9 @@ if [ "${WDDM_BRIDGE_TEST_RESOURCE_FDS:-0}" = 1 ]; then
     if [ "${WDDM_BRIDGE_TEST_RESOURCE_FULL_READBACK:-0}" = 1 ]; then
         resource_define="$resource_define -DWDDM_BRIDGE_RESOURCE_FD_FULL_READBACK=1"
     fi
+    if [ "${WDDM_BRIDGE_TEST_RESOURCE_RECIPIENT:-0}" = 1 ]; then
+        resource_define="$resource_define -DWDDM_BRIDGE_RESOURCE_FD_RECIPIENT=1"
+    fi
     "${CXX:-c++}" -std=c++17 -O2 -Wall -Wextra -Werror $resource_define \
         -isystem "$directx/include" -isystem "$directx/include/wsl/stubs" \
         -isystem "$source/include" -isystem "$source/src/gallium/drivers/d3d12" \

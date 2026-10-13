@@ -20,6 +20,10 @@ using HGLRC = HGLRC__*;
 #include <dlfcn.h>
 #include <fcntl.h>
 #include <unistd.h>
+#ifdef WDDM_BRIDGE_RESOURCE_FD_RECIPIENT
+#include <poll.h>
+#include <sys/syscall.h>
+#endif
 
 using Microsoft::WRL::ComPtr;
 
@@ -178,5 +182,40 @@ extern "C" int wddm_mesa_resource_fd_test(EGLDisplay display, EGLContext context
             static_cast<unsigned long long>(readbackBytes), static_cast<unsigned long long>(digest));
     }
     std::puts("MESA_RESOURCE_FD_COMPLETE rounds=2 pixelsPerRound=8294400 native=true dmaBuf=false desktop=false");
+#ifdef WDDM_BRIDGE_RESOURCE_FD_RECIPIENT
+    // This recipient holds a real exported kernel capability, but does no
+    // GPU work. GPU imports in independent processes require a coordinator.
+    HANDLE retained=nullptr;
+    result=native.device->CreateSharedHandle(imported.Get(),nullptr,GENERIC_ALL,nullptr,&retained);
+    if (FAILED(result)) return failed("RecipientExport",result);
+    const auto retainedValue=reinterpret_cast<intptr_t>(retained);
+    if (retainedValue<0 || retainedValue>INT32_MAX) return failed("RecipientDescriptor",E_FAIL);
+    const auto retainedFd=static_cast<int>(retainedValue);
+    int ready[2];
+    if (pipe2(ready,O_CLOEXEC)) return failed("RecipientPipe",E_FAIL);
+    const auto producer=getpid(),recipient=fork();
+    if (recipient<0) return failed("RecipientFork",E_FAIL);
+    if (!recipient) {
+        syscall(SYS_close,ready[0]);
+        const auto pidfd=static_cast<int>(syscall(SYS_pidfd_open,producer,0));
+        const char marker=pidfd>=0 ? 'R' : 'F';
+        if (write(ready[1],&marker,1)!=1 || pidfd<0) _exit(1);
+        syscall(SYS_close,ready[1]);
+        pollfd exited{pidfd,POLLIN,0};
+        if (poll(&exited,1,5000)!=1 || !(exited.revents&POLLIN) || fcntl(retainedFd,F_GETFD)<0) _exit(1);
+        poll(nullptr,0,250); // let the broker enter its post-producer drain
+        static constexpr char alive[]="MESA_RESOURCE_FD_RECIPIENT producerExited=true capabilityOpen=true gpuWork=false\n";
+        if (write(STDERR_FILENO,alive,sizeof(alive)-1)!=sizeof(alive)-1) _exit(1);
+        poll(nullptr,0,1750);
+        static constexpr char closing[]="MESA_RESOURCE_FD_RECIPIENT closingCapability=true producerExited=true gpuWork=false\n";
+        if (write(STDERR_FILENO,closing,sizeof(closing)-1)!=sizeof(closing)-1 || syscall(SYS_close,retainedFd)) _exit(1);
+        _exit(0);
+    }
+    syscall(SYS_close,ready[1]); pollfd readable{ready[0],POLLIN,0}; char marker=0;
+    if (poll(&readable,1,5000)!=1 || read(ready[0],&marker,1)!=1 || marker!='R') return failed("RecipientReady",E_FAIL);
+    syscall(SYS_close,ready[0]);
+    if (syscall(SYS_close,retainedFd)) return failed("RecipientProducerClose",E_FAIL);
+    std::puts("MESA_RESOURCE_FD_RECIPIENT_ARMED producerFdClosed=true recipientFdInherited=true gpuWork=false");
+#endif
     return 0;
 }
