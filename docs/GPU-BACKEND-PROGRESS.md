@@ -57,6 +57,13 @@ producer's exit until a separate FD recipient closes it. That recipient does no
 GPU work; independent GPU clients and cross-process GPU imports still require a
 coordinator. DRM/GBM and Hyprland remain pending, with no new desktop gate closed.
 
+A [separate Windows GPU consumer](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-WINDOWS-WORKER.md)
+now imports and copies the ordinary guest user's two full 4K shader frames.
+Two final-source fresh guests pass independent pixel and process-lifetime audits.
+A strict two-frame window display check passes once and fails on its repeat;
+continuous display and stability remain unverified. This is a host consumer
+boundary, with independent guest GPU clients and compositor DRM/GBM still open.
+
 ![Four of eight verification stages demonstrated; zero of four desktop acceptance gates complete](images/gpu-backend-progress.svg)
 
 The normal upstream Try Omarchy desktop is already available. This roadmap
