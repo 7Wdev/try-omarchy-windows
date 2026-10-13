@@ -8,14 +8,15 @@ from verify_kernel_aperture_capture import validate_kernel_aperture
 from verify_exit_lifetime_capture import validate_exit_lifetime
 
 
-def validate_broker_routing(report, guest, records, *, finalizer=False):
+def validate_broker_routing(report, guest, records, *, finalizer=False, protocol=2):
+    require(type(protocol) is int and protocol in (2,3), 'Broker protocol selection must be explicit')
     audit = validate_exit_lifetime if finalizer else validate_kernel_aperture
     result = audit(report, guest, records, allocation_slots=256, transport='authenticated-broker')
     lines = guest.splitlines()
     client = 'BROKER_RENDER_CLIENT uid=65534 gid=65534 effectiveCapabilities=0 noNewPrivs=true controllerOpen=denied nativePortOpen=denied'
     require(lines.count(client) == 1, 'Missing ordinary rendering-client privilege proof')
     start = [l for l in lines if l.startswith('BROKER_ROUTE_START ')]
-    require(len(start) == 1 and re.fullmatch(r'BROKER_ROUTE_START protocol=2 clientPid=[1-9]\d* clientUid=65534 nativeWorkerClients=1 kernelControllersClient=false',start[0]),
+    require(len(start) == 1 and re.fullmatch(rf'BROKER_ROUTE_START protocol={protocol} clientPid=[1-9]\d* clientUid=65534 nativeWorkerClients=1 kernelControllersClient=false',start[0]),
             'Missing exact broker peer and worker binding')
     end = [l for l in lines if l.startswith('BROKER_ROUTE_EXIT ')]
     require(len(end) == 1, 'Missing broker process-exit receipt')

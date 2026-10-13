@@ -22,8 +22,9 @@ def validate_disabled_mesa(report, guest, records):
     return result
 
 
-def validate_mesa_fence_fds(report, guest, records):
-    result = validate_kernel_aperture(report, guest, records)
+def validate_mesa_fence_fds(report, guest, records, *, allocation_slots=128, transport='virtio-port'):
+    require(type(allocation_slots) is int and allocation_slots in (128,256), 'Explicit supported virtual aperture layout required')
+    result = validate_kernel_aperture(report, guest, records, allocation_slots=allocation_slots, transport=transport)
     require(exact(report, liveNvidiaLinuxUmdLoaded=True, realWslDxgForwarding=False,
                   capturedPrivateFixturesUsed=False), 'Wrong native runtime provenance')
     profile = [r for r in records if 'openGlProfileNegotiated' in r]
@@ -126,7 +127,7 @@ def validate_mesa_fence_fds(report, guest, records):
                   acceptedAsyncContextSignals=1, retiredAsyncContextSignals=1, pendingAsyncContextSignals=0,
                   acceptedHwQueueSignals=2, completedHwQueueSignals=2, pendingHwQueueSignals=0,
                   acceptedGpuQueueWaits=3, satisfiedGpuQueueWaits=3, pendingGpuQueueWaits=0,
-                  vendorAllocationObjectLimit=192, vendorCpuSlotLimit=128, vendorCpuSlotQuotaRejections=0),
+                  vendorAllocationObjectLimit=192, vendorCpuSlotLimit=allocation_slots, vendorCpuSlotQuotaRejections=0),
             'Unbalanced native work or changed allocation budgets')
     require(all(type(v) is int and v == 0 for k, v in cleanup.items() if k.startswith('failed') or k.endswith('Timeouts')),
             'Native failure or timeout')

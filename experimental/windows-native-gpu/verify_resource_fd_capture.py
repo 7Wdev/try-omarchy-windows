@@ -21,11 +21,13 @@ def uniform_digest(rgba):
     return f'{value:016x}'
 
 
-def validate_resource_fds(report, guest, records, *, full_readback=False):
+def validate_resource_fds(report, guest, records, *, full_readback=False, transport='virtio-port', retained_recipient=False):
     require(type(full_readback) is bool, 'Full-readback audit selection must be explicit')
+    require(type(retained_recipient) is bool and (not retained_recipient or transport=='authenticated-broker'),
+            'Retained-recipient audit requires the explicit broker transport')
     allocation_slots = 256 if full_readback else 128
     bands, readback_bytes = (1, 33177600) if full_readback else (5, 7864320)
-    result = validate_kernel_aperture(report, guest, records, allocation_slots=allocation_slots)
+    result = validate_kernel_aperture(report, guest, records, allocation_slots=allocation_slots, transport=transport)
     lines = guest.splitlines()
     def exactly(line):
         require(lines.count(line) == 1, 'Missing or duplicated resource-FD receipt: ' + line)
@@ -62,7 +64,10 @@ def validate_resource_fds(report, guest, records, *, full_readback=False):
     targets = re.findall(r'^LINUX_BRIDGE nativeHwQueueSignalQueued=true flags=4 queues=1 target=(\d+) observedAtReturn=\d+ noGpuAccess=true$', block, re.M)
     require([int(n) for n in targets] == list(range(1, 2 * bands + 1)), 'Missing or reordered band retirement signals')
     tickets = re.findall(r'^LINUX_BRIDGE kernelObjectExported=true kind=resource ticket=(\d+) cookie=(\d+)$', guest, re.M)
-    require(len(tickets) == 1 and all(int(n) > 0 for n in tickets[0]), 'Missing typed resource FD export')
+    export_count=2 if retained_recipient else 1
+    require(len(tickets) == export_count and all(int(n)>0 for row in tickets for n in row) and
+            len({row[0] for row in tickets})==len({row[1] for row in tickets})==export_count,
+            'Missing or repeated typed resource FD export')
     ticket, _ = tickets[0]
     reaped = exactly('LINUX_BRIDGE kernelObjectReaped=true ticket=' + ticket)
     require(imported < reaped < lines.index(receipts[0]), 'FD reference was not reaped after import and before storage proof')
@@ -71,8 +76,10 @@ def validate_resource_fds(report, guest, records, *, full_readback=False):
         require(len(events) == 1, 'Missing or duplicated native event: ' + key)
         return events[0]
     negotiated = one('nativeResourceSharingNegotiated')
-    native_export = one('nativeResourceHandleExported')
-    require(native_export.get('rawHandleExposed') is False, 'Native resource HANDLE exposed')
+    native_exports=[r for r in records if r.get('nativeResourceHandleExported') is True]
+    require(len(native_exports)==export_count and all(r.get('rawHandleExposed') is False for r in native_exports),
+            'Wrong native export count or native HANDLE exposed')
+    native_export=native_exports[0]
     open_begin = one('nativeResourceFdOpenBegin')
     native_open = one('nativeResourceFdOpenReturned')
     require(native_open.get('ntstatus') == 0 and native_open.get('hasResource') is True and native_open.get('hasAllocation') is True and
@@ -89,19 +96,36 @@ def validate_resource_fds(report, guest, records, *, full_readback=False):
             native_open.get('allocationDriverBytes') == info['driverBytes'] and native_open.get('resourceDriverBytes') == 0 and
             native_import.get('guestRuntimeBytes') == info['guestRuntimeBytes'] and native_import.get('driverBytes') == info['driverBytes'],
             'Native/Linux resource metadata substitution')
-    native_closed = one('nativeResourceHandleClosed')
+    native_closes=[r for r in records if r.get('nativeResourceHandleClosed') is True]
+    require(len(native_closes)==export_count, 'Wrong native NT-reference close count')
+    native_closed=native_closes[0]
     require(records.index(negotiated) < records.index(native_export) < records.index(queries[0]) <
             records.index(open_begin) < records.index(native_open) < records.index(native_import) < records.index(native_closed),
             'Invalid native NT-reference lifetime or import ordering')
     cleanup = report['disconnectCleanup']
-    require(cleanup.get('exportedResourceHandles') == 1 and cleanup.get('closedResourceHandles') == 1 and
+    require(cleanup.get('exportedResourceHandles') == export_count and cleanup.get('closedResourceHandles') == export_count and
             cleanup.get('liveSharedResourceHandles') == 0 and cleanup.get('vendorCpuSlotQuotaRejections') == 0,
             'Resource handle leak or CPU aperture exhaustion')
+    if retained_recipient:
+        armed=exactly('MESA_RESOURCE_FD_RECIPIENT_ARMED producerFdClosed=true recipientFdInherited=true gpuWork=false')
+        drain=exactly('BROKER_OBJECT_DRAIN producerExited=true retained=1')
+        alive=exactly('MESA_RESOURCE_FD_RECIPIENT producerExited=true capabilityOpen=true gpuWork=false')
+        closing=exactly('MESA_RESOURCE_FD_RECIPIENT closingCapability=true producerExited=true gpuWork=false')
+        reference=exactly('BROKER_OBJECT_CLOSE producerExited=true kind=2 ticket='+tickets[1][0]+' cookie='+tickets[1][1])
+        require(complete<armed<drain<alive<closing<reference, 'Wrong recipient/native cleanup lifetime')
+        export_positions=[i for i,r in enumerate(records) if r.get('nativeResourceHandleExported') is True]
+        close_positions=[i for i,r in enumerate(records) if r.get('nativeResourceHandleClosed') is True]
+        require(close_positions[0]<export_positions[1]<close_positions[1],
+                'Wrong second native export/close ordering')
+    else:
+        require('MESA_RESOURCE_FD_RECIPIENT' not in guest, 'Recipient proof requires explicit audit selection')
     result.update(nativeResourceFdVerified=True, sharedStorageVerified=True, width=3840, height=2160,
                   rounds=rounds, readbackBandsPerRound=bands, diagnosticReadbackBytes=readback_bytes,
                   sourceAndFdReleaseVerified=True, resourceFdContractChecks=15,
                   drmDeviceVerified=False, dmaBufVerified=False, desktopVerified=False,
                   openGl4kVerified=False, nearNativePerformanceVerified=False)
+    if retained_recipient:
+        result.update(recipientFdBeyondProducerExitVerified=True,crossProcessGpuResourceImportVerified=False)
     if full_readback:
         require(report.get('configuredCpuApertureSlots') == cleanup.get('vendorCpuSlotLimit') == 256 and
                 cleanup.get('vendorCpuMappedByteLimit') == 96 * 1024 * 1024 and
