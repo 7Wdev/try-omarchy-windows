@@ -1,11 +1,12 @@
 # Guest graphics broker integration
 
-The first broker component now authenticates individual Linux client processes
-and tracks their kernel process lifetime independently of socket lifetime. Its
-real-process contract passes on WSL and inside the QEMU guest, including a
-UID 65534 client. The guest subsequently passes the existing full-buffer 4K
-resource-FD and OpenGL shader checks. This establishes the broker ingress and
-process-exit boundary; GPU calls still use the existing direct connection.
+The broker now authenticates individual Linux client processes and tracks their
+kernel lifetime independently of socket lifetime. The [opt-in graphics route](LIVE-GPU-BROKER-ROUTING.md)
+also renders real NVIDIA OpenGL shaders as UID 65534 in three fresh guests,
+including a native library-finalizer lifetime regression. Kernel controllers
+remain in the root broker; only native-receipt-authorized view FDs reach the
+renderer. Multiple GPU clients, native FD export/import and desktop integration
+remain open. The default direct diagnostic path is preserved.
 
 ## Implemented boundary
 
@@ -24,13 +25,16 @@ obtains that handle from the socket's peer PID object. The
 [Linux Unix-socket documentation](https://man7.org/linux/man-pages/man7/unix.7.html)
 describes the per-message credentials and descriptor transfer mechanisms.
 
-Frames have a fixed 32-byte header, a maximum 4096-byte control payload, at most
+Protocol 2 frames have a fixed 32-byte header, a maximum 4096-byte control payload, at most
 eight descriptors, and strictly ordered nonzero sequence numbers. Unknown
 versions/operations, reserved fields, changed credentials, mismatched lengths,
 extra descriptors and truncated messages disconnect the channel. Every received
 descriptor is adopted before rejection and closed on failure; close-on-exec is
 set when the kernel installs it. Unexpected descriptor-bearing `SCM_PIDFD`
 messages are closed and rejected too. The normal listener disables that feature.
+Request status must be zero; replies carry a separate POSIX status and no payload
+or descriptors on error. The native Windows wire protocol remains version 1.
+Broker FD cleanup uses the raw close syscall to avoid re-entering the shim.
 
 Disconnect forbids further requests while preserving the process handle. A
 socket EOF, rejected packet or exited process leader does not establish that
@@ -47,12 +51,13 @@ until the corresponding resource/lease authority validates it.
 
 ## Retained checks
 
-The real-process contract checks 13 malformed/replayed/foreign-sender cases,
+The current real-process contract checks 14 malformed/replayed/foreign-sender cases,
 descriptor counts before/after rejection, two independent peers, a real ELF
 finalizer, wrong UID binding, required socket options/type and thread-group
 exit. The transferred backing is an owned `memfd`, not a GPU allocation.
 
-The [guest evidence](evidence/BROKER-PEER-2026-10-12.json) retains the full kernel
+The original protocol-1 [guest evidence](evidence/BROKER-PEER-2026-10-12.json), with
+13 rejection cases, retains the full kernel
 contract and GPU regression capture, exact source/build hashes and the scoped
 audit. The GPU regression still renders directly through the NVIDIA bridge:
 both complete 3840×2160 storage rounds, 24 native commands, two ordered GPU
@@ -77,7 +82,7 @@ unless explicitly selected. CI runs the real process test without a GPU.
 
 ## Remaining integration
 
-The next component must route authenticated peers into separate native object
+The next component must route multiple authenticated peers into separate native object
 namespaces over the shared VM transport. CPU/GPU memory and pending-work quotas
 must remain global, rather than being multiplied by the number of clients.
 The existing request/deadline/frame limits are diagnostic limits and need a
