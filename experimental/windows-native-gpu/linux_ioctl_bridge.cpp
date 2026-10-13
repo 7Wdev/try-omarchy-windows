@@ -708,6 +708,50 @@ public:
                 ++completedQueries; if (type == 0) ++privateQueries;
                 std::fprintf(stderr, "LINUX_BRIDGE queryCompleted type=%u bytes=%zu\n", type, data.size()); return 0;
             }
+            case 10: {
+                auto& a=args<D3DKMT_QUERYVIDEOMEMORYINFO>(requestNumber,pointer);
+                std::fprintf(stderr,"LINUX_BRIDGE memoryBudgetInput ownedAdapter=%u group=%u physicalAdapter=%u currentProcess=%u\n",
+                    ownedAdapters.count(a.hAdapter)?1u:0u,static_cast<unsigned>(a.MemorySegmentGroup),a.PhysicalAdapterIndex,
+                    !a.hProcess || a.hProcess==reinterpret_cast<HANDLE>(static_cast<std::intptr_t>(-1))?1u:0u);
+                if (!(caps.flags & VendorMemoryManagementCapability)) throw Error(ENOSYS);
+                if (a.hProcess && a.hProcess!=reinterpret_cast<HANDLE>(static_cast<std::intptr_t>(-1))) throw Error(EACCES);
+                const MemoryBudgetDesc desc{static_cast<std::uint32_t>(a.MemorySegmentGroup),a.PhysicalAdapterIndex};
+                if (!validMemoryBudget(desc)) throw Error(EINVAL);
+                if (!ownedAdapters.count(a.hAdapter)) throw Error(EBADF);
+                const auto result=call(request(Op::QueryMemoryBudget,a.hAdapter,desc),sizeof(MemoryBudgetReply),true);
+                MemoryBudgetReply info{}; std::memcpy(&info,result.data.data(),sizeof info);
+                if (result.header.handle!=a.hAdapter || result.result.value || result.result.ntstatus>0 ||
+                    (result.result.ntstatus<0 && (info.budget || info.usage || info.reservation || info.available))) { transport.fail(); throw Error(EPROTO); }
+                checkNt(result.result.ntstatus);
+                a.Budget=info.budget; a.CurrentUsage=info.usage; a.CurrentReservation=info.reservation; a.AvailableForReservation=info.available;
+                std::fprintf(stderr,"LINUX_BRIDGE nativeMemoryBudget=true group=%u budget=%llu usage=%llu reservation=%llu available=%llu currentProcessOnly=true\n",
+                    desc.group,(unsigned long long)info.budget,(unsigned long long)info.usage,(unsigned long long)info.reservation,(unsigned long long)info.available);
+                return 0;
+            }
+            case 30: {
+                auto& a=args<D3DKMT_EVICT>(requestNumber,pointer);
+                std::fprintf(stderr,"LINUX_BRIDGE evictionInput count=%u flags=%u ownedDevice=%u hasAllocations=%u\n",
+                    a.NumAllocations,a.Flags.Value,deviceAdapters.count(a.hDevice)?1u:0u,a.AllocationList?1u:0u);
+                if (!(caps.flags & VendorMemoryManagementCapability)) throw Error(ENOSYS);
+                const EvictDesc desc{a.NumAllocations,a.Flags.Value};
+                if (!validEvict(desc) || !a.AllocationList) throw Error(EINVAL);
+                if (!deviceAdapters.count(a.hDevice)) throw Error(EBADF);
+                std::vector<std::uint32_t> ids; ids.reserve(desc.count);
+                for (std::uint32_t n=0;n<desc.count;++n) {
+                    const auto found=vendorOwners.find(a.AllocationList[n]);
+                    if (found==vendorOwners.end() || found->second!=a.hDevice) throw Error(EBADF);
+                    if (std::find(a.AllocationList,a.AllocationList+n,a.AllocationList[n])!=a.AllocationList+n) throw Error(EINVAL);
+                    std::fprintf(stderr,"LINUX_BRIDGE evictionAllocation index=%u cpuLease=%u\n",n,cpuLocks.count(a.AllocationList[n])?1u:0u);
+                    ids.push_back(wireAllocation(a.AllocationList[n]));
+                }
+                auto packet=request(Op::EvictVendorAllocations,a.hDevice,desc);
+                const auto bytes=reinterpret_cast<const std::uint8_t*>(ids.data()); packet.insert(packet.end(),bytes,bytes+ids.size()*4);
+                const auto result=call(packet,0,true);
+                if (result.header.handle!=a.hDevice || result.result.ntstatus>0 || (result.result.ntstatus<0 && result.result.value)) { transport.fail(); throw Error(EPROTO); }
+                a.NumBytesToTrim=result.result.value; checkNt(result.result.ntstatus);
+                std::fprintf(stderr,"LINUX_BRIDGE nativeVendorEviction=true count=%u flags=%u bytesToTrim=%llu\n",desc.count,desc.flags,(unsigned long long)a.NumBytesToTrim);
+                return 0;
+            }
             case 2: {
                 auto& a = args<D3DKMT_CREATEDEVICE>(requestNumber, pointer);
                 unsigned flags{}; static_assert(sizeof a.Flags == sizeof flags); std::memcpy(&flags, &a.Flags, sizeof flags);

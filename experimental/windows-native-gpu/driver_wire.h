@@ -50,6 +50,7 @@ inline bool validVendorCpuSlots(std::size_t slots) {
 }
 constexpr std::uint32_t VendorGpuVaCapability = 512;
 constexpr std::uint32_t VendorResidencyCapability = 1024;
+constexpr std::uint32_t VendorMemoryManagementCapability = 0x80000000u;
 constexpr std::uint32_t VendorCpuCapability = 2048;
 // Only explicitly selected 128/256-slot native profiles advertise this budget.
 // Preserve standard allocation and 16/32/64-slot vendor CPU budgets.
@@ -177,6 +178,12 @@ inline bool validResident(ResidentDesc d) {
 }
 struct ResidentReply { std::uint32_t count, reserved; std::uint64_t bytesToTrim; };
 static_assert(sizeof(ResidentReply) == 16, "fixed residency output");
+struct MemoryBudgetDesc { std::uint32_t group, physicalAdapter; };
+struct MemoryBudgetReply { std::uint64_t budget, usage, reservation, available; };
+struct EvictDesc { std::uint32_t count, flags; };
+inline bool validMemoryBudget(MemoryBudgetDesc d) { return d.group<=1 && !d.physicalAdapter; }
+inline bool validEvict(EvictDesc d) { return d.count && d.count<=MaxVendorAllocations && d.flags<=3; }
+static_assert(sizeof(MemoryBudgetDesc)==8 && sizeof(MemoryBudgetReply)==32 && sizeof(EvictDesc)==8,"fixed memory management ABI");
 constexpr std::uint64_t MaxGpuAddress = 1ull << 48;
 inline bool validSyncGpuAddress(SyncDesc desc, std::uint64_t address) {
     // NoGPUAccess fences have CPU storage but no GPU virtual address.
@@ -363,7 +370,8 @@ enum class Op : std::uint32_t {
     CreateSync = 0x2070, DestroySync, SignalContextSync, QueueHwQueueSignal,
     BeginSyncSharing, ExportSync, ImportSync, CloseSharedSync, QuerySharedSyncInfo, QueueHwQueueWait, QueueContextSync, QueueContextWait,
     ReserveGpuAddress = 0x2080, FreeGpuReservation, MapGpuState,
-    BeginResourceSharing = 0x2090, ExportResource, CloseSharedResource, QuerySharedResourceInfo, ImportResource
+    BeginResourceSharing = 0x2090, ExportResource, CloseSharedResource, QuerySharedResourceInfo, ImportResource,
+    QueryMemoryBudget = 0x20a0, EvictVendorAllocations
 };
 enum class Kind { Adapter, Device, PagingQueue, Allocation, Context, PagingSync, VendorAllocation, HwQueue, HwQueueSync, Sync, GpuReservation, VendorResource, SharedSync, SharedResource };
 struct ContextDesc {
@@ -388,6 +396,8 @@ static_assert(sizeof(GuestRange) == 16, "fixed guest range layout");
 struct CopyRange { std::uint32_t source; std::uint32_t sourceOffset; std::uint32_t destinationOffset; std::uint32_t size; };
 static_assert(sizeof(CopyRange) == 16, "fixed GPU copy layout");
 struct Result { std::int32_t ntstatus; std::uint32_t nativeHandle; std::uint64_t value; };
+struct MemoryBudgetResult { Result result; MemoryBudgetReply info; };
+struct EvictResult { Result result; bool attempted; };
 inline bool validHwSubmitReply(Result result, std::uint64_t target, std::uint32_t capabilities) {
     return target && target != UINT64_MAX && !result.nativeHandle && result.ntstatus <= 0 &&
            (result.ntstatus < 0 ? result.value == 0 : result.value != UINT64_MAX &&
@@ -478,6 +488,8 @@ public:
         return {{static_cast<std::int32_t>(0xc00000bbu), 0, 0}, {0, 0}};
     }
     virtual ResourceSharingProfile beginResourceSharing() { return {}; }
+    virtual MemoryBudgetResult queryMemoryBudget(std::uint32_t, MemoryBudgetDesc) { return {{-95,0,0},{}}; }
+    virtual EvictResult evictVendorAllocations(std::uint32_t, EvictDesc, const std::vector<std::uint32_t>&) { return {{-95,0,0},false}; }
     virtual Result querySharedResourceInfo(std::uint32_t, std::uint32_t, SharedResourceInfo&, std::vector<std::uint8_t>&) { return {-95, 0, 0}; }
     virtual SharedResourceOpenResult importResource(std::uint32_t, SharedResourceOpenDesc, std::vector<std::uint8_t>&) { return {{-95, 0, 0}, {}}; }
     virtual Result exportResource(std::uint32_t) { return {static_cast<std::int32_t>(0xc00000bbu), 0, 0}; }
@@ -540,6 +552,9 @@ class Session {
         std::uint64_t submittedFence = 0;
         std::uint32_t vendorResource = 0;
         std::uint32_t syncFlags = 0;
+        // Proven lower bound. Failed/partial native operations can leave
+        // extra residency references which must not authorize unsafe access.
+        std::uint32_t residentReferences = 0;
     };
     Driver& driver;
     std::map<std::uint32_t, Object> objects;
@@ -1491,6 +1506,51 @@ public:
                 objects.emplace(id, owned); gpuReservedBytes += desc.bytes; return out;
             } catch (...) { driver.destroy(Kind::GpuReservation, result.nativeHandle); throw; }
         }
+        if (op == Op::QueryMemoryBudget) {
+            if (!negotiated) return reply(h,-71);
+            if (!(driver.capabilities().flags & VendorMemoryManagementCapability)) return reply(h,-95);
+            if (packet.size()!=sizeof h+sizeof(MemoryBudgetDesc)) return reply(h,-22);
+            MemoryBudgetDesc desc{}; std::memcpy(&desc,packet.data()+sizeof h,sizeof desc);
+            if (!validMemoryBudget(desc)) return reply(h,-22);
+            const auto adapter=objects.find(h.handle);
+            if (adapter==objects.end() || adapter->second.kind!=Kind::Adapter) return reply(h,-9);
+            const auto result=driver.queryMemoryBudget(adapter->second.nativeHandle,desc);
+            if (result.result.nativeHandle || result.result.value || result.result.ntstatus>0 ||
+                (result.result.ntstatus<0 && (result.info.budget || result.info.usage || result.info.reservation || result.info.available)))
+                return reply(h,-5);
+            auto out=reply(h,0,h.handle,&result.result); const auto start=out.size(); out.resize(start+sizeof result.info);
+            std::memcpy(out.data()+start,&result.info,sizeof result.info); return out;
+        }
+        if (op == Op::EvictVendorAllocations) {
+            if (!negotiated) return reply(h,-71);
+            if (!(driver.capabilities().flags & VendorMemoryManagementCapability)) return reply(h,-95);
+            if (packet.size()<sizeof h+sizeof(EvictDesc)) return reply(h,-22);
+            EvictDesc desc{}; std::memcpy(&desc,packet.data()+sizeof h,sizeof desc);
+            if (!validEvict(desc) || packet.size()!=sizeof h+sizeof desc+desc.count*4) return reply(h,-22);
+            const auto device=objects.find(h.handle);
+            if (device==objects.end() || device->second.kind!=Kind::Device) return reply(h,-9);
+            std::vector<std::uint32_t> ids(desc.count),native(desc.count);
+            std::memcpy(ids.data(),packet.data()+sizeof h+sizeof desc,ids.size()*4);
+            for (std::size_t n=0;n<ids.size();++n) {
+                const auto entry=objects.find(ids[n]);
+                if (entry==objects.end() || entry->second.kind!=Kind::VendorAllocation || entry->second.parent!=h.handle) return reply(h,-9);
+                if (std::find(ids.begin(),ids.begin()+n,ids[n])!=ids.begin()+n) return reply(h,-22);
+                if (entry->second.cpuBytes && entry->second.residentReferences<=1) return reply(h,-16);
+                native[n]=entry->second.nativeHandle;
+            }
+            const auto eviction=driver.evictVendorAllocations(device->second.nativeHandle,desc,native);
+            const auto& result=eviction.result;
+            // At most one reference per allocation can be removed by this
+            // call, including a partially failing list operation. Never
+            // assume a failed operation left all references unchanged.
+            if (eviction.attempted) for (const auto id:ids) {
+                auto& entry=objects.at(id);
+                if (entry.residentReferences) --entry.residentReferences;
+                entry.resident=entry.residentReferences!=0;
+            }
+            if (result.nativeHandle || result.ntstatus>0 || (result.ntstatus<0 && result.value) || (!eviction.attempted && result.ntstatus>=0)) return reply(h,-5);
+            return reply(h,0,h.handle,&result);
+        }
         if (op == Op::MakeVendorResident) {
             if (!negotiated) return reply(h, -71);
             if (!(driver.capabilities().flags & VendorResidencyCapability)) return reply(h, -95);
@@ -1519,7 +1579,7 @@ public:
                 (result.residency.ntstatus >= 0 && result.residency.ntstatus != 0 && result.residency.ntstatus != 0x103))
                 return reply(h, -5);
             if (result.residency.ntstatus >= 0 && result.output.count == desc.count)
-                for (const auto id : ids) objects.at(id).resident = true;
+                for (const auto id : ids) { auto& entry=objects.at(id); entry.resident=true; ++entry.residentReferences; }
             auto out = reply(h, 0, h.handle, &result.residency);
             const auto start = out.size(); out.resize(start + sizeof(ResidentReply));
             std::memcpy(out.data() + start, &result.output, sizeof result.output);

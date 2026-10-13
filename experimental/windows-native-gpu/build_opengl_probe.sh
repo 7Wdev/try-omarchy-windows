@@ -19,7 +19,7 @@ if [ "${WDDM_BRIDGE_TEST_EXIT_LIFETIME:-0}" = 1 ]; then
         -isystem "$dxg/include" -isystem "$directx/include" -isystem "$directx/include/wsl/stubs" \
         "$base/exit_lifetime_probe.cpp" -o "$output/exit-lifetime-probe.so"
 fi
-if [ "${WDDM_BRIDGE_TEST_NATIVE_SYNC_FILES:-0}" = 1 ] || [ "${WDDM_BRIDGE_TEST_NATIVE_SYNC_LINEAGE:-0}" = 1 ]; then
+if [ "${WDDM_BRIDGE_TEST_NATIVE_SYNC_FILES:-0}" = 1 ] || [ "${WDDM_BRIDGE_TEST_NATIVE_SYNC_LINEAGE:-0}" = 1 ] || [ "${WDDM_BRIDGE_TEST_EGL_NATIVE_SYNC:-0}" = 1 ]; then
     if [ "${WDDM_BRIDGE_TEST_RESOURCE_FDS:-0}" = 1 ] || [ "${WDDM_BRIDGE_TEST_MESA_FENCE_FDS:-0}" = 1 ] || [ "${WDDM_BRIDGE_TEST_SYNC_FDS:-0}" = 1 ]; then
         echo 'Select one explicit FD diagnostic at a time' >&2; exit 2
     fi
@@ -27,14 +27,22 @@ if [ "${WDDM_BRIDGE_TEST_NATIVE_SYNC_FILES:-0}" = 1 ] || [ "${WDDM_BRIDGE_TEST_N
     directx=${WDDM_BRIDGE_DIRECTX_HEADERS:?Supply DirectX-Headers source}
     dxg=${WDDM_BRIDGE_DXG_HEADERS:?Supply libdxg source}
     sync_source=native_sync_file_probe.cpp
+    sync_define=
     if [ "${WDDM_BRIDGE_TEST_NATIVE_SYNC_LINEAGE:-0}" = 1 ]; then
         sync_source=native_sync_lineage_probe.cpp
     fi
-    "${CXX:-c++}" -std=c++17 -O2 -Wall -Wextra -Werror \
+    if [ "${WDDM_BRIDGE_TEST_EGL_NATIVE_SYNC:-0}" = 1 ]; then
+        sync_source=egl_native_sync_probe.cpp
+        sync_define=-DWDDM_BRIDGE_EGL_NATIVE_SYNC_TEST=1
+        if [ "${WDDM_BRIDGE_TEST_EGL_NATIVE_SYNC_DISABLED:-0}" = 1 ]; then
+            sync_define="$sync_define -DWDDM_BRIDGE_EGL_NATIVE_SYNC_DISABLED=1"
+        fi
+    fi
+    "${CXX:-c++}" -std=c++17 -O2 -Wall -Wextra -Werror $sync_define \
         -isystem "$directx/include" -isystem "$directx/include/wsl/stubs" -isystem "$dxg/include" \
         -isystem "$source/include" -isystem "$source/src/gallium/drivers/d3d12" \
         -c "$base/$sync_source" -o "$output/native-sync-file-probe.o"
-    "${CC:-cc}" -std=c11 -O2 -Wall -Wextra -Werror $exit_define -DWDDM_BRIDGE_NATIVE_SYNC_FILE_TEST=1 \
+    "${CC:-cc}" -std=c11 -O2 -Wall -Wextra -Werror $exit_define $sync_define -DWDDM_BRIDGE_NATIVE_SYNC_FILE_TEST=1 \
         -isystem "$mesa/include" -c "$base/egl_gl_probe.c" -o "$output/egl-gl-probe.o"
     "${CXX:-c++}" -std=c++17 -isystem "$directx/include" -isystem "$directx/include/wsl/stubs" \
         "$output/egl-gl-probe.o" "$output/native-sync-file-probe.o" "$directx/src/dxguids.cpp" \

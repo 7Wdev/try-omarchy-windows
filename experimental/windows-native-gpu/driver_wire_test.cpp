@@ -26,6 +26,22 @@ struct Fake : Driver {
     int badVendorDestroyReply = 0;
     bool gpuVaEnabled = false;
     bool residencyEnabled = false;
+    bool memoryManagementEnabled = false, evictAttempted = true;
+    int badMemoryBudgetReply = 0, badEvictReply = 0;
+    unsigned memoryBudgetCalls = 0, evictionCalls = 0;
+    MemoryBudgetResult queryMemoryBudget(std::uint32_t adapter, MemoryBudgetDesc desc) override {
+        require(adapter>500 && validMemoryBudget(desc)); ++calls; ++memoryBudgetCalls;
+        const MemoryBudgetReply info{268435456,65536,0,268435456};
+        return {{badMemoryBudgetReply==1?259:badMemoryBudgetReply==4?-123:0,
+                 badMemoryBudgetReply==2?777u:0u,badMemoryBudgetReply==3?1ull:0ull},info};
+    }
+    EvictResult evictVendorAllocations(std::uint32_t device, EvictDesc desc, const std::vector<std::uint32_t>& handles) override {
+        require(device>500 && validEvict(desc) && handles.size()==desc.count);
+        for (const auto handle:handles) require(vendorOwners.at(handle)==device);
+        ++calls; ++evictionCalls;
+        return {{!evictAttempted?static_cast<std::int32_t>(0x80000011u):fail?-123:badEvictReply==1?259:0,
+                 badEvictReply==2?777u:0u,fail?(badEvictReply==3?1ull:0ull):evictAttempted?65536ull:0ull},evictAttempted};
+    }
     bool cpuEnabled = false;
     bool translationEnabled = false;
     int badTranslationReply = 0;
@@ -130,6 +146,7 @@ struct Fake : Driver {
                 (contextSignalEnabled ? ContextSignalCapability : 0u) |
                 (hwQueueSignalEnabled ? HwQueueSignalCapability : 0u) |
                 (gpuVaEnabled ? VendorGpuVaCapability : 0u) | (residencyEnabled ? VendorResidencyCapability : 0u) |
+                (memoryManagementEnabled ? VendorMemoryManagementCapability : 0u) |
                 (cpuEnabled ? VendorCpuCapability : 0u) | (translationEnabled ? VendorTranslationCapability : 0u) |
                 (hwQueuesEnabled ? HwQueueCapability : 0u) | (syncEnabled ? SyncCapability : 0u) |
                 (noBroadcastHwQueuesEnabled ? NoBroadcastSignalHwQueueCapability : 0u) |
@@ -358,6 +375,70 @@ struct Fake : Driver {
     }
 };
 int main() {
+    {
+        Fake f; f.vendorEnabled=true; f.residencyEnabled=true; f.gpuVaEnabled=true; f.cpuEnabled=true;
+        Session s(f); s.dispatch(hello());
+        const auto adapter=header(s.dispatch(request(Op::OpenAdapter))).handle;
+        const auto device=header(s.dispatch(request(Op::CreateDevice,adapter))).handle;
+        const auto other=header(s.dispatch(request(Op::CreateDevice,adapter))).handle;
+        const auto queue=header(s.dispatch(request(Op::CreatePagingQueue,device))).handle;
+        const auto query=request(Op::QueryMemoryBudget,adapter,MemoryBudgetDesc{0,0});
+        auto before=f.calls;
+        require(header(s.dispatch(query)).status==-95 && f.calls==before);
+        f.memoryManagementEnabled=true;
+        const auto queried=s.dispatch(query); MemoryBudgetReply info{};
+        require(!header(queried).status && queried.size()==sizeof(Header)+sizeof(Reply)+sizeof info);
+        std::memcpy(&info,queried.data()+sizeof(Header)+sizeof(Reply),sizeof info);
+        require(info.budget==268435456 && info.usage==65536 && !info.reservation && info.available==268435456);
+        for (unsigned n=1;n<=4;++n) { f.badMemoryBudgetReply=n; require(header(s.dispatch(query)).status==-5); }
+        f.badMemoryBudgetReply=0; before=f.calls;
+        require(header(s.dispatch(request(Op::QueryMemoryBudget,device,MemoryBudgetDesc{0,0}))).status==-9);
+        require(header(s.dispatch(request(Op::QueryMemoryBudget,adapter,MemoryBudgetDesc{2,0}))).status==-22);
+        require(header(s.dispatch(request(Op::QueryMemoryBudget,adapter,MemoryBudgetDesc{0,1}))).status==-22);
+        auto malformed=query; malformed.push_back(0); require(header(s.dispatch(malformed)).status==-22 && f.calls==before);
+        auto creation=request(Op::CreateVendorAllocation,device,VendorAllocationDesc{0,0,0,1,0,0}); creation.push_back(1);
+        const auto allocation=header(s.dispatch(creation)).handle;
+        auto evict=[&](EvictDesc desc,std::initializer_list<std::uint32_t> ids,std::uint32_t owner) {
+            auto packet=request(Op::EvictVendorAllocations,owner,desc);
+            for (const auto id:ids) { const auto bytes=reinterpret_cast<const std::uint8_t*>(&id); packet.insert(packet.end(),bytes,bytes+4); }
+            return s.dispatch(packet);
+        };
+        before=f.calls;
+        require(header(evict({0,0},{},device)).status==-22);
+        require(header(evict({1,4},{allocation},device)).status==-22);
+        require(header(evict({2,0},{allocation},device)).status==-22);
+        require(header(evict({2,0},{allocation,allocation},device)).status==-22);
+        require(header(evict({1,0},{allocation},other)).status==-9);
+        require(header(evict({1,0},{device},device)).status==-9 && f.calls==before);
+        auto resident=request(Op::MakeVendorResident,queue,ResidentDesc{1,0,0,0});
+        const auto idBytes=reinterpret_cast<const std::uint8_t*>(&allocation); resident.insert(resident.end(),idBytes,idBytes+4);
+        require(!header(s.dispatch(resident)).status && !header(s.dispatch(resident)).status);
+        require(!header(s.dispatch(request(Op::MapVendorAllocation,allocation,GpuVaDesc{queue,0,0,65536,1ull<<40,0,16,1,0}))).status);
+        const auto lock=request(Op::LockVendorAllocation,allocation,VendorCpuDesc{device,0});
+        const auto unlock=request(Op::UnlockVendorAllocation,allocation,VendorCpuDesc{device,0});
+        require(!header(s.dispatch(lock)).status);
+        f.evictAttempted=false;
+        auto busy=evict({1,0},{allocation},device); Reply result{}; std::memcpy(&result,busy.data()+sizeof(Header),sizeof result);
+        require(!header(busy).status && result.ntstatus<0 && !result.value);
+        f.evictAttempted=true;
+        auto first=evict({1,0},{allocation},device); std::memcpy(&result,first.data()+sizeof(Header),sizeof result);
+        require(!header(first).status && !result.ntstatus && result.value==65536);
+        before=f.calls; require(header(evict({1,0},{allocation},device)).status==-16 && f.calls==before);
+        require(!header(s.dispatch(unlock)).status);
+        require(!header(evict({1,0},{allocation},device)).status);
+        require(!header(s.dispatch(resident)).status && !header(s.dispatch(resident)).status && !header(s.dispatch(lock)).status);
+        f.fail=true;
+        const auto partial=evict({1,0},{allocation},device); std::memcpy(&result,partial.data()+sizeof(Header),sizeof result);
+        require(!header(partial).status && result.ntstatus==-123 && !result.value);
+        f.fail=false; before=f.calls;
+        require(header(evict({1,0},{allocation},device)).status==-16 && f.calls==before);
+        require(!header(s.dispatch(unlock)).status);
+        for (const auto flags:{0u,1u,2u,3u}) require(!header(evict({1,flags},{allocation},device)).status);
+        for (unsigned n=1;n<=2;++n) { f.badEvictReply=n; require(header(evict({1,0},{allocation},device)).status==-5); }
+        f.badEvictReply=3; f.fail=true; require(header(evict({1,0},{allocation},device)).status==-5);
+        f.badEvictReply=0; f.fail=false;
+        std::cout<<"MEMORY_WIRE budgetOwnership=true foreignDeviceRejected=true boundedLists=true cpuLastReferenceProtected=true partialFailureConservative=true nativeBlockedCallPreservesRefs=true gpu=false\n";
+    }
     struct OpenGlFake : Fake {
         OpenGlProfile profile = GuestOpenGlProfile;
         unsigned begins = 0;

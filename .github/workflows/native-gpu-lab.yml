@@ -155,6 +155,11 @@ jobs:
           c++ -std=c++17 -Wall -Wextra -Werror -isystem .runtime-headers/include -isystem .runtime-headers/include/wsl/stubs -isystem .runtime-dxg/include -isystem /tmp/mesa-26.0.8/include -isystem /tmp/mesa-26.0.8/src/gallium/drivers/d3d12 -c experimental/windows-native-gpu/native_sync_file_probe.cpp -o /tmp/native-sync-file-probe.o
           c++ -std=c++17 -Wall -Wextra -Werror -isystem .runtime-headers/include -isystem .runtime-headers/include/wsl/stubs -isystem .runtime-dxg/include -isystem /tmp/mesa-26.0.8/include -isystem /tmp/mesa-26.0.8/src/gallium/drivers/d3d12 -c experimental/windows-native-gpu/native_sync_lineage_probe.cpp -o /tmp/native-sync-lineage-probe.o
           cc -std=c11 -Wall -Wextra -Werror -DWDDM_BRIDGE_NATIVE_SYNC_FILE_TEST=1 -c experimental/windows-native-gpu/egl_gl_probe.c -o /tmp/egl-gl-native-sync-file.o
+          python3 experimental/windows-native-gpu/mesa/apply_mesa_native_sync.py /tmp/mesa-26.0.8
+          python3 experimental/windows-native-gpu/mesa/apply_mesa_native_sync.py /tmp/mesa-26.0.8
+          c++ -std=c++17 -Wall -Wextra -Werror -isystem .runtime-headers/include -isystem .runtime-headers/include/wsl/stubs -isystem /tmp/mesa-26.0.8/include -isystem /tmp/mesa-26.0.8/src/gallium/drivers/d3d12 -c experimental/windows-native-gpu/egl_native_sync_probe.cpp -o /tmp/egl-native-sync-probe.o
+          c++ -std=c++17 -Wall -Wextra -Werror -DWDDM_BRIDGE_EGL_NATIVE_SYNC_DISABLED=1 -isystem .runtime-headers/include -isystem .runtime-headers/include/wsl/stubs -isystem /tmp/mesa-26.0.8/include -isystem /tmp/mesa-26.0.8/src/gallium/drivers/d3d12 -c experimental/windows-native-gpu/egl_native_sync_probe.cpp -o /tmp/egl-native-sync-disabled-probe.o
+          cc -std=c11 -Wall -Wextra -Werror -DWDDM_BRIDGE_NATIVE_SYNC_FILE_TEST=1 -DWDDM_BRIDGE_EGL_NATIVE_SYNC_TEST=1 -c experimental/windows-native-gpu/egl_gl_probe.c -o /tmp/egl-gl-native-sync-enabled.o
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: wddm-bridge-guest-probe

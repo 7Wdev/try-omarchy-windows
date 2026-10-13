@@ -199,6 +199,7 @@ class KmtDriver : public Driver {
         bool locked = false;
         bool resident = false;
         void* cpuData = nullptr;
+        std::uint32_t residentReferences = 0;
         std::uint32_t cpuBytes = 0;
         std::uint64_t initialCpuFingerprint = 0;
         std::uint64_t firstWord = 0, lastWord = 0;
@@ -270,6 +271,8 @@ class KmtDriver : public Driver {
     }
     std::uint32_t vendorResidencyAttempts = 0, peakVendorResidencyAttempts = 0;
     unsigned completedVendorResidency = 0, failedVendorResidency = 0, completedVendorResidencyWaits = 0;
+    unsigned completedMemoryBudgetQueries = 0, failedMemoryBudgetQueries = 0;
+    unsigned attemptedVendorEvictions = 0, completedVendorEvictions = 0, failedVendorEvictions = 0;
     std::uint64_t vendorAllocationsMadeResident = 0;
     std::uint32_t vendorMappedPages = 0, peakVendorMappedPages = 0;
     unsigned completedVendorMaps = 0, failedVendorMaps = 0, completedVendorMapWaits = 0;
@@ -422,7 +425,7 @@ public:
         return {Version, (guestSectionName.empty() ? 7u : 31u) | (contextsEnabled ? ContextCapability : 0u) |
                 (queriesEnabled ? QueryCapability : 0u) | (runtime ? GuestPagingCapability : 0u) |
                 (allocationsEnabled ? VendorAllocationCapability : 0u) | (gpuVaEnabled ? VendorGpuVaCapability : 0u) |
-                (residencyEnabled ? VendorResidencyCapability : 0u) | (cpuEnabled ? VendorCpuCapability : 0u) |
+                (residencyEnabled ? VendorResidencyCapability | VendorMemoryManagementCapability : 0u) | (cpuEnabled ? VendorCpuCapability : 0u) |
                 (cpuEnabled && runtime && runtime->allocationSlotLimit() >= ExpandedVendorCpuSlots ? ExpandedVendorCpuCapability : 0u) |
                 (gpuVaEnabled && runtime && runtime->allocationSlotLimit() >= ExpandedVendorCpuSlots ? ExpandedVendorGpuCapability : 0u) |
                 (allocationsEnabled && runtime && runtime->allocationSlotLimit() >= ExpandedVendorCpuSlots ? ExpandedVendorObjectsCapability : 0u) |
@@ -1290,6 +1293,50 @@ public:
                   << ",\"nativeSignalAccepted\":true,\"sourceState\":\"COMMON\",\"returnedState\":\"COMMON\",\"pendingGuestCommands\":0}\n";
         return {0,0,hash};
     }
+    MemoryBudgetResult queryMemoryBudget(std::uint32_t adapter, MemoryBudgetDesc desc) override {
+        if (!residencyEnabled || !ownedAdapters.count(adapter) || !validMemoryBudget(desc)) return {{Invalid,0,0},{}};
+        D3DKMT_QUERYVIDEOMEMORYINFO value{}; value.hAdapter=adapter;
+        value.MemorySegmentGroup=static_cast<D3DKMT_MEMORY_SEGMENT_GROUP>(desc.group);
+        value.PhysicalAdapterIndex=desc.physicalAdapter;
+        // NULL selects this owned Windows worker. No guest process HANDLE
+        // or process identifier is forwarded across the boundary.
+        const auto status=D3DKMTQueryVideoMemoryInfo(&value);
+        if (status!=0) { ++failedMemoryBudgetQueries; return {{status>0?Invalid:status,0,0},{}}; }
+        const auto budget=(std::min)(value.Budget,ReportedGpuUsageLimit);
+        const MemoryBudgetReply info{budget,value.CurrentUsage,value.CurrentReservation,
+            (std::min)(value.AvailableForReservation,budget)};
+        ++completedMemoryBudgetQueries;
+        std::cerr<<"{\"nativeMemoryBudgetQueried\":true,\"group\":"<<desc.group<<",\"nativeBudget\":"<<value.Budget
+                 <<",\"budget\":"<<info.budget<<",\"usage\":"<<info.usage<<",\"reservation\":"<<info.reservation
+                 <<",\"available\":"<<info.available<<",\"currentProcessOnly\":true,\"physicalAdapter\":0}\n";
+        return {{0,0,0},info};
+    }
+    EvictResult evictVendorAllocations(std::uint32_t device, EvictDesc desc, const std::vector<std::uint32_t>& handles) override {
+        if (!residencyEnabled || !deviceAdapters.count(device) || !validEvict(desc) || handles.size()!=desc.count)
+            return {{Invalid,0,0},false};
+        for (std::size_t n=0;n<handles.size();++n) {
+            const auto found=vendorAllocations.find(handles[n]);
+            if (found==vendorAllocations.end() || found->second.device!=device ||
+                std::find(handles.begin(),handles.begin()+n,handles[n])!=handles.begin()+n ||
+                (found->second.locked && found->second.residentReferences<=1)) return {{Invalid,0,0},false};
+        }
+        if (!collectRetiredSubmissions() || !pendingSubmissions.empty() || !pendingHwSignals.empty() || !pendingHwWaits.empty())
+            return {{static_cast<std::int32_t>(0x80000011u),0,0},false};
+        D3DKMT_EVICT value{}; value.hDevice=device; value.NumAllocations=desc.count;
+        value.AllocationList=handles.data(); value.Flags.Value=desc.flags;
+        ++attemptedVendorEvictions;
+        const auto status=D3DKMTEvict(&value);
+        for (const auto handle:handles) {
+            auto& allocation=vendorAllocations.at(handle);
+            if (allocation.residentReferences) --allocation.residentReferences;
+            allocation.resident=allocation.residentReferences!=0;
+        }
+        if (status==0) ++completedVendorEvictions; else ++failedVendorEvictions;
+        std::cerr<<"{\"nativeVendorEviction\":true,\"count\":"<<desc.count<<",\"flags\":"<<desc.flags
+                 <<",\"ntstatus\":"<<status<<",\"bytesToTrim\":"<<(status==0?value.NumBytesToTrim:0)
+                 <<",\"pendingCommands\":0,\"pendingSignals\":0,\"pendingWaits\":0,\"nativeCall\":true}\n";
+        return {{status>0?Invalid:status,0,status==0?value.NumBytesToTrim:0},true};
+    }
     ResidentResult makeVendorResident(std::uint32_t queue, ResidentDesc desc, const std::vector<std::uint32_t>& handles,
                                      const std::vector<std::uint32_t>& priorities) override {
         const auto paging = pagingFences.find(queue);
@@ -1330,7 +1377,7 @@ public:
             ++completedVendorResidency; ++completedVendorResidencyWaits;
             vendorAllocationsMadeResident += a.NumAllocations;
             if (a.NumAllocations == desc.count)
-                for (const auto handle : handles) vendorAllocations.at(handle).resident = true;
+                for (const auto handle : handles) { auto& allocation=vendorAllocations.at(handle); allocation.resident=true; ++allocation.residentReferences; }
         } else ++failedVendorResidency;
         return {{status, 0, a.PagingFenceValue}, {a.NumAllocations, 0, a.NumBytesToTrim}};
     }
@@ -1965,6 +2012,11 @@ public:
                   << ",\"peakVendorMappedPages\":" << peakVendorMappedPages
                   << ",\"vendorGpuMappedByteLimit\":" << vendorGpuPageLimit(capabilities().flags) * 4096
                   << ",\"completedVendorResidencyRequests\":" << completedVendorResidency
+                  << ",\"completedMemoryBudgetQueries\":" << completedMemoryBudgetQueries
+                  << ",\"failedMemoryBudgetQueries\":" << failedMemoryBudgetQueries
+                  << ",\"attemptedVendorEvictions\":" << attemptedVendorEvictions
+                  << ",\"completedVendorEvictions\":" << completedVendorEvictions
+                  << ",\"failedVendorEvictions\":" << failedVendorEvictions
                   << ",\"failedVendorResidencyRequests\":" << failedVendorResidency
                   << ",\"completedVendorResidencyWaits\":" << completedVendorResidencyWaits
                   << ",\"vendorAllocationsMadeResident\":" << vendorAllocationsMadeResident
