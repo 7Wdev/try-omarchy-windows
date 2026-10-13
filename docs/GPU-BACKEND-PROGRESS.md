@@ -4,7 +4,13 @@ Updated 2026-10-13. **4 of 8 verification stages demonstrated.** This is a
 checklist count, not 50% of engineering effort or a product-readiness estimate.
 The largest integration tasks are still ahead.
 
-Latest lab result: [a separate Windows GPU process](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-WINDOWS-WORKER.md)
+Latest lab result: [native GPU progress exported as Linux sync-files](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-NATIVE-SYNC-FILE.md)
+passes two fresh ordinary-user guests. Standard FD polling and transfer observe
+an actual GPU signal above 32 bits; revocation, timeout and cleanup checks pass.
+EGL native-fence import/export and compositor integration remain open. This is
+part of stage 5 and closes no desktop gate.
+
+Earlier [a separate Windows GPU process](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-WINDOWS-WORKER.md)
 imports and copies both ordinary-user 4K shader frames in two fresh guests.
 Strict window presentation passes once and fails on repeat. This advances the
 buffer handoff work; it does not complete a roadmap stage or a desktop gate.
