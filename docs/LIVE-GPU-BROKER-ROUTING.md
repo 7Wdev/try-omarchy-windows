@@ -97,6 +97,7 @@ WDDM assigns GPU virtual address spaces [per Windows process](https://learn.micr
 Our next design to validate is a coordinator with separate native worker
 processes and aggregate VM quotas; separate handle tables alone do not establish
 isolation of opaque GPU commands. Cross-process native resource retention,
+rolling runtime budgets in place of diagnostic frame/request/deadline limits,
 DRM/GBM/dma-buf imports, compositor synchronization and continuous host display
 still need integration. Hyprland, desktop stability, required APIs, NVIDIA
 features, concurrent workloads and the ≥93% matched native performance target

@@ -134,7 +134,7 @@ jobs:
           cc -std=c11 -O2 -Wall -Wextra -Werror -DWDDM_BRIDGE_EXIT_LIFETIME_TEST=1 experimental/windows-native-gpu/egl_gl_probe.c -lEGL -ldl -o /tmp/egl-gl-exit-probe
       - name: Verify the pinned experimental Mesa patch and compile its fence-FD probe
         run: |
-          curl --fail --location --retry 2 https://archive.mesa3d.org/mesa-26.0.8.tar.xz -o /tmp/mesa-26.0.8.tar.xz
+          curl --fail --location --retry 3 --retry-all-errors --retry-delay 2 --retry-max-time 180 --connect-timeout 15 --max-time 60 https://archive.mesa3d.org/mesa-26.0.8.tar.xz -o /tmp/mesa-26.0.8.tar.xz
           echo 'caf1c0061a68e88dfa74967a7e780c0e85d65b6c4e334cd69095a5dc54ad78bc  /tmp/mesa-26.0.8.tar.xz' | sha256sum --check
           tar -xJf /tmp/mesa-26.0.8.tar.xz -C /tmp
           python3 experimental/windows-native-gpu/mesa/apply_mesa_fence_fd.py /tmp/mesa-26.0.8
