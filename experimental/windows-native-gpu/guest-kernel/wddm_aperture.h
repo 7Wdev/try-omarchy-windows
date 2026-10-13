@@ -79,4 +79,18 @@ struct wddm_sync_file_stats {
 };
 #define WDDM_SYNC_FILE_CREATE _IOWR('W', 0x48, struct wddm_sync_file_create)
 #define WDDM_SYNC_FILE_STATS _IOWR('W', 0x49, struct wddm_sync_file_stats)
+/* Additive opt-in lineage ABI. The retained descriptor must be a genuine
+ * WDDM_OBJECT_SYNC capability; no user-provided ticket/Windows HANDLE. */
+struct wddm_sync_file_native_create {
+	struct wddm_sync_file_create sync;
+	__s32 native_fd;
+	__u32 reserved;
+};
+struct wddm_sync_file_native_resolve {
+	__u32 version, flags;
+	__s32 fd, native_fd;
+	__u64 value, reserved;
+};
+#define WDDM_SYNC_FILE_NATIVE_CREATE _IOWR('W', 0x4a, struct wddm_sync_file_native_create)
+#define WDDM_SYNC_FILE_NATIVE_RESOLVE _IOWR('W', 0x4b, struct wddm_sync_file_native_resolve)
 #endif

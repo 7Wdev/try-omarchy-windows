@@ -188,11 +188,13 @@ public:
     std::size_t active() const {
         return std::count_if(grants.begin(),grants.end(),[](const auto& i){return i.second.cookie != 0;});
     }
-    void syncFile(SyncFileRequest request) {
+    std::uint32_t syncFile(SyncFileRequest request,bool linked=false) {
         const auto& g=cookie(request.cookie);
         if (g.view.kind!=WDDM_APERTURE_FENCE || request.offset!=g.fenceOffset ||
-            !request.value || request.value==UINT64_MAX)
+            (!linked && !request.value) || request.value==UINT64_MAX)
             throw std::system_error(EPERM,std::generic_category(),"Sync-file requires the exact authorized native fence word");
+        for(const auto& entry:grants) if(entry.second.cookie==request.cookie) return entry.first;
+        throw std::system_error(EBADF,std::generic_category(),"Missing native fence source");
     }
 };
 } // namespace guest_broker

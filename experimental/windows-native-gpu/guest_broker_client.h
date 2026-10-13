@@ -28,6 +28,8 @@ inline std::uint32_t importKind(driver_bridge::Op op) {
 }
 inline bool recoverableObjectError(Operation operation,int error) {
     return (operation==Operation::ResolveObject && (error==EBADF || error==EINVAL || error==EPERM || error==ENODEV)) ||
+           ((operation==Operation::ExportNativeSyncFile || operation==Operation::ResolveNativeSyncFile) &&
+            (error==EBADF || error==EINVAL || error==EPERM || error==ENODEV || error==EOPNOTSUPP || error==ETIMEDOUT || error==EIO || error==ENOMEM || error==ENOSPC)) ||
            (operation==Operation::CreateObject && (error==ENOMEM || error==ENOSPC)) ||
            (operation==Operation::ExportSyncFile && (error==ENOMEM || error==ENOSPC || error==EOPNOTSUPP));
 }
@@ -139,6 +141,17 @@ public:
         auto reply=request(Operation::ExportSyncFile,encode(requestValue));
         if (reply.fds.size()!=1 || !reply.payload.empty()) { disconnect(); failed(EPROTO,"Sync-file export response mismatch"); }
         return std::move(reply.fds[0]);
+    }
+    Fd nativeSyncFile(SyncFileRequest requestValue,int nativeFd) {
+        auto reply=request(Operation::ExportNativeSyncFile,encode(requestValue),{nativeFd});
+        if (reply.fds.size()!=1 || !reply.payload.empty()) { disconnect(); failed(EPROTO,"Native sync-file export response mismatch"); }
+        return std::move(reply.fds[0]);
+    }
+    std::pair<Fd,std::uint64_t> resolveSyncFile(int fd) {
+        auto reply=request(Operation::ResolveNativeSyncFile,{}, {fd});
+        const auto value=decode<std::uint64_t>(reply.payload);
+        if(reply.fds.size()!=1 || value==UINT64_MAX) { disconnect(); failed(EPROTO,"Native sync-file lineage response mismatch"); }
+        return {std::move(reply.fds[0]),value};
     }
     wddm_sync_file_stats syncFileInfo() {
         auto reply=request(Operation::SyncFileInfo);

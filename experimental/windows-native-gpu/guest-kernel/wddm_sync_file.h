@@ -23,6 +23,7 @@ struct native_sync {
 	struct work_struct free;
 	struct rcu_head reclaim;
 	struct file *source;
+	struct file *native_source;
 	void __iomem *word;
 	u64 target;
 	unsigned long deadline;
@@ -36,6 +37,7 @@ static void native_sync_free(struct work_struct *work)
 	struct native_sync *sync = container_of(work, struct native_sync, free);
 	iounmap(sync->word);
 	fput(sync->source);
+	if (sync->native_source) fput(sync->native_source);
 	mutex_lock(&aperture_lock);
 	--native_sync_held;
 	if (sync->published) ++native_sync_released;
@@ -88,20 +90,39 @@ static void native_sync_poll(struct work_struct *work)
 	dma_fence_signal(&sync->fence);
 	dma_fence_put(&sync->fence); /* Retained polling reference. */
 }
-static long native_sync_create(struct file *control, void __user *pointer)
+static long native_sync_create(struct file *control, void __user *pointer, bool linked)
 {
 	struct wddm_sync_file_create arg;
+	struct wddm_sync_file_native_create native_arg;
+	struct file *native_source = NULL;
 	struct aperture_lease *lease;
 	struct native_sync *sync;
 	struct sync_file *file;
 	int fd, result = -ENOENT;
 	if (!capable(CAP_SYS_RAWIO)) return -EPERM;
 	if (!enable_native_sync_files) return -EOPNOTSUPP;
-	if (copy_from_user(&arg, pointer, sizeof(arg))) return -EFAULT;
+	if (linked) {
+		if (copy_from_user(&native_arg, pointer, sizeof(native_arg))) return -EFAULT;
+		arg = native_arg.sync;
+		if (native_arg.reserved || native_arg.native_fd < 0) return -EINVAL;
+	} else if (copy_from_user(&arg, pointer, sizeof(arg))) return -EFAULT;
 	if (arg.version != WDDM_APERTURE_VERSION || arg.flags || !arg.cookie ||
-	    !arg.value || arg.value == U64_MAX || arg.fd || arg.reserved || (arg.offset & 7)) return -EINVAL;
+	    (!linked && !arg.value) || arg.value == U64_MAX || arg.fd || arg.reserved || (arg.offset & 7)) return -EINVAL;
+	if (linked) {
+		struct wddm_object *object;
+		native_source = fget(native_arg.native_fd);
+		if (!native_source) return -EBADF;
+		if (native_source->f_op != &object_fops) { fput(native_source); return -EINVAL; }
+		object = native_source->private_data;
+		mutex_lock(&object_lock);
+		result = !object->valid ? -ENODEV : object->kind != WDDM_OBJECT_SYNC ? -EINVAL : 0;
+		mutex_unlock(&object_lock);
+		if (result) { fput(native_source); return result; }
+	}
 	sync = kzalloc(sizeof(*sync), GFP_KERNEL);
-	if (!sync) return -ENOMEM;
+	if (!sync) { if (native_source) fput(native_source); return -ENOMEM; }
+	sync->native_source = native_source;
+	result = -ENOENT;
 	mutex_lock(&aperture_lock);
 	list_for_each_entry(lease, &aperture_leases, link) {
 		if (lease->cookie != arg.cookie || lease->owner != control->private_data) continue;
@@ -115,7 +136,7 @@ static long native_sync_create(struct file *control, void __user *pointer)
 		++native_sync_held; result = 0; break;
 	}
 	mutex_unlock(&aperture_lock);
-	if (result) { kfree(sync); return result; }
+	if (result) { if (native_source) fput(native_source); kfree(sync); return result; }
 	__module_get(THIS_MODULE);
 	spin_lock_init(&sync->lock);
 	sync->target = arg.value;
@@ -129,7 +150,9 @@ static long native_sync_create(struct file *control, void __user *pointer)
 	fd = get_unused_fd_flags(O_CLOEXEC);
 	if (fd < 0) { fput(file->file); dma_fence_put(&sync->fence); return fd; }
 	arg.fd = fd;
-	if (copy_to_user(pointer, &arg, sizeof(arg))) {
+	if (linked) native_arg.sync = arg;
+	if (copy_to_user(pointer, linked ? (void *)&native_arg : (void *)&arg,
+			 linked ? sizeof(native_arg) : sizeof(arg))) {
 		put_unused_fd(fd); fput(file->file); dma_fence_put(&sync->fence); return -EFAULT;
 	}
 	mutex_lock(&aperture_lock);
@@ -142,6 +165,58 @@ static long native_sync_create(struct file *control, void __user *pointer)
 	queue_delayed_work(native_sync_wq, &sync->poll, 0);
 	fd_install(fd, file->file);
 	return 0;
+}
+static long native_sync_resolve(u64 owner, void __user *pointer)
+{
+	struct wddm_sync_file_native_resolve arg;
+	struct dma_fence *fence;
+	struct native_sync *sync;
+	struct wddm_object *object;
+	struct file *source = NULL;
+	int fd, result = 0;
+	if (!capable(CAP_SYS_RAWIO)) return -EPERM;
+	if (!enable_native_sync_files) return -EOPNOTSUPP;
+	if (copy_from_user(&arg, pointer, sizeof(arg))) return -EFAULT;
+	if (arg.version != WDDM_APERTURE_VERSION || arg.flags || arg.fd < 0 ||
+	    arg.native_fd || arg.value || arg.reserved) return -EINVAL;
+	fence = sync_file_get_fence(arg.fd);
+	if (!fence) return -EINVAL;
+	/* Our custom release prevents driver detachment. A retained fence reference
+	 * and the ops identity protect container_of even after signaling. Foreign
+	 * sync_files, fence arrays/chains and unlinked exports are rejected. */
+	if (rcu_access_pointer(fence->ops) != &native_sync_ops) { result = -EINVAL; goto put; }
+	sync = container_of(fence, struct native_sync, fence);
+	result = dma_fence_get_status(fence);
+	if (result < 0) goto put;
+	if (!result) {
+		/* The polling worker may not yet have recorded a lease revocation.
+		 * Do not turn a canceled Linux dependency into an unbounded GPU wait.
+		 * Successful completed fences can outlive their original CPU lease. */
+		struct aperture_lease *lease = sync->source->private_data;
+		mutex_lock(&aperture_lock);
+		if (!lease->valid || !fence_hub.pci || !cpu_hub.pci) result = -ENODEV;
+		mutex_unlock(&aperture_lock);
+		if (result < 0) goto put;
+	}
+	result = 0;
+	if (!sync->native_source) { result = -EOPNOTSUPP; goto put; }
+	object = sync->native_source->private_data;
+	mutex_lock(&object_lock);
+	if (!object->valid) result = -ENODEV;
+	else if (object->owner != owner || object->kind != WDDM_OBJECT_SYNC) result = -EPERM;
+	else source = get_file(sync->native_source);
+	mutex_unlock(&object_lock);
+	if (result) goto put;
+	fd = get_unused_fd_flags(O_CLOEXEC);
+	if (fd < 0) { result = fd; fput(source); goto put; }
+	arg.native_fd = fd; arg.value = sync->target;
+	if (copy_to_user(pointer, &arg, sizeof(arg))) {
+		put_unused_fd(fd); fput(source); result = -EFAULT; goto put;
+	}
+	fd_install(fd, source);
+put:
+	dma_fence_put(fence);
+	return result;
 }
 static long native_sync_stats(void __user *pointer)
 {

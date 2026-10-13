@@ -47,6 +47,7 @@ static void bus_signal(int signal_number)
 }
 #include "object_contract.h"
 #include "native_sync_contract.h"
+#include "native_sync_lineage_contract.h"
 static void transfer_and_revoke_lease(int control)
 {
     int sockets[2], status;
@@ -76,6 +77,11 @@ static void transfer_and_revoke_lease(int control)
         struct wddm_sync_file_create denied_sync={.version=1,.cookie=arg.cookie,.value=1};
         errno=0; REQUIRE(ioctl(control,WDDM_SYNC_FILE_CREATE,&denied_sync)==-1 && errno==EPERM);
         puts("SYNC_FILE_CONTRACT_UNPRIVILEGED_CREATE denied=true");
+        struct wddm_sync_file_native_create denied_linked={.sync={.version=1,.cookie=arg.cookie,.value=1}};
+        errno=0; REQUIRE(ioctl(control,WDDM_SYNC_FILE_NATIVE_CREATE,&denied_linked)==-1 && errno==EPERM);
+        struct wddm_sync_file_native_resolve denied_resolve={.version=1,.fd=fd};
+        errno=0; REQUIRE(ioctl(control,WDDM_SYNC_FILE_NATIVE_RESOLVE,&denied_resolve)==-1 && errno==EPERM);
+        puts("SYNC_LINEAGE_CONTRACT_UNPRIVILEGED deniedCreate=true deniedResolve=true");
         void* view=mmap(NULL,4096,PROT_READ,MAP_SHARED,fd,0);
         REQUIRE(view!=MAP_FAILED);
         errno=0; REQUIRE(mprotect(view,4096,PROT_READ|PROT_WRITE)==-1 && errno==EACCES);
@@ -198,6 +204,7 @@ int main(void)
     object_contract(control);
     resource_object_contract(control);
     native_sync_contract(control);
+    native_sync_lineage_contract(control);
     transfer_and_revoke_lease(control);
     /* Controller close revokes a recipient FD even when that FD stays open. */
     arg=fence(); REQUIRE(!ioctl(control,WDDM_APERTURE_CREATE,&arg));

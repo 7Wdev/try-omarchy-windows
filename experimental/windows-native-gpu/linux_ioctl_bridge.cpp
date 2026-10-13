@@ -1598,6 +1598,11 @@ public:
     }
     void protocolFailed() { transport.fail(); }
     int exportSyncFile(const void* word,std::uint64_t value) { return syncFences.syncFile(word,value); }
+    int exportNativeSyncFile(int fd,std::uint64_t value) {
+        const auto word=nativeFenceWord(fd);
+        return syncFences.syncFile(word,value,fd);
+    }
+    int resolveSyncFile(int fd,std::uint64_t& value) { return kernelObjects.resolveSyncFile(fd,value); }
     const void* nativeFenceWord(int fd) {
         std::uint32_t ticket=0;
         if (!kernelObjects.resolve(fd,ticket,WDDM_OBJECT_SYNC)) throw Error(errno);
@@ -1677,6 +1682,29 @@ extern "C" const void* wddm_bridge_native_fence_word(int fd) {
     catch (const std::system_error& error) { errno=error.code().value(); }
     catch (...) { errno=EIO; }
     return nullptr;
+}
+// Additive opt-in hooks: caller owns returned CLOEXEC descriptors. The native
+// descriptor is an opaque kernel capability, never a Windows HANDLE/ticket.
+extern "C" int wddm_bridge_export_native_sync_file(int fd,std::uint64_t value) {
+    if (bridgeStopped) { errno=ESHUTDOWN; return -1; }
+    auto& state=bridge(); std::lock_guard<std::mutex> lock(state.guard);
+    if (bridgeStopped) { errno=ESHUTDOWN; return -1; }
+    try { return state.exportNativeSyncFile(fd,value); }
+    catch (const Error& error) { errno=error.number; }
+    catch (const std::system_error& error) { errno=error.code().value(); }
+    catch (...) { errno=EIO; }
+    return -1;
+}
+extern "C" int wddm_bridge_resolve_sync_file(int fd,std::uint64_t* value) {
+    if (!value) { errno=EINVAL; return -1; }
+    if (bridgeStopped) { errno=ESHUTDOWN; return -1; }
+    auto& state=bridge(); std::lock_guard<std::mutex> lock(state.guard);
+    if (bridgeStopped) { errno=ESHUTDOWN; return -1; }
+    try { return state.resolveSyncFile(fd,*value); }
+    catch (const Error& error) { errno=error.number; }
+    catch (const std::system_error& error) { errno=error.code().value(); }
+    catch (...) { errno=EIO; }
+    return -1;
 }
 extern "C" int wddm_bridge_sync_file_info(wddm_sync_file_stats* info) {
     if (bridgeStopped || !info) { errno=EINVAL; return -1; }

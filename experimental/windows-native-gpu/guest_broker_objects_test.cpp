@@ -23,6 +23,7 @@ static std::vector<std::uint8_t> receipt(Op op,std::uint32_t id,const std::vecto
     auto bytes=packet(op,id,encode(Reply{})); bytes.insert(bytes.end(),data.begin(),data.end()); return bytes;
 }
 struct ObjectMock {
+    std::pair<Fd,std::uint64_t> resolveSyncFile(int) { throw std::system_error(EINVAL,std::generic_category(),"No real sync-file in mock"); }
     struct Record { Fd watch; ObjectRef ref; std::uint64_t identity; };
     std::map<std::uint32_t,Record> records;
     bool corrupt=false;
@@ -86,6 +87,15 @@ static void objectPolicy() {
     store.observe(packet(Op::ExportSync,3),receipt(Op::ExportSync,12));
     store.authorize(packet(Op::CloseSharedSync,12),{},kernel);
     store.observe(packet(Op::CloseSharedSync,12),receipt(Op::CloseSharedSync,12)); CHECK(!store.size());
+    store.observe(packet(Op::ExportSync,3),receipt(Op::ExportSync,13));
+    auto fence=store.create({WDDM_OBJECT_SYNC,13,0},kernel);
+    store.syncLineage(fence.first.get(),3,kernel);
+    denied([&]{store.syncLineage(fence.first.get(),4,kernel);},EPERM);
+    denied([&]{store.syncLineage(fence.first.get(),0,kernel);},EPERM);
+    denied([&]{store.syncLineage(foreign.get(),3,kernel);},EBADF);
+    fence.first=Fd(); CHECK(store.reap(kernel).ticket==13);
+    store.authorize(packet(Op::CloseSharedSync,13),{},kernel);
+    store.observe(packet(Op::CloseSharedSync,13),receipt(Op::CloseSharedSync,13)); CHECK(!store.size());
     for (unsigned i=1;i<=16;++i) store.observe(exportPacket,receipt(Op::ExportResource,20+i));
     denied([&]{store.observe(exportPacket,receipt(Op::ExportResource,37));},EPROTO);
     CHECK(store.size()==16);
@@ -119,6 +129,7 @@ static void importedViews() {
     std::cout<<"BROKER_IMPORTED_VIEWS highResolution="<<gpu_diagnostic::HighResolution<<" native=mock kernel=mock gpu=false\n";
 }
 struct MemoryMock {
+    Fd nativeSyncFile(SyncFileRequest,int) { throw std::runtime_error("Unexpected linked sync-file export"); }
     Fd syncFile(SyncFileRequest) { throw std::runtime_error("Unexpected sync-file export"); }
     wddm_sync_file_stats syncFileInfo() { throw std::runtime_error("Unexpected sync-file stats"); }
     bool closed=false;

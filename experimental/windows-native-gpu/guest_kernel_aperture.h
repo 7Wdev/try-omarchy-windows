@@ -104,15 +104,23 @@ public:
         views.erase(found);
         std::fprintf(stderr, "LINUX_BRIDGE kernelApertureRevoked=true\n");
     }
-    int syncFile(const void* word,std::uint64_t value) {
+    int syncFile(const void* word,std::uint64_t value,int nativeFd=-1) {
         const auto address=reinterpret_cast<std::uintptr_t>(word);
-        if (!enabled() || !address || address%8 || !value || value==UINT64_MAX)
+        if (!enabled() || !address || address%8 || (!value && nativeFd<0) || value==UINT64_MAX)
             throw std::system_error(EINVAL,std::generic_category(),"Invalid native sync-file target");
         for (const auto& entry:views) {
             const auto start=reinterpret_cast<std::uintptr_t>(entry.first);
             if (address<start || address-start>=entry.second.bytes || entry.second.bytes-(address-start)<8) continue;
             const guest_broker::SyncFileRequest request{entry.second.cookie,address-start,value};
-            if (guest_broker::clientEnabled()) return guest_broker::client().syncFile(request).release();
+            if (guest_broker::clientEnabled()) return nativeFd<0 ? guest_broker::client().syncFile(request).release() :
+                guest_broker::client().nativeSyncFile(request,nativeFd).release();
+            if (nativeFd>=0) {
+                wddm_sync_file_native_create arg{}; arg.sync.version=WDDM_APERTURE_VERSION;
+                arg.sync.cookie=request.cookie; arg.sync.offset=request.offset; arg.sync.value=value; arg.native_fd=nativeFd;
+                if (syscall(SYS_ioctl,control,WDDM_SYNC_FILE_NATIVE_CREATE,&arg))
+                    throw std::system_error(errno,std::generic_category(),"Native sync-file lineage export");
+                return arg.sync.fd;
+            }
             wddm_sync_file_create arg{}; arg.version=WDDM_APERTURE_VERSION;
             arg.cookie=request.cookie; arg.offset=request.offset; arg.value=value;
             if (syscall(SYS_ioctl,control,WDDM_SYNC_FILE_CREATE,&arg))

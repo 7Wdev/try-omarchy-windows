@@ -51,6 +51,8 @@ static void viewPolicy() {
     }
     views.acquire(fence).cookie=8; CHECK(views.active()==1);
     views.syncFile({8,8,57});
+    CHECK(views.syncFile({8,8,0},true)==3);
+    denied([&]{views.syncFile({8,0,0},true);},EPERM);
     for (const auto invalid: {SyncFileRequest{8,0,57},SyncFileRequest{8,16,57},SyncFileRequest{8,8,0},SyncFileRequest{8,8,UINT64_MAX}})
         denied([&]{views.syncFile(invalid);},EPERM);
     denied([&]{views.syncFile({9,8,57});},EBADF);
@@ -115,6 +117,7 @@ struct NativeMock {
     }
 };
 struct KernelMock {
+    Fd nativeSyncFile(SyncFileRequest,int) { throw std::system_error(EOPNOTSUPP,std::generic_category(),"No native kernel in portable test"); }
     Fd syncFile(SyncFileRequest) { throw std::system_error(EOPNOTSUPP,std::generic_category(),"No kernel in portable test"); }
     wddm_sync_file_stats syncFileInfo() { return {1,0,0,0,0,0,0,0}; }
     unsigned created=0,released=0;

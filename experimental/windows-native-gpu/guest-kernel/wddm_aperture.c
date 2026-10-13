@@ -221,7 +221,9 @@ static long control_ioctl(struct file *control, unsigned int request, unsigned l
 	struct file *file = NULL;
 	u32 counter;
 	int result = 0;
-	if (request == WDDM_SYNC_FILE_CREATE) return native_sync_create(control, pointer);
+	if (request == WDDM_SYNC_FILE_CREATE) return native_sync_create(control, pointer, false);
+	if (request == WDDM_SYNC_FILE_NATIVE_CREATE) return native_sync_create(control, pointer, true);
+	if (request == WDDM_SYNC_FILE_NATIVE_RESOLVE) return native_sync_resolve(((struct aperture_owner *)control->private_data)->id, pointer);
 	if (request == WDDM_SYNC_FILE_STATS) return native_sync_stats(pointer);
 	if (request == WDDM_APERTURE_CREATE)
 		return create_lease(control, pointer);

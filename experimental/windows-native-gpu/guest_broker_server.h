@@ -54,6 +54,15 @@ public:
         if (request.fd<0) throw std::system_error(EPROTO,std::generic_category(),"Broker sync-file descriptor");
         return Fd(request.fd);
     }
+    Fd nativeSyncFile(SyncFileRequest value,int nativeFd) {
+        open(); wddm_sync_file_native_create request{};
+        request.sync.version=WDDM_APERTURE_VERSION; request.sync.cookie=value.cookie;
+        request.sync.offset=value.offset; request.sync.value=value.value; request.native_fd=nativeFd;
+        if(syscall(SYS_ioctl,control.get(),WDDM_SYNC_FILE_NATIVE_CREATE,&request))
+            throw std::system_error(errno,std::generic_category(),"Broker native sync-file lineage create");
+        if(request.sync.fd<0) throw std::system_error(EPROTO,std::generic_category(),"Broker linked sync-file descriptor");
+        return Fd(request.sync.fd);
+    }
     wddm_sync_file_stats syncFileInfo() {
         open(); wddm_sync_file_stats value{}; value.version=WDDM_APERTURE_VERSION;
         if (syscall(SYS_ioctl,control.get(),WDDM_SYNC_FILE_STATS,&value))
@@ -116,7 +125,8 @@ template<class Native,class Authority,class ObjectAuthority> int serve(Peer& pee
             bool expectedObjectError=false;
             try {
                 const auto operation=message.frame.operation;
-                if (operation!=Operation::DriverCall && operation!=Operation::ResolveObject && !message.fds.empty())
+                if (operation!=Operation::DriverCall && operation!=Operation::ResolveObject &&
+                    operation!=Operation::ExportNativeSyncFile && operation!=Operation::ResolveNativeSyncFile && !message.fds.empty())
                     throw std::system_error(EPROTO,std::generic_category(),"Unsolicited broker descriptors");
                 if (operation == Operation::Hello) {
                     if (!message.payload.empty()) throw std::system_error(EINVAL,std::generic_category(),"Broker hello payload");
@@ -144,6 +154,19 @@ template<class Native,class Authority,class ObjectAuthority> int serve(Peer& pee
                 } else if (operation == Operation::SyncFileInfo) {
                     if (!message.payload.empty()) throw std::system_error(EPROTO,std::generic_category(),"Sync-file info payload");
                     peer.send(operation,message.frame.sequence,encode(kernel.syncFileInfo()));
+                } else if (operation == Operation::ExportNativeSyncFile) {
+                    if(message.fds.size()!=1) throw std::system_error(EPROTO,std::generic_category(),"Native sync-file export requires one capability FD");
+                    const auto value=decode<SyncFileRequest>(message.payload);
+                    const auto source=views.syncFile(value,true); expectedObjectError=true;
+                    objects.syncLineage(message.fds[0].get(),source,objectKernel);
+                    auto fd=kernel.nativeSyncFile(value,message.fds[0].get());
+                    peer.send(operation,message.frame.sequence,{}, {fd.get()});
+                } else if (operation == Operation::ResolveNativeSyncFile) {
+                    if(message.fds.size()!=1 || !message.payload.empty()) throw std::system_error(EPROTO,std::generic_category(),"Sync-file resolution requires exactly one FD");
+                    expectedObjectError=true;
+                    auto result=objectKernel.resolveSyncFile(message.fds[0].get());
+                    (void)objects.resolve(result.first.get(),WDDM_OBJECT_SYNC,objectKernel);
+                    peer.send(operation,message.frame.sequence,encode(result.second), {result.first.get()});
                 } else if (operation == Operation::ObjectInfo) {
                     if (!message.payload.empty()) throw std::system_error(EPROTO,std::generic_category(),"Object info payload");
                     peer.send(operation,message.frame.sequence,encode(objectKernel.info()));

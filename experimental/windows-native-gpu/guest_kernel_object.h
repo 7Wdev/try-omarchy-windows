@@ -74,6 +74,19 @@ public:
         ticket = arg.ticket;
         return true;
     }
+    int resolveSyncFile(int fd,std::uint64_t& value) {
+        if (!available()) return -1;
+        if (guest_broker::clientEnabled()) {
+            try {
+                auto result=guest_broker::client().resolveSyncFile(fd);
+                value=result.second; return result.first.release();
+            } catch (const std::system_error& error) { errno=error.code().value(); return -1; }
+        }
+        wddm_sync_file_native_resolve arg{}; arg.version=WDDM_APERTURE_VERSION; arg.fd=fd;
+        if (syscall(SYS_ioctl,control,WDDM_SYNC_FILE_NATIVE_RESOLVE,&arg)) return -1;
+        if (arg.native_fd<0 || arg.value==UINT64_MAX || arg.reserved || arg.flags) { errno=EPROTO; return -1; }
+        value=arg.value; return arg.native_fd;
+    }
     int reap(std::uint32_t& ticket, std::uint32_t* kind = nullptr) {
         if (guest_broker::clientEnabled()) {
             if (!remoteStarted) return 0;

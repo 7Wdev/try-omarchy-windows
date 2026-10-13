@@ -40,6 +40,13 @@ public:
             throw std::system_error(EPROTO,std::generic_category(),"Broker object resolution mismatch");
         return {value.kind,value.ticket,value.cookie};
     }
+    std::pair<Fd,std::uint64_t> resolveSyncFile(int fd) {
+        wddm_sync_file_native_resolve value{}; value.version=WDDM_APERTURE_VERSION; value.fd=fd;
+        call(WDDM_SYNC_FILE_NATIVE_RESOLVE,&value);
+        if(value.native_fd<0 || value.value==UINT64_MAX || value.reserved || value.flags)
+            throw std::system_error(EPROTO,std::generic_category(),"Kernel sync-file lineage mismatch");
+        return {Fd(value.native_fd),value.value};
+    }
     ObjectRef reap() {
         wddm_object_reap value{}; value.version=WDDM_APERTURE_VERSION;
         try { call(WDDM_OBJECT_REAP,&value); }
@@ -51,7 +58,7 @@ public:
 };
 class ObjectStore {
     enum class State { Unbound, Bound, Reaped };
-    struct Entry { ObjectRef ref; State state=State::Unbound; };
+    struct Entry { ObjectRef ref; State state=State::Unbound; std::uint32_t source=0; };
     std::map<std::uint32_t,Entry> entries;
     std::uint64_t exports=0,published=0,resolved=0,reaped=0,closed=0;
     static void require(bool condition,int error,const char* message) {
@@ -108,7 +115,7 @@ public:
             const auto count=std::count_if(entries.begin(),entries.end(),[&](const auto& item){return item.second.ref.kind==kind;});
             require(output.handle && output.handle!=UINT32_MAX && entries.size()<32 && count<16 && !entries.count(output.handle),
                     EPROTO,"Native capability identity or budget collision");
-            entries.emplace(output.handle,Entry{ObjectRef{kind,output.handle,0},State::Unbound}); ++exports;
+            entries.emplace(output.handle,Entry{ObjectRef{kind,output.handle,0},State::Unbound,h.handle}); ++exports;
         } else {
             require(output.handle==h.handle && entry(h.handle,closing).state!=State::Bound,EPROTO,"Native close before recipient FD release");
             entries.erase(h.handle); ++closed;
@@ -136,6 +143,10 @@ public:
         auto& value=entry(ref.ticket,ref.kind);
         require(value.state==State::Bound && ref.cookie && value.ref.cookie==ref.cookie,EPROTO,"Reaped capability identity mismatch");
         value.state=State::Reaped; ++reaped; return ref;
+    }
+    template<class Authority> void syncLineage(int fd,std::uint32_t source,Authority& kernel) {
+        const auto ref=resolve(fd,WDDM_OBJECT_SYNC,kernel);
+        require(source && entry(ref.ticket,WDDM_OBJECT_SYNC).source==source,EPERM,"Native fence FD does not own this monitored-fence word");
     }
     template<class Native,class Authority> void drain(Native& native,Authority& kernel) {
         std::fprintf(stderr,"BROKER_OBJECT_DRAIN producerExited=true retained=%zu\n",entries.size());
