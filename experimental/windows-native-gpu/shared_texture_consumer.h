@@ -50,6 +50,13 @@ public:
             if (handle && handle != INVALID_HANDLE_VALUE && !CloseHandle(handle)) ExitProcess(3);
             return E_FAIL;
         }
+        return initializeOwnedHandle(handle,luid,present);
+    }
+    // Host-private ownership transfer, never a guest wire operation. The
+    // caller supplies one duplicated NT reference owned by this process.
+    HRESULT initializeOwnedHandle(HANDLE handle,LUID luid,bool present=false) {
+        if (!handle || handle==INVALID_HANDLE_VALUE) return E_INVALIDARG;
+        if (device || source) { if (!CloseHandle(handle)) ExitProcess(3); return E_INVALIDARG; }
         Microsoft::WRL::ComPtr<IDXGIFactory4> factory;
         Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
         auto hr = CreateDXGIFactory1(IID_PPV_ARGS(&factory));
@@ -57,7 +64,7 @@ public:
         if (SUCCEEDED(hr)) hr = D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device));
         if (SUCCEEDED(hr)) hr = device->OpenSharedHandle(handle, IID_PPV_ARGS(&source));
         const bool closed = CloseHandle(handle) != FALSE;
-        std::cerr << "{\"nativeSharedTextureConsumerOpened\":true,\"ntstatus\":" << status
+        std::cerr << "{\"nativeSharedTextureConsumerOpened\":true,\"ntstatus\":0"
                   << ",\"hresult\":" << hr << ",\"sharedNtHandleClosed\":" << (closed ? "true" : "false") << "}\n";
         if (!closed) ExitProcess(3);
         if (FAILED(hr)) return hr;

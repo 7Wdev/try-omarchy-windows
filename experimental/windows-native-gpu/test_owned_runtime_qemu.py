@@ -208,6 +208,7 @@ def main():
         parser.add_argument('--' + name, type=pathlib.Path, required=True)
     parser.add_argument('--expected-unimplemented-ioctl', type=int, required=True)
     parser.add_argument('--driver-consume-shared', action='store_true', help='Opt into native GPU consumption after explicit COMMON/fence handoff')
+    parser.add_argument('--driver-consume-shared-process', action='store_true', help='Use an owned separate Windows GPU consumer process')
     parser.add_argument('--driver-native-metadata', action='store_true', help='Enable typed texture allocation with Windows-generated runtime metadata')
     parser.add_argument('--driver-present-shared', action='store_true', help='Present consumed guest frames in an owned diagnostic Windows window')
     parser.add_argument('--driver-shared-resources', action='store_true', help='Opt into bounded shareable NVIDIA resource creation and native import probing')
@@ -322,6 +323,8 @@ def main():
         parser.error('Native texture metadata requires explicit shared resource opt-in')
     if args.driver_present_shared and not args.driver_consume_shared:
         parser.error('Shared texture presentation requires explicit consumption opt-in')
+    if args.driver_consume_shared_process and not args.driver_consume_shared:
+        parser.error('Shared GPU worker requires explicit consumption opt-in')
     if args.driver_consume_shared and (not args.driver_shared_resources or not args.driver_async_submit or not args.driver_syncs):
         parser.error("Shared texture consumption requires shared resources, asynchronous submission and sync opt-ins")
     if args.driver_shared_resources and not args.driver_allocations:
@@ -360,6 +363,7 @@ def main():
                              (['--driver-async-submit'] if args.driver_async_submit else []) +
                              (['--driver-shared-resources'] if args.driver_shared_resources else []) +
                              (['--driver-consume-shared'] if args.driver_consume_shared else []) +
+                             (['--driver-consume-shared-process'] if args.driver_consume_shared_process else []) +
                              (['--driver-present-shared'] if args.driver_present_shared else []) +
                              (['--driver-native-metadata'] if args.driver_native_metadata else []) +
                              (['--cpu-store-test'] if args.cpu_store_test else []) + (['--cpu-eof-test'] if args.cpu_eof_test else []) +

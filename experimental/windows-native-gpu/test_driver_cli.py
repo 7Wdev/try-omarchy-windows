@@ -13,6 +13,9 @@ def main():
         parser.error('Run on Windows with the built bridge')
     cases = [(['--driver-cpu-slots', value], 'CPU aperture slots must be specified once')
              for value in ('0', '8', '17', '33', '65', '127', '129', '255', '257', '512', '-1', '4294967296', '32x')]
+    cases += [(['--stdio','--driver-consume-shared-process'],'Shared GPU worker requires explicit consumption opt-in')]
+    cases += [(['--native-texture-worker',value,'0'],'worker handle')
+              for value in ('0','-1','32x','18446744073709551615','18446744073709551616')]
     cases += [(['--driver-cpu-slots', '16', '--driver-cpu-slots', '32'], 'specified once'),
               (['--stdio', '--driver-cpu-slots', '32'], 'capacity requires'),
               (['--stdio', '--driver-cpu-slots', '256'], 'capacity requires')]
