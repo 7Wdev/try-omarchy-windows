@@ -73,6 +73,9 @@ static void transfer_and_revoke_lease(int control)
         struct wddm_object_create denied_object={.version=1,.kind=WDDM_OBJECT_SYNC,.ticket=5000};
         errno=0; REQUIRE(ioctl(control,WDDM_OBJECT_CREATE,&denied_object)==-1 && errno==EPERM);
         puts("OBJECT_CONTRACT_UNPRIVILEGED_CREATE denied=true");
+        struct wddm_sync_file_create denied_sync={.version=1,.cookie=arg.cookie,.value=1};
+        errno=0; REQUIRE(ioctl(control,WDDM_SYNC_FILE_CREATE,&denied_sync)==-1 && errno==EPERM);
+        puts("SYNC_FILE_CONTRACT_UNPRIVILEGED_CREATE denied=true");
         void* view=mmap(NULL,4096,PROT_READ,MAP_SHARED,fd,0);
         REQUIRE(view!=MAP_FAILED);
         errno=0; REQUIRE(mprotect(view,4096,PROT_READ|PROT_WRITE)==-1 && errno==EACCES);
