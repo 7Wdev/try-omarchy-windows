@@ -32,7 +32,7 @@ def validate_native_sync_lineage(report, guest, records):
         'SYNC_LINEAGE_LIFETIME originalSourceReleased=true originalNativeFdClosed=true firstImportedAliasReleased=true completedSyncFileRetainsNative=true',
         'SYNC_LINEAGE_REJECT canceledStatus=-19 canceledImportErrno=19 foreignRejected=true nullOutputRejected=true',
         'SYNC_LINEAGE_COMPLETE created=3 signaled=2 errors=1 released=3 held=0 pending=0 gpuQueueWaits=1 gpuReleaseSignals=1 dependentGpuSignals=1 eglNativeFence=false desktop=false']
-    require([l for l in lines if l.startswith(('SYNC_LINEAGE_BEGIN','SYNC_LINEAGE_GPU','SYNC_LINEAGE_LIFETIME','SYNC_LINEAGE_REJECT','SYNC_LINEAGE_COMPLETE','SYNC_LINEAGE_FAILURE'))]==expected,
+    require([l for l in lines if l.startswith('SYNC_LINEAGE_') and not l.startswith('SYNC_LINEAGE_CONTRACT')]==expected,
             'Incomplete or failed sync-file lineage workload')
     indices=[once(l) for l in expected]
     kernel=once('KERNEL_SYNC_FILE_EXIT held=0 pending=0 created=3 signaled=2 errors=1 released=3 cleanup=true')
@@ -45,9 +45,9 @@ def validate_native_sync_lineage(report, guest, records):
     waits,satisfied=select('nativeGpuQueueWaitAccepted'),select('nativeGpuQueueWaitDependenciesSatisfied')
     require(len(waits)==len(satisfied)==3,'Missing native GPU wait dependencies')
     for n,(accepted,done) in enumerate(zip(waits,satisfied),1):
-        require(exact(accepted,index=n,objects=1,contextStream=False,firstTarget=target,cpuWait=False) and
+        require(exact(accepted,nativeGpuQueueWaitAccepted=True,index=n,objects=1,contextStream=False,firstTarget=target,cpuWait=False) and
                 type(accepted.get('nativeCallMs')) is int and accepted['nativeCallMs']>=0 and
-                exact(done,index=n,objects=1,contextStream=False,queueRetirementVerified=False) and records.index(accepted)<records.index(done),
+                exact(done,nativeGpuQueueWaitDependenciesSatisfied=True,index=n,objects=1,contextStream=False,queueRetirementVerified=False) and records.index(accepted)<records.index(done),
                 'CPU wait or incorrect native GPU dependency')
     require(lines.count(f'LINUX_BRIDGE nativeGpuQueueWaitQueued=true objects=1 firstTarget={target} contextStream=0 cpuWait=false')==3,
             'Missing matching guest GPU wait calls')
@@ -58,22 +58,22 @@ def validate_native_sync_lineage(report, guest, records):
         actual=select(marker)
         require(actual==report[key] and len(actual)==1,'Unmatched dependent GPU signal')
         record=actual[0]; hardware.append(record)
-        require(exact(record,flags=4,queues=1,target=1,observed=1 if marker.endswith('Retired') else 0),
+        require(exact(record,**{marker:True}) and exact(record,flags=4,queues=1,target=1,observed=1 if marker.endswith('Retired') else 0),
                 'Dependent GPU signal was not gated before release')
         require(exact(record,ntstatus=0) if marker.endswith('Returned') else
                 exact(record,index=1,noGpuAccess=True,cpuValueWrittenByBridge=False),'CPU-written or rejected dependent signal')
     released,retired=select('nativeAsyncContextSignalAccepted'),select('nativeAsyncContextSignalRetired')
     require(len(released)==len(retired)==1,'Missing independent GPU release')
-    require(exact(released[0],index=1,target=target,cpuWait=False) and type(released[0].get('observed')) is int and
+    require(exact(released[0],nativeAsyncContextSignalAccepted=True,index=1,target=target,cpuWait=False) and type(released[0].get('observed')) is int and
             0<=released[0]['observed']<=target and
-            exact(retired[0],index=1,target=target,observed=target,noGpuAccess=True,cpuValueWrittenByBridge=False),
+            exact(retired[0],nativeAsyncContextSignalRetired=True,index=1,target=target,observed=target,noGpuAccess=True,cpuValueWrittenByBridge=False),
             'Wrong independent native GPU release')
     require(records.index(waits[-1])<records.index(hardware[1])<records.index(released[0])<records.index(hardware[2]) and
             records.index(released[0])<records.index(retired[0])<records.index(satisfied[0]),
             'Native GPU wait/signal/release order disagrees')
     lifecycle=[r for r in records if any(k in r for k in ('nativeSyncSharingNegotiated','nativeSyncHandleExported',
         'nativeSyncResourceInfoQueried','nativeSyncHandleImported','nativeSyncHandleClosed'))]
-    require(lifecycle==[{'nativeSyncSharingNegotiated':True,'handleLimit':16},
+    expected_lifecycle=[{'nativeSyncSharingNegotiated':True,'handleLimit':16},
         {'nativeSyncHandleExported':True,'rawHandleExposed':False},
         {'nativeSyncResourceInfoQueried':True,'ntstatus':-1073741788},
         {'nativeSyncHandleImported':True,'gpuMapped':False},
@@ -81,7 +81,9 @@ def validate_native_sync_lineage(report, guest, records):
         {'nativeSyncHandleImported':True,'gpuMapped':False},
         {'nativeSyncHandleClosed':True},
         {'nativeSyncHandleExported':True,'rawHandleExposed':False},
-        {'nativeSyncHandleClosed':True}], 'Native reference not retained through completed import')
+        {'nativeSyncHandleClosed':True}]
+    require(json.dumps(lifecycle,sort_keys=True)==json.dumps(expected_lifecycle,sort_keys=True),
+            'Native reference not retained through completed import')
     clean=report['disconnectCleanup']
     require(exact(clean,acceptedHwQueueSignals=1,completedHwQueueSignals=1,pendingHwQueueSignals=0,
                   acceptedAsyncContextSignals=1,retiredAsyncContextSignals=1,pendingAsyncContextSignals=0,
