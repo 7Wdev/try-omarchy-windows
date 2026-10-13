@@ -1,5 +1,9 @@
 # Native GPU completion through Linux sync-file FDs
 
+Follow-up: [owned sync-file native import and GPU waits](LIVE-GPU-NATIVE-SYNC-LINEAGE.md)
+now pass two fresh guests. This page retains the earlier export milestone and
+its evidence; EGL and compositor integration remain open.
+
 On 2026-10-13, two fresh QEMU/WHPX guests passed GPU-driven Linux sync-file
 export and transfer as UID/GID 65534. An ordinary recipient sees the FD pending
 before an NVIDIA GPU queue signal, then sees it complete at **4,294,967,354**.
