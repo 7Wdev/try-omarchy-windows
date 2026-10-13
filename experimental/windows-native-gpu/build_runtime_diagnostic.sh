@@ -30,3 +30,7 @@ fi
     "$base/umd_context_probe.cpp" "$headers/src/dxguids.cpp" \
     -L/usr/lib/wsl/lib -Wl,-rpath,/usr/lib/wsl/lib -ld3d12 -ldxcore -ldl -o "$output/runtime-probe"
 "${CC:-cc}" -static -std=c11 -Wall -Wextra -Werror -O2 "$base/runtime_guest_init.c" -o "$output/runtime-init"
+if [ "${WDDM_BRIDGE_TEST_BROKER_ROUTE:-0}" = 1 ]; then
+    "${CXX:-c++}" -std=c++17 -O2 -Wall -Wextra -Werror -pthread $profile_define \
+        "$base/guest_graphics_broker.cpp" -o "$output/guest-graphics-broker"
+fi

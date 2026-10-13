@@ -43,7 +43,7 @@ def main():
     files = {'init': args.init, 'guest-probe': args.probe, 'linux-ioctl-bridge.so': args.shim}
     roots = [args.probe, args.shim, args.linux_umd, args.d3d12, args.d3d12core, args.dxcore]
     if args.guest_graphics_broker:
-        if not args.guest_aperture_module or not args.guest_aperture_contract or args.runtime_workload not in ('init','copy','clear','triangle','opengl'):
+        if not args.guest_aperture_module or not args.guest_aperture_contract or args.runtime_workload not in ('init','copy','clear','triangle','native','opengl'):
             parser.error('The graphics broker requires the kernel aperture and a workload without native FD export')
         files['guest-graphics-broker'] = args.guest_graphics_broker
         roots.append(args.guest_graphics_broker)

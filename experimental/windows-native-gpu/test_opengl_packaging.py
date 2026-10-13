@@ -108,6 +108,13 @@ class OpenGlPackaging(unittest.TestCase):
         broker=next(f for f in manifest['files'] if f['path']=='/guest-graphics-broker')
         self.assertEqual(broker['bytes'],len(self.elf)); self.assertEqual(len(broker['sha256']),64)
 
+    def test_native_texture_broker_requires_and_records_its_explicit_workload(self):
+        self.run_packer(*self.broker_kernel_arguments(),'--guest-graphics-broker',str(self.input),'--runtime-workload','native')
+        manifest=json.loads(self.output.with_suffix('.manifest.json').read_text())
+        self.assertEqual(manifest['runtimeWorkload'],'native')
+        self.assertTrue(manifest['guestGraphicsBrokerIncluded'])
+        self.assertTrue(manifest['kernelApertureIncluded'])
+
     def test_library_count_bound_rejected(self):
         for i in range(32): (self.mesa/f'lib/libFixture{i}.so').write_bytes(self.elf)
         with self.assertRaises(SystemExit): self.run_packer('--runtime-workload','opengl','--mesa-runtime-directory',str(self.mesa))
