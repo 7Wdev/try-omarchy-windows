@@ -50,7 +50,10 @@ The old 128-slot failure is retained. General fragmentation, dma-buf, GBM and Hy
 The [opt-in guest graphics broker](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-BROKER-ROUTING.md)
 now renders both 130×73 NVIDIA OpenGL shader frames as UID 65534 in two fresh guests.
 A third also verifies a real native fence in a library finalizer after channel close; all three exit cleanly.
-Multiple native workers, cross-process resource ownership and Hyprland remain to be integrated.
+The [native capability store](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-BROKER-OBJECTS.md)
+now passes ordinary-user full 4K texture export/import, native timeline GPU ordering,
+and two fresh tests retaining a resource FD beyond its producer's exit, with clean last-FD-close cleanup.
+Multiple GPU clients, cross-process GPU imports, DRM/GBM and Hyprland remain to be integrated.
 
 Download links below refer to official upstream releases.
 
