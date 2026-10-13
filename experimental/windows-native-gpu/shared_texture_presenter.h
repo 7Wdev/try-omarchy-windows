@@ -66,16 +66,13 @@ public:
         UINT previous = UINT_MAX;
         hr = swapchain->GetLastPresentCount(&previous); if (hr != S_OK || previous != 0) return E_FAIL;
         ShowWindow(window, SW_SHOWNOACTIVATE); UpdateWindow(window); pump();
-        char topmost[2]{};
-        const bool diagnosticTopmost=GetEnvironmentVariableA("WDDM_BRIDGE_TEST_WINDOW_TOPMOST",topmost,sizeof(topmost))==1 && topmost[0]=='1';
-        if (diagnosticTopmost && !SetWindowPos(window,HWND_TOPMOST,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE)) return HRESULT_FROM_WIN32(GetLastError());
         RECT client{};
         if (!IsWindowVisible(window) || !GetClientRect(window, &client) || client.right <= 0 || client.bottom <= 0) return E_FAIL;
         opened = true;
         std::cerr << "{\"nativeSharedTexturePresenterOpened\":true,\"width\":" << gpu_diagnostic::Width
             << ",\"height\":" << gpu_diagnostic::Height << ",\"bufferCount\":2"
             << ",\"flipModel\":true,\"clientWidth\":" << client.right << ",\"clientHeight\":" << client.bottom
-            << ",\"windowVisible\":true,\"sameAdapter\":true,\"cpuUpload\":false,\"diagnosticTopmost\":"<<(diagnosticTopmost?"true":"false")<<"}\n";
+            << ",\"windowVisible\":true,\"sameAdapter\":true,\"cpuUpload\":false}\n";
         return S_OK;
     }
     HRESULT copy(ID3D12GraphicsCommandList* commands, ID3D12Resource* source,
@@ -142,17 +139,21 @@ public:
         }
         if (presented != S_OK) return E_FAIL;
         UINT count = 0; hr = swapchain->GetLastPresentCount(&count); if (hr != S_OK || count != round) return E_FAIL;
-        const auto flushed = DwmFlush();
+        HRESULT flushed=S_OK; unsigned flushes=0;
         DXGI_FRAME_STATISTICS stats{};
         const auto statsDeadline = GetTickCount64() + 2500;
         do {
-            pump(); hr = swapchain->GetFrameStatistics(&stats);
+            // Hardware Flip Queue systems can require a DWM flush before
+            // statistics update. Flush each observation, not just the first.
+            pump(); flushed=DwmFlush(); ++flushes;
+            if (FAILED(flushed)) break;
+            hr = swapchain->GetFrameStatistics(&stats);
             if (hr == S_OK && stats.PresentCount == count && stats.SyncQPCTime.QuadPart > 0) break;
             if (FAILED(hr) && hr != DXGI_ERROR_FRAME_STATISTICS_DISJOINT) break;
             Sleep(10);
         } while (GetTickCount64() < statsDeadline);
         const bool visible = IsWindowVisible(window) != FALSE && !IsIconic(window);
-        const bool complete = hr == S_OK && stats.PresentCount == count && stats.SyncQPCTime.QuadPart > 0 && visible;
+        const bool complete = hr == S_OK && SUCCEEDED(flushed) && stats.PresentCount == count && stats.SyncQPCTime.QuadPart > 0 && visible;
         std::cerr << "{\"nativeSharedTexturePresented\":" << (complete ? "true" : "false") << ",\"round\":" << round
             << ",\"width\":" << gpu_diagnostic::Width << ",\"height\":" << gpu_diagnostic::Height << ",\"backBufferIndex\":" << index << ",\"backBufferFnv1a\":" << hash
             << ",\"presentProcessId\":" << GetCurrentProcessId()
@@ -164,6 +165,7 @@ public:
             << ",\"presentHresult\":" << presented << ",\"lastPresentCount\":" << count << ",\"statisticsHresult\":" << hr
             << ",\"statisticsPresentCount\":" << stats.PresentCount << ",\"syncQpc\":" << stats.SyncQPCTime.QuadPart
             << ",\"dwmFlushHresult\":" << flushed << ",\"windowVisible\":" << (visible ? "true" : "false")
+            << ",\"dwmStatisticsFlushes\":" << flushes
             << ",\"presentQueueFenceTarget\":" << round << ",\"presentQueueFenceObserved\":" << observed
             << ",\"backBufferState\":\"PRESENT\",\"cpuUpload\":false}\n";
         // Leave the verified frame visible briefly, pumping its window messages.

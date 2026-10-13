@@ -21,8 +21,8 @@ int main(int argc,char** argv) {
         if (argc==4 && std::string(argv[1])=="--native-texture-worker") return driver_worker::run(argv[2],argv[3]);
         DWORD before=0,after=0;
         driver_worker::Counters counters;
-        // Windows/runtime first-process startup can retain process-global
-        // handles. Test a second identical lifetime for continuing leakage.
+        // The first process-creation cycle retains extra handles in this
+        // environment. Its attribution is separate; test continuing growth.
         {
             driver_worker::TextureWorker warmup(counters);
             if (SUCCEEDED(warmup.initialize(0,LUID{}))) throw std::runtime_error("Invalid warmup source accepted");
