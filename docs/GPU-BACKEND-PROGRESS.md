@@ -1,6 +1,6 @@
 # NVIDIA backend progress
 
-Updated 2026-10-12. **4 of 8 verification stages demonstrated.** This is a
+Updated 2026-10-13. **4 of 8 verification stages demonstrated.** This is a
 checklist count, not 50% of engineering effort or a product-readiness estimate.
 The largest integration tasks are still ahead.
 
@@ -49,6 +49,13 @@ finalizer after channel close. Both 130×73 frames and all 18 native commands
 pass independent audits in each run, with full guest/native/VM cleanup.
 Multiple native workers, cross-process imports and compositor integration remain
 open; this is part of stage 5 and closes no desktop gate.
+
+The [broker capability store](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-BROKER-OBJECTS.md)
+now also passes ordinary-user full 4K texture export/import and native timeline
+GPU ordering. Two fresh guests retain a native resource reference beyond its
+producer's exit until a separate FD recipient closes it. That recipient does no
+GPU work; independent GPU clients and cross-process GPU imports still require a
+coordinator. DRM/GBM and Hyprland remain pending, with no new desktop gate closed.
 
 ![Four of eight verification stages demonstrated; zero of four desktop acceptance gates complete](images/gpu-backend-progress.svg)
 
@@ -129,6 +136,10 @@ their own implementation and application evidence as well.
   quotas. This fixes that reproduced workload; general fragmentation remains open.
 - **Product integration:** no accelerated Hyprland desktop, general OpenGL,
   Vulkan, CUDA or video test has passed through this backend yet.
+- **Multiple GPU clients:** the broker now validates actual kernel capability
+  FDs for native imports and retains references beyond producer exit. It still
+  has one native worker. Independent client process contexts, cross-process
+  GPU imports and compositor-compatible buffer/sync integration remain open.
 
 The [experimental PR](https://github.com/7Wdev/try-omarchy-windows/pull/2) retains
 the implementation and detailed evidence. The released app continues using the
