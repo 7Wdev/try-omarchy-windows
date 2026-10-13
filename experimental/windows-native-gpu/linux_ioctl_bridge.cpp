@@ -230,6 +230,7 @@ class Bridge {
     guest_kernel::Objects kernelObjects;
     bool sharedFencesNegotiated = false;
     std::set<std::uint32_t> exportedSyncTickets, importedShareableSyncs;
+    std::map<std::uint32_t,std::uint32_t> exportedSyncSources;
     bool sharedResourcesNegotiated = false;
     std::set<std::uint32_t> exportedResourceTickets;
     std::set<std::uint32_t> cpuLocks;
@@ -276,6 +277,7 @@ class Bridge {
             if (result.header.handle != ticket || result.result.ntstatus > 0 || result.result.value) { transport.fail(); throw Error(EPROTO); }
             checkNt(result.result.ntstatus);
             tickets.erase(ticket);
+            if (kind==WDDM_OBJECT_SYNC) exportedSyncSources.erase(ticket);
             std::fprintf(stderr, "LINUX_BRIDGE kernelObjectReaped=true ticket=%u\n", ticket);
         }
     }
@@ -496,11 +498,13 @@ public:
                     // allocation failure must not queue a ticket already
                     // closed by rollback for a second native close.
                     if (!exportedSyncTickets.insert(ticket).second) { transport.fail(); throw Error(EPROTO); }
+                    if (!exportedSyncSources.emplace(ticket,object).second) { transport.fail(); throw Error(EPROTO); }
                     fd = kernelObjects.create(ticket);
                     if (fd < 0) throw Error(errno);
                 } catch (...) {
                     if (fd >= 0) rawClose(fd);
                     exportedSyncTickets.erase(ticket);
+                    exportedSyncSources.erase(ticket);
                     destroy(Op::CloseSharedSync, ticket);
                     throw;
                 }
@@ -1594,6 +1598,13 @@ public:
     }
     void protocolFailed() { transport.fail(); }
     int exportSyncFile(const void* word,std::uint64_t value) { return syncFences.syncFile(word,value); }
+    const void* nativeFenceWord(int fd) {
+        std::uint32_t ticket=0;
+        if (!kernelObjects.resolve(fd,ticket,WDDM_OBJECT_SYNC)) throw Error(errno);
+        const auto source=exportedSyncSources.find(ticket);
+        if (source==exportedSyncSources.end() || !syncObjects.count(source->second)) throw Error(EBADF);
+        return syncFences.mappedWord(source->second);
+    }
     wddm_sync_file_stats syncFileInfo() { return syncFences.syncFileInfo(); }
 };
 // The process owns the bridge until the kernel destroys its address space.
@@ -1656,6 +1667,16 @@ extern "C" int wddm_bridge_export_sync_file(const void* word,std::uint64_t value
     catch (const std::system_error& error) { errno=error.code().value(); }
     catch (...) { errno=EIO; }
     return -1;
+}
+extern "C" const void* wddm_bridge_native_fence_word(int fd) {
+    if (bridgeStopped) { errno=ESHUTDOWN; return nullptr; }
+    auto& state=bridge(); std::lock_guard<std::mutex> lock(state.guard);
+    if (bridgeStopped) { errno=ESHUTDOWN; return nullptr; }
+    try { return state.nativeFenceWord(fd); }
+    catch (const Error& error) { errno=error.number; }
+    catch (const std::system_error& error) { errno=error.code().value(); }
+    catch (...) { errno=EIO; }
+    return nullptr;
 }
 extern "C" int wddm_bridge_sync_file_info(wddm_sync_file_stats* info) {
     if (bridgeStopped || !info) { errno=EINVAL; return -1; }

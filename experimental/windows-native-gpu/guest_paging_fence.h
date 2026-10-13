@@ -160,6 +160,11 @@ public:
         throw std::system_error(EBADF,std::generic_category(),"Sync-file requires the exact owned fence pointer");
     }
     wddm_sync_file_stats syncFileInfo() { return kernel.syncFileInfo(); }
+    const void* mappedWord(std::uint32_t object) const {
+        const auto found=mappings.find(object);
+        if(found==mappings.end()) throw std::system_error(EBADF,std::generic_category(),"Owned native fence has no CPU lease");
+        return const_cast<const std::uint64_t*>(found->second.fence);
+    }
     bool contains(std::uint32_t queue) const { return mappings.count(queue) != 0; }
     std::uint64_t directLoads() const { return reads; }
 };

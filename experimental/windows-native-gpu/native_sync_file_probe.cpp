@@ -76,23 +76,19 @@ extern "C" int wddm_native_sync_file_test(EGLDisplay display,EGLContext context)
     std::puts("NATIVE_SYNC_FILE_BEGIN gpu=true kernel=true eglNativeFence=false desktop=false");
     auto exportFile=reinterpret_cast<int(*)(const void*,std::uint64_t)>(dlsym(RTLD_DEFAULT,"wddm_bridge_export_sync_file"));
     auto stats=reinterpret_cast<int(*)(wddm_sync_file_stats*)>(dlsym(RTLD_DEFAULT,"wddm_bridge_sync_file_info"));
-    if(!exportFile || !stats) return failure("BridgeHooks");
+    auto nativeWord=reinterpret_cast<const void*(*)(int)>(dlsym(RTLD_DEFAULT,"wddm_bridge_native_fence_word"));
+    if(!exportFile || !stats || !nativeWord) return failure("BridgeHooks");
     d3d12_interop_device_info native{}; mesa_glinterop_device_info interop{};
     interop.version=2; interop.driver_data_size=sizeof native; interop.driver_data=&native;
     if(MesaGLInteropEGLQueryDeviceInfo(display,context,&interop)!=MESA_GLINTEROP_SUCCESS ||
         interop.driver_data_size!=sizeof native || !native.device || !native.queue) return failure("MesaDevice");
-    Descriptor dxg(open("/dev/dxg",O_RDWR|O_CLOEXEC)); if(dxg.fd<0) return failure("Dxg");
-    D3DKMT_OPENADAPTERFROMLUID adapter{}; adapter.AdapterLuid.LowPart=0x57475055;
-    if(!call(dxg.fd,1,adapter)) return failure("Adapter");
-    D3DKMT_CREATEDEVICE device{}; device.hAdapter=adapter.hAdapter; device.Flags.RequestVSync=1;
-    if(!call(dxg.fd,2,device)) return failure("Device");
-    D3DKMT_CREATESYNCHRONIZATIONOBJECT2 source{}; source.hDevice=device.hDevice;
-    source.Info.Type=D3DDDI_MONITORED_FENCE; source.Info.MonitoredFence.InitialFenceValue=57;
-    source.Info.MonitoredFence.EngineAffinity=1;
-    source.Info.Flags.Shared=source.Info.Flags.NtSecuritySharing=source.Info.Flags.NoGPUAccess=1;
-    if(!call(dxg.fd,16,source)) return failure("Source");
-    const auto word=source.Info.MonitoredFence.FenceValueCPUVirtualAddress;
-    if(!word || *static_cast<volatile std::uint64_t*>(word)!=57) return failure("InitialValue");
+    ComPtr<ID3D12Fence> source,control;
+    if(FAILED(native.device->CreateFence(57,D3D12_FENCE_FLAG_SHARED,IID_PPV_ARGS(&source)))) return failure("Source");
+    HANDLE handle=nullptr;
+    if(FAILED(native.device->CreateSharedHandle(source.Get(),nullptr,GENERIC_ALL,nullptr,&handle))) return failure("ExportNative");
+    Descriptor shared(static_cast<int>(reinterpret_cast<std::intptr_t>(handle)));
+    const auto word=nativeWord(shared.fd);
+    if(!word || *static_cast<const volatile std::uint64_t*>(word)!=57) return failure("InitialValue");
     for(const auto target:{std::uint64_t(0),UINT64_MAX}) {
         errno=0; if(exportFile(word,target)!=-1 || errno!=EINVAL) return failure("InvalidTarget");
     }
@@ -106,12 +102,6 @@ extern "C" int wddm_native_sync_file_test(EGLDisplay display,EGLContext context)
         done.fd,done.fd<0?-1:fcntl(done.fd,F_GETFD),completeReady,infoResult,fileInfo.num_fences,fileInfo.status,detail.status,detail.driver_name,detail.obj_name);
     if(done.fd<0 || !(fcntl(done.fd,F_GETFD)&FD_CLOEXEC) || completeReady!=1 || status(done.fd)!=1) return failure("AlreadyComplete");
     done.reset();
-    HANDLE handle=nullptr;
-    D3DKMT_SHAREOBJECTS share{}; share.ObjectCount=1; share.ObjectHandleArray=&source.hSyncObject;
-    share.DesiredAccess=0x10000000; share.pSharedNtHandle=&handle;
-    if(!call(dxg.fd,63,share)) return failure("ExportNative");
-    Descriptor shared(static_cast<int>(reinterpret_cast<std::intptr_t>(handle)));
-    ComPtr<ID3D12Fence> control;
     if(FAILED(native.device->OpenSharedHandle(handle,IID_PPV_ARGS(&control)))) return failure("ImportNative");
     shared.reset();
     constexpr std::uint64_t target=(UINT64_C(1)<<32)+58;
@@ -143,20 +133,18 @@ extern "C" int wddm_native_sync_file_test(EGLDisplay display,EGLContext context)
     Descriptor canceled(exportFile(word,target+1)),abandoned(exportFile(word,target+1));
     if(canceled.fd<0 || abandoned.fd<0 || status(canceled.fd)!=0 || status(abandoned.fd)!=0) return failure("CancellationPending");
     abandoned.reset();
-    D3DKMT_DESTROYSYNCHRONIZATIONOBJECT destroy{}; destroy.hSyncObject=source.hSyncObject;
-    if(!call(dxg.fd,29,destroy) || !finish(canceled.fd,-ENODEV)) return failure("Revocation");
+    source.Reset();
+    if(!finish(canceled.fd,-ENODEV)) return failure("Revocation");
     canceled.reset(); control.Reset();
     std::puts("NATIVE_SYNC_FILE_REVOKE status=-19 sourceRevoked=true abandonedFdClosed=true");
-    source={}; source.hDevice=device.hDevice; source.Info.Type=D3DDDI_MONITORED_FENCE;
-    source.Info.Flags.NoGPUAccess=1; source.Info.MonitoredFence.EngineAffinity=1;
-    if(!call(dxg.fd,16,source)) return failure("TimeoutSource");
-    Descriptor timeout(exportFile(source.Info.MonitoredFence.FenceValueCPUVirtualAddress,1));
+    if(FAILED(native.device->CreateFence(0,D3D12_FENCE_FLAG_SHARED,IID_PPV_ARGS(&source)))) return failure("TimeoutSource");
+    if(FAILED(native.device->CreateSharedHandle(source.Get(),nullptr,GENERIC_ALL,nullptr,&handle))) return failure("TimeoutExport");
+    shared.fd=static_cast<int>(reinterpret_cast<std::intptr_t>(handle));
+    const auto timeoutWord=nativeWord(shared.fd); shared.reset();
+    if(!timeoutWord) return failure("TimeoutWord");
+    Descriptor timeout(exportFile(timeoutWord,1));
     if(timeout.fd<0 || !finish(timeout.fd,-ETIMEDOUT)) return failure("Timeout");
-    timeout.reset(); destroy.hSyncObject=source.hSyncObject;
-    if(!call(dxg.fd,29,destroy)) return failure("TimeoutDestroy");
-    D3DKMT_DESTROYDEVICE destroyDevice{}; destroyDevice.hDevice=device.hDevice;
-    D3DKMT_CLOSEADAPTER closeAdapter{}; closeAdapter.hAdapter=adapter.hAdapter;
-    if(!call(dxg.fd,25,destroyDevice) || !call(dxg.fd,21,closeAdapter)) return failure("NativeCleanup");
+    timeout.reset(); source.Reset();
     wddm_sync_file_stats info{};
     const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(2);
     do {
