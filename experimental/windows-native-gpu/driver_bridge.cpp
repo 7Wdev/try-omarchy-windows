@@ -1064,7 +1064,7 @@ public:
             return {Invalid, 0, 0};
         const auto owner = contextOwners.find(context); const auto object = syncObjects.find(sync);
         if (!submitEnabled || !syncEnabled || !runtime || runtime->hasStopped() || !validContextSignal(desc) ||
-            owner == contextOwners.end() || owner->second.flags != 16 || object == syncObjects.end() ||
+            owner == contextOwners.end() || !contextCanSignal(owner->second.flags) || object == syncObjects.end() ||
             object->second.device != owner->second.device || object->second.type != 5 || !packetSignalSyncFlags(object->second.flags) ||
             !object->second.lease || !object->second.fence || desc.fence <= object->second.lastSignal ||
             (streamingEnabled ? contextSignalAttempts + hwQueueSignalAttempts >= GuestStreamProfile.totalSignals :
@@ -1075,7 +1075,8 @@ public:
         a.BroadcastContextCount = 1; a.BroadcastContextArray = &context; a.MonitoredFenceValueArray = &desc.fence;
         ++contextSignalAttempts;
         const auto status = D3DKMTSignalSynchronizationObjectFromGpu2(&a);
-        std::cerr << "{\"nativeContextSignalStatus\":true,\"flags\":" << desc.flags << ",\"target\":" << desc.fence << ",\"ntstatus\":" << status << "}\n";
+        std::cerr << "{\"nativeContextSignalStatus\":true,\"flags\":" << desc.flags << ",\"target\":" << desc.fence << ",\"ntstatus\":" << status
+                  << ",\"contextFlags\":" << owner->second.flags << ",\"synchronizationOnly\":" << (owner->second.flags==8?"true":"false") << "}\n";
         if (status < 0) { ++failedContextSignals; return {status,0,0}; }
         object->second.lastSignal = desc.fence;
         if (status != 0) { ++failedContextSignals; throw std::runtime_error("Unexpected native context signal status"); }

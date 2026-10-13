@@ -1405,7 +1405,7 @@ public:
                 const ContextSignalDesc desc{a.ObjectHandleArray[0],a.Flags.Value,a.MonitoredFenceValueArray[0]};
                 if (!validContextSignal(desc)) throw Error(EINVAL);
                 const auto context = contextOwners.find(a.BroadcastContextArray[0]); const auto sync = syncObjects.find(a.ObjectHandleArray[0]);
-                if (context == contextOwners.end() || context->second.flags != 16 || sync == syncObjects.end() ||
+                if (context == contextOwners.end() || !contextCanSignal(context->second.flags) || sync == syncObjects.end() ||
                     sync->second.type != 5 || !packetSignalSyncFlags(sync->second.flags) || sync->second.device != context->second.device) throw Error(EBADF);
                 if (desc.fence <= sync->second.lastSignal) throw Error(EINVAL);
                 const bool asynchronous = sharedFencesNegotiated && (caps.flags & AsyncHwSubmitCapability);

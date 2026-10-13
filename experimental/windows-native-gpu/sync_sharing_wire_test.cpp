@@ -194,6 +194,33 @@ static void queueDependencies() {
     }
     require(fake.live.empty() && fake.borrowed.empty());
 }
+static void synchronizationOnlySignals() {
+    struct SignalFake : Fake {
+        Result signalContextSync(std::uint32_t context,std::uint32_t object,ContextSignalDesc desc) override {
+            require(live.at(context)==Kind::Context && live.at(object)==Kind::Sync && validContextSignal(desc));
+            ++calls; return {0,0,desc.fence};
+        }
+    } fake;
+    fake.capabilityFlags|=ContextCapability|AsyncHwSubmitCapability|ContextSignalCapability|HwQueueCapability;
+    {
+        Session session(fake); session.dispatch(hello());
+        require(!header(session.dispatch(request(Op::BeginSyncSharing))).status);
+        const auto adapter=add(session,Op::OpenAdapter,0),device=add(session,Op::CreateDevice,adapter);
+        const auto other=add(session,Op::CreateDevice,adapter);
+        const auto context=header(session.dispatch(request(Op::CreateContext,device,ContextDesc{0,0,8,0,0,0}))).handle;
+        const auto fence=sync(session,device,128),foreign=sync(session,other,128);
+        require(context && fence && foreign);
+        require(!header(session.dispatch(request(Op::SignalContextSync,context,ContextSignalDesc{fence,4,1}))).status);
+        require(!header(session.dispatch(request(Op::QueueContextSync,context,ContextSignalDesc{fence,4,2}))).status);
+        const auto before=fake.calls;
+        require(header(session.dispatch(request(Op::QueueContextSync,context,ContextSignalDesc{fence,4,2}))).status==-22);
+        require(header(session.dispatch(request(Op::QueueContextSync,context,ContextSignalDesc{foreign,4,3}))).status==-9);
+        auto queue=request(Op::CreateHwQueue,context,HwQueueDesc{0,1,0,0}); queue.push_back(1);
+        require(header(session.dispatch(queue)).status==-95 && fake.calls==before);
+    }
+    require(fake.live.empty() && fake.borrowed.empty());
+    std::cout<<"SYNC_ONLY_CONTEXT nativeSignalsAuthorized=true foreignDeviceRejected=true duplicateRejected=true commandQueueDenied=true gpu=false\n";
+}
 int main() {
     try {
         Fake fake;
@@ -270,7 +297,7 @@ int main() {
             // Disconnect must close every remaining NT reference and KMT object.
         }
         require(fake.live.empty());
-        queueDependencies();
+        queueDependencies(); synchronizationOnlySignals();
         std::cout << "PASS: " << checks << " shared-fence protocol checks, scoped tickets, cross-device ownership, quotas, malformed replies and cleanup\n";
     } catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }
 }

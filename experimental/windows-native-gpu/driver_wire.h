@@ -389,6 +389,7 @@ inline bool validContext(ContextDesc d) {
            (d.clientHint == 12 || d.clientHint == 16) && d.privateBytes;
 }
 inline bool validContextPriority(std::int32_t priority) { return priority == 0 || priority == 1; }
+inline bool contextCanSignal(std::uint32_t flags) { return flags==8 || flags==16; }
 struct Range { std::uint32_t offset; std::uint32_t size; };
 static_assert(sizeof(Range) == 8, "fixed transfer layout");
 struct GuestRange { std::uint64_t offset; std::uint32_t size; std::uint32_t reserved; };
@@ -1195,7 +1196,7 @@ public:
             ContextSignalDesc desc{}; std::memcpy(&desc, packet.data() + sizeof h, sizeof desc);
             if (!validContextSignal(desc)) return reply(h, -22);
             const auto context = objects.find(h.handle), sync = objects.find(desc.sync);
-            if (context == objects.end() || context->second.kind != Kind::Context || context->second.contextFlags != 16 ||
+            if (context == objects.end() || context->second.kind != Kind::Context || !contextCanSignal(context->second.contextFlags) ||
                 sync == objects.end() || sync->second.kind != Kind::Sync || sync->second.syncType != 5 ||
                 !packetSignalSyncFlags(sync->second.syncFlags) || sync->second.parent != context->second.parent) return reply(h, -9);
             if (desc.fence <= sync->second.submittedFence) return reply(h, -22);
