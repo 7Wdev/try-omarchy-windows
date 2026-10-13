@@ -114,7 +114,7 @@ template<class Native,class Authority> int serve(Peer& peer, Native& native, Aut
                 } else throw std::system_error(EOPNOTSUPP,std::generic_category(),"Broker operation not implemented");
             } catch (const std::system_error& error) {
                 ++denied; failed=true;
-                std::fprintf(stderr,"BROKER_ROUTE rejected=true errno=%d\n",error.code().value());
+                std::fprintf(stderr,"BROKER_ROUTE rejected=true errno=%d operation=%u reason=%s\n",error.code().value(),static_cast<unsigned>(message.frame.operation),error.what());
                 peer.send(message.frame.operation,message.frame.sequence,{}, {},error.code().value());
                 peer.disconnect();
             }

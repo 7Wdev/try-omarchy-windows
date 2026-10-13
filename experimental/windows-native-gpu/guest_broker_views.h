@@ -92,7 +92,14 @@ public:
                 "Native reply identity mismatch");
         if (r.status) { require(response.size() == sizeof(Header),"Native wire error payload"); return; }
         const auto op = static_cast<Op>(h.type);
-        if (op == Op::Hello || op == Op::BeginOpenGl || op == Op::BeginStreaming) return;
+        const auto retired = retiring(request);
+        const bool creating = op == Op::OpenAdapter || op == Op::CreateDevice || op == Op::CreateContext ||
+            op == Op::CreateVendorAllocation || op == Op::CreateVendorResourceAllocation ||
+            op == Op::CreateSharedVendorResourceAllocation || op == Op::CreateNativeSharedVendorResourceAllocation ||
+            op == Op::CreateGuestPagingQueue || op == Op::CreateHwQueue || op == Op::CreateSync || op == Op::LockVendorAllocation;
+        // Other operations can have non-Reply payloads or legitimate pending
+        // native statuses (GPU VA mapping). They confer no CPU-view authority.
+        if (!creating && retired.empty()) return;
         const auto result = at<Reply>(response,sizeof(Header));
         require(!result.reserved && result.ntstatus <= 0,"Native reply result mismatch");
         if (result.ntstatus) return;
@@ -134,7 +141,6 @@ public:
                     "Native CPU lock receipt");
             grant(h.handle,{WDDM_APERTURE_ALLOCATION,0,result.value,value.bytes,value.generation});
         }
-        const auto retired = retiring(request);
         for (const auto target : retired) {
             for (auto i = grants.begin(); i != grants.end();) {
                 if (below(i->first,target)) { require(!i->second.cookie,"Native released live CPU lease"); i=grants.erase(i); }

@@ -38,6 +38,7 @@ static void paging(Views& views) {
 static void viewPolicy() {
     const ViewRequest fence{WDDM_APERTURE_FENCE,0,4096,4096,0};
     auto views=base(); denied([&]{views.acquire(fence);},EPERM); paging(views);
+    views.observe(packet(Op::MapVendorAllocation,8),receipt(Op::MapVendorAllocation,8,0,{},0x103));
     CHECK(views.acquire(fence).cookie==0);
     for (unsigned field=0;field<5;++field) {
         auto invalid=fence;
@@ -60,13 +61,14 @@ static void viewPolicy() {
     denied([&]{views.acquire(fence);},EPERM);
     for (auto op : {Op::BeginSyncSharing,Op::ExportSync,Op::ImportSync,Op::BeginResourceSharing,Op::ExportResource,Op::ImportResource})
         denied([&]{views.approve(packet(op,1));},EOPNOTSUPP);
-    for (unsigned corruption=0;corruption<5;++corruption) {
+    for (unsigned corruption=0;corruption<6;++corruption) {
         auto invalid=base(); auto reply=receipt(Op::CreateGuestPagingQueue,3,0,encode(PagingReply{4,0,4096}));
         if (corruption==0) reply[0]^=1;
         if (corruption==1) reply.resize(sizeof(Header));
         if (corruption==2) reply=receipt(Op::CreateGuestPagingQueue,3,0,encode(PagingReply{4,1,4096}));
         if (corruption==3) reply=receipt(Op::CreateGuestPagingQueue,3,0,encode(PagingReply{4,0,FenceApertureBytes}));
         if (corruption==4) reply=receipt(Op::CreateGuestPagingQueue,2,0,encode(PagingReply{4,0,4096}));
+        if (corruption==5) reply=receipt(Op::CreateGuestPagingQueue,3,0,encode(PagingReply{4,0,4096}),0x103);
         denied([&]{invalid.observe(packet(Op::CreateGuestPagingQueue,2),reply);},EPROTO);
     }
     auto allocation=base();
