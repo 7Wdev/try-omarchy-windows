@@ -202,7 +202,12 @@ extern "C" int wddm_mesa_resource_fd_test(EGLDisplay display, EGLContext context
         if (write(ready[1],&marker,1)!=1 || pidfd<0) _exit(1);
         syscall(SYS_close,ready[1]);
         pollfd exited{pidfd,POLLIN,0};
-        if (poll(&exited,1,5000)!=1 || !(exited.revents&POLLIN) || fcntl(retainedFd,F_GETFD)<0) _exit(1);
+        int waitResult;
+        do { waitResult=poll(&exited,1,20000); } while (waitResult<0 && errno==EINTR);
+        if (waitResult!=1 || !(exited.revents&POLLIN) || fcntl(retainedFd,F_GETFD)<0) {
+            static constexpr char failure[]="MESA_RESOURCE_FD_FAILURE stage=RecipientProducerExit status=80004005 errno=0\n";
+            (void)write(STDERR_FILENO,failure,sizeof(failure)-1); _exit(1);
+        }
         poll(nullptr,0,250); // let the broker enter its post-producer drain
         static constexpr char alive[]="MESA_RESOURCE_FD_RECIPIENT producerExited=true capabilityOpen=true gpuWork=false\n";
         if (write(STDERR_FILENO,alive,sizeof(alive)-1)!=sizeof(alive)-1) _exit(1);
