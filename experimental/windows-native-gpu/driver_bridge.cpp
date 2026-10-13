@@ -1221,9 +1221,11 @@ public:
         a.AllocationCount = static_cast<UINT>(handles.size()); a.Flags.SynchronousDestroy = 1;
         const auto resource = vendorAllocations.at(handles.front()).resource;
         if (resource) { a.hResource = resource; a.phAllocationList = nullptr; a.AllocationCount = 0; }
-        if (resource && textureConsumers.erase(resource)) {
-            ++releasedTextureConsumers;
-            std::cerr << "{\"nativeSharedTextureConsumerReleased\":true,\"gpuWorkRetired\":true}\n";
+        const auto consumer=textureConsumers.find(resource);
+        if (resource && consumer!=textureConsumers.end()) {
+            const bool retired=!consumer->second.worker || consumer->second.worker->stop();
+            textureConsumers.erase(consumer); ++releasedTextureConsumers;
+            std::cerr << "{\"nativeSharedTextureConsumerReleased\":true,\"gpuWorkRetired\":"<<(retired?"true":"false")<<"}\n";
         }
         const auto status = D3DKMTDestroyAllocation2(&a);
         if (status > 0) throw std::runtime_error("Unexpected native allocation-destruction status");
