@@ -29,8 +29,10 @@ There is no reliable completion date yet; the remaining work includes substantia
 
 Vulkan, CUDA, video acceleration, NVIDIA-specific features and concurrent Windows/guest GPU use need separate real-application acceptance tests as part of the wider goal.
 
-Latest lab result: [two independently verified OpenGL shader frames](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-OPENGL.md)
-through Mesa and the NVIDIA bridge. Full Omarchy/Hyprland acceleration remains pending.
+Latest lab result: [ordinary-user 4K frames copied by a separate Windows GPU process](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-WINDOWS-WORKER.md)
+pass two fresh guest runs. Window presentation passes once and fails on repeat; Hyprland remains pending.
+Earlier [OpenGL shader frames](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-OPENGL.md)
+also pass independent pixel audits through Mesa and the NVIDIA bridge.
 The [first guest kernel memory-lease component](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-KERNEL-APERTURE.md)
 also passes FD isolation/revocation checks and two fresh OpenGL runs. DRM and compositor integration remain pending.
 The [native fence-sharing diagnostic](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-SYNC-FD.md)
@@ -53,7 +55,7 @@ A third also verifies a real native fence in a library finalizer after channel c
 The [native capability store](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-BROKER-OBJECTS.md)
 now passes ordinary-user full 4K texture export/import, native timeline GPU ordering,
 and two fresh tests retaining a resource FD beyond its producer's exit, with clean last-FD-close cleanup.
-Multiple GPU clients, cross-process GPU imports, DRM/GBM and Hyprland remain to be integrated.
+Independent guest GPU clients and imports, DRM/GBM and Hyprland remain to be integrated.
 The [separate Windows GPU consumer](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-WINDOWS-WORKER.md)
 now imports and copies both full 4K shader frames from an ordinary guest user in two fresh final-source runs.
 One strict two-frame window presentation passes; its repeat fails, so display stability remains open.

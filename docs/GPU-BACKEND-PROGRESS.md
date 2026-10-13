@@ -4,10 +4,12 @@ Updated 2026-10-13. **4 of 8 verification stages demonstrated.** This is a
 checklist count, not 50% of engineering effort or a product-readiness estimate.
 The largest integration tasks are still ahead.
 
-Latest lab result: [Mesa OpenGL shader rendering](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-OPENGL.md)
-now passes two independent 130×73 pixel audits through the Windows NVIDIA
-bridge. This is progress within the remaining API/device work; it does not
-complete a new roadmap stage.
+Latest lab result: [a separate Windows GPU process](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-WINDOWS-WORKER.md)
+imports and copies both ordinary-user 4K shader frames in two fresh guests.
+Strict window presentation passes once and fails on repeat. This advances the
+buffer handoff work; it does not complete a roadmap stage or a desktop gate.
+Earlier [Mesa OpenGL shader rendering](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-OPENGL.md)
+also passes two independent 130×73 pixel audits through the Windows NVIDIA bridge.
 
 The [first guest kernel memory-lease component](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-KERNEL-APERTURE.md)
 now passes 581 isolation checks and two fresh OpenGL runs with complete kernel
@@ -47,15 +49,15 @@ now routes real NVIDIA OpenGL shaders from UID 65534 through restricted memory
 FDs in two fresh guests. A third verifies a native fence in a late library
 finalizer after channel close. Both 130×73 frames and all 18 native commands
 pass independent audits in each run, with full guest/native/VM cleanup.
-Multiple native workers, cross-process imports and compositor integration remain
+Independent guest GPU workers and imports, and compositor integration remain
 open; this is part of stage 5 and closes no desktop gate.
 
 The [broker capability store](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-BROKER-OBJECTS.md)
 now also passes ordinary-user full 4K texture export/import and native timeline
 GPU ordering. Two fresh guests retain a native resource reference beyond its
 producer's exit until a separate FD recipient closes it. That recipient does no
-GPU work; independent GPU clients and cross-process GPU imports still require a
-coordinator. DRM/GBM and Hyprland remain pending, with no new desktop gate closed.
+GPU work; independent guest GPU clients and imports still require a coordinator.
+DRM/GBM and Hyprland remain pending, with no new desktop gate closed.
 
 A [separate Windows GPU consumer](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-WINDOWS-WORKER.md)
 now imports and copies the ordinary guest user's two full 4K shader frames.
