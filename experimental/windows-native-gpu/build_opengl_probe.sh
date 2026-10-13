@@ -80,7 +80,14 @@ if [ "${WDDM_BRIDGE_TEST_BROKER_PEER:-0}" = 1 ]; then
         "$base/guest_broker_peer_test.cpp" -ldl -o "$output/broker-peer-contract"
 fi
 if [ "${WDDM_BRIDGE_TEST_BROKER_ROUTE:-0}" = 1 ]; then
-    "${CXX:-c++}" -std=c++17 -O2 -Wall -Wextra -Werror -pthread \
+    # Resource diagnostics use a 4K native bridge/shim pair, including the
+    # explicitly bounded 64 MiB single CPU-mapping profile. Keep the broker's
+    # receipt validation on that same profile; the default stays at 4 MiB.
+    broker_define=
+    if [ "${WDDM_BRIDGE_TEST_RESOURCE_FDS:-0}" = 1 ]; then
+        broker_define=-DWDDM_BRIDGE_4K_LAB=1
+    fi
+    "${CXX:-c++}" -std=c++17 -O2 -Wall -Wextra -Werror -pthread $broker_define \
         "$base/guest_graphics_broker.cpp" -o "$output/guest-graphics-broker"
 fi
 "${CC:-cc}" -static -std=c11 -O2 -Wall -Wextra -Werror \

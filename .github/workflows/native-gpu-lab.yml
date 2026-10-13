@@ -90,6 +90,8 @@ jobs:
           c++ -std=c++17 -O2 -Wall -Wextra -Werror -pthread experimental/windows-native-gpu/guest_broker_routing_test.cpp -o /tmp/broker-routing-test
           c++ -std=c++17 -O2 -Wall -Wextra -Werror -pthread experimental/windows-native-gpu/guest_broker_objects_test.cpp -o /tmp/broker-objects-test
           sudo /tmp/broker-objects-test
+          c++ -std=c++17 -O2 -Wall -Wextra -Werror -pthread -DWDDM_BRIDGE_4K_LAB=1 experimental/windows-native-gpu/guest_broker_objects_test.cpp -o /tmp/broker-objects-4k-test
+          sudo /tmp/broker-objects-4k-test
           c++ -std=c++17 -O2 -Wall -Wextra -Werror experimental/windows-native-gpu/diagnostic_profile_test.cpp -o /tmp/profile-test
           /tmp/profile-test
           c++ -std=c++17 -O2 -Wall -Wextra -Werror -DWDDM_BRIDGE_4K_LAB=1 experimental/windows-native-gpu/diagnostic_profile_test.cpp -o /tmp/profile-4k-test

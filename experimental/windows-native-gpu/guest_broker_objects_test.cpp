@@ -105,7 +105,18 @@ static void importedViews() {
     const auto sync=SharedSyncOpenDesc{2,NoGpuAccessSyncFlag,0,0};
     views.observe(packet(Op::ImportSync,12,encode(sync)),receipt(Op::ImportSync,5,encode(SyncReply{4104,0})));
     CHECK(views.acquire({WDDM_APERTURE_FENCE,0,4096,4096,0}).cookie==0);
-    std::cout<<"BROKER_IMPORTED_VIEWS native=mock kernel=mock gpu=false\n";
+    // Exercise the actual broker receipt policy in both compiled profiles.
+    Views large; large.observe(packet(Op::OpenAdapter),receipt(Op::OpenAdapter,1));
+    large.observe(packet(Op::CreateDevice,1),receipt(Op::CreateDevice,2));
+    large.observe(packet(Op::CreateVendorAllocation,2),receipt(Op::CreateVendorAllocation,3));
+    auto full=receipt(Op::LockVendorAllocation,3,encode(VendorCpuReply{33226752,0,78}));
+    std::memcpy(full.data()+sizeof(Header),&result,sizeof(result));
+    const auto lockRequest=packet(Op::LockVendorAllocation,3,encode(VendorCpuDesc{2,0}));
+    if (gpu_diagnostic::HighResolution) {
+        large.observe(lockRequest,full);
+        CHECK(large.acquire({WDDM_APERTURE_ALLOCATION,0,1048576,33226752,78}).cookie==0);
+    } else denied([&]{large.observe(lockRequest,full);},EPROTO);
+    std::cout<<"BROKER_IMPORTED_VIEWS highResolution="<<gpu_diagnostic::HighResolution<<" native=mock kernel=mock gpu=false\n";
 }
 struct MemoryMock {
     bool closed=false;
