@@ -116,7 +116,9 @@ def validate_worker_receipts(report,guest,records,pixel_audit,*,present=False):
                   kernelCpuViews=created,explicitCpuViewReleases=released,
                   independentGuestGpuClientsVerified=False,drmDeviceVerified=False,gbmVerified=False,
                   dmaBufVerified=False,desktopVerified=False,desktopStabilityVerified=False,
-                  gpuSideCrossProcessWaitVerified=False,nearNativePerformanceVerified=False)
+                  gpuSideCrossProcessWaitVerified=False,nearNativePerformanceVerified=False,
+                  concurrentWindowsGuestWorkloadsVerified=False,requiredApiMatrixVerified=False,
+                  allNvidiaFeaturesVerified=False,openGl4kVerified=False)
     result['separateWindowsPresentationVerified']=present
     return result
 
