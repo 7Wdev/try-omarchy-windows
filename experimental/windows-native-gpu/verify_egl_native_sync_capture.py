@@ -126,9 +126,12 @@ def validate_egl_native_sync(report, guest, records, *, enabled=True):
         require(len(eviction) == 1 and exact(eviction[0], nativeVendorEviction=True, count=1, flags=1, ntstatus=0,
             bytesToTrim=0, pendingCommands=0, pendingSignals=0, pendingWaits=0, nativeCall=True), 'Missing native eviction or work still pending')
         evicted = once('LINUX_BRIDGE nativeVendorEviction=true count=1 flags=1 bytesToTrim=0')
-        resident = once('LINUX_BRIDGE nativeVendorResident=true count=1 status=259 fence=7010 bytesToTrim=0')
-        resident_wait = once('LINUX_BRIDGE cpuFenceWaitRetired=true direct=true target=7010 observed=7010 owner=paging')
-        require(evicted < resident < resident_wait < indices[5], 'Eviction/remake-resident cycle did not finish')
+        cycle = lines[evicted + 1:indices[5]]
+        resident = 'LINUX_BRIDGE nativeVendorResident=true count=1 status=259 fence=7010 bytesToTrim=0'
+        resident_wait = 'LINUX_BRIDGE cpuFenceWaitRetired=true direct=true target=7010 observed=7010 owner=paging'
+        # Paging values are scoped to each owned queue and may occur elsewhere.
+        require(cycle.count(resident) == cycle.count(resident_wait) == 1 and
+            cycle.index(resident) < cycle.index(resident_wait), 'Eviction/remake-resident cycle did not finish')
         require(exact(clean, completedMemoryBudgetQueries=20, attemptedVendorEvictions=1, completedVendorEvictions=1,
             completedVendorResidencyRequests=155, completedVendorResidencyWaits=155,
             acceptedAsyncContextSignals=3, retiredAsyncContextSignals=3, pendingAsyncContextSignals=0,
