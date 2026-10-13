@@ -152,6 +152,8 @@ jobs:
           c++ -std=c++17 -Wall -Wextra -Werror -DWDDM_BRIDGE_RESOURCE_FD_FULL_READBACK=1 -isystem .runtime-headers/include -isystem .runtime-headers/include/wsl/stubs -isystem /tmp/mesa-26.0.8/include -isystem /tmp/mesa-26.0.8/src/gallium/drivers/d3d12 -c experimental/windows-native-gpu/mesa_resource_fd_probe.cpp -o /tmp/mesa-resource-fd-full-readback.o
           c++ -std=c++17 -Wall -Wextra -Werror -DWDDM_BRIDGE_RESOURCE_FD_FULL_READBACK=1 -DWDDM_BRIDGE_RESOURCE_FD_RECIPIENT=1 -isystem .runtime-headers/include -isystem .runtime-headers/include/wsl/stubs -isystem /tmp/mesa-26.0.8/include -isystem /tmp/mesa-26.0.8/src/gallium/drivers/d3d12 -c experimental/windows-native-gpu/mesa_resource_fd_probe.cpp -o /tmp/mesa-resource-fd-recipient.o
           cc -std=c11 -Wall -Wextra -Werror -DWDDM_BRIDGE_MESA_RESOURCE_FD_TEST=1 -c experimental/windows-native-gpu/egl_gl_probe.c -o /tmp/egl-gl-resource-fd.o
+          c++ -std=c++17 -Wall -Wextra -Werror -isystem .runtime-headers/include -isystem .runtime-headers/include/wsl/stubs -isystem .runtime-dxg/include -isystem /tmp/mesa-26.0.8/include -isystem /tmp/mesa-26.0.8/src/gallium/drivers/d3d12 -c experimental/windows-native-gpu/native_sync_file_probe.cpp -o /tmp/native-sync-file-probe.o
+          cc -std=c11 -Wall -Wextra -Werror -DWDDM_BRIDGE_NATIVE_SYNC_FILE_TEST=1 -c experimental/windows-native-gpu/egl_gl_probe.c -o /tmp/egl-gl-native-sync-file.o
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: wddm-bridge-guest-probe

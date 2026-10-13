@@ -40,9 +40,13 @@ struct Descriptor {
 static int status(int fd) {
     sync_fence_info fence{}; sync_file_info info{};
     info.num_fences=1; info.sync_fence_info=reinterpret_cast<std::uintptr_t>(&fence);
-    if (syscall(SYS_ioctl,fd,SYNC_IOC_FILE_INFO,&info) || info.num_fences!=1 ||
-        std::strcmp(fence.driver_name,"wddm-aperture") || std::strcmp(fence.obj_name,"native-monitored-fence") ||
-        fence.status!=info.status) return -10000;
+    if (syscall(SYS_ioctl,fd,SYNC_IOC_FILE_INFO,&info) || info.num_fences!=1 || fence.status!=info.status) return -10000;
+    const bool native=!std::strcmp(fence.driver_name,"wddm-aperture") && !std::strcmp(fence.obj_name,"native-monitored-fence");
+    // Linux 6.18 dma_fence_{driver,timeline}_name replaces names after signal.
+    // Pending fences must still identify this exporter; completion/error
+    // requires the matching standard status, never a name as a substitute.
+    const bool detached=info.status!=0 && !std::strcmp(fence.driver_name,"detached-driver") && !std::strcmp(fence.obj_name,"signaled-timeline");
+    if(!native && !detached) return -10000;
     return info.status;
 }
 static int ready(int fd,int timeout) {
@@ -94,7 +98,13 @@ extern "C" int wddm_native_sync_file_test(EGLDisplay display,EGLContext context)
     }
     errno=0; if(exportFile(static_cast<const char*>(word)+8,58)!=-1 || errno!=EBADF) return failure("WrongWord");
     Descriptor done(exportFile(word,57));
-    if(done.fd<0 || !(fcntl(done.fd,F_GETFD)&FD_CLOEXEC) || !finish(done.fd,1)) return failure("AlreadyComplete");
+    const auto completeReady=done.fd<0 ? -1:ready(done.fd,6500);
+    sync_fence_info detail{}; sync_file_info fileInfo{}; fileInfo.num_fences=1;
+    fileInfo.sync_fence_info=reinterpret_cast<std::uintptr_t>(&detail);
+    const auto infoResult=done.fd<0 ? -1:syscall(SYS_ioctl,done.fd,SYNC_IOC_FILE_INFO,&fileInfo);
+    std::printf("NATIVE_SYNC_FILE_INFO fd=%d flags=%d ready=%d ioctl=%ld fences=%u status=%d fenceStatus=%d driver=%s timeline=%s\n",
+        done.fd,done.fd<0?-1:fcntl(done.fd,F_GETFD),completeReady,infoResult,fileInfo.num_fences,fileInfo.status,detail.status,detail.driver_name,detail.obj_name);
+    if(done.fd<0 || !(fcntl(done.fd,F_GETFD)&FD_CLOEXEC) || completeReady!=1 || status(done.fd)!=1) return failure("AlreadyComplete");
     done.reset();
     HANDLE handle=nullptr;
     D3DKMT_SHAREOBJECTS share{}; share.ObjectCount=1; share.ObjectHandleArray=&source.hSyncObject;

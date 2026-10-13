@@ -21,6 +21,7 @@ struct native_sync {
 	spinlock_t lock;
 	struct delayed_work poll;
 	struct work_struct free;
+	struct rcu_head reclaim;
 	struct file *source;
 	void __iomem *word;
 	u64 target;
@@ -43,11 +44,18 @@ static void native_sync_free(struct work_struct *work)
 	/* Module exit destroys/flushed this queue before its code is removed. */
 	module_put(THIS_MODULE);
 }
+static void native_sync_rcu_release(struct rcu_head *head)
+{
+	struct native_sync *sync = container_of(head, struct native_sync, reclaim);
+	queue_work(native_sync_wq, &sync->free);
+}
 static void native_sync_release(struct dma_fence *fence)
 {
 	struct native_sync *sync = container_of(fence, struct native_sync, fence);
-	/* Last put may run in atomic context. iounmap/fput use our workqueue. */
-	queue_work(native_sync_wq, &sync->free);
+	/* Last put may run in atomic context. Fence memory/ops obey the RCU
+	 * lifetime contract; iounmap/fput then run in process context. The module
+	 * reference survives the grace period and the final cleanup worker. */
+	call_rcu(&sync->reclaim, native_sync_rcu_release);
 }
 static const struct dma_fence_ops native_sync_ops = {
 	.get_driver_name = native_sync_driver, .get_timeline_name = native_sync_timeline,
