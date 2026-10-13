@@ -42,12 +42,13 @@ now passes the full 33 MB readback in two fresh 256-slot guests, retaining the
 128-slot failure and the same 96 MiB physical mapping limit. General aperture
 fragmentation, desktop stability and performance remain unverified.
 
-The [guest broker peer boundary](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/GUEST-GRAPHICS-BROKER.md)
-now authenticates real client processes and tracks their kernel lifetime through
-socket disconnect, library finalizers and a zombie leader with a live thread.
-Its contract passes as UID 65534 in the guest before a successful full 4K GPU
-regression. GPU routing and cross-process native imports remain unimplemented;
-this is a component of stage 5 and closes no desktop gate.
+The [opt-in guest graphics broker](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-BROKER-ROUTING.md)
+now routes real NVIDIA OpenGL shaders from UID 65534 through restricted memory
+FDs in two fresh guests. A third verifies a native fence in a late library
+finalizer after channel close. Both 130×73 frames and all 18 native commands
+pass independent audits in each run, with full guest/native/VM cleanup.
+Multiple native workers, cross-process imports and compositor integration remain
+open; this is part of stage 5 and closes no desktop gate.
 
 ![Four of eight verification stages demonstrated; zero of four desktop acceptance gates complete](images/gpu-backend-progress.svg)
 
