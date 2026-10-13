@@ -29,6 +29,9 @@ enum { Width = 130, Height = 73, Frames = 2 };
 #ifdef WDDM_BRIDGE_SYNC_FD_TEST
 extern int wddm_sync_fd_test(void);
 #endif
+#ifdef WDDM_BRIDGE_NATIVE_SYNC_FILE_TEST
+extern int wddm_native_sync_file_test(EGLDisplay, EGLContext);
+#endif
 #ifdef WDDM_BRIDGE_MESA_FENCE_FD_TEST
 extern int wddm_mesa_fence_fd_test(EGLDisplay, EGLContext);
 #endif
@@ -62,7 +65,7 @@ int main(void) {
     if (setenv("D3D12_EXPERIMENTAL_FENCE_FD", "true", 1)) return fail("FenceFdOptIn");
 #endif
     puts("OPENGL_TEST_BEGIN api=OpenGL requested=3.3 width=130 height=73 frames=2 display=false");
-#if defined(WDDM_BRIDGE_MESA_FENCE_FD_TEST) || defined(WDDM_BRIDGE_MESA_RESOURCE_FD_TEST)
+#if defined(WDDM_BRIDGE_MESA_FENCE_FD_TEST) || defined(WDDM_BRIDGE_MESA_RESOURCE_FD_TEST) || defined(WDDM_BRIDGE_NATIVE_SYNC_FILE_TEST)
     const char* begin_name = "wddm_bridge_begin_opengl_fences";
 #else
     const char* begin_name = "wddm_bridge_begin_opengl";
@@ -156,6 +159,9 @@ int main(void) {
     glDeleteShader(vertex); glDeleteShader(fragment);
 #ifdef WDDM_BRIDGE_MESA_RESOURCE_FD_TEST
     if (wddm_mesa_resource_fd_test(display, context)) return fail("SharedResourceFd");
+#endif
+#ifdef WDDM_BRIDGE_NATIVE_SYNC_FILE_TEST
+    if (wddm_native_sync_file_test(display, context)) return fail("NativeSyncFile");
 #endif
     if (!eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT) ||
         !eglDestroyContext(display, context) || !eglDestroySurface(display, surface) || !eglTerminate(display))

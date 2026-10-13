@@ -19,7 +19,23 @@ if [ "${WDDM_BRIDGE_TEST_EXIT_LIFETIME:-0}" = 1 ]; then
         -isystem "$dxg/include" -isystem "$directx/include" -isystem "$directx/include/wsl/stubs" \
         "$base/exit_lifetime_probe.cpp" -o "$output/exit-lifetime-probe.so"
 fi
-if [ "${WDDM_BRIDGE_TEST_RESOURCE_FDS:-0}" = 1 ]; then
+if [ "${WDDM_BRIDGE_TEST_NATIVE_SYNC_FILES:-0}" = 1 ]; then
+    if [ "${WDDM_BRIDGE_TEST_RESOURCE_FDS:-0}" = 1 ] || [ "${WDDM_BRIDGE_TEST_MESA_FENCE_FDS:-0}" = 1 ] || [ "${WDDM_BRIDGE_TEST_SYNC_FDS:-0}" = 1 ]; then
+        echo 'Select one explicit FD diagnostic at a time' >&2; exit 2
+    fi
+    source=${WDDM_BRIDGE_MESA_SOURCE:?Supply pinned Mesa source}
+    directx=${WDDM_BRIDGE_DIRECTX_HEADERS:?Supply DirectX-Headers source}
+    dxg=${WDDM_BRIDGE_DXG_HEADERS:?Supply libdxg source}
+    "${CXX:-c++}" -std=c++17 -O2 -Wall -Wextra -Werror \
+        -isystem "$directx/include" -isystem "$directx/include/wsl/stubs" -isystem "$dxg/include" \
+        -isystem "$source/include" -isystem "$source/src/gallium/drivers/d3d12" \
+        -c "$base/native_sync_file_probe.cpp" -o "$output/native-sync-file-probe.o"
+    "${CC:-cc}" -std=c11 -O2 -Wall -Wextra -Werror $exit_define -DWDDM_BRIDGE_NATIVE_SYNC_FILE_TEST=1 \
+        -isystem "$mesa/include" -c "$base/egl_gl_probe.c" -o "$output/egl-gl-probe.o"
+    "${CXX:-c++}" -std=c++17 -isystem "$directx/include" -isystem "$directx/include/wsl/stubs" \
+        "$output/egl-gl-probe.o" "$output/native-sync-file-probe.o" "$directx/src/dxguids.cpp" \
+        -L"$mesa/lib" -Wl,-rpath-link,"$mesa/lib" -l:libEGL.so.1 -ldl -o "$output/egl-gl-probe"
+elif [ "${WDDM_BRIDGE_TEST_RESOURCE_FDS:-0}" = 1 ]; then
     if [ "${WDDM_BRIDGE_TEST_MESA_FENCE_FDS:-0}" = 1 ] || [ "${WDDM_BRIDGE_TEST_SYNC_FDS:-0}" = 1 ]; then
         echo 'Select one explicit FD diagnostic at a time' >&2
         exit 2

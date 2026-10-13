@@ -154,6 +154,12 @@ public:
         std::fprintf(stderr, "LINUX_BRIDGE guestFenceUnmapped=true\n");
     }
     unsigned total() const { return created; }
+    int syncFile(const void* word,std::uint64_t value) {
+        if (!kernel.enabled()) throw std::system_error(EOPNOTSUPP,std::generic_category(),"Sync-file requires kernel leases");
+        for (const auto& entry:mappings) if (entry.second.fence==word) return kernel.syncFile(word,value);
+        throw std::system_error(EBADF,std::generic_category(),"Sync-file requires the exact owned fence pointer");
+    }
+    wddm_sync_file_stats syncFileInfo() { return kernel.syncFileInfo(); }
     bool contains(std::uint32_t queue) const { return mappings.count(queue) != 0; }
     std::uint64_t directLoads() const { return reads; }
 };

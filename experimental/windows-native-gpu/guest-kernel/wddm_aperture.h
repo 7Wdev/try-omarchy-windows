@@ -64,4 +64,19 @@ struct wddm_object_stats {
 #define WDDM_OBJECT_REVOKE _IOW('W', 0x45, struct wddm_aperture_revoke)
 #define WDDM_OBJECT_REAP _IOWR('W', 0x46, struct wddm_object_reap)
 #define WDDM_OBJECT_STATS _IOWR('W', 0x47, struct wddm_object_stats)
+
+/* Explicit experimental sync_file export from an authorized read-only native
+ * monitored-fence lease. No DMA-BUF or EGL-native-fence import is implied. */
+struct wddm_sync_file_create {
+	__u32 version, flags;
+	__u64 cookie, offset, value;
+	__s32 fd;
+	__u32 reserved;
+};
+struct wddm_sync_file_stats {
+	__u32 version, held, pending, reserved;
+	__u64 created, signaled, errors, released;
+};
+#define WDDM_SYNC_FILE_CREATE _IOWR('W', 0x48, struct wddm_sync_file_create)
+#define WDDM_SYNC_FILE_STATS _IOWR('W', 0x49, struct wddm_sync_file_stats)
 #endif

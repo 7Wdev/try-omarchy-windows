@@ -9,7 +9,7 @@
 namespace guest_broker {
 class Views {
 public:
-    struct Grant { ViewRequest view; std::uint64_t cookie = 0; };
+    struct Grant { ViewRequest view; std::uint64_t cookie = 0; std::uint32_t fenceOffset=0; };
 private:
     std::map<std::uint32_t, Grant> grants;
     std::map<std::uint32_t, std::uint32_t> parents, resources;
@@ -53,7 +53,7 @@ private:
             return {h.handle};
         return {};
     }
-    void grant(std::uint32_t object, ViewRequest view) {
+    void grant(std::uint32_t object, ViewRequest view, std::uint32_t fenceOffset=0) {
         using namespace driver_bridge;
         require(parents.count(object) && grants.size() < WDDM_APERTURE_MAX_LEASES && !grants.count(object), "Native view identity collision");
         if (view.kind == WDDM_APERTURE_FENCE)
@@ -67,7 +67,7 @@ private:
             require(view.kind != b.kind || view.offset >= b.offset + b.bytes || b.offset >= view.offset + view.bytes,
                     "Native view overlap");
         }
-        grants.emplace(object, Grant{view,0});
+        grants.emplace(object, Grant{view,0,fenceOffset});
     }
 public:
     void approve(const std::vector<std::uint8_t>& packet) const {
@@ -114,7 +114,7 @@ public:
             const auto value = at<PagingReply>(response,payload);
             require(response.size() == payload + sizeof(value) && !value.reserved && !(value.offset % 8),"Native paging receipt");
             parent(r.handle,h.handle); parent(value.sync,r.handle);
-            grant(r.handle,{WDDM_APERTURE_FENCE,0,value.offset & ~4095ull,4096,0});
+            grant(r.handle,{WDDM_APERTURE_FENCE,0,value.offset & ~4095ull,4096,0},static_cast<std::uint32_t>(value.offset&4095));
         }
         if (op == Op::CreateHwQueue) {
             const auto value = at<HwQueueReply>(response,payload);
@@ -123,14 +123,14 @@ public:
                     response.size() == payload + sizeof(value) + desc.privateBytes && !value.reserved && !(value.offset % 8),
                     "Native queue receipt");
             parent(r.handle,h.handle); parent(value.sync,r.handle);
-            grant(r.handle,{WDDM_APERTURE_FENCE,0,value.offset & ~4095ull,4096,0});
+            grant(r.handle,{WDDM_APERTURE_FENCE,0,value.offset & ~4095ull,4096,0},static_cast<std::uint32_t>(value.offset&4095));
         }
         if (op == Op::CreateSync) {
             const auto desc = at<SyncDesc>(request,sizeof(Header)); parent(r.handle,h.handle);
             if (desc.type == 5) {
                 const auto value = at<SyncReply>(response,payload);
                 require(response.size() == payload + sizeof(value) && !(value.offset % 8),"Native sync receipt");
-                grant(r.handle,{WDDM_APERTURE_FENCE,0,value.offset & ~4095ull,4096,0});
+                grant(r.handle,{WDDM_APERTURE_FENCE,0,value.offset & ~4095ull,4096,0},static_cast<std::uint32_t>(value.offset&4095));
             }
         }
         if (op == Op::ImportSync) {
@@ -140,7 +140,7 @@ public:
                     response.size()==payload+sizeof(value) && !(value.offset%8) && value.offset<FenceApertureBytes &&
                     validSyncGpuAddress(SyncDesc{5,desc.flags,desc.affinity,0,0},value.gpuAddress),"Native imported sync receipt");
             parent(r.handle,desc.device);
-            grant(r.handle,{WDDM_APERTURE_FENCE,0,value.offset&~4095ull,4096,0});
+            grant(r.handle,{WDDM_APERTURE_FENCE,0,value.offset&~4095ull,4096,0},static_cast<std::uint32_t>(value.offset&4095));
         }
         if (op == Op::ImportResource) {
             const auto desc=at<SharedResourceOpenDesc>(request,sizeof(Header));
@@ -187,6 +187,12 @@ public:
     }
     std::size_t active() const {
         return std::count_if(grants.begin(),grants.end(),[](const auto& i){return i.second.cookie != 0;});
+    }
+    void syncFile(SyncFileRequest request) {
+        const auto& g=cookie(request.cookie);
+        if (g.view.kind!=WDDM_APERTURE_FENCE || request.offset!=g.fenceOffset ||
+            !request.value || request.value==UINT64_MAX)
+            throw std::system_error(EPERM,std::generic_category(),"Sync-file requires the exact authorized native fence word");
     }
 };
 } // namespace guest_broker

@@ -1593,6 +1593,8 @@ public:
         return result.result.value;
     }
     void protocolFailed() { transport.fail(); }
+    int exportSyncFile(const void* word,std::uint64_t value) { return syncFences.syncFile(word,value); }
+    wddm_sync_file_stats syncFileInfo() { return syncFences.syncFileInfo(); }
 };
 // The process owns the bridge until the kernel destroys its address space.
 // Stop forwarding under the same mutex used by every hook, but preserve state
@@ -1644,6 +1646,24 @@ extern "C" int wddm_bridge_begin_streaming() {
     try { state.beginStreaming(); return 0; }
     catch (const Error& error) { errno = error.number; }
     catch (...) { state.protocolFailed(); errno = EIO; }
+    return -1;
+}
+extern "C" int wddm_bridge_export_sync_file(const void* word,std::uint64_t value) {
+    if (bridgeStopped) { errno=ESHUTDOWN; return -1; }
+    auto& state=bridge(); std::lock_guard<std::mutex> lock(state.guard);
+    if (bridgeStopped) { errno=ESHUTDOWN; return -1; }
+    try { return state.exportSyncFile(word,value); }
+    catch (const std::system_error& error) { errno=error.code().value(); }
+    catch (...) { errno=EIO; }
+    return -1;
+}
+extern "C" int wddm_bridge_sync_file_info(wddm_sync_file_stats* info) {
+    if (bridgeStopped || !info) { errno=EINVAL; return -1; }
+    auto& state=bridge(); std::lock_guard<std::mutex> lock(state.guard);
+    if (bridgeStopped) { errno=ESHUTDOWN; return -1; }
+    try { *info=state.syncFileInfo(); return 0; }
+    catch (const std::system_error& error) { errno=error.code().value(); }
+    catch (...) { errno=EIO; }
     return -1;
 }
 extern "C" int wddm_bridge_begin_opengl() {

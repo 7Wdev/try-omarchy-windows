@@ -87,6 +87,7 @@ static int lease_release(struct inode *inode, struct file *file)
 static const struct file_operations lease_fops = {
 	.owner = THIS_MODULE, .mmap = lease_mmap, .release = lease_release,
 };
+#include "wddm_sync_file.h"
 
 /* Caller holds aperture_lock. Zap every recipient before freeing its range:
  * another creator must not reuse an offset while stale PTEs still exist.
@@ -220,6 +221,8 @@ static long control_ioctl(struct file *control, unsigned int request, unsigned l
 	struct file *file = NULL;
 	u32 counter;
 	int result = 0;
+	if (request == WDDM_SYNC_FILE_CREATE) return native_sync_create(control, pointer);
+	if (request == WDDM_SYNC_FILE_STATS) return native_sync_stats(pointer);
 	if (request == WDDM_APERTURE_CREATE)
 		return create_lease(control, pointer);
 	if (request == WDDM_APERTURE_REVOKE) {
@@ -346,16 +349,20 @@ static struct pci_driver aperture_driver = {
 };
 static int __init aperture_init(void)
 {
-	int result = pci_register_driver(&aperture_driver);
-	if (result) return result;
+	int result;
+	native_sync_wq = alloc_workqueue("wddm-native-sync", WQ_UNBOUND | WQ_MEM_RECLAIM, 0);
+	if (!native_sync_wq) return -ENOMEM;
+	result = pci_register_driver(&aperture_driver);
+	if (result) { destroy_workqueue(native_sync_wq); return result; }
 	result = misc_register(&aperture_device);
-	if (result) pci_unregister_driver(&aperture_driver);
+	if (result) { pci_unregister_driver(&aperture_driver); destroy_workqueue(native_sync_wq); }
 	return result;
 }
 static void __exit aperture_exit(void)
 {
 	misc_deregister(&aperture_device);
 	pci_unregister_driver(&aperture_driver);
+	destroy_workqueue(native_sync_wq);
 }
 module_init(aperture_init);
 module_exit(aperture_exit);

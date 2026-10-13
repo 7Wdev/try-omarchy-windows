@@ -28,7 +28,7 @@ namespace guest_broker {
 constexpr std::uint32_t Magic = 0x4b524257; // WBRK, little endian
 constexpr std::uint16_t Version = 3;
 constexpr std::size_t MaxPayload = 4096, MaxFds = 8;
-enum class Operation : std::uint16_t { Hello=1, DriverCall, AcquireView, ReleaseView, ResolveObject, CreateObject, ReapObject, ObjectInfo };
+enum class Operation : std::uint16_t { Hello=1, DriverCall, AcquireView, ReleaseView, ResolveObject, CreateObject, ReapObject, ObjectInfo, ExportSyncFile, SyncFileInfo };
 struct Frame {
     std::uint32_t magic = Magic;
     std::uint16_t version = Version;
@@ -205,7 +205,7 @@ public:
         if (f.magic != Magic || f.version != Version || f.reserved || f.status < 0 || f.status > 4095 ||
             (!replies && f.status) || (f.status && (f.bytes || f.fds)) || f.bytes > MaxPayload ||
             sizeof(Frame) + f.bytes != static_cast<std::size_t>(bytes) || f.fds != result.fds.size() ||
-            f.operation < Operation::Hello || f.operation > Operation::ObjectInfo ||
+            f.operation < Operation::Hello || f.operation > Operation::SyncFileInfo ||
             sequenceExhausted || f.sequence != nextSequence)
             reject(EPROTO, "Invalid broker version, bounds, operation or sequence");
         result.payload.assign(packet.begin() + sizeof(Frame), packet.begin() + bytes);

@@ -15,6 +15,8 @@ struct ViewRequest {
     std::uint64_t offset, bytes, generation;
 };
 struct ViewReply { std::uint64_t cookie; };
+struct SyncFileRequest { std::uint64_t cookie, offset, value; };
+static_assert(sizeof(SyncFileRequest)==24,"Fixed optional sync-file request ABI");
 struct ObjectRequest { std::uint32_t kind, ticket; std::uint64_t reserved; };
 struct ObjectRef { std::uint32_t kind=0, ticket=0; std::uint64_t cookie=0; };
 static_assert(sizeof(ObjectRequest)==16 && sizeof(ObjectRef)==16,"Fixed broker capability ABI");
@@ -26,7 +28,8 @@ inline std::uint32_t importKind(driver_bridge::Op op) {
 }
 inline bool recoverableObjectError(Operation operation,int error) {
     return (operation==Operation::ResolveObject && (error==EBADF || error==EINVAL || error==EPERM || error==ENODEV)) ||
-           (operation==Operation::CreateObject && (error==ENOMEM || error==ENOSPC));
+           (operation==Operation::CreateObject && (error==ENOMEM || error==ENOSPC)) ||
+           (operation==Operation::ExportSyncFile && (error==ENOMEM || error==ENOSPC || error==EOPNOTSUPP));
 }
 static_assert(sizeof(ViewRequest) == 32 && sizeof(ViewReply) == 8, "Fixed broker view ABI");
 template<class T> std::vector<std::uint8_t> encode(const T& value) {
@@ -131,6 +134,16 @@ public:
     void release(std::uint64_t cookie) {
         auto reply = request(Operation::ReleaseView, encode(ViewReply{cookie}));
         if (!reply.fds.empty() || !reply.payload.empty()) { disconnect(); failed(EPROTO, "Broker release response mismatch"); }
+    }
+    Fd syncFile(SyncFileRequest requestValue) {
+        auto reply=request(Operation::ExportSyncFile,encode(requestValue));
+        if (reply.fds.size()!=1 || !reply.payload.empty()) { disconnect(); failed(EPROTO,"Sync-file export response mismatch"); }
+        return std::move(reply.fds[0]);
+    }
+    wddm_sync_file_stats syncFileInfo() {
+        auto reply=request(Operation::SyncFileInfo);
+        if (!reply.fds.empty()) { disconnect(); failed(EPROTO,"Sync-file info carried descriptors"); }
+        return decode<wddm_sync_file_stats>(reply.payload);
     }
     wddm_object_stats objectInfo() {
         auto reply=request(Operation::ObjectInfo);

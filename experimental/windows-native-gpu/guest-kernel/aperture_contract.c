@@ -46,6 +46,7 @@ static void bus_signal(int signal_number)
     _exit(signal_number == SIGBUS ? 74 : 75);
 }
 #include "object_contract.h"
+#include "native_sync_contract.h"
 static void transfer_and_revoke_lease(int control)
 {
     int sockets[2], status;
@@ -193,6 +194,7 @@ int main(void)
     }
     object_contract(control);
     resource_object_contract(control);
+    native_sync_contract(control);
     transfer_and_revoke_lease(control);
     /* Controller close revokes a recipient FD even when that FD stays open. */
     arg=fence(); REQUIRE(!ioctl(control,WDDM_APERTURE_CREATE,&arg));

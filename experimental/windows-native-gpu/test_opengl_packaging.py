@@ -1,5 +1,6 @@
 """Private Mesa packaging bounds using inert ELF fixtures, never vendor code."""
 import contextlib
+import gzip
 import io
 import json
 from pathlib import Path
@@ -94,6 +95,19 @@ class OpenGlPackaging(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self.run_packer(*self.broker_kernel_arguments(),'--guest-graphics-broker',str(self.input),'--runtime-workload','shared')
         self.assertFalse(self.output.exists())
+    def test_native_sync_files_require_explicit_module_and_opt_in(self):
+        with self.assertRaises(SystemExit): self.run_packer('--guest-native-sync-files')
+        self.assertFalse(self.output.exists())
+        self.run_packer(*self.broker_kernel_arguments(),'--guest-native-sync-files')
+        manifest=json.loads(self.output.with_suffix('.manifest.json').read_text())
+        self.assertTrue(manifest['nativeSyncFilesEnabled'])
+        self.assertIn(b'native-sync-files-required',gzip.decompress(self.output.read_bytes()))
+
+    def test_native_sync_files_are_disabled_in_default_images(self):
+        self.run_packer(*self.broker_kernel_arguments())
+        manifest=json.loads(self.output.with_suffix('.manifest.json').read_text())
+        self.assertFalse(manifest['nativeSyncFilesEnabled'])
+        self.assertNotIn(b'native-sync-files-required',gzip.decompress(self.output.read_bytes()))
 
     def test_graphics_broker_elf_is_validated(self):
         bad=self.base/'invalid-graphics-broker'; bad.write_bytes(b'not an ELF')

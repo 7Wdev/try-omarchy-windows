@@ -50,6 +50,10 @@ static void viewPolicy() {
         denied([&]{views.acquire(invalid);},field==4 ? EPROTO : EPERM);
     }
     views.acquire(fence).cookie=8; CHECK(views.active()==1);
+    views.syncFile({8,8,57});
+    for (const auto invalid: {SyncFileRequest{8,0,57},SyncFileRequest{8,16,57},SyncFileRequest{8,8,0},SyncFileRequest{8,8,UINT64_MAX}})
+        denied([&]{views.syncFile(invalid);},EPERM);
+    denied([&]{views.syncFile({9,8,57});},EBADF);
     denied([&]{views.acquire(fence);},EBUSY);
     denied([&]{views.cookie(0);},EBADF); denied([&]{views.cookie(9);},EBADF);
     for (auto op : {Op::DestroyPagingQueue,Op::DestroyDevice,Op::CloseAdapter})
@@ -87,6 +91,7 @@ static void viewPolicy() {
     denied([&]{allocation.acquire(cpu);},EPERM);
     allocation.observe(lock,receipt(Op::LockVendorAllocation,5,cpu.offset,encode(VendorCpuReply{4096,0,77})));
     allocation.acquire(cpu).cookie=9;
+    denied([&]{allocation.syncFile({9,0,1});},EPERM);
     denied([&]{allocation.approve(packet(Op::UnlockVendorAllocation,5,encode(VendorCpuDesc{2,0})));},EBUSY);
     denied([&]{allocation.approve(packet(Op::DestroyVendorResource,6,encode(std::uint32_t{2})));},EBUSY);
     auto destroy=encode(DestroyVendorDesc{1,0}); const auto id=encode(std::uint32_t{5}); destroy.insert(destroy.end(),id.begin(),id.end());
@@ -110,6 +115,8 @@ struct NativeMock {
     }
 };
 struct KernelMock {
+    Fd syncFile(SyncFileRequest) { throw std::system_error(EOPNOTSUPP,std::generic_category(),"No kernel in portable test"); }
+    wddm_sync_file_stats syncFileInfo() { return {1,0,0,0,0,0,0,0}; }
     unsigned created=0,released=0;
     void close() {}
     wddm_aperture_info info() { return {1,128,256,0,128*4096,256*1048576,1048576,0,0,0,0}; }
@@ -151,6 +158,8 @@ static void realRpc(bool attack,const char* probe=nullptr,const char* shim=nullp
             CHECK(mmap(nullptr,4096,PROT_READ|PROT_WRITE,MAP_SHARED,reply.fds[0].get(),0)==MAP_FAILED && errno==EACCES);
             auto* page=static_cast<std::uint64_t*>(mmap(nullptr,4096,PROT_READ,MAP_SHARED,reply.fds[0].get(),0));
             CHECK(page!=MAP_FAILED && page[1]==57);
+            denied([&]{client.syncFile({decode<ViewReply>(reply.payload).cookie,8,58});},EOPNOTSUPP);
+            CHECK(client.syncFileInfo().held==0 && client.info().fence_slots==128);
             if (attack) denied([&]{client.acquire({WDDM_APERTURE_ALLOCATION,0,0,4096,1});},EPERM);
             client.disconnect(); const char marker='C'; CHECK(write(notices[1],&marker,1)==1);
             char command=0; CHECK(read(commands[0],&command,1)==1 && command=='E');

@@ -46,6 +46,20 @@ public:
         if (syscall(SYS_ioctl,control.get(),WDDM_APERTURE_REVOKE,&request))
             throw std::system_error(errno,std::generic_category(),"Broker kernel view revoke");
     }
+    Fd syncFile(SyncFileRequest value) {
+        open(); wddm_sync_file_create request{}; request.version=WDDM_APERTURE_VERSION;
+        request.cookie=value.cookie; request.offset=value.offset; request.value=value.value;
+        if (syscall(SYS_ioctl,control.get(),WDDM_SYNC_FILE_CREATE,&request))
+            throw std::system_error(errno,std::generic_category(),"Broker native sync-file export");
+        if (request.fd<0) throw std::system_error(EPROTO,std::generic_category(),"Broker sync-file descriptor");
+        return Fd(request.fd);
+    }
+    wddm_sync_file_stats syncFileInfo() {
+        open(); wddm_sync_file_stats value{}; value.version=WDDM_APERTURE_VERSION;
+        if (syscall(SYS_ioctl,control.get(),WDDM_SYNC_FILE_STATS,&value))
+            throw std::system_error(errno,std::generic_category(),"Broker native sync-file stats");
+        return value;
+    }
 };
 class Port {
     const std::string path;
@@ -122,6 +136,14 @@ template<class Native,class Authority,class ObjectAuthority> int serve(Peer& pee
                     auto& grant=views.cookie(decode<ViewReply>(message.payload).cookie);
                     kernel.release(grant.cookie); grant.cookie=0; ++released;
                     peer.send(operation,message.frame.sequence,{});
+                } else if (operation == Operation::ExportSyncFile) {
+                    const auto value=decode<SyncFileRequest>(message.payload);
+                    views.syncFile(value); expectedObjectError=true;
+                    auto fd=kernel.syncFile(value);
+                    peer.send(operation,message.frame.sequence,{}, {fd.get()});
+                } else if (operation == Operation::SyncFileInfo) {
+                    if (!message.payload.empty()) throw std::system_error(EPROTO,std::generic_category(),"Sync-file info payload");
+                    peer.send(operation,message.frame.sequence,encode(kernel.syncFileInfo()));
                 } else if (operation == Operation::ObjectInfo) {
                     if (!message.payload.empty()) throw std::system_error(EPROTO,std::generic_category(),"Object info payload");
                     peer.send(operation,message.frame.sequence,encode(objectKernel.info()));

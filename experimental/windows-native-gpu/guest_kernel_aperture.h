@@ -104,6 +104,30 @@ public:
         views.erase(found);
         std::fprintf(stderr, "LINUX_BRIDGE kernelApertureRevoked=true\n");
     }
+    int syncFile(const void* word,std::uint64_t value) {
+        const auto address=reinterpret_cast<std::uintptr_t>(word);
+        if (!enabled() || !address || address%8 || !value || value==UINT64_MAX)
+            throw std::system_error(EINVAL,std::generic_category(),"Invalid native sync-file target");
+        for (const auto& entry:views) {
+            const auto start=reinterpret_cast<std::uintptr_t>(entry.first);
+            if (address<start || address-start>=entry.second.bytes || entry.second.bytes-(address-start)<8) continue;
+            const guest_broker::SyncFileRequest request{entry.second.cookie,address-start,value};
+            if (guest_broker::clientEnabled()) return guest_broker::client().syncFile(request).release();
+            wddm_sync_file_create arg{}; arg.version=WDDM_APERTURE_VERSION;
+            arg.cookie=request.cookie; arg.offset=request.offset; arg.value=value;
+            if (syscall(SYS_ioctl,control,WDDM_SYNC_FILE_CREATE,&arg))
+                throw std::system_error(errno,std::generic_category(),"Native sync-file export");
+            return arg.fd;
+        }
+        throw std::system_error(EBADF,std::generic_category(),"Native sync-file word has no owned lease");
+    }
+    wddm_sync_file_stats syncFileInfo() {
+        if (guest_broker::clientEnabled()) return guest_broker::client().syncFileInfo();
+        open(); wddm_sync_file_stats value{}; value.version=WDDM_APERTURE_VERSION;
+        if (syscall(SYS_ioctl,control,WDDM_SYNC_FILE_STATS,&value))
+            throw std::system_error(errno,std::generic_category(),"Native sync-file stats");
+        return value;
+    }
 };
 static_assert(sizeof(wddm_aperture_info) == 72 && sizeof(wddm_aperture_create) == 64 &&
               sizeof(wddm_aperture_revoke) == 16, "Fixed kernel aperture ABI");

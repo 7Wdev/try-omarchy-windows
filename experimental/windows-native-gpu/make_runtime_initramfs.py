@@ -28,6 +28,7 @@ def main():
     parser.add_argument('--mesa-runtime-directory', type=pathlib.Path, help='Private non-GLVND Mesa install for the explicit OpenGL probe; relocated to /opt/wddm-mesa')
     parser.add_argument('--guest-aperture-module', type=pathlib.Path, help='Explicit guest-only wddm_aperture.ko built against the matching guest kernel')
     parser.add_argument('--guest-aperture-contract', type=pathlib.Path, help='Static guest isolation probe, required with the aperture module')
+    parser.add_argument('--guest-native-sync-files', action='store_true', help='Explicit guest-only native GPU sync-file export; requires aperture module')
     parser.add_argument('--guest-broker-contract', type=pathlib.Path, help='Optional real-process broker peer contract executable')
     parser.add_argument('--guest-broker-finalizer', type=pathlib.Path, help='ELF finalizer DSO required with the broker peer contract')
     parser.add_argument('--guest-graphics-broker', type=pathlib.Path, help='Opt-in single-client privileged broker; render process runs as UID 65534')
@@ -41,6 +42,8 @@ def main():
     if not re.fullmatch(r'[A-Za-z0-9._-]{1,128}', module):
         parser.error('Invalid Linux UMD module basename')
     files = {'init': args.init, 'guest-probe': args.probe, 'linux-ioctl-bridge.so': args.shim}
+    if args.guest_native_sync_files and not args.guest_aperture_module:
+        parser.error('Native sync-file export requires the guest aperture module')
     roots = [args.probe, args.shim, args.linux_umd, args.d3d12, args.d3d12core, args.dxcore]
     if args.guest_graphics_broker:
         if not args.guest_aperture_module or not args.guest_aperture_contract or args.runtime_workload not in ('init','copy','clear','triangle','native','opengl'):
@@ -148,6 +151,7 @@ def main():
     manifest = {'schema': 1, 'privateImage': True, 'vendorBinariesIncluded': True,
                 'redistributionApproved': False, 'runtimeWorkload': args.runtime_workload,
                 'kernelApertureIncluded': bool(args.guest_aperture_module),
+                'nativeSyncFilesEnabled': args.guest_native_sync_files,
                 'guestBrokerContractIncluded': bool(args.guest_broker_contract),
                 'guestGraphicsBrokerIncluded': bool(args.guest_graphics_broker),
                 'mesaFrontendIncluded': bool(args.mesa_runtime_directory), 'files': []}
@@ -159,6 +163,8 @@ def main():
     entry('runtime-workload', stat.S_IFREG | 0o600, args.runtime_workload.encode())
     if args.guest_aperture_module:
         entry('kernel-aperture-required', stat.S_IFREG | 0o600, b'1')
+    if args.guest_native_sync_files:
+        entry('native-sync-files-required', stat.S_IFREG | 0o600, b'1')
     if args.guest_broker_contract:
         entry('broker-peer-required', stat.S_IFREG | 0o600, b'1')
     if args.guest_graphics_broker:

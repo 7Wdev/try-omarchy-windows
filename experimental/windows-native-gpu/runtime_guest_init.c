@@ -95,7 +95,8 @@ static int kernel_aperture_start(void) {
     if (access("/kernel-aperture-required", F_OK)) return 0;
     const int module = open("/wddm-aperture.ko", O_RDONLY | O_CLOEXEC);
     if (module < 0) { perror("aperture module open"); return -1; }
-    const int result = (int)syscall(SYS_finit_module, module, "", 0);
+    const char* parameters=access("/native-sync-files-required",F_OK) ? "" : "enable_native_sync_files=1";
+    const int result = (int)syscall(SYS_finit_module, module, parameters, 0);
     close(module);
     if (result) { perror("guest aperture finit_module"); return -1; }
     pid_t child = fork();
@@ -114,6 +115,12 @@ static int kernel_aperture_stop(void) {
     struct wddm_object_stats objects = {.version=WDDM_APERTURE_VERSION};
     const int object_result = fd < 0 ? -1 : ioctl(fd, WDDM_OBJECT_STATS, &objects);
     const int object_error = errno;
+    struct wddm_sync_file_stats syncs={.version=1};
+    int sync_result=fd<0 ? -1:ioctl(fd,WDDM_SYNC_FILE_STATS,&syncs);
+    int sync_error=errno;
+    for(unsigned n=0;!sync_result && (syncs.held || syncs.pending) && n<2000;++n) {
+        usleep(1000); syncs.version=1; sync_result=ioctl(fd,WDDM_SYNC_FILE_STATS,&syncs); sync_error=errno;
+    }
     if (fd >= 0) close(fd);
     if (result || info.active_leases || info.active_cpu_bytes || info.fence_mmio_reads ||
         info.allocation_mmio_reads || info.allocation_mmio_writes) {
@@ -123,6 +130,11 @@ static int kernel_aperture_stop(void) {
         puts("KERNEL_OBJECT_EXIT cleanup=false"); return -1;
     }
     if (!object_result) puts("KERNEL_OBJECT_EXIT held=0 active=0 cleanup=true");
+    if ((!sync_result && (syncs.held || syncs.pending)) || (sync_result && sync_error!=ENOTTY)) {
+        puts("KERNEL_SYNC_FILE_EXIT cleanup=false"); return -1;
+    }
+    if (!sync_result) printf("KERNEL_SYNC_FILE_EXIT held=0 pending=0 created=%llu signaled=%llu errors=%llu released=%llu cleanup=true\n",
+        (unsigned long long)syncs.created,(unsigned long long)syncs.signaled,(unsigned long long)syncs.errors,(unsigned long long)syncs.released);
     for (unsigned attempt = 0; attempt < 20; ++attempt) {
         if (!syscall(SYS_delete_module, "wddm_aperture", O_NONBLOCK)) {
             puts("KERNEL_APERTURE_EXIT activeLeases=0 activeCpuBytes=0 mmioReads=0 mmioWrites=0 unloaded=true");
