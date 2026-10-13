@@ -1,4 +1,19 @@
-# Experimental Mesa D3D12 timeline fence FDs
+# Experimental Mesa D3D12 fence FDs
+
+Two independently opt-in patches are available: the private timeline-FD patch
+below and an additive owned Linux sync-file/EGL callback patch. The latter is
+verified in [two hardware runs](../../../docs/LIVE-GPU-EGL-NATIVE-SYNC.md),
+with disabled-extension and timeline regressions. It does not implement general
+sync-file interoperability, DRM/GBM or a compositor desktop.
+
+Apply `apply_mesa_fence_fd.py` first, then `apply_mesa_native_sync.py` to that
+exact pinned tree. The additive helper verifies both patch digests and every
+changed/unchanged base file, dry-runs with zero fuzz and rejects mixed sources.
+Use `D3D12_EXPERIMENTAL_NATIVE_SYNC_FILE=true` before screen creation for the
+new path; both native bridge hooks must also be present. That option is
+independent of `D3D12_EXPERIMENTAL_FENCE_FD`. All defaults remain off.
+
+## Private timeline patch
 
 This opt-in patch targets Mesa **26.0.8** and the fork's private QEMU/Windows
 NVIDIA bridge. It adds the missing Linux Gallium fence-FD callback for a native

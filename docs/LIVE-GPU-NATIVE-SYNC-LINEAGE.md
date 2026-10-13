@@ -74,8 +74,9 @@ one-millisecond/jiffy poll, five-second deadline and 256 held-fence limit.
 Sustained/event-driven synchronization, stress, batching and performance need
 further work before claiming a production compositor path.
 
-The next integration is Mesa's actual `PIPE_FD_TYPE_NATIVE_SYNC` import/export
-and EGL callbacks. Native D3D12 timeline FDs and texture capabilities are not
+The later [EGL callback milestone](LIVE-GPU-EGL-NATIVE-SYNC.md) now verifies
+Mesa's actual `PIPE_FD_TYPE_NATIVE_SYNC` import/export for our owned fences.
+Native D3D12 timeline FDs and texture capabilities are not
 Linux dma-bufs. Aquamarine/Hyprland still need a validated graphics device,
 allocator/buffer metadata, compatible EGL imports and continuous Windows display.
 Vulkan, CUDA, video, NVIDIA features, concurrent workloads and ≥93% matched
