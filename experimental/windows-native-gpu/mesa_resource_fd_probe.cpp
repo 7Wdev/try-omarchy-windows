@@ -202,11 +202,17 @@ extern "C" int wddm_mesa_resource_fd_test(EGLDisplay display, EGLContext context
         if (write(ready[1],&marker,1)!=1 || pidfd<0) _exit(1);
         syscall(SYS_close,ready[1]);
         pollfd exited{pidfd,POLLIN,0};
-        int waitResult;
-        do { waitResult=poll(&exited,1,20000); } while (waitResult<0 && errno==EINTR);
+        const auto exitDeadline=std::chrono::steady_clock::now()+std::chrono::seconds(20);
+        int waitResult=0;
+        do {
+            const auto remaining=std::chrono::duration_cast<std::chrono::milliseconds>(exitDeadline-std::chrono::steady_clock::now()).count();
+            if (remaining<=0) break;
+            waitResult=poll(&exited,1,static_cast<int>(remaining));
+        } while (waitResult<0 && errno==EINTR);
         if (waitResult!=1 || !(exited.revents&POLLIN) || fcntl(retainedFd,F_GETFD)<0) {
             static constexpr char failure[]="MESA_RESOURCE_FD_FAILURE stage=RecipientProducerExit status=80004005 errno=0\n";
-            (void)write(STDERR_FILENO,failure,sizeof(failure)-1); _exit(1);
+            if (write(STDERR_FILENO,failure,sizeof(failure)-1)!=sizeof(failure)-1) _exit(2);
+            _exit(1);
         }
         poll(nullptr,0,250); // let the broker enter its post-producer drain
         static constexpr char alive[]="MESA_RESOURCE_FD_RECIPIENT producerExited=true capabilityOpen=true gpuWork=false\n";
