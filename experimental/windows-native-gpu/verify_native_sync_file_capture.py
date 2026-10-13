@@ -8,7 +8,7 @@ from verify_kernel_aperture_capture import validate_kernel_aperture
 
 
 def validate_native_sync_files(report, guest, records):
-    result=validate_kernel_aperture(report,guest,records,transport='authenticated-broker')
+    result=validate_kernel_aperture(report,guest,records,transport='authenticated-broker',contract_checks=583)
     require(exact(report,liveNvidiaLinuxUmdLoaded=True,realWslDxgForwarding=False,capturedPrivateFixturesUsed=False),
             'Wrong native runtime provenance')
     lines=guest.splitlines()

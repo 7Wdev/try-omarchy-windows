@@ -7,12 +7,15 @@ from verify_4k_capture import require
 from verify_opengl_capture import validate_opengl
 
 
-def validate_kernel_aperture(report, guest, records, *, allocation_slots=128, transport='virtio-port'):
+def validate_kernel_aperture(report, guest, records, *, allocation_slots=128, transport='virtio-port', contract_checks=581):
+    # The opt-in sync-file contract adds two calls to the existing checked
+    # lease-revocation helper. Older/default captures retain exactly 581.
+    require(type(contract_checks) is int and contract_checks in (581,583), 'Explicit kernel contract profile required')
     result = validate_opengl(report, guest, records, allocation_slots=allocation_slots, transport=transport)
     lines = guest.splitlines()
     for line in (
             'APERTURE_CONTRACT fdTransfer=true unprivilegedMap=true readOnly=true revokeSigbus=true',
-            'APERTURE_CONTRACT_PASS checks=581 activeLeases=0 activeCpuBytes=0',
+            f'APERTURE_CONTRACT_PASS checks={contract_checks} activeLeases=0 activeCpuBytes=0',
             'KERNEL_APERTURE_START loaded=true contracts=true rawSysfsFallback=false',
             'KERNEL_APERTURE_EXIT activeLeases=0 activeCpuBytes=0 mmioReads=0 mmioWrites=0 unloaded=true'):
         require(lines.count(line) == 1, 'Missing kernel isolation or cleanup receipt')
@@ -41,7 +44,7 @@ def validate_kernel_aperture(report, guest, records, *, allocation_slots=128, tr
     allocation_count = sum(kind == '2' for kind, _, _ in leases)
     require(fence_count == vm['fenceMappingsCreated'] and allocation_count == vm['allocationMappingsCreated'],
             'Native mappings were not all backed by kernel leases')
-    result.update(kernelApertureVerified=True, kernelContractChecks=581,
+    result.update(kernelApertureVerified=True, kernelContractChecks=contract_checks,
                   kernelFenceLeases=fence_count, kernelAllocationLeases=allocation_count,
                   transferredFdRevocationVerified=True, kernelModuleUnloaded=True,
                   drmDeviceVerified=False, dmaBufVerified=False, guestGraphicsIoctlKernelImplemented=False)
