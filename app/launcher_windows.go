@@ -262,6 +262,26 @@ func chooseProvisionMode(cfg *config, newInstall bool) {
 	}
 }
 
+// syncURLSchemesAtStart registers allowed link types under the same host
+// mutation lock as Settings, move and uninstall. When another of those holds
+// it, the next start tries again. An unreadable approvals file allows
+// nothing, like the guest's copy.
+func syncURLSchemesAtStart(dir, target string) {
+	guard, err := lockMoveStore(hostMoveStore())
+	if err != nil {
+		logf("link types: not updated this start: %v", err)
+		return
+	}
+	defer guard.Close()
+	links, err := loadApprovedURLSchemes(dir)
+	if err != nil {
+		logf("allowed link types: %v", err)
+	}
+	if err := syncURLSchemeRegistrations(dir, target, links.Schemes); err != nil {
+		logf("link types: %v", err)
+	}
+}
+
 // offerLauncherShortcuts runs only after the guest and writable disk are
 // complete. The signed launcher is copied into the app-data folder on every
 // successful launch, so opening a newer downloaded release refreshes the
@@ -283,6 +303,7 @@ func offerLauncherShortcuts(dir string) {
 	if err := registerUninstallEntry(target, installDir); err != nil {
 		logf("apps & features entry: %v", err)
 	}
+	syncURLSchemesAtStart(installDir, target)
 	if prefs, err := loadLaunchPreferences(installDir); err == nil {
 		if err := syncSignInShortcut(target, installDir, prefs.LaunchAtSignIn); err != nil {
 			logf("sign-in shortcut: %v", err)

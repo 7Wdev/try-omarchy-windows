@@ -10,6 +10,19 @@ scripts/release/build-guest.sh --contract-only
 scripts/release/build-guest.sh --output /path/to/artifacts
 ```
 
+Patch 0146 opens links clicked in Windows inside Omarchy, only for URL schemes
+the user approved in Try Omarchy Settings. Agent version 6 starts every
+connection with links disabled. Each `url-approved` snapshot from the launcher
+is installed in `/run/try-omarchy`. A malformed snapshot or a failed write removes
+it. The guest then reports schemes that have a default guest handler; desktop
+files are scanned as the desktop user and checked with `xdg-mime`. `open-url` re-checks
+the URL against the shared contract, the installed snapshot and the default
+handler. It then passes the URL as one argument to `/usr/bin/xdg-open` as the
+desktop user, at most once per second. Rejections show a generic notification
+and log a reason code, never the URL. Agent replies and compositor health
+reports take one lock, so lines on the shared socket stay whole.
+Compatibility revision 62 delivers the helper and agent to existing disks.
+
 Patch 0144 fixes provenance checks when reviewed backports touch the same file.
 The build still verifies each patch's before and after digests in order.
 Provenance keeps those intermediate digests, records the next backport as

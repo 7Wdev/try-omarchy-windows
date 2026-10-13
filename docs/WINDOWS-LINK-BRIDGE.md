@@ -1,0 +1,15 @@
+# Links from Windows in Omarchy
+
+[Issue #348](https://github.com/omacom/try-omarchy-windows/issues/348) is the reverse of the [approved Windows apps](WINDOWS-APP-BRIDGE.md) bridge: a link clicked in a Windows browser or messenger can open in the Omarchy app that handles it.
+
+In Windows **Try Omarchy Settings → Apps**, the **Links from Windows** section lists the link types (URL schemes) that an app inside Omarchy handles. Start Omarchy once so the list can fill in. Select a link type, choose **Allow** and save Settings. Windows then sends links of that type to Try Omarchy; a browser asks first, as it does for any app. Choose **Stop allowing** and save to revoke a type.
+
+Only link types with a default handler inside Omarchy are offered. `http`, `https`, `file`, `mailto`, other common schemes, `ms-*` schemes and any link type that another Windows app already handles are never offered. If a Windows app later takes over an allowed type, it is shown as **used by another Windows app** and Try Omarchy leaves it alone until it is revoked.
+
+Approvals stay in `approved-url-schemes.json` beside that installation's settings and are excluded from backups. For each allowed type the launcher registers itself under `HKCU\Software\Classes\<scheme>` and checks that registration on every start. It only changes or removes a registration whose folder marker and command both match this installation, and checks again just before each change, so it leaves another app's or another installation's handler alone. If that check is busy at startup, it runs on the next start. Moving the installation updates the registrations; revoking a type or uninstalling removes them. Portable copies do not register link types.
+
+When Windows opens such a link, a short-lived launcher process checks the link and passes it to the running launcher over the loopback control port. Before sending, that process checks that the program listening on the port runs as the same Windows user in the same session; the running launcher makes the same check on the sender before it forwards anything. It also checks the link again, allows one link per second, and passes only the link over Omarchy's private agent connection. If Omarchy is not running, the launcher says so instead of starting it.
+
+Inside Omarchy, the agent starts every connection with links disabled and only accepts links after the launcher has sent its current list of allowed types. Before anything reaches `xdg-open`, it checks the link again: the link type must be allowed, be a valid scheme, not be on the deny list and still have a default Omarchy handler. The link must be at most 2 KiB, valid UTF-8, without spaces, control characters, quotes or backslashes. The link is passed to `xdg-open` as a single argument without a shell. A rejected link shows a notification without the link, except when links arrive faster than one per second; logs record only the reason.
+
+Allowing a link type lets any Windows program open links of that type in Omarchy, the same as allowing an app to handle it on Windows. The Omarchy app decides what the link does.
