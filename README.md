@@ -54,6 +54,10 @@ The [native capability store](https://github.com/7Wdev/try-omarchy-windows/blob/
 now passes ordinary-user full 4K texture export/import, native timeline GPU ordering,
 and two fresh tests retaining a resource FD beyond its producer's exit, with clean last-FD-close cleanup.
 Multiple GPU clients, cross-process GPU imports, DRM/GBM and Hyprland remain to be integrated.
+The [separate Windows GPU consumer](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-WINDOWS-WORKER.md)
+now imports and copies both full 4K shader frames from an ordinary guest user in two fresh final-source runs.
+One strict two-frame window presentation passes; its repeat fails, so display stability remains open.
+Independent guest GPU clients and the actual Hyprland buffer/display path still require integration.
 
 Download links below refer to official upstream releases.
 
