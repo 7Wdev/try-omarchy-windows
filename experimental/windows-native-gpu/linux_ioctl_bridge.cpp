@@ -90,6 +90,7 @@ class Transport {
     int input = -1, output = -1;
     pid_t child = -1;
     bool started = false, broken = false;
+    bool broker = false;
     void transfer(void* data, std::size_t size, bool reading,
                   std::chrono::steady_clock::time_point deadline) {
         auto bytes = static_cast<std::uint8_t*>(data);
@@ -115,6 +116,7 @@ class Transport {
 public:
     ~Transport() { finish(); }
     void finish() {
+        if (broker) guest_broker::client().disconnect();
         disconnect();
         if (child <= 0) return;
         int status = 0;
@@ -143,6 +145,13 @@ public:
         try {
             const auto worker = std::getenv("WDDM_BRIDGE_WINDOWS_WORKER");
             const auto port = std::getenv("WDDM_BRIDGE_PORT");
+            if (guest_broker::clientEnabled()) {
+                const auto kernel = std::getenv("WDDM_BRIDGE_KERNEL_APERTURE");
+                if ((worker && *worker) || (port && *port) || !kernel || std::strcmp(kernel,"1")) throw Error(EINVAL);
+                broker = true;
+                (void)guest_broker::client().info();
+                std::fprintf(stderr,"LINUX_BRIDGE transport=authenticated-broker nativeWorkerClients=1\n"); return;
+            }
             if ((!worker || !*worker) == (!port || !*port)) throw Error(EINVAL);
             if (port && *port) {
                 input = output = rawOpen(port, O_RDWR | O_CLOEXEC | O_NONBLOCK);
@@ -196,6 +205,7 @@ public:
         start();
         if (packet.size() < sizeof(Header) || packet.size() > native_gpu::MaxPacket) throw Error(EINVAL);
         try {
+            if (broker) return guest_broker::client().driver(packet);
             const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
             PipeSignal signal;
             auto size = static_cast<std::uint32_t>(packet.size());
@@ -205,9 +215,9 @@ public:
             if (size < sizeof(Header) || size > native_gpu::MaxPacket) throw Error(EPROTO);
             std::vector<std::uint8_t> result(size); transfer(result.data(), size, true, deadline);
             return result;
-        } catch (...) { broken = true; disconnect(); throw; }
+        } catch (...) { broken = true; if (broker) guest_broker::client().disconnect(); disconnect(); throw; }
     }
-    void fail() { broken = true; disconnect(); }
+    void fail() { broken = true; if (broker) guest_broker::client().disconnect(); disconnect(); }
 };
 struct Response { Header header; Reply result; std::vector<std::uint8_t> data; };
 std::atomic<bool> bridgeStopped{false};

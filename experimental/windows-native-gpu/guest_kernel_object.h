@@ -2,6 +2,7 @@
 // Kernel-authenticated, typed session tickets for native NT object references.
 #pragma once
 #include "guest-kernel/wddm_aperture.h"
+#include "guest_broker_client.h"
 #include <sys/syscall.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -18,6 +19,7 @@ public:
     Objects(const Objects&) = delete;
     ~Objects() { if (control >= 0) syscall(SYS_close, control); }
     bool available() {
+        if (guest_broker::clientEnabled()) { errno = EOPNOTSUPP; return false; }
         if (control >= 0) return true;
         const auto value = std::getenv("WDDM_BRIDGE_KERNEL_APERTURE");
         if (!value || std::strcmp(value, "1")) { errno = ENOSYS; return false; }

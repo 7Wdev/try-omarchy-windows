@@ -2,6 +2,7 @@
 // Explicit guest-kernel path. Never falls back to raw sysfs BAR access.
 #pragma once
 #include "guest-kernel/wddm_aperture.h"
+#include "guest_broker_client.h"
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
@@ -25,10 +26,12 @@ class Aperture {
     }
     void open() {
         if (control >= 0) return;
+        if (guest_broker::clientEnabled()) throw std::runtime_error("Broker client cannot open a kernel controller");
         control = static_cast<int>(syscall(SYS_openat, AT_FDCWD, "/dev/wddm-aperture", O_RDWR | O_CLOEXEC, 0));
         if (control < 0) failed("open");
     }
     void revoke(std::uint64_t cookie) {
+        if (guest_broker::clientEnabled()) { guest_broker::client().release(cookie); return; }
         wddm_aperture_revoke arg{WDDM_APERTURE_VERSION, 0, cookie};
         if (syscall(SYS_ioctl, control, WDDM_APERTURE_REVOKE, &arg)) failed("revoke");
     }
@@ -47,9 +50,12 @@ public:
         return true;
     }
     wddm_aperture_info info() {
-        open();
         wddm_aperture_info value{}; value.version = WDDM_APERTURE_VERSION;
-        if (syscall(SYS_ioctl, control, WDDM_APERTURE_INFO, &value)) failed("info");
+        if (guest_broker::clientEnabled()) value = guest_broker::client().info();
+        else {
+            open();
+            if (syscall(SYS_ioctl, control, WDDM_APERTURE_INFO, &value)) failed("info");
+        }
         if (value.version != WDDM_APERTURE_VERSION ||
             (value.fence_slots != 64 && value.fence_slots != 128) ||
             value.allocation_slots < 16 || value.allocation_slots > 256 ||
@@ -61,16 +67,25 @@ public:
         return value;
     }
     void* map(std::uint32_t kind, std::uint64_t offset, std::size_t bytes, std::uint64_t generation = 0) {
-        open();
         wddm_aperture_create arg{};
         arg.version = WDDM_APERTURE_VERSION; arg.kind = kind;
         arg.offset = offset; arg.bytes = bytes; arg.host_generation = generation;
         arg.flags = kind == WDDM_APERTURE_ALLOCATION ? WDDM_APERTURE_WRITE : 0;
-        if (syscall(SYS_ioctl, control, WDDM_APERTURE_CREATE, &arg)) failed("create");
+        // Only a receipt-authorized restricted view FD crosses the broker
+        // boundary. The root controller and arbitrary aperture access do not.
+        guest_broker::Message remote;
+        if (guest_broker::clientEnabled()) {
+            remote = guest_broker::client().acquire({kind,0,offset,bytes,generation});
+            arg.cookie = guest_broker::decode<guest_broker::ViewReply>(remote.payload).cookie;
+            arg.fd = remote.fds[0].get();
+        } else {
+            open();
+            if (syscall(SYS_ioctl, control, WDDM_APERTURE_CREATE, &arg)) failed("create");
+        }
         if (!arg.cookie || arg.fd < 0) throw std::runtime_error("Kernel aperture lease response mismatch");
         auto data = mmap(nullptr, bytes, PROT_READ | (arg.flags ? PROT_WRITE : 0), MAP_SHARED, arg.fd, 0);
         const auto saved = errno;
-        syscall(SYS_close, arg.fd);
+        if (!guest_broker::clientEnabled()) syscall(SYS_close, arg.fd);
         if (data == MAP_FAILED) { revoke(arg.cookie); errno = saved; failed("mmap"); }
         try {
             if (!views.emplace(data, View{arg.cookie, bytes}).second)

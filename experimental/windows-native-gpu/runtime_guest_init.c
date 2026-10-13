@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: MIT
 // Private, disk-free Linux runtime diagnostic. No guest disk is attached.
-#define _DEFAULT_SOURCE
+#define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
+#include <grp.h>
+#include <linux/capability.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mount.h>
+#include <sys/prctl.h>
 #include <sys/ioctl.h>
 #include <sys/reboot.h>
 #include <sys/resource.h>
@@ -17,6 +20,60 @@
 #include <unistd.h>
 #include "guest-kernel/wddm_aperture.h"
 static void timeout_handler(int signal_number) { (void)signal_number; }
+static pid_t graphics_broker_start(const char* port) {
+    if (access("/graphics-broker-required", F_OK)) return 0;
+    int ready[2];
+    if ((mkdir("/run",0755) && errno != EEXIST) || mkdir("/run/wddm-broker",0755) || pipe2(ready,O_CLOEXEC)) return -1;
+    const pid_t child=fork();
+    if (!child) {
+        close(ready[0]);
+        if (fcntl(ready[1],F_SETFD,0)) _exit(127);
+        char descriptor[24]; snprintf(descriptor,sizeof descriptor,"%d",ready[1]);
+        unsetenv("LD_PRELOAD"); setenv("LD_LIBRARY_PATH","/usr/lib/x86_64-linux-gnu",1);
+        execl("/guest-graphics-broker","/guest-graphics-broker","/run/wddm-broker/graphics.sock",port,"65534","65534",descriptor,(char*)NULL);
+        _exit(127);
+    }
+    close(ready[1]);
+    struct sigaction action={0}; action.sa_handler=timeout_handler; sigaction(SIGALRM,&action,NULL);
+    alarm(10); char marker=0; const ssize_t bytes=read(ready[0],&marker,1); alarm(0); close(ready[0]);
+    if (child < 0 || bytes != 1 || marker != 'R') {
+        if (child > 0) { kill(child,SIGKILL); waitpid(child,NULL,0); }
+        puts("BROKER_ROUTE failed=true readiness=true"); return -1;
+    }
+    return child;
+}
+static int graphics_client_drop(const char* port) {
+    unsetenv("WDDM_BRIDGE_PORT"); unsetenv("WDDM_BRIDGE_WINDOWS_WORKER");
+    setenv("WDDM_BRIDGE_BROKER_SOCKET","/run/wddm-broker/graphics.sock",1);
+    if (setgroups(0,NULL) || setgid(65534) || setuid(65534) || prctl(PR_SET_NO_NEW_PRIVS,1,0,0,0)) return -1;
+    struct __user_cap_header_struct header={_LINUX_CAPABILITY_VERSION_3,0};
+    struct __user_cap_data_struct capabilities[2]={{0}};
+    if (syscall(SYS_capget,&header,capabilities) || capabilities[0].effective || capabilities[1].effective ||
+        getuid()!=65534 || geteuid()!=65534 || getgid()!=65534 || getegid()!=65534 || getgroups(0,NULL) ||
+        prctl(PR_GET_NO_NEW_PRIVS,0,0,0,0)!=1) return -1;
+    const char* paths[]={"/dev/wddm-aperture",port};
+    for (unsigned i=0;i<2;++i) {
+        const int fd=open(paths[i],O_RDWR|O_CLOEXEC|O_NONBLOCK);
+        if (fd>=0) { close(fd); return -1; }
+        if (errno!=EACCES && errno!=EPERM) return -1;
+    }
+    puts("BROKER_RENDER_CLIENT uid=65534 gid=65534 effectiveCapabilities=0 noNewPrivs=true controllerOpen=denied nativePortOpen=denied");
+    fflush(stdout); return 0;
+}
+static int graphics_broker_wait(pid_t child) {
+    if (child<=0) return child<0 ? -1 : 0;
+    for (unsigned n=0;n<500;++n) {
+        int status=0; const pid_t result=waitpid(child,&status,WNOHANG);
+        if (result==child) {
+            const int success=WIFEXITED(status) && !WEXITSTATUS(status);
+            printf("BROKER_ROUTE_REAP exit=%d\n",success ? 0 : 1); return success ? 0 : -1;
+        }
+        if (result<0 && errno!=EINTR) break;
+        usleep(10000);
+    }
+    // The rendering child has already exited or been killed and reaped.
+    kill(child,SIGKILL); waitpid(child,NULL,0); puts("BROKER_ROUTE failed=true reapTimeout=true"); return -1;
+}
 static int broker_peer_start(void) {
     if (access("/broker-peer-required", F_OK)) return 0;
     pid_t child = fork();
@@ -127,6 +184,8 @@ int main(void) {
         (hwqueue_wait_option[hwqueue_wait_bytes] == 0 || hwqueue_wait_option[hwqueue_wait_bytes] == ' ' || hwqueue_wait_option[hwqueue_wait_bytes] == '\n');
     for (int i = 0; i < 200 && access(port, F_OK); ++i) usleep(50000);
     const int kernel_aperture = broker_peer_start() ? -1 : kernel_aperture_start();
+    const pid_t graphics_broker=kernel_aperture>0 ? graphics_broker_start(port) :
+        (access("/graphics-broker-required",F_OK) ? 0 : -1);
     char module[130] = {0};
     FILE* name = fopen("/linux-umd-name", "rb");
     int status = 127;
@@ -137,7 +196,7 @@ int main(void) {
         if (bytes == 13 && !memcmp(value, "native-stream", 13)) runtime_deadline = 120;
         fclose(deadline_workload);
     }
-    if (kernel_aperture >= 0 && name && fread(module, 1, sizeof(module) - 1, name) && !access(port, F_OK)) {
+    if (kernel_aperture >= 0 && graphics_broker>=0 && name && fread(module, 1, sizeof(module) - 1, name) && !access(port, F_OK)) {
         module[strcspn(module, "\r\n")] = 0;
         pid_t child = fork();
         if (child == 0) {
@@ -184,6 +243,7 @@ int main(void) {
             setenv("LD_LIBRARY_PATH", selected_workload && !strcmp(selected_workload, "opengl") ?
                 "/opt/wddm-mesa/lib:/usr/lib/wsl/lib:/usr/lib/x86_64-linux-gnu" :
                 "/usr/lib/wsl/lib:/usr/lib/x86_64-linux-gnu", 1);
+            if (graphics_broker>0 && graphics_client_drop(port)) { perror("drop broker rendering client privileges"); _exit(126); }
             if (!access("/runtime-tracer", X_OK)) {
                 unsetenv("LD_PRELOAD");
                 execl("/runtime-tracer", "/runtime-tracer", "-f", "-e", "status=failed", "-e",
@@ -206,6 +266,7 @@ int main(void) {
         }
     } else puts(kernel_aperture < 0 ? "FAIL: required guest aperture contracts failed" : "FAIL: runtime name or virtio port missing");
     if (name) fclose(name);
+    if (graphics_broker_wait(graphics_broker)) status=125;
     if (kernel_aperture > 0 && kernel_aperture_stop()) status = 125;
     printf("BRIDGE_RUNTIME_EXIT=%d\n", status);
     sync(); reboot(RB_POWER_OFF);

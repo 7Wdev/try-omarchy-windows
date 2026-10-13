@@ -79,5 +79,9 @@ if [ "${WDDM_BRIDGE_TEST_BROKER_PEER:-0}" = 1 ]; then
     "${CXX:-c++}" -std=c++17 -O2 -Wall -Wextra -Werror -pthread \
         "$base/guest_broker_peer_test.cpp" -ldl -o "$output/broker-peer-contract"
 fi
+if [ "${WDDM_BRIDGE_TEST_BROKER_ROUTE:-0}" = 1 ]; then
+    "${CXX:-c++}" -std=c++17 -O2 -Wall -Wextra -Werror -pthread \
+        "$base/guest_graphics_broker.cpp" -o "$output/guest-graphics-broker"
+fi
 "${CC:-cc}" -static -std=c11 -O2 -Wall -Wextra -Werror \
     "$base/runtime_guest_init.c" -o "$output/runtime-init"

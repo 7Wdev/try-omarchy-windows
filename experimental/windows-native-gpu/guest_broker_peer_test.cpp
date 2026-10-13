@@ -55,12 +55,13 @@ static void exited(Peer& peer) {
     }
 }
 enum class Mode { Good, Finalizer, Descendant, Leader, Magic, Version, Reserved, Length,
-                  FdCount, Sequence, Operation, Oversize, ExcessFds, Empty, Replay };
+                  FdCount, Sequence, Operation, Oversize, ExcessFds, Empty, Replay, Status };
 static void sendFrame(int socket, int backing, Mode mode) {
     Frame f; f.operation = Operation::DriverCall; f.bytes = 4; f.fds = 1;
     if (mode == Mode::Magic) ++f.magic;
     if (mode == Mode::Version) ++f.version;
     if (mode == Mode::Reserved) f.reserved = 1;
+    if (mode == Mode::Status) f.status = EPERM;
     if (mode == Mode::Length) f.bytes = 3;
     if (mode == Mode::FdCount) f.fds = 0;
     if (mode == Mode::Sequence) f.sequence = 0;
@@ -178,7 +179,7 @@ int main(int argc, char** argv) {
             std::cout<<"BROKER_PEER_THREAD_GROUP leaderZombie=true liveWorkerRetained=true\n";
         }
         for (auto mode : {Mode::Magic,Mode::Version,Mode::Reserved,Mode::Length,Mode::FdCount,Mode::Sequence,
-                          Mode::Operation,Mode::Oversize,Mode::ExcessFds,Mode::Empty,Mode::Replay,Mode::Descendant}) {
+                          Mode::Operation,Mode::Oversize,Mode::ExcessFds,Mode::Empty,Mode::Replay,Mode::Descendant,Mode::Status}) {
             Child child(mode,argv[1]); Peer peer(std::move(child.accepted),child.uid,child.gid); child.command('S');
             if (mode==Mode::Replay) valid(receive(peer));
             const auto before=fdCount(); bool rejected=false;
@@ -216,7 +217,7 @@ int main(int argc, char** argv) {
             CHECK(a.pid()!=b.pid()); first.command('S'); second.command('S'); valid(receive(a)); valid(receive(b));
             first.command('E'); exited(a); first.join(); CHECK(!b.processExited()); second.command('E'); exited(b); second.join();
         }
-        std::cout<<"BROKER_PEER_CONTRACT_PASS malformedCases=13 fdLeaks=0 independentPeers=true gpu=false\n";
+        std::cout<<"BROKER_PEER_CONTRACT_PASS malformedCases=14 fdLeaks=0 independentPeers=true gpu=false\n";
         return 0;
     } catch (const std::exception& error) { std::cerr<<"BROKER_PEER_CONTRACT_FAIL "<<error.what()<<" errno="<<errno<<'\n'; return 1; }
 }

@@ -2,6 +2,7 @@
 // Guest broker ingress and process lifetime. No GPU handle/offset authorization.
 #pragma once
 #include <array>
+#include <chrono>
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
@@ -24,7 +25,7 @@
 
 namespace guest_broker {
 constexpr std::uint32_t Magic = 0x4b524257; // WBRK, little endian
-constexpr std::uint16_t Version = 1;
+constexpr std::uint16_t Version = 2;
 constexpr std::size_t MaxPayload = 4096, MaxFds = 8;
 enum class Operation : std::uint16_t { Hello=1, DriverCall, AcquireView, ReleaseView, ResolveObject };
 struct Frame {
@@ -32,7 +33,9 @@ struct Frame {
     std::uint16_t version = Version;
     Operation operation = Operation::Hello;
     std::uint32_t bytes = 0, fds = 0;
-    std::uint64_t sequence = 1, reserved = 0;
+    std::uint64_t sequence = 1;
+    std::int32_t status = 0;
+    std::uint32_t reserved = 0;
 };
 static_assert(sizeof(Frame) == 32 && offsetof(Frame, sequence) == 16, "Fixed broker ABI");
 #if __BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__
@@ -62,6 +65,7 @@ class Peer {
     ucred identity{};
     std::uint64_t nextSequence = 1;
     bool sequenceExhausted = false;
+    bool replies = false;
     [[noreturn]] static void error(int code, const char* text) {
         throw std::system_error(code, std::generic_category(), text);
     }
@@ -75,7 +79,8 @@ class Peer {
 public:
     // Ownership is transferred even if construction fails. The listener must
     // enable SO_PASSCRED before accept; every received packet is authenticated.
-    Peer(Fd accepted, uid_t permittedUid, gid_t permittedGid) : channel(std::move(accepted)) {
+    Peer(Fd accepted, uid_t permittedUid, gid_t permittedGid, bool receiveReplies = false)
+        : channel(std::move(accepted)), replies(receiveReplies) {
         if (option<int>(channel.get(), SO_DOMAIN) != AF_UNIX ||
             option<int>(channel.get(), SO_TYPE) != SOCK_SEQPACKET ||
             option<int>(channel.get(), SO_ACCEPTCONN) != 0 ||
@@ -98,6 +103,45 @@ public:
     pid_t pid() const noexcept { return identity.pid; }
     bool connected() const noexcept { return channel.get() >= 0; }
     void disconnect() noexcept { channel = Fd(); } // Does not drop process identity.
+    void send(Operation operation, std::uint64_t sequence, const std::vector<std::uint8_t>& payload,
+              const std::vector<int>& fds = {}, int status = 0) {
+        if (!connected()) error(ENOTCONN, "Broker channel closed");
+        if (payload.size() > MaxPayload || fds.size() > MaxFds || !sequence ||
+            status < 0 || status > 4095 || (replies && status) ||
+            (status && (!payload.empty() || !fds.empty())))
+            error(EINVAL, "Invalid broker outgoing packet");
+        Frame frame; frame.operation = operation; frame.sequence = sequence;
+        frame.bytes = static_cast<std::uint32_t>(payload.size());
+        frame.fds = static_cast<std::uint32_t>(fds.size()); frame.status = status;
+        iovec data[2]{{&frame, sizeof(frame)}, {const_cast<std::uint8_t*>(payload.data()), payload.size()}};
+        union Control { cmsghdr alignment; char data[CMSG_SPACE(MaxFds * sizeof(int))]; } control{};
+        msghdr output{}; output.msg_iov = data; output.msg_iovlen = 2;
+        if (!fds.empty()) {
+            output.msg_control = control.data; output.msg_controllen = CMSG_SPACE(fds.size() * sizeof(int));
+            auto* h = CMSG_FIRSTHDR(&output); h->cmsg_level = SOL_SOCKET; h->cmsg_type = SCM_RIGHTS;
+            h->cmsg_len = CMSG_LEN(fds.size() * sizeof(int));
+            std::memcpy(CMSG_DATA(h), fds.data(), fds.size() * sizeof(int));
+        }
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        for (;;) {
+            const auto bytes = sendmsg(channel.get(), &output, MSG_NOSIGNAL | MSG_DONTWAIT);
+            if (bytes >= 0) {
+                if (static_cast<std::size_t>(bytes) != sizeof(Frame) + payload.size())
+                    reject(EIO, "Partial broker seqpacket send");
+                return;
+            }
+            if (errno == EINTR) continue;
+            if (errno != EAGAIN && errno != EWOULDBLOCK) reject(errno, "Broker send failed");
+            const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count();
+            if (ms <= 0) reject(ETIMEDOUT, "Broker send deadline exceeded");
+            pollfd ready{channel.get(), POLLOUT, 0};
+            if (poll(&ready, 1, static_cast<int>(ms)) < 0 && errno != EINTR) reject(errno, "Broker send poll failed");
+        }
+    }
+    void waitReadable(int milliseconds) const {
+        pollfd ready{channel.get(), POLLIN, 0};
+        if (poll(&ready, 1, milliseconds) < 0 && errno != EINTR) error(errno, "Broker receive poll failed");
+    }
     bool processExited() const {
         pollfd event{process.get(), POLLIN, 0};
         int result;
@@ -154,7 +198,8 @@ public:
         if (static_cast<std::size_t>(bytes) < sizeof(Frame)) reject(EPROTO, "Short broker frame");
         std::memcpy(&result.frame, packet.data(), sizeof(Frame));
         const auto& f = result.frame;
-        if (f.magic != Magic || f.version != Version || f.reserved || f.bytes > MaxPayload ||
+        if (f.magic != Magic || f.version != Version || f.reserved || f.status < 0 || f.status > 4095 ||
+            (!replies && f.status) || (f.status && (f.bytes || f.fds)) || f.bytes > MaxPayload ||
             sizeof(Frame) + f.bytes != static_cast<std::size_t>(bytes) || f.fds != result.fds.size() ||
             f.operation < Operation::Hello || f.operation > Operation::ResolveObject ||
             sequenceExhausted || f.sequence != nextSequence)

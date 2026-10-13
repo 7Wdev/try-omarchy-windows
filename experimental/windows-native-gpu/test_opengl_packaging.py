@@ -59,6 +59,7 @@ class OpenGlPackaging(unittest.TestCase):
         self.assertTrue(manifest['mesaFrontendIncluded'])
         self.assertFalse(manifest['redistributionApproved'])
         self.assertFalse(manifest['guestBrokerContractIncluded'])
+        self.assertFalse(manifest['guestGraphicsBrokerIncluded'])
         self.assertEqual([f['path'] for f in manifest['files'] if f['path'].startswith('/opt/')], ['/opt/wddm-mesa/lib/libEGL.so.1'])
 
     def test_broker_contract_requires_paired_bounded_elf_inputs(self):
@@ -82,6 +83,30 @@ class OpenGlPackaging(unittest.TestCase):
         (self.mesa/'lib/libOutside.so').symlink_to(self.input)
         with self.assertRaises(SystemExit): self.run_packer('--runtime-workload','opengl','--mesa-runtime-directory',str(self.mesa))
         self.assertFalse(self.output.exists())
+
+    def broker_kernel_arguments(self):
+        module=self.base/'broker-wddm-aperture.ko'
+        data=bytearray(self.elf); data[16:18]=b'\x01\x00'; data.extend(b'name=wddm_aperture\0'); module.write_bytes(data)
+        return ['--guest-aperture-module',str(module),'--guest-aperture-contract',str(self.input)]
+
+    def test_graphics_broker_requires_kernel_and_supported_workload(self):
+        with self.assertRaises(SystemExit): self.run_packer('--guest-graphics-broker',str(self.input))
+        with self.assertRaises(SystemExit):
+            self.run_packer(*self.broker_kernel_arguments(),'--guest-graphics-broker',str(self.input),'--runtime-workload','shared')
+        self.assertFalse(self.output.exists())
+
+    def test_graphics_broker_elf_is_validated(self):
+        bad=self.base/'invalid-graphics-broker'; bad.write_bytes(b'not an ELF')
+        with self.assertRaises(SystemExit):
+            self.run_packer(*self.broker_kernel_arguments(),'--guest-graphics-broker',str(bad))
+        self.assertFalse(self.output.exists())
+
+    def test_graphics_broker_is_explicitly_packaged_and_hashed(self):
+        self.run_packer(*self.broker_kernel_arguments(),'--guest-graphics-broker',str(self.input))
+        manifest=json.loads(self.output.with_suffix('.manifest.json').read_text())
+        self.assertTrue(manifest['guestGraphicsBrokerIncluded'])
+        broker=next(f for f in manifest['files'] if f['path']=='/guest-graphics-broker')
+        self.assertEqual(broker['bytes'],len(self.elf)); self.assertEqual(len(broker['sha256']),64)
 
     def test_library_count_bound_rejected(self):
         for i in range(32): (self.mesa/f'lib/libFixture{i}.so').write_bytes(self.elf)
