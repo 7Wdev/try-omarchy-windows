@@ -4,16 +4,24 @@ Updated 2026-10-13. **4 of 8 verification stages demonstrated.** This is a
 checklist count, not 50% of engineering effort or a product-readiness estimate.
 The largest integration tasks are still ahead.
 
-Latest lab result: [native GPU waits through Linux sync-file import](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-NATIVE-SYNC-LINEAGE.md)
+Latest lab result: [actual EGL native-fence callbacks](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-EGL-NATIVE-SYNC.md)
+pass two fresh ordinary-user guests. An EGL server wait gates a subsequently
+exported EGL fence and a native acknowledgement until independent GPU release.
+Completed-source lifetime, error rejection and full cleanup pass; a disabled
+extension control and the legacy timeline regression also pass. Compositor
+DRM/GBM buffers, sustained work and reliable Windows presentation remain open.
+This advances stage 5 without closing a desktop gate.
+
+Earlier [native GPU waits through Linux sync-file import](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-NATIVE-SYNC-LINEAGE.md)
 passes two fresh ordinary-user guests. A pending import gates real GPU work
 until an independent queue releases it; a completed import retains its native
-reference after original source/FD release. EGL callbacks, DRM/GBM buffers and
-continuous display remain open. This advances stage 5 and closes no desktop gate.
+reference after original source/FD release. General sync-file interoperability,
+DRM/GBM buffers and continuous display remain open.
 
 Earlier [native GPU progress exported as Linux sync-files](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-NATIVE-SYNC-FILE.md)
 passes two fresh ordinary-user guests. Standard FD polling and transfer observe
 an actual GPU signal above 32 bits; revocation, timeout and cleanup checks pass.
-EGL native-fence import/export and compositor integration remain open. This is
+General sync-file interoperability and compositor integration remain open. This is
 part of stage 5 and closes no desktop gate.
 
 Earlier [a separate Windows GPU process](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-WINDOWS-WORKER.md)
@@ -39,7 +47,8 @@ queue releases it. Two separate OpenGL/FD regressions pass with this change.
 The [opt-in Mesa native timeline FD test](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-MESA-FENCE-FD.md)
 also passes genuine OpenGL semaphore imports, signals and a future GPU wait in
 two fresh guests. The later native sync-file lineage test covers our owned
-single-fence import; full EGL, binary Vulkan interoperability and compositor
+single-fence import; the later EGL callback test covers owned native fences.
+General EGL conformance, binary Vulkan interoperability and compositor
 integration remain pending. This advances stage 5 without completing it.
 
 The [process-exit lifetime fix](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-EXIT-LIFETIME.md)
@@ -110,7 +119,7 @@ an unmeasured partial percentage.
 
 | Gate | Current evidence | What closes the gate |
 | --- | --- | --- |
-| Guest graphics device, buffers and synchronization | In progress: kernel memory leases, native sync-file import with GPU ordering, isolated Mesa OpenGL draws, and opt-in GL native timeline FDs. | The compositor can access the backend through a supported guest device path, import/export its buffers, and synchronize their use correctly. |
+| Guest graphics device, buffers and synchronization | In progress: kernel memory leases, owned EGL native-fence callbacks with GPU ordering, isolated Mesa OpenGL draws, and opt-in GL native timeline FDs. | The compositor can access the backend through a supported guest device path, import/export its buffers, and synchronize their use correctly. |
 | First Hyprland frame | Pending. No Omarchy/Hyprland session has rendered through this backend. | Boot the real guest session and independently verify a correctly displayed compositor frame in the Windows app. |
 | Usable interactive desktop | Pending. Bounded shader diagnostics do not exercise a desktop session. | Continuously display real apps and multiple windows, with working input, focus, resizing and fullscreen up to 4K. |
 | Stable and performant product | Pending. No matched near-native result or long desktop run has passed. | Sustain desktop workloads, recover from failures, keep memory bounded, and meet ≥93% of matched native performance on the agreed workloads. |
@@ -143,7 +152,7 @@ their own implementation and application evidence as well.
   integration into a synchronized buffer ring before measuring near-native throughput.
 - **Synchronization frontend:** a pinned, opt-in Mesa patch now passes the
   private native D3D12 timeline FD diagnostic. Owned Linux sync-file lineage
-  now passes native GPU import/wait tests. Actual EGL callbacks, foreign/merged
+  and actual EGL callbacks now pass native GPU import/wait tests. Foreign/merged
   sync-files, post-import cancellation recovery and compositor synchronization
   remain open.
 - **Teardown:** a confirmed premature CPU-view teardown bug is fixed and passes

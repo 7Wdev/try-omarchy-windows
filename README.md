@@ -29,12 +29,15 @@ There is no reliable completion date yet; the remaining work includes substantia
 
 Vulkan, CUDA, video acceleration, NVIDIA-specific features and concurrent Windows/guest GPU use need separate real-application acceptance tests as part of the wider goal.
 
-Latest lab result: [native GPU waits through Linux sync-file import](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-NATIVE-SYNC-LINEAGE.md)
+Latest lab result: [actual EGL native-fence callbacks](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-EGL-NATIVE-SYNC.md)
+pass two fresh ordinary-user guests, including a GPU wait that gates a subsequently exported EGL fence,
+completed-source lifetime, error rejection and full cleanup. The disabled-extension and legacy timeline regressions also pass.
+Compositor-compatible DRM/GBM buffers, sustained compositor work and reliable Windows presentation remain the next integration steps.
+Earlier [native GPU waits through Linux sync-file import](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-NATIVE-SYNC-LINEAGE.md)
 passes two fresh ordinary-user guests, including a future GPU dependency and completed import after original source/FD release.
-EGL callbacks, compositor-compatible buffers and stable presentation remain the path to the first Hyprland frame.
 Earlier [GPU-driven Linux sync-file export](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-NATIVE-SYNC-FILE.md)
 passes two fresh ordinary-user guests, including pending/completed FD transfer, revocation errors and cleanup.
-EGL native-fence integration, compositor-compatible buffers and stable presentation still need implementation and testing.
+General sync-file interoperability, compositor-compatible buffers and stable presentation still need implementation and testing.
 Earlier [ordinary-user 4K frames copied by a separate Windows GPU process](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-WINDOWS-WORKER.md)
 pass two fresh guest runs. Window presentation passes once and fails on repeat; Hyprland remains pending.
 Earlier [OpenGL shader frames](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-OPENGL.md)
