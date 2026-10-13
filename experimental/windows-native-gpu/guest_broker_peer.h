@@ -11,6 +11,7 @@
 #include <limits>
 #include <poll.h>
 #include <sys/socket.h>
+#include <sys/syscall.h>
 #include <system_error>
 #include <unistd.h>
 #include <utility>
@@ -46,12 +47,14 @@ class Fd {
     int value = -1;
 public:
     explicit Fd(int fd = -1) noexcept : value(fd) {}
-    ~Fd() { if (value >= 0) ::close(value); }
+    // This type is also used inside the /dev/dxg interposer while its request
+    // mutex is held. Never re-enter the interposed close() for broker FDs.
+    ~Fd() { if (value >= 0) syscall(SYS_close,value); }
     Fd(const Fd&) = delete;
     Fd& operator=(const Fd&) = delete;
     Fd(Fd&& other) noexcept : value(std::exchange(other.value, -1)) {}
     Fd& operator=(Fd&& other) noexcept {
-        if (this != &other) { if (value >= 0) ::close(value); value = std::exchange(other.value, -1); }
+        if (this != &other) { if (value >= 0) syscall(SYS_close,value); value = std::exchange(other.value, -1); }
         return *this;
     }
     int get() const noexcept { return value; }
