@@ -61,6 +61,16 @@ static void viewPolicy() {
     denied([&]{views.acquire(fence);},EPERM);
     for (auto op : {Op::BeginSyncSharing,Op::ExportSync,Op::ImportSync,Op::BeginResourceSharing,Op::ExportResource,Op::ImportResource})
         denied([&]{views.approve(packet(op,1));},EOPNOTSUPP);
+    {
+        auto queued=base(); queued.observe(packet(Op::CreateContext,2),receipt(Op::CreateContext,3));
+        auto desc=encode(HwQueueDesc{0,4,0,0}); desc.insert(desc.end(),{1,2,3,4});
+        auto body=encode(HwQueueReply{5,0,8192,65536}); body.insert(body.end(),{9,8,7,6});
+        const auto request=packet(Op::CreateHwQueue,3,desc), reply=receipt(Op::CreateHwQueue,4,0,body);
+        auto truncated=reply; truncated.pop_back();
+        denied([&]{queued.observe(request,truncated);},EPROTO);
+        queued.observe(request,reply);
+        CHECK(queued.acquire({WDDM_APERTURE_FENCE,0,8192,4096,0}).cookie==0);
+    }
     for (unsigned corruption=0;corruption<6;++corruption) {
         auto invalid=base(); auto reply=receipt(Op::CreateGuestPagingQueue,3,0,encode(PagingReply{4,0,4096}));
         if (corruption==0) reply[0]^=1;

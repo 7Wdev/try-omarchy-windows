@@ -123,7 +123,10 @@ public:
         }
         if (op == Op::CreateHwQueue) {
             const auto value = at<HwQueueReply>(response,payload);
-            require(response.size() == payload + sizeof(value) && !value.reserved && !(value.offset % 8),"Native queue receipt");
+            const auto desc = at<HwQueueDesc>(request,sizeof(Header));
+            require(validHwQueue(desc) && request.size() == sizeof(Header) + sizeof(desc) + desc.privateBytes &&
+                    response.size() == payload + sizeof(value) + desc.privateBytes && !value.reserved && !(value.offset % 8),
+                    "Native queue receipt");
             parent(r.handle,h.handle); parent(value.sync,r.handle);
             grant(r.handle,{WDDM_APERTURE_FENCE,0,value.offset & ~4095ull,4096,0});
         }
