@@ -103,9 +103,11 @@ struct NativeMock {
     std::vector<std::uint8_t> exchange(const std::vector<std::uint8_t>& bytes) {
         ++calls; Header h{}; std::memcpy(&h,bytes.data(),sizeof(h));
         const auto op=static_cast<Op>(h.type);
+        if (op==Op::Hello) return packet(op,0,encode(native_gpu::Capabilities{driver_bridge::Version,ContextCapability|QueryCapability|GuestPagingCapability,0x10de,11352}));
         if (op==Op::OpenAdapter) return receipt(op,1);
         if (op==Op::CreateDevice && h.handle==1) return receipt(op,2);
-        if (op==Op::CreateGuestPagingQueue && h.handle==2) return receipt(op,3,0,encode(PagingReply{4,0,4096}));
+        if (op==Op::CreateGuestPagingQueue && h.handle==2) return receipt(op,3,0,encode(PagingReply{4,0,4104}));
+        if (op==Op::DestroyPagingQueue && h.handle==3) return receipt(op,3);
         throw std::runtime_error("Unexpected mock native operation");
     }
 };
@@ -122,7 +124,7 @@ struct KernelMock {
     }
     void release(std::uint64_t cookie) { CHECK(cookie==19); ++released; }
 };
-static void realRpc(bool attack) {
+static void realRpc(bool attack,const char* probe=nullptr,const char* shim=nullptr,bool expectTimeout=false) {
     char directory[]="/tmp/wddm-broker-routing-XXXXXX"; CHECK(mkdtemp(directory)); CHECK(!chmod(directory,0755));
     const auto path=std::string(directory)+"/broker.sock";
     sockaddr_un address{}; address.sun_family=AF_UNIX; std::memcpy(address.sun_path,path.c_str(),path.size()+1);
@@ -136,7 +138,13 @@ static void realRpc(bool attack) {
         try {
             close(listener.get()); close(commands[1]); close(notices[0]);
             CHECK(!setgroups(0,nullptr) && !setgid(65534) && !setuid(65534));
-            setenv("WDDM_BRIDGE_BROKER_SOCKET",path.c_str(),1); Client client;
+            setenv("WDDM_BRIDGE_BROKER_SOCKET",path.c_str(),1);
+            if (probe) {
+                unsetenv("WDDM_BRIDGE_WINDOWS_WORKER"); unsetenv("WDDM_BRIDGE_PORT");
+                setenv("LD_PRELOAD",shim,1); setenv("WDDM_BRIDGE_KERNEL_APERTURE","1",1);
+                execl(probe,probe,(char*)nullptr); throw std::runtime_error("Shim probe exec failed");
+            }
+            Client client;
             CHECK(client.info().allocation_slots==256);
             client.driver(packet(Op::OpenAdapter)); client.driver(packet(Op::CreateDevice,1)); client.driver(packet(Op::CreateGuestPagingQueue,2));
             auto reply=client.acquire({WDDM_APERTURE_FENCE,0,4096,4096,0});
@@ -155,17 +163,36 @@ static void realRpc(bool attack) {
     Peer peer(std::move(accepted),65534,65534); NativeMock native; KernelMock kernel;
     std::atomic<bool> done{false}; int result=-1;
     std::thread server([&]{result=serve(peer,native,kernel);done.store(true);});
-    char notice=0; CHECK(read(notices[0],&notice,1)==1 && notice=='C');
-    CHECK(!done.load() && !peer.processExited()); const char exit='E'; CHECK(write(commands[1],&exit,1)==1);
-    server.join(); int status=0; CHECK(waitpid(child,&status,0)==child && WIFEXITED(status) && !WEXITSTATUS(status));
-    CHECK(result==(attack ? 1 : 0) && native.calls==3 && kernel.created==1 && kernel.released==0 && peer.processExited());
+    int status=0; bool timeout=false;
+    if (probe) {
+        pid_t waited=0;
+        for (unsigned n=0;n<100 && !waited;++n) { waited=waitpid(child,&status,WNOHANG); if (!waited) poll(nullptr,0,50); }
+        if (!waited) { timeout=true; CHECK(!kill(child,SIGKILL)); waited=waitpid(child,&status,0); }
+        CHECK(waited==child);
+    } else {
+        char notice=0; CHECK(read(notices[0],&notice,1)==1 && notice=='C');
+        CHECK(!done.load() && !peer.processExited()); const char exit='E'; CHECK(write(commands[1],&exit,1)==1);
+        CHECK(waitpid(child,&status,0)==child);
+    }
+    server.join();
+    if (expectTimeout) {
+        CHECK(timeout && WIFSIGNALED(status) && WTERMSIG(status)==SIGKILL && result==0 && native.calls==4 && kernel.created==1 && kernel.released==0);
+    } else {
+        CHECK(!timeout && WIFEXITED(status) && !WEXITSTATUS(status));
+        CHECK(result==(attack ? 1 : 0) && native.calls==(probe ? 5u : 3u) && kernel.created==1 && kernel.released==(probe ? 1u : 0u));
+    }
+    CHECK(peer.processExited());
     close(commands[1]); close(notices[0]); CHECK(!unlink(path.c_str()) && !rmdir(directory));
-    std::cout<<"BROKER_RPC_CONTRACT clientUid=65534 readonlyFd=true retainedAfterEof=true attack="<<(attack?"rejected":"none")<<" native=mock kernel=mock gpu=false\n";
+    if (probe) std::cout<<"BROKER_SHIM_CONTRACT clientUid=65534 oldDeadlockControl="<<(expectTimeout?"true":"false")<<" native=mock kernel=mock gpu=false\n";
+    else std::cout<<"BROKER_RPC_CONTRACT clientUid=65534 readonlyFd=true retainedAfterEof=true attack="<<(attack?"rejected":"none")<<" native=mock kernel=mock gpu=false\n";
 }
-int main() {
+int main(int argc,char** argv) {
     try {
+        if (argc!=1 && argc!=3 && (argc!=4 || std::strcmp(argv[3],"--expect-close-deadlock"))) throw std::runtime_error("Use optional PROBE SHIM [--expect-close-deadlock]");
         viewPolicy();
         if (geteuid()) { std::cout<<"BROKER_RPC_CONTRACT skipped=root-required\n"; return 0; }
-        alarm(25); realRpc(false); realRpc(true); alarm(0); return 0;
+        alarm(25); realRpc(false); realRpc(true);
+        if (argc>=3) realRpc(false,argv[1],argv[2],argc==4);
+        alarm(0); return 0;
     } catch (const std::exception& error) { std::cerr<<error.what()<<'\n'; return 1; }
 }

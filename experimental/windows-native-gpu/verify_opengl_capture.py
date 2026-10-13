@@ -30,7 +30,7 @@ def validate_opengl_cleanup(report, records, *, allocation_slots=128):
                 'Report/cleanup receipt mismatch')
 
 
-def validate_opengl_rendering(report, guest, records, *, allocation_slots=128):
+def validate_opengl_rendering(report, guest, records, *, allocation_slots=128, transport='virtio-port'):
     """Audit the actual draws and native/VM cleanup independently of guest exit.
 
     A caller testing an intentional process crash must validate that signal and
@@ -58,7 +58,12 @@ def validate_opengl_rendering(report, guest, records, *, allocation_slots=128):
     require(async_submissions_complete(report['guestCommandEnqueues'], report['nativeAsyncSubmissionAcceptances'],
             report['nativeAsyncSubmissionRetirements'], report['disconnectCleanup'], maximum=64),
             'Unretired or unmatched native command')
-    require('LINUX_BRIDGE transport=virtio-port' in guest and 'realDxgForwarding=false' in guest and
+    transports = {'virtio-port': 'LINUX_BRIDGE transport=virtio-port',
+                  'authenticated-broker': 'LINUX_BRIDGE transport=authenticated-broker nativeWorkerClients=1'}
+    require(transport in transports and
+            [l for l in guest.splitlines() if l.startswith('LINUX_BRIDGE transport=')] == [transports[transport]],
+            'Missing or mixed explicit guest transport')
+    require('realDxgForwarding=false' in guest and
             'LINUX_BRIDGE nvidiaUmdPresentDuringPrivateQuery=true' in guest and
             'LINUX_BRIDGE openGlProfileNegotiated=true frames=2 commandLimit=64 reservationLimit=16 reservedByteLimit=17179869184' in guest,
             'Missing genuine runtime/transport provenance')
@@ -113,11 +118,11 @@ def validate_opengl_rendering(report, guest, records, *, allocation_slots=128):
             'retiredNativeCommands': len(report['nativeAsyncSubmissionRetirements'])}
 
 
-def validate_opengl(report, guest, records, *, allocation_slots=128):
+def validate_opengl(report, guest, records, *, allocation_slots=128, transport='virtio-port'):
     require(re.findall(r'^BRIDGE_RUNTIME_EXIT=(\d+)[ \t\r]*$', guest, re.M) == ['0'],
             'Guest runtime did not finish normally')
     require('BRIDGE_RUNTIME_SIGNAL' not in guest, 'Unexpected guest runtime signal')
-    return validate_opengl_rendering(report, guest, records, allocation_slots=allocation_slots)
+    return validate_opengl_rendering(report, guest, records, allocation_slots=allocation_slots, transport=transport)
 
 
 def main():

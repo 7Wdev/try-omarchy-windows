@@ -38,8 +38,8 @@ def _lifecycle(report, guest, records, control):
     return lines, once
 
 
-def validate_exit_lifetime(report, guest, records):
-    result = validate_kernel_aperture(report, guest, records)
+def validate_exit_lifetime(report, guest, records, *, allocation_slots=128, transport='virtio-port'):
+    result = validate_kernel_aperture(report, guest, records, allocation_slots=allocation_slots, transport=transport)
     lines, once = _lifecycle(report, guest, records, control=False)
     retained = [line for line in lines if line.startswith('LINUX_BRIDGE processExitViewsRetained=')]
     require(len(retained) == 1, 'Missing or duplicate process-owned mapping receipt')

@@ -7,8 +7,8 @@ from verify_4k_capture import require
 from verify_opengl_capture import validate_opengl
 
 
-def validate_kernel_aperture(report, guest, records, *, allocation_slots=128):
-    result = validate_opengl(report, guest, records, allocation_slots=allocation_slots)
+def validate_kernel_aperture(report, guest, records, *, allocation_slots=128, transport='virtio-port'):
+    result = validate_opengl(report, guest, records, allocation_slots=allocation_slots, transport=transport)
     lines = guest.splitlines()
     for line in (
             'APERTURE_CONTRACT fdTransfer=true unprivilegedMap=true readOnly=true revokeSigbus=true',
