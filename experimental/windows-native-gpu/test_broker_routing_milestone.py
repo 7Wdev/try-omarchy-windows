@@ -1,8 +1,12 @@
 """Corrupt actual broker-rendered shader and native-finalizer captures."""
 import copy
 import json
+import hashlib
 from pathlib import Path
 import unittest
+import struct
+import re
+import zlib
 from verify_broker_routing_capture import validate_broker_routing
 from verify_opengl_capture import validate_opengl
 
@@ -32,6 +36,27 @@ class BrokerRoutingMilestone(unittest.TestCase):
         for failure in self.evidence['failures']:
             with self.subTest(label=failure['label']),self.assertRaises(ValueError):
                 self.check(dict(proof=failure['proof'],finalizer=False))
+
+    def test_corrected_preview_preserves_exact_logged_top_origin_pixels(self):
+        root=Path(__file__).resolve().parents[2]
+        meta=json.loads((root/'docs/evidence/BROKER-ROUTING-IMAGE-2026-10-13.json').read_text())
+        data=(root/meta['pngFile']).read_bytes()
+        self.assertEqual(hashlib.sha256(data).hexdigest(),meta['pngSha256'])
+        self.assertEqual(data[:8],b'\x89PNG\r\n\x1a\n')
+        offset=8; compressed=b''
+        while offset<len(data):
+            size=struct.unpack('>I',data[offset:offset+4])[0]; kind=data[offset+4:offset+8]
+            payload=data[offset+8:offset+8+size]
+            self.assertEqual(struct.unpack('>I',data[offset+8+size:offset+12+size])[0],zlib.crc32(kind+payload)&0xffffffff)
+            if kind==b'IHDR': self.assertEqual(struct.unpack('>IIBBBBB',payload),(130,73,8,6,0,0,0))
+            if kind==b'IDAT': compressed+=payload
+            offset+=12+size
+        raw=zlib.decompress(compressed); self.assertEqual(len(raw),73*521)
+        rows={int(y):bytes.fromhex(p) for y,p in re.findall(r'^OPENGL_PIXEL_ROW frame=2 y=(\d+) rgba=([0-9a-f]+)$',
+              '\n'.join(self.evidence['runs'][0]['proof']['guestLines']),re.M)}
+        for y in range(73):
+            self.assertEqual(raw[y*521],0); self.assertEqual(raw[y*521+1:(y+1)*521],rows[y])
+        self.assertEqual(hashlib.sha256(b''.join(rows[y] for y in range(73))).hexdigest(),meta['denseRgbaSha256'])
 
     def test_wrong_client_worker_privileges_and_lifetime_rejected(self):
         changes=(('uid=65534 gid=65534','uid=0 gid=0'),('effectiveCapabilities=0','effectiveCapabilities=1'),

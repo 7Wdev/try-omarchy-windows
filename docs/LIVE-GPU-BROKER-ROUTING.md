@@ -7,7 +7,11 @@ finalizer after the client closes its broker connection. All three independently
 pass the complete pixel, native command retirement, kernel lease and VM cleanup
 audits. This is one graphics process per native worker; it closes no desktop gate.
 
-![Actual frame 2 read back from the NVIDIA GPU by the broker client](images/nvidia-broker-opengl-2026-10-13.png)
+![Actual frame 2 read back from the NVIDIA GPU by the broker client](images/nvidia-broker-opengl-2026-10-13-top-origin.png)
+
+The [preview correction](evidence/BROKER-ROUTING-IMAGE-2026-10-13.json) preserves
+the logged top-origin row order. The first PNG was vertically mirrored during
+extraction; the retained raw GPU pixels and rendering audits are unchanged.
 
 Mesa reports `D3D12 (NVIDIA GeForce RTX 5090 Laptop GPU)` and OpenGL 4.6.
 Each frame checks all 9,490 pixels against the independent triangle oracle,
