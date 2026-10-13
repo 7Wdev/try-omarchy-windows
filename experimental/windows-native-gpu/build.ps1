@@ -44,6 +44,10 @@ cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\native_worker_protocol_te
 if not "%errorlevel%"=="0" exit /b %errorlevel%
 native-worker-protocol-test.exe
 if not "%errorlevel%"=="0" exit /b %errorlevel%
+cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\native_worker_process_test.cpp" /Fe:native-worker-process-test.exe /link d3d12.lib dxgi.lib gdi32.lib user32.lib dwmapi.lib
+if not "%errorlevel%"=="0" exit /b %errorlevel%
+native-worker-process-test.exe
+if not "%errorlevel%"=="0" exit /b %errorlevel%
 cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\cpu_aperture_test.cpp" /Fe:cpu-aperture-test.exe
 if not "%errorlevel%"=="0" exit /b %errorlevel%
 cpu-aperture-test.exe

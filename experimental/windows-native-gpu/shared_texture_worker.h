@@ -168,6 +168,9 @@ public:
             try { Request request{}; request.operation=Operation::Stop; if (exchange(request).hresult) failure(); }
             catch (...) { failure(); }
         }
+        // A worker that has not accepted initialization must be able to exit
+        // on EOF. Waiting with its input open would force-kill an idle child.
+        if (!initialized || failed) input=Handle();
         if (WaitForSingleObject(process.get(),5000)!=WAIT_OBJECT_0) {
             failure(); forced=true; ++counters.forced;
             if (!TerminateProcess(process.get(),3) || WaitForSingleObject(process.get(),5000)!=WAIT_OBJECT_0) {

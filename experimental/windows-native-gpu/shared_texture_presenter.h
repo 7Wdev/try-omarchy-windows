@@ -66,13 +66,16 @@ public:
         UINT previous = UINT_MAX;
         hr = swapchain->GetLastPresentCount(&previous); if (hr != S_OK || previous != 0) return E_FAIL;
         ShowWindow(window, SW_SHOWNOACTIVATE); UpdateWindow(window); pump();
+        char topmost[2]{};
+        const bool diagnosticTopmost=GetEnvironmentVariableA("WDDM_BRIDGE_TEST_WINDOW_TOPMOST",topmost,sizeof(topmost))==1 && topmost[0]=='1';
+        if (diagnosticTopmost && !SetWindowPos(window,HWND_TOPMOST,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE)) return HRESULT_FROM_WIN32(GetLastError());
         RECT client{};
         if (!IsWindowVisible(window) || !GetClientRect(window, &client) || client.right <= 0 || client.bottom <= 0) return E_FAIL;
         opened = true;
         std::cerr << "{\"nativeSharedTexturePresenterOpened\":true,\"width\":" << gpu_diagnostic::Width
             << ",\"height\":" << gpu_diagnostic::Height << ",\"bufferCount\":2"
             << ",\"flipModel\":true,\"clientWidth\":" << client.right << ",\"clientHeight\":" << client.bottom
-            << ",\"windowVisible\":true,\"sameAdapter\":true,\"cpuUpload\":false}\n";
+            << ",\"windowVisible\":true,\"sameAdapter\":true,\"cpuUpload\":false,\"diagnosticTopmost\":"<<(diagnosticTopmost?"true":"false")<<"}\n";
         return S_OK;
     }
     HRESULT copy(ID3D12GraphicsCommandList* commands, ID3D12Resource* source,
