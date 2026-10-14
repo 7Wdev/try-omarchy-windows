@@ -14,6 +14,7 @@ Start with the [quick start](../README.md#try-it). For supported hardware and cu
 | Move an installation to another drive | [Moving an installation](MOVING.md) |
 | Install Omarchy for real and bring your trial along | [Moving to a real install](MIGRATION.md) |
 | Launch approved Windows apps | [Windows app bridge](WINDOWS-APP-BRIDGE.md) |
+| Open links from Windows in Omarchy | [Windows link bridge](WINDOWS-LINK-BRIDGE.md) |
 | Approve `sudo` with Windows Hello | [Windows Hello for guest sudo](WINDOWS-HELLO.md) |
 | Zoom with a touchpad pinch | [Trackpad pinch](PINCH-ZOOM.md) |
 | Troubleshoot slow or unsupported graphics | [Performance](PERFORMANCE.md), [App compatibility](COMPATIBILITY.md) |

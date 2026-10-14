@@ -2,8 +2,12 @@ package main
 
 import (
 	"bufio"
+	"encoding/base64"
 	"net"
+	"os"
+	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -362,5 +366,294 @@ func TestAgentRefusesForeignHealthPeer(t *testing.T) {
 	<-done
 	if health.armed || health.connected {
 		t.Fatal("foreign stream changed health")
+	}
+}
+
+func TestURLOpenWaitsForThisConnectionsReportAndStaysBounded(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	dir := t.TempDir()
+	if err := saveApprovedURLSchemes(dir, approvedURLSchemePreferences{Schemes: []string{"zoommtg"}}); err != nil {
+		t.Fatal(err)
+	}
+	a := newGuestAgent()
+	a.batteryLine = nil
+	a.appsDir = dir
+	now := time.Now()
+	a.now = func() time.Time { return now }
+	go a.accept(l)
+	connect := func() (net.Conn, *bufio.Reader) {
+		c, err := net.Dial("tcp", l.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		c.Write([]byte("hello 6\n"))
+		r := bufio.NewReader(c)
+		c.SetReadDeadline(time.Now().Add(2 * time.Second))
+		for {
+			line, err := r.ReadString('\n')
+			if err != nil {
+				t.Fatal(err)
+			}
+			if line == urlApprovedLine([]string{"zoommtg"}) {
+				return c, r
+			}
+		}
+	}
+	guest, r := connect()
+	defer guest.Close()
+	if err := a.requestURLOpen("zoommtg:join"); err == nil {
+		t.Fatal("link forwarded before the guest reported its link types")
+	}
+	guest.Write([]byte("url-schemes " + base64.StdEncoding.EncodeToString([]byte(`["zoommtg","steam"]`)) + "\n"))
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		a.mu.Lock()
+		ready := a.urlReady
+		a.mu.Unlock()
+		if ready || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := a.requestURLOpen("ZoomMtg:join?x=1"); err != nil {
+		t.Fatal(err)
+	}
+	guest.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if line, err := r.ReadString('\n'); err != nil || line != urlApprovedLine([]string{"zoommtg"}) {
+		t.Fatalf("snapshot before the link: %q, %v", line, err)
+	}
+	if line, err := r.ReadString('\n'); err != nil || line != openURLLine("zoommtg:join?x=1") {
+		t.Fatalf("link line: %q, %v", line, err)
+	}
+	if err := a.requestURLOpen("zoommtg:again"); err == nil {
+		t.Fatal("second link within a second was forwarded")
+	}
+	now = now.Add(2 * time.Second)
+	for _, refused := range []string{"steam://run/10", "http://a", "zoommtg:a b"} {
+		if err := a.requestURLOpen(refused); err == nil {
+			t.Errorf("%q forwarded", refused)
+		}
+	}
+	// The report is stored after urlReady is set; give the write a moment.
+	for deadline := time.Now().Add(2 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		got, err := loadGuestURLSchemes(dir)
+		if err == nil && slices.Equal(got, []string{"steam", "zoommtg"}) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("stored report %v, %v", got, err)
+		}
+	}
+	// Revoking in Settings takes effect on the next link without waiting.
+	if err := saveApprovedURLSchemes(dir, approvedURLSchemePreferences{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.requestURLOpen("zoommtg:join"); err == nil {
+		t.Fatal("revoked link type forwarded")
+	}
+	if err := saveApprovedURLSchemes(dir, approvedURLSchemePreferences{Schemes: []string{"zoommtg"}}); err != nil {
+		t.Fatal(err)
+	}
+	// A reconnected agent starts without link support until it reports again.
+	second, _ := connect()
+	defer second.Close()
+	if err := a.requestURLOpen("zoommtg:join"); err == nil {
+		t.Fatal("link forwarded to a connection that has not reported")
+	}
+	// A report on the replaced connection does not enable the new one.
+	guest.Write([]byte("url-schemes " + base64.StdEncoding.EncodeToString([]byte(`["zoommtg"]`)) + "\n"))
+	time.Sleep(100 * time.Millisecond)
+	if err := a.requestURLOpen("zoommtg:join"); err == nil {
+		t.Fatal("stale connection's report enabled links")
+	}
+}
+
+func TestApprovedURLSchemesUnreadableSendsAnEmptyList(t *testing.T) {
+	host, guest := net.Pipe()
+	defer guest.Close()
+	dir := t.TempDir()
+	if err := os.WriteFile(approvedURLSchemesPath(dir), []byte("{"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	a := &guestAgent{conn: host, now: time.Now, appsDir: dir}
+	go a.sendApprovedURLSchemes()
+	guest.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if line, err := bufio.NewReader(guest).ReadString('\n'); err != nil || line != urlApprovedLine(nil) {
+		t.Fatalf("got %q, %v", line, err)
+	}
+}
+
+// connectReadyURLGuest connects a guest agent that reported its link types,
+// and returns once the host has recorded the report.
+func connectReadyURLGuest(t *testing.T, a *guestAgent, addr string) (net.Conn, *bufio.Reader) {
+	t.Helper()
+	c, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Write([]byte("hello 6\n"))
+	r := bufio.NewReader(c)
+	c.SetReadDeadline(time.Now().Add(2 * time.Second))
+	for {
+		line, err := r.ReadString('\n')
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.HasPrefix(line, "url-approved ") {
+			break
+		}
+	}
+	c.Write([]byte("url-schemes " + base64.StdEncoding.EncodeToString([]byte(`["zoommtg"]`)) + "\n"))
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		a.mu.Lock()
+		ready := a.urlReady
+		a.mu.Unlock()
+		if ready {
+			return c, r
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the guest's report was not recorded")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestURLOpenCannotFollowANewerRevocation(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	dir := t.TempDir()
+	if err := saveApprovedURLSchemes(dir, approvedURLSchemePreferences{Schemes: []string{"zoommtg"}}); err != nil {
+		t.Fatal(err)
+	}
+	a := newGuestAgent()
+	a.batteryLine = nil
+	a.appsDir = dir
+	var pause atomic.Bool
+	loaded, release := make(chan struct{}), make(chan struct{})
+	a.urlApprovals = func() ([]string, error) {
+		prefs, err := loadApprovedURLSchemes(dir)
+		if pause.CompareAndSwap(true, false) {
+			loaded <- struct{}{}
+			<-release
+		}
+		return prefs.Schemes, err
+	}
+	go a.accept(l)
+	guest, r := connectReadyURLGuest(t, a, l.Addr().String())
+	defer guest.Close()
+	pause.Store(true)
+	result := make(chan error, 1)
+	go func() { result <- a.requestURLOpen("zoommtg:join") }()
+	<-loaded
+	// Settings revokes while the request holds the older approval; the
+	// periodic sender must wait rather than slip its snapshot in between.
+	if err := saveApprovedURLSchemes(dir, approvedURLSchemePreferences{}); err != nil {
+		t.Fatal(err)
+	}
+	ticked := make(chan struct{})
+	go func() { a.sendApprovedURLSchemes(); close(ticked) }()
+	select {
+	case <-ticked:
+		t.Fatal("the periodic snapshot was sent while a link was being forwarded")
+	case <-time.After(150 * time.Millisecond):
+	}
+	close(release)
+	if err := <-result; err != nil {
+		t.Fatal(err)
+	}
+	<-ticked
+	guest.SetReadDeadline(time.Now().Add(2 * time.Second))
+	want := []string{urlApprovedLine([]string{"zoommtg"}), openURLLine("zoommtg:join"), urlApprovedLine(nil)}
+	for _, expected := range want {
+		if line, err := r.ReadString('\n'); err != nil || line != expected {
+			t.Fatalf("guest got %q, %v; want %q", line, err, expected)
+		}
+	}
+	a.mu.Lock()
+	a.lastURLOpen = time.Time{}
+	a.mu.Unlock()
+	if err := a.requestURLOpen("zoommtg:join"); err == nil {
+		t.Fatal("a link was forwarded after the revocation was sent")
+	}
+}
+
+func TestReplacedConnectionCannotOverwriteANewerReport(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	a := newGuestAgent()
+	a.batteryLine = nil
+	a.urlApprovals = func() ([]string, error) { return []string{"zoommtg"}, nil }
+	var mu sync.Mutex
+	var stored [][]string
+	paused, release, saved := make(chan struct{}), make(chan struct{}), make(chan struct{}, 4)
+	var pause atomic.Bool
+	a.saveURLReport = func(schemes []string) error {
+		if pause.CompareAndSwap(true, false) {
+			close(paused)
+			<-release
+		}
+		mu.Lock()
+		stored = append(stored, schemes)
+		mu.Unlock()
+		saved <- struct{}{}
+		return nil
+	}
+	go a.accept(l)
+	first, _ := connectReadyURLGuest(t, a, l.Addr().String())
+	defer first.Close()
+	// urlReady is set before the report is saved; arm the pause only once
+	// the first report's save has finished, so the second one takes it.
+	<-saved
+	pause.Store(true)
+	first.Write([]byte("url-schemes " + base64.StdEncoding.EncodeToString([]byte(`["steam"]`)) + "\n"))
+	<-paused
+	second, err := net.Dial("tcp", l.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	second.Write([]byte("hello 6\n"))
+	r := bufio.NewReader(second)
+	second.SetReadDeadline(time.Now().Add(150 * time.Millisecond))
+	if line, err := r.ReadString('\n'); err == nil {
+		t.Fatalf("the connection was replaced while the old report was being written: %q", line)
+	}
+	close(release)
+	second.SetReadDeadline(time.Now().Add(2 * time.Second))
+	for {
+		line, err := r.ReadString('\n')
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.HasPrefix(line, "url-approved ") {
+			break
+		}
+	}
+	second.Write([]byte("url-schemes " + base64.StdEncoding.EncodeToString([]byte(`["zoommtg","slack"]`)) + "\n"))
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		mu.Lock()
+		n := len(stored)
+		mu.Unlock()
+		if n == 3 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(stored) != 3 || !slices.Equal(stored[2], []string{"zoommtg", "slack"}) {
+		t.Fatalf("stored reports %v", stored)
 	}
 }

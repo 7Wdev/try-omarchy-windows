@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -72,6 +73,9 @@ const (
 	settingsUSBSelectionID       = 2127
 	settingsVolumeSyncID         = 2128
 	settingsInstallOmarchyID     = 2130
+	settingsLinkListID           = 2131
+	settingsLinkAllowID          = 2132
+	settingsLinkRevokeID         = 2133
 	settingsSaveID               = 2001
 	settingsCancelID             = 2002
 	settingsBrowseID             = 2003
@@ -220,6 +224,37 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 		errorBox(uiTextWith("settings.error.read_apps", map[string]string{"error": err.Error()}))
 		return false
 	}
+	// Portable copies never register link types: the drive can move.
+	approvedLinks := approvedURLSchemePreferences{SchemaVersion: 1}
+	var linkRows []string
+	linkConflicted := map[string]bool{}
+	linkDir, linkTarget := dataDir, ""
+	if !portable {
+		if approvedLinks, err = loadApprovedURLSchemes(dataDir); err == nil {
+			linkDir, err = filepath.Abs(dataDir)
+		}
+		if err != nil {
+			errorBox(uiTextWith("settings.error.read_links", map[string]string{"error": err.Error()}))
+			return false
+		}
+		linkTarget = filepath.Join(linkDir, stableLauncherName)
+		reported, reportErr := loadGuestURLSchemes(dataDir)
+		if reportErr != nil {
+			logf("links: ignoring the guest's link types: %v", reportErr)
+		}
+		// Hide what Windows already handles, but keep an allowed one listed
+		// so it can still be revoked.
+		for _, scheme := range slices.Sorted(slices.Values(append(slices.Clone(reported), approvedLinks.Schemes...))) {
+			if len(linkRows) > 0 && linkRows[len(linkRows)-1] == scheme {
+				continue
+			}
+			linkConflicted[scheme] = urlSchemeHandledByWindows(scheme, linkTarget, linkDir)
+			if !linkConflicted[scheme] || slices.Contains(approvedLinks.Schemes, scheme) {
+				linkRows = append(linkRows, scheme)
+			}
+		}
+	}
+	savedLinks := slices.Clone(approvedLinks.Schemes)
 	hostSnapshot := measureHostResources(true)
 	runningMiB := runningGuestMiB()
 	hostSnapshot.AvailableMiB = min(hostSnapshot.TotalMiB, hostSnapshot.AvailableMiB+runningMiB)
@@ -256,9 +291,9 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 	var hCameraOn, hMicrophoneOn, hCamera, hUpdateOn uintptr
 	var hAudioOutput, hAudioInput, hVolumeSync uintptr
 	var hResourceProfile, hResourceHelp uintptr
-	var hApprovedApps uintptr
+	var hApprovedApps, hLinks uintptr
 	var updateResourceControls func()
-	var refreshApprovedApps func()
+	var refreshApprovedApps, refreshLinks func()
 	profileValues := []string{resourceBalanced, resourceMaximum, resourceManual}
 	selectedProfile := func() string {
 		index, _, _ := procSendMessageW.Call(hResourceProfile, 0x147, 0, 0) // CB_GETCURSEL
@@ -408,6 +443,24 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 					approvedApps.Apps = append(approvedApps.Apps[:index], approvedApps.Apps[index+1:]...)
 					refreshApprovedApps()
 				}
+			case settingsLinkAllowID, settingsLinkRevokeID:
+				index, _, _ := procSendMessageW.Call(hLinks, 0x188, 0, 0) // LB_GETCURSEL
+				if index >= uintptr(len(linkRows)) {
+					return 0
+				}
+				scheme := linkRows[index]
+				allowed := slices.Index(approvedLinks.Schemes, scheme)
+				if wParam&0xffff == settingsLinkRevokeID && allowed >= 0 {
+					approvedLinks.Schemes = slices.Delete(slices.Clone(approvedLinks.Schemes), allowed, allowed+1)
+				} else if wParam&0xffff == settingsLinkAllowID && allowed < 0 {
+					if len(approvedLinks.Schemes) >= maximumURLSchemes {
+						errorBox(uiTextWith("settings.error.allow_link", map[string]string{"error": uiTextWith("error.links.limit", map[string]string{"count": fmt.Sprint(maximumURLSchemes)})}))
+						return 0
+					}
+					approvedLinks.Schemes = append(slices.Clone(approvedLinks.Schemes), scheme)
+				}
+				refreshLinks()
+				procSendMessageW.Call(hLinks, 0x186, index, 0) // LB_SETCURSEL
 			case settingsRenderAutoID, settingsRenderGPUID, settingsRenderCPUID:
 				if wParam>>16 == 0 && updateResourceControls != nil { // BN_CLICKED
 					updateResourceControls()
@@ -588,6 +641,19 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 				if err := saveApprovedWindowsApps(dataDir, approvedApps); err != nil {
 					errorBox(uiTextWith("settings.error.save_apps", map[string]string{"error": err.Error()}))
 					return 0
+				}
+				if !portable {
+					if !slices.Equal(approvedLinks.Schemes, savedLinks) {
+						if err := saveApprovedURLSchemes(dataDir, approvedLinks); err != nil {
+							errorBox(uiTextWith("settings.error.save_links", map[string]string{"error": err.Error()}))
+							return 0
+						}
+						savedLinks = slices.Clone(approvedLinks.Schemes)
+					}
+					// The file is saved; the next normal start registers again.
+					if err := syncURLSchemeRegistrations(linkDir, linkTarget, approvedLinks.Schemes); err != nil {
+						errorBox(uiTextWith("settings.error.register_links", map[string]string{"error": err.Error()}))
+					}
 				}
 				// Only write the file for a real change. Older launchers reject
 				// backups that contain files they do not know.
@@ -1259,6 +1325,38 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 		rowButton{uiText("settings.apps.remove"), 160, settingsAppRemoveID})
 	y += 40 + grow
 	y = note(uiText("settings.apps.save_help"), left, y, clientW-2*left, 70, 76)
+	section(uiText("settings.section.links"))
+	if portable {
+		y = note(uiText("settings.links.portable"), left, y, clientW-2*left, 20, 26)
+	} else {
+		y = note(uiText("settings.links.help"), left, y, clientW-2*left, 48, 52)
+	}
+	hLinks = mk("LISTBOX", "", left, y, clientW-2*left, 160, wsBorder|wsVscroll|wsTabstop|0x0001, settingsLinkListID) // LBS_NOTIFY
+	refreshLinks = func() {
+		procSendMessageW.Call(hLinks, 0x184, 0, 0) // LB_RESETCONTENT
+		for _, scheme := range linkRows {
+			label := scheme
+			if slices.Contains(approvedLinks.Schemes, scheme) {
+				label = uiTextWith("settings.links.allowed", map[string]string{"scheme": scheme})
+				if linkConflicted[scheme] {
+					label = uiTextWith("settings.links.conflicted", map[string]string{"scheme": scheme})
+				}
+			}
+			value, _ := syscall.UTF16PtrFromString(label)
+			procSendMessageW.Call(hLinks, 0x180, 0, uintptr(unsafe.Pointer(value))) // LB_ADDSTRING
+		}
+	}
+	refreshLinks()
+	y += 170
+	linkButtons, grow := buttons(left, y, 28, 10,
+		rowButton{uiText("settings.links.allow"), 150, settingsLinkAllowID},
+		rowButton{uiText("settings.links.revoke"), 150, settingsLinkRevokeID})
+	if portable {
+		for _, h := range append(linkButtons, hLinks) {
+			procEnableWindow.Call(h, 0)
+		}
+	}
+	y += 40 + grow
 	pages[4] = append(pages[4], scroll.controls...)
 	pageHeights[4] = y
 	scroll.controls = nil

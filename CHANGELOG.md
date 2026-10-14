@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Links clicked in Windows can open in Omarchy. Allow a link type that an
+  Omarchy app handles in Settings > Apps > Links from Windows (#348).
 - First setup says the Omarchy system image is downloading instead of showing
   "Checking cached rootfs.ext4.zst..." for the whole download.
 - In fullscreen with an auto-hiding Windows taskbar, clicks at the bottom edge
