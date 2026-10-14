@@ -373,5 +373,7 @@ static void __exit aperture_exit(void)
 module_init(aperture_init);
 module_exit(aperture_exit);
 MODULE_LICENSE("GPL");
-MODULE_IMPORT_NS("DMA_BUF");
+/* MODULE_IMPORT_NS changed from stringifying a token to taking a string.
+ * Emit the identical import metadata on both the CI and guest kernels. */
+MODULE_INFO(import_ns, "DMA_BUF");
 MODULE_DESCRIPTION("Private QEMU WDDM memory leases and opt-in native capability buffers; no DRM device");
