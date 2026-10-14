@@ -19,7 +19,20 @@ if [ "${WDDM_BRIDGE_TEST_EXIT_LIFETIME:-0}" = 1 ]; then
         -isystem "$dxg/include" -isystem "$directx/include" -isystem "$directx/include/wsl/stubs" \
         "$base/exit_lifetime_probe.cpp" -o "$output/exit-lifetime-probe.so"
 fi
-if [ "${WDDM_BRIDGE_TEST_NATIVE_IMAGES:-0}" = 1 ]; then
+if [ "${WDDM_BRIDGE_TEST_GBM:-0}" = 1 ]; then
+    for option in "${WDDM_BRIDGE_TEST_NATIVE_IMAGES:-0}" "${WDDM_BRIDGE_TEST_NATIVE_SYNC_FILES:-0}" "${WDDM_BRIDGE_TEST_NATIVE_SYNC_LINEAGE:-0}" "${WDDM_BRIDGE_TEST_EGL_NATIVE_SYNC:-0}" "${WDDM_BRIDGE_TEST_RESOURCE_FDS:-0}" "${WDDM_BRIDGE_TEST_MESA_FENCE_FDS:-0}" "${WDDM_BRIDGE_TEST_SYNC_FDS:-0}"; do
+        if [ "$option" = 1 ]; then echo 'Select one explicit GBM/image diagnostic' >&2; exit 2; fi
+    done
+    dependencies=${WDDM_BRIDGE_DRM_DEPENDENCIES:?Supply pinned libdrm dependency prefix}
+    "${CXX:-c++}" -std=c++17 -O2 -Wall -Wextra -Werror -isystem "$mesa/include" \
+        -isystem "$dependencies/usr/include" -isystem "$dependencies/usr/include/libdrm" \
+        -c "$base/gbm_native_probe.cpp" -o "$output/gbm-native-probe.o"
+    "${CC:-cc}" -std=c11 -O2 -Wall -Wextra -Werror $exit_define -DWDDM_BRIDGE_GBM_TEST=1 \
+        -isystem "$mesa/include" -c "$base/egl_gl_probe.c" -o "$output/egl-gl-probe.o"
+    "${CXX:-c++}" "$output/egl-gl-probe.o" "$output/gbm-native-probe.o" \
+        -L"$mesa/lib" -L"$dependencies/usr/lib/x86_64-linux-gnu" -Wl,-rpath-link,"$mesa/lib" \
+        -l:libEGL.so.1 -l:libgbm.so.1 -l:libdrm.so.2 -ldl -o "$output/egl-gl-probe"
+elif [ "${WDDM_BRIDGE_TEST_NATIVE_IMAGES:-0}" = 1 ]; then
     for option in "${WDDM_BRIDGE_TEST_NATIVE_SYNC_FILES:-0}" "${WDDM_BRIDGE_TEST_NATIVE_SYNC_LINEAGE:-0}" "${WDDM_BRIDGE_TEST_EGL_NATIVE_SYNC:-0}" "${WDDM_BRIDGE_TEST_RESOURCE_FDS:-0}" "${WDDM_BRIDGE_TEST_MESA_FENCE_FDS:-0}" "${WDDM_BRIDGE_TEST_SYNC_FDS:-0}"; do
         if [ "$option" = 1 ]; then echo 'Select one explicit image/FD diagnostic' >&2; exit 2; fi
     done
@@ -142,7 +155,7 @@ if [ "${WDDM_BRIDGE_TEST_BROKER_ROUTE:-0}" = 1 ]; then
     # explicitly bounded 64 MiB single CPU-mapping profile. Keep the broker's
     # receipt validation on that same profile; the default stays at 4 MiB.
     broker_define=
-    if [ "${WDDM_BRIDGE_TEST_RESOURCE_FDS:-0}" = 1 ] || [ "${WDDM_BRIDGE_TEST_NATIVE_IMAGES:-0}" = 1 ]; then
+    if [ "${WDDM_BRIDGE_TEST_RESOURCE_FDS:-0}" = 1 ] || [ "${WDDM_BRIDGE_TEST_NATIVE_IMAGES:-0}" = 1 ] || [ "${WDDM_BRIDGE_TEST_GBM:-0}" = 1 ]; then
         broker_define=-DWDDM_BRIDGE_4K_LAB=1
     fi
     "${CXX:-c++}" -std=c++17 -O2 -Wall -Wextra -Werror -pthread $broker_define \

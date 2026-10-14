@@ -149,6 +149,55 @@ class OpenGlPackaging(unittest.TestCase):
         with self.assertRaises(SystemExit): self.run_packer('--runtime-workload','opengl','--mesa-runtime-directory',str(self.mesa))
         self.assertFalse(self.output.exists())
 
+    def render_arguments(self):
+        arguments=self.broker_kernel_arguments()
+        aperture=Path(arguments[1]); aperture.write_bytes(aperture.read_bytes()+b'vermagic=7.2.8-arch1-2 SMP\0')
+        render=self.base/'wddm_render.ko'
+        data=bytearray(self.elf); data[16:18]=b'\x01\x00'
+        data.extend(b'name=wddm_render\0vermagic=7.2.8-arch1-2 SMP\0'); render.write_bytes(data)
+        return arguments+['--guest-native-buffers','--guest-native-sync-files','--guest-graphics-broker',str(self.input),
+            '--runtime-workload','opengl','--mesa-runtime-directory',str(self.mesa),'--guest-render-module',str(render)]
+
+    def test_render_node_requires_the_complete_native_route(self):
+        arguments=self.render_arguments()
+        for missing in ('--guest-native-buffers','--guest-native-sync-files','--guest-graphics-broker'):
+            invalid=arguments.copy(); index=invalid.index(missing); invalid.pop(index)
+            if missing=='--guest-graphics-broker': invalid.pop(index)
+            with self.subTest(missing=missing), self.assertRaises(SystemExit): self.run_packer(*invalid)
+        self.assertFalse(self.output.exists())
+
+    def test_render_module_identity_release_and_type(self):
+        arguments=self.render_arguments(); module=Path(arguments[-1]); valid=module.read_bytes()
+        for invalid in (self.elf, valid.replace(b'wddm_render',b'other_render'),
+                        valid.replace(b'7.2.8-arch1-2',b'7.2.9-arch1-1'), valid.replace(b'vermagic=',b'badmagic=')):
+            module.write_bytes(invalid)
+            with self.subTest(identity=invalid[-45:]), self.assertRaises(SystemExit): self.run_packer(*arguments)
+        self.assertFalse(self.output.exists())
+
+    def test_render_node_manifest_marker_and_gbm_backend(self):
+        arguments=self.render_arguments(); backend=self.mesa/'lib/gbm'; backend.mkdir()
+        (backend/'dri_gbm.so').write_bytes(self.elf)
+        self.run_packer(*arguments)
+        manifest=json.loads(self.output.with_suffix('.manifest.json').read_text())
+        self.assertTrue(manifest['guestRenderNodeIncluded'])
+        self.assertEqual(manifest['guestRenderKernelRelease'],'7.2.8-arch1-2')
+        files={f['path']:f for f in manifest['files']}
+        self.assertIn('/wddm-render.ko',files)
+        self.assertIn('/opt/wddm-mesa/lib/gbm/dri_gbm.so',files)
+        self.assertIn(b'native-render-required',gzip.decompress(self.output.read_bytes()))
+
+    def test_render_node_remains_absent_by_default(self):
+        self.run_packer('--runtime-workload','opengl','--mesa-runtime-directory',str(self.mesa))
+        manifest=json.loads(self.output.with_suffix('.manifest.json').read_text())
+        self.assertFalse(manifest['guestRenderNodeIncluded'])
+        self.assertIsNone(manifest['guestRenderKernelRelease'])
+        self.assertNotIn(b'native-render-required',gzip.decompress(self.output.read_bytes()))
+
+    def test_gbm_backend_cannot_escape_the_mesa_prefix(self):
+        backend=self.mesa/'lib/gbm'; backend.mkdir(); (backend/'dri_gbm.so').symlink_to(self.input)
+        with self.assertRaises(SystemExit): self.run_packer('--runtime-workload','opengl','--mesa-runtime-directory',str(self.mesa))
+        self.assertFalse(self.output.exists())
+
     def test_missing_egl_or_wrong_elf_rejected(self):
         (self.mesa/'lib/libEGL.so.1').write_bytes(b'not an ELF')
         with self.assertRaises(SystemExit): self.run_packer('--runtime-workload','opengl','--mesa-runtime-directory',str(self.mesa))

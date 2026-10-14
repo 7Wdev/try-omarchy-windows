@@ -17,6 +17,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends linux-headers-generic
           headers=$(printf '%s\n' /usr/src/linux-headers-*-generic | sort -V | tail -n 1)
           sh experimental/windows-native-gpu/build_guest_aperture.sh "$headers" "$RUNNER_TEMP/wddm-guest-kernel"
+          sh experimental/windows-native-gpu/build_guest_render.sh "$headers" "$RUNNER_TEMP/wddm-render-kernel"
   windows-build:
     runs-on: windows-latest
     timeout-minutes: 15
@@ -135,9 +136,12 @@ jobs:
       - name: Compile the OpenGL probe without running against the CI host GPU
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libegl-dev libgl-dev
+          sudo apt-get install -y --no-install-recommends libegl-dev libgl-dev libgbm-dev libdrm-dev
           cc -std=c11 -O2 -Wall -Wextra -Werror experimental/windows-native-gpu/egl_gl_probe.c -lEGL -ldl -o /tmp/egl-gl-probe
           cc -std=c11 -O2 -Wall -Wextra -Werror -DWDDM_BRIDGE_EXIT_LIFETIME_TEST=1 experimental/windows-native-gpu/egl_gl_probe.c -lEGL -ldl -o /tmp/egl-gl-exit-probe
+          c++ -std=c++17 -O2 -Wall -Wextra -Werror $(pkg-config --cflags gbm libdrm egl) -c experimental/windows-native-gpu/gbm_native_probe.cpp -o /tmp/gbm-native-probe.o
+          cc -std=c11 -O2 -Wall -Wextra -Werror -DWDDM_BRIDGE_GBM_TEST=1 -c experimental/windows-native-gpu/egl_gl_probe.c -o /tmp/egl-gl-gbm-probe.o
+          c++ /tmp/egl-gl-gbm-probe.o /tmp/gbm-native-probe.o $(pkg-config --libs gbm libdrm egl) -ldl -o /tmp/egl-gl-gbm-probe
       - name: Verify the pinned experimental Mesa patch and compile its fence-FD probe
         run: |
           curl --fail --location --retry 3 --retry-all-errors --retry-delay 2 --retry-max-time 180 --connect-timeout 15 --max-time 60 https://archive.mesa3d.org/mesa-26.0.8.tar.xz -o /tmp/mesa-26.0.8.tar.xz
@@ -160,6 +164,9 @@ jobs:
           c++ -std=c++17 -Wall -Wextra -Werror -isystem .runtime-headers/include -isystem .runtime-headers/include/wsl/stubs -isystem /tmp/mesa-26.0.8/include -isystem /tmp/mesa-26.0.8/src/gallium/drivers/d3d12 -c experimental/windows-native-gpu/egl_native_sync_probe.cpp -o /tmp/egl-native-sync-probe.o
           c++ -std=c++17 -Wall -Wextra -Werror -DWDDM_BRIDGE_EGL_NATIVE_SYNC_DISABLED=1 -isystem .runtime-headers/include -isystem .runtime-headers/include/wsl/stubs -isystem /tmp/mesa-26.0.8/include -isystem /tmp/mesa-26.0.8/src/gallium/drivers/d3d12 -c experimental/windows-native-gpu/egl_native_sync_probe.cpp -o /tmp/egl-native-sync-disabled-probe.o
           cc -std=c11 -Wall -Wextra -Werror -DWDDM_BRIDGE_NATIVE_SYNC_FILE_TEST=1 -DWDDM_BRIDGE_EGL_NATIVE_SYNC_TEST=1 -c experimental/windows-native-gpu/egl_gl_probe.c -o /tmp/egl-gl-native-sync-enabled.o
+          python3 experimental/windows-native-gpu/mesa/apply_mesa_native_images.py /tmp/mesa-26.0.8
+          python3 experimental/windows-native-gpu/mesa/apply_mesa_native_render.py /tmp/mesa-26.0.8
+          python3 experimental/windows-native-gpu/mesa/apply_mesa_native_render.py /tmp/mesa-26.0.8
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: wddm-bridge-guest-probe

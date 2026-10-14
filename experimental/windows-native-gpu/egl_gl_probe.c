@@ -26,6 +26,13 @@ GL_FUNCTIONS(DECLARE_GL)
 #undef DECLARE_GL
 
 enum { Width = 130, Height = 73, Frames = 2 };
+#ifdef WDDM_BRIDGE_GBM_TEST
+extern EGLDisplay wddm_gbm_native_display(void);
+extern int wddm_gbm_native_bind(EGLDisplay);
+extern int wddm_gbm_native_sample(void);
+extern int wddm_gbm_native_cleanup(void);
+extern int wddm_gbm_native_close(void);
+#endif
 #ifdef WDDM_BRIDGE_SYNC_FD_TEST
 extern int wddm_sync_fd_test(void);
 #endif
@@ -64,6 +71,10 @@ static GLuint shader(GLenum type, const char* source) {
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
+#ifdef WDDM_BRIDGE_GBM_TEST
+    if (setenv("D3D12_EXPERIMENTAL_NATIVE_SYNC_FILE", "true", 1) ||
+        setenv("D3D12_EXPERIMENTAL_NATIVE_BUFFERS", "true", 1)) return fail("GbmOptIn");
+#endif
 #if (defined(WDDM_BRIDGE_EGL_NATIVE_SYNC_TEST) && !defined(WDDM_BRIDGE_EGL_NATIVE_SYNC_DISABLED)) || defined(WDDM_BRIDGE_RESOURCE_DMABUF_TEST) || defined(WDDM_BRIDGE_NATIVE_IMAGE_TEST)
     if (setenv("D3D12_EXPERIMENTAL_NATIVE_SYNC_FILE", "true", 1)) return fail("NativeSyncOptIn");
 #endif
@@ -75,27 +86,39 @@ int main(void) {
     if (setenv("D3D12_EXPERIMENTAL_FENCE_FD", "true", 1)) return fail("FenceFdOptIn");
 #endif
     puts("OPENGL_TEST_BEGIN api=OpenGL requested=3.3 width=130 height=73 frames=2 display=false");
-#if defined(WDDM_BRIDGE_MESA_FENCE_FD_TEST) || defined(WDDM_BRIDGE_MESA_RESOURCE_FD_TEST) || defined(WDDM_BRIDGE_NATIVE_SYNC_FILE_TEST) || defined(WDDM_BRIDGE_NATIVE_IMAGE_TEST)
+#if defined(WDDM_BRIDGE_MESA_FENCE_FD_TEST) || defined(WDDM_BRIDGE_MESA_RESOURCE_FD_TEST) || defined(WDDM_BRIDGE_NATIVE_SYNC_FILE_TEST) || defined(WDDM_BRIDGE_NATIVE_IMAGE_TEST) || defined(WDDM_BRIDGE_GBM_TEST)
     const char* begin_name = "wddm_bridge_begin_opengl_fences";
 #else
     const char* begin_name = "wddm_bridge_begin_opengl";
 #endif
     int (*begin_profile)(void) = (int (*)(void))dlsym(RTLD_DEFAULT, begin_name);
     if (!begin_profile || begin_profile()) return fail("BridgeProfile");
+#ifdef WDDM_BRIDGE_GBM_TEST
+    EGLDisplay display = wddm_gbm_native_display();
+#else
     EGLDisplay display = eglGetPlatformDisplay(EGL_PLATFORM_SURFACELESS_MESA, EGL_DEFAULT_DISPLAY, NULL);
+#endif
     EGLint major = 0, minor = 0;
     if (display == EGL_NO_DISPLAY || !eglInitialize(display, &major, &minor)) return fail("Initialize");
     printf("OPENGL_EGL version=%d.%d vendor=%s\n", major, minor, eglQueryString(display, EGL_VENDOR));
     printf("OPENGL_EGL_EXTENSIONS %s\n", eglQueryString(display, EGL_EXTENSIONS));
     if (!eglBindAPI(EGL_OPENGL_API)) return fail("BindAPI");
+#ifdef WDDM_BRIDGE_GBM_TEST
+    const EGLint attributes[] = {EGL_SURFACE_TYPE, EGL_WINDOW_BIT, EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT,
+#else
     const EGLint attributes[] = {EGL_SURFACE_TYPE, EGL_PBUFFER_BIT, EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT,
+#endif
         EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8, EGL_ALPHA_SIZE, 8, EGL_NONE};
     EGLConfig config = NULL;
     EGLint count = 0;
     if (!eglChooseConfig(display, attributes, &config, 1, &count) || count != 1) return fail("ChooseConfig");
+#ifdef WDDM_BRIDGE_GBM_TEST
+    EGLSurface surface = EGL_NO_SURFACE;
+#else
     const EGLint surface_attributes[] = {EGL_WIDTH, Width, EGL_HEIGHT, Height, EGL_NONE};
     EGLSurface surface = eglCreatePbufferSurface(display, config, surface_attributes);
     if (surface == EGL_NO_SURFACE) return fail("Pbuffer");
+#endif
     const EGLint context_attributes[] = {EGL_CONTEXT_MAJOR_VERSION, 3, EGL_CONTEXT_MINOR_VERSION, 3,
         EGL_CONTEXT_OPENGL_PROFILE_MASK, EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT, EGL_NONE};
     EGLContext context = eglCreateContext(display, config, EGL_NO_CONTEXT, context_attributes);
@@ -144,6 +167,10 @@ int main(void) {
     glViewport(0, 0, Width, Height);
     glDisable(GL_DITHER); glDisable(GL_BLEND); glDisable(GL_DEPTH_TEST); glDisable(GL_CULL_FACE);
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
+#ifdef WDDM_BRIDGE_GBM_TEST
+    if (wddm_gbm_native_bind(display)) return fail("GbmBuffers");
+    glViewport(0, 0, Width, Height);
+#endif
     unsigned char pixels[Width * Height * 4];
     for (unsigned frame = 1; frame <= Frames; ++frame) {
         glClearColor(0, 0, frame == 1 ? 1 : 0, 1); glClear(GL_COLOR_BUFFER_BIT);
@@ -168,6 +195,10 @@ int main(void) {
 #ifdef WDDM_BRIDGE_NATIVE_IMAGE_TEST
     if(wddm_native_image_test(display,context)) return fail("NativeImage");
 #endif
+#ifdef WDDM_BRIDGE_GBM_TEST
+    if (wddm_gbm_native_sample()) return fail("GbmSample");
+    if (wddm_gbm_native_cleanup()) return fail("GbmCleanup");
+#endif
     glDeleteVertexArrays(1, &array); glUseProgram(0); glDeleteProgram(program);
     glDeleteShader(vertex); glDeleteShader(fragment);
 #ifdef WDDM_BRIDGE_MESA_RESOURCE_FD_TEST
@@ -177,8 +208,11 @@ int main(void) {
     if (wddm_native_sync_file_test(display, context)) return fail("NativeSyncFile");
 #endif
     if (!eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT) ||
-        !eglDestroyContext(display, context) || !eglDestroySurface(display, surface) || !eglTerminate(display))
+        !eglDestroyContext(display, context) || (surface != EGL_NO_SURFACE && !eglDestroySurface(display, surface)) || !eglTerminate(display))
         return fail("Teardown");
+#ifdef WDDM_BRIDGE_GBM_TEST
+    if (wddm_gbm_native_close()) return fail("GbmClose");
+#endif
 #ifdef WDDM_BRIDGE_NATIVE_IMAGE_TEST
     if(wddm_native_image_cleanup()) return fail("NativeImageCleanup");
 #endif

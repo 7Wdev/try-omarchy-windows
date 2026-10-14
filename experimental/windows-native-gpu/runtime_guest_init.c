@@ -19,6 +19,8 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include "guest-kernel/wddm_aperture.h"
+#include "guest-kernel/wddm_render.h"
+#include <dirent.h>
 static void timeout_handler(int signal_number) { (void)signal_number; }
 static pid_t graphics_broker_start(const char* port) {
     if (access("/graphics-broker-required", F_OK)) return 0;
@@ -109,6 +111,66 @@ static int kernel_aperture_start(void) {
     }
     puts("KERNEL_APERTURE_START loaded=true contracts=true rawSysfsFallback=false");
     return 1;
+}
+static char native_render_path[64];
+static int native_render_loaded;
+static int native_render_start(void) {
+    if (access("/native-render-required", F_OK)) return 0;
+    const int module = open("/wddm-render.ko", O_RDONLY | O_CLOEXEC);
+    if (module < 0) { perror("render module open"); return -1; }
+    errno = 0;
+    const int disabled = (int)syscall(SYS_finit_module, module, "", 0);
+    const int disabled_error = errno;
+    if (!disabled || disabled_error != EOPNOTSUPP) {
+        native_render_loaded = !disabled;
+        close(module); puts("KERNEL_RENDER_START defaultDisabled=false"); return -1;
+    }
+    const int loaded = (int)syscall(SYS_finit_module, module, "experimental=1", 0);
+    close(module);
+    if (loaded) { perror("render finit_module"); return -1; }
+    native_render_loaded = 1;
+    unsigned matches = 0;
+    for (unsigned n = 128; n < 256; ++n) {
+        char path[64]; snprintf(path, sizeof(path), "/dev/dri/renderD%u", n);
+        const int fd = open(path, O_RDWR | O_CLOEXEC);
+        struct wddm_render_info info = {.version = WDDM_RENDER_VERSION};
+        if (fd < 0) {
+            if(errno!=ENOENT) printf("KERNEL_RENDER_NODE_OPEN node=%s errno=%d\n",path,errno);
+            continue;
+        }
+        errno=0; const int queried=ioctl(fd, DRM_IOCTL_WDDM_RENDER_INFO, &info);
+        printf("KERNEL_RENDER_NODE_QUERY node=%s result=%d errno=%d version=%u flags=%u signature=%016llx width=%u height=%u\n",
+            path,queried,errno,info.version,info.flags,(unsigned long long)info.signature,info.max_width,info.max_height);
+        if (!queried && info.version == WDDM_RENDER_VERSION &&
+            info.flags == WDDM_RENDER_NATIVE_ROUTE && info.signature == WDDM_RENDER_MAGIC &&
+            info.max_width == 4096 && info.max_height == 4096 && !info.reserved[0] && !info.reserved[1]) {
+            ++matches; memcpy(native_render_path, path, strlen(path)+1);
+        }
+        close(fd);
+    }
+    if (matches != 1 || chmod(native_render_path, 0666)) {
+        printf("KERNEL_RENDER_START identity=false matches=%u errno=%d\n",matches,errno);
+        DIR* nodes=opendir("/sys/class/drm");
+        if(nodes) {
+            struct dirent* node;
+            while((node=readdir(nodes))) printf("KERNEL_RENDER_SYSFS name=%s\n",node->d_name);
+            closedir(nodes);
+        }
+        return -1;
+    }
+    printf("KERNEL_RENDER_START node=%s defaultDisabled=true nativeRoute=true kms=false gem=false\n", native_render_path);
+    return 1;
+}
+static int native_render_stop(void) {
+    if (syscall(SYS_delete_module, "wddm_render", O_NONBLOCK)) {
+        perror("render delete_module"); return -1;
+    }
+    native_render_loaded = 0;
+    if (native_render_path[0] && !access(native_render_path, F_OK)) {
+        puts("KERNEL_RENDER_EXIT nodeRemoved=false"); return -1;
+    }
+    puts("KERNEL_RENDER_EXIT unloaded=true nodeRemoved=true");
+    return 0;
 }
 static int kernel_aperture_stop(void) {
     const int fd = open("/dev/wddm-aperture", O_RDWR | O_CLOEXEC);
@@ -211,7 +273,8 @@ int main(void) {
         (hwqueue_wait_option[hwqueue_wait_bytes] == 0 || hwqueue_wait_option[hwqueue_wait_bytes] == ' ' || hwqueue_wait_option[hwqueue_wait_bytes] == '\n');
     for (int i = 0; i < 200 && access(port, F_OK); ++i) usleep(50000);
     const int kernel_aperture = broker_peer_start() ? -1 : kernel_aperture_start();
-    const pid_t graphics_broker=kernel_aperture>0 ? graphics_broker_start(port) :
+    const int kernel_render = kernel_aperture >= 0 ? native_render_start() : -1;
+    const pid_t graphics_broker=kernel_aperture>0 && kernel_render>=0 ? graphics_broker_start(port) :
         (access("/graphics-broker-required",F_OK) ? 0 : -1);
     char module[130] = {0};
     FILE* name = fopen("/linux-umd-name", "rb");
@@ -223,7 +286,7 @@ int main(void) {
         if (bytes == 13 && !memcmp(value, "native-stream", 13)) runtime_deadline = 120;
         fclose(deadline_workload);
     }
-    if (kernel_aperture >= 0 && graphics_broker>=0 && name && fread(module, 1, sizeof(module) - 1, name) && !access(port, F_OK)) {
+    if (kernel_aperture >= 0 && kernel_render>=0 && graphics_broker>=0 && name && fread(module, 1, sizeof(module) - 1, name) && !access(port, F_OK)) {
         module[strcspn(module, "\r\n")] = 0;
         pid_t child = fork();
         if (child == 0) {
@@ -265,6 +328,7 @@ int main(void) {
             if (hwqueue_no_broadcast_eof_test) setenv("WDDM_BRIDGE_HWQUEUE_EOF_TEST", "2", 1);
             if (hwqueue_wait_eof_test) setenv("WDDM_BRIDGE_HWQUEUE_EOF_TEST", "3", 1);
             setenv("WDDM_BRIDGE_LINUX_UMD_NAME", module, 1);
+            if (kernel_render>0) setenv("WDDM_BRIDGE_RENDER_NODE", native_render_path, 1);
             setenv("LD_PRELOAD", "/linux-ioctl-bridge.so", 1);
             const char* selected_workload = getenv("WDDM_BRIDGE_RUNTIME_WORKLOAD");
             setenv("LD_LIBRARY_PATH", selected_workload && !strcmp(selected_workload, "opengl") ?
@@ -294,6 +358,7 @@ int main(void) {
     } else puts(kernel_aperture < 0 ? "FAIL: required guest aperture contracts failed" : "FAIL: runtime name or virtio port missing");
     if (name) fclose(name);
     if (graphics_broker_wait(graphics_broker)) status=125;
+    if (native_render_loaded && native_render_stop()) status=125;
     if (kernel_aperture > 0 && kernel_aperture_stop()) status = 125;
     printf("BRIDGE_RUNTIME_EXIT=%d\n", status);
     sync(); reboot(RB_POWER_OFF);

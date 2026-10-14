@@ -27,6 +27,7 @@ def main():
     parser.add_argument('--extra-runtime', type=pathlib.Path, action='append', default=[], help='Installed library loaded dynamically; preserves its absolute guest path')
     parser.add_argument('--mesa-runtime-directory', type=pathlib.Path, help='Private non-GLVND Mesa install for the explicit OpenGL probe; relocated to /opt/wddm-mesa')
     parser.add_argument('--guest-aperture-module', type=pathlib.Path, help='Explicit guest-only wddm_aperture.ko built against the matching guest kernel')
+    parser.add_argument('--guest-render-module', type=pathlib.Path, help='Opt-in matching guest-only wddm_render.ko; requires the native-buffer OpenGL broker route')
     parser.add_argument('--guest-aperture-contract', type=pathlib.Path, help='Static guest isolation probe, required with the aperture module')
     parser.add_argument('--guest-native-sync-files', action='store_true', help='Explicit guest-only native GPU sync-file export; requires aperture module')
     parser.add_argument('--guest-native-buffers', action='store_true', help='Explicit guest-only opaque native-resource DMA-BUF files; requires aperture module')
@@ -47,6 +48,9 @@ def main():
         parser.error('Native sync-file export requires the guest aperture module')
     if args.guest_native_buffers and not args.guest_aperture_module:
         parser.error('Native buffers require the guest aperture module')
+    if args.guest_render_module and (not args.guest_native_buffers or not args.guest_native_sync_files or
+            not args.guest_graphics_broker or args.runtime_workload != 'opengl'):
+        parser.error('The render node requires the native-buffer/native-sync OpenGL broker route')
     roots = [args.probe, args.shim, args.linux_umd, args.d3d12, args.d3d12core, args.dxcore]
     if args.guest_graphics_broker:
         if not args.guest_aperture_module or not args.guest_aperture_contract or args.runtime_workload not in ('init','copy','clear','triangle','native','opengl'):
@@ -73,6 +77,17 @@ def main():
             parser.error('The aperture module must be a bounded x64 ELF relocatable named wddm_aperture')
         files['wddm-aperture.ko'] = args.guest_aperture_module
         files['aperture-contract'] = args.guest_aperture_contract
+    if args.guest_render_module:
+        data = args.guest_render_module.read_bytes()
+        if not 64 <= len(data) <= 16 * 1024 * 1024 or data[:6] != b'\x7fELF\x02\x01' or \
+                data[16:20] != b'\x01\x00\x3e\x00' or b'name=wddm_render\0' not in data:
+            parser.error('The render module must be a bounded x64 ELF relocatable named wddm_render')
+        release_pattern = rb'vermagic=([0-9][A-Za-z0-9._+-]{0,127}) '
+        render_release = re.search(release_pattern, data)
+        aperture_release = re.search(release_pattern, args.guest_aperture_module.read_bytes())
+        if not render_release or not aperture_release or render_release.group(1) != aperture_release.group(1):
+            parser.error('Render and aperture modules must match the same guest kernel release')
+        files['wddm-render.ko'] = args.guest_render_module
     relocated = {}
     if (args.runtime_workload == 'opengl') != bool(args.mesa_runtime_directory):
         parser.error('The OpenGL workload requires --mesa-runtime-directory, exclusive to that workload')
@@ -82,7 +97,8 @@ def main():
             parser.error('The private Mesa install must contain lib/libEGL.so.1')
         # Resolve local symlinks to bytes inside the private image, preserving
         # loader names. Never copy a host directory wholesale into the guest.
-        mesa_files = sorted((mesa / 'lib').glob('*.so*')) + sorted((mesa / 'lib/dri').glob('*.so'))
+        mesa_files = (sorted((mesa / 'lib').glob('*.so*')) + sorted((mesa / 'lib/dri').glob('*.so')) +
+                      sorted((mesa / 'lib/gbm').glob('*.so')))
         if not 1 <= len(mesa_files) <= 32:
             parser.error('Private Mesa library count is outside the diagnostic bound')
         for path in mesa_files:
@@ -154,6 +170,8 @@ def main():
     manifest = {'schema': 1, 'privateImage': True, 'vendorBinariesIncluded': True,
                 'redistributionApproved': False, 'runtimeWorkload': args.runtime_workload,
                 'kernelApertureIncluded': bool(args.guest_aperture_module),
+                'guestRenderNodeIncluded': bool(args.guest_render_module),
+                'guestRenderKernelRelease': render_release.group(1).decode('ascii') if args.guest_render_module else None,
                 'nativeSyncFilesEnabled': args.guest_native_sync_files,
                 'nativeBuffersEnabled': args.guest_native_buffers,
                 'guestBrokerContractIncluded': bool(args.guest_broker_contract),
@@ -171,6 +189,8 @@ def main():
         entry('native-sync-files-required', stat.S_IFREG | 0o600, b'1')
     if args.guest_native_buffers:
         entry('native-buffers-required', stat.S_IFREG | 0o600, b'1')
+    if args.guest_render_module:
+        entry('native-render-required', stat.S_IFREG | 0o600, b'1')
     if args.guest_broker_contract:
         entry('broker-peer-required', stat.S_IFREG | 0o600, b'1')
     if args.guest_graphics_broker:
