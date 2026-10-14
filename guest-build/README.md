@@ -10,7 +10,7 @@ scripts/release/build-guest.sh --contract-only
 scripts/release/build-guest.sh --output /path/to/artifacts
 ```
 
-Patch 0146 opens links clicked in Windows inside Omarchy, only for URL schemes
+Patch 0147 opens links clicked in Windows inside Omarchy, only for URL schemes
 the user approved in Try Omarchy Settings. Agent version 6 starts every
 connection with links disabled. Each `url-approved` snapshot from the launcher
 is installed in `/run/try-omarchy`. A malformed snapshot or a failed write removes
