@@ -325,6 +325,28 @@ inline bool validNativeSharedVendorAllocation(NativeSharedVendorAllocationDesc d
     return validSharedVendorAllocation(d.shared) && validNativeTexture(d.texture) &&
            d.shared.allocation.privateBytes + d.shared.runtimeBytes <= native_gpu::MaxPacket - sizeof(Header) - sizeof(d);
 }
+// Variable-size compositor buffers use a separate operation. The fixed RGBA
+// texture/stream/Windows-consumer profiles above retain their old contract.
+struct NativeInteropCaps {
+    std::uint32_t version, formats, maxWidth, maxHeight;
+    std::uint64_t maxLogicalBytes;
+    std::uint32_t flags, reserved;
+};
+constexpr NativeInteropCaps NativeInteropProfile{1,7,4096,4096,64ull*1024*1024,1,0};
+static_assert(sizeof(NativeInteropCaps)==32,"native opaque resource capabilities ABI");
+inline bool validNativeInteropCaps(NativeInteropCaps c) {
+    return c.version==1 && c.formats==7 && c.maxWidth==4096 && c.maxHeight==4096 &&
+           c.maxLogicalBytes==64ull*1024*1024 && c.flags==1 && !c.reserved;
+}
+inline bool validNativeInteropTexture(NativeTextureDesc d) {
+    return d.width && d.width<=NativeInteropProfile.maxWidth && d.height && d.height<=NativeInteropProfile.maxHeight &&
+           (d.format==28 || d.format==87 || d.format==88) && d.flags==1 &&
+           std::uint64_t(d.width)*d.height*4<=NativeInteropProfile.maxLogicalBytes;
+}
+inline bool validNativeInteropAllocation(NativeSharedVendorAllocationDesc d) {
+    return validSharedVendorAllocation(d.shared) && validNativeInteropTexture(d.texture) &&
+           d.shared.allocation.privateBytes+d.shared.runtimeBytes<=native_gpu::MaxPacket-sizeof(Header)-sizeof(d);
+}
 constexpr std::uint32_t DefaultFenceSlots = 64, MaxFenceSlots = 128;
 inline bool validFenceSlots(std::uint32_t slots) { return slots == DefaultFenceSlots || slots == MaxFenceSlots; }
 constexpr std::uint64_t FenceApertureBytes = MaxFenceSlots * 4096;
@@ -371,7 +393,8 @@ enum class Op : std::uint32_t {
     BeginSyncSharing, ExportSync, ImportSync, CloseSharedSync, QuerySharedSyncInfo, QueueHwQueueWait, QueueContextSync, QueueContextWait,
     ReserveGpuAddress = 0x2080, FreeGpuReservation, MapGpuState,
     BeginResourceSharing = 0x2090, ExportResource, CloseSharedResource, QuerySharedResourceInfo, ImportResource,
-    QueryMemoryBudget = 0x20a0, EvictVendorAllocations
+    QueryMemoryBudget = 0x20a0, EvictVendorAllocations,
+    CreateNativeInteropResource, QueryNativeInteropCaps
 };
 enum class Kind { Adapter, Device, PagingQueue, Allocation, Context, PagingSync, VendorAllocation, HwQueue, HwQueueSync, Sync, GpuReservation, VendorResource, SharedSync, SharedResource };
 struct ContextDesc {
@@ -428,6 +451,7 @@ public:
     virtual native_gpu::Capabilities capabilities() const = 0;
     virtual StreamProfile beginStreaming() { return {}; }
     virtual OpenGlProfile beginOpenGl(std::uint32_t = 1) { return {}; }
+    virtual NativeInteropCaps nativeInteropCaps() const { return {}; }
     virtual Result consumeStreamingTexture(std::uint32_t, std::uint32_t, SharedTextureConsumeDesc) {
         return {static_cast<std::int32_t>(0xc00000bbu), 0, 0};
     }
@@ -451,6 +475,9 @@ public:
     }
     virtual VendorResourceResult createNativeSharedVendorResourceAllocation(std::uint32_t, NativeSharedVendorAllocationDesc, std::vector<std::uint8_t>&) {
         return {{static_cast<std::int32_t>(0xc00000bbu), 0, 0}, 0};
+    }
+    virtual VendorResourceResult createNativeInteropResource(std::uint32_t, NativeSharedVendorAllocationDesc, std::vector<std::uint8_t>&) {
+        return {{static_cast<std::int32_t>(0xc00000bbu),0,0},0};
     }
     virtual Result consumeSharedTexture(std::uint32_t, std::uint32_t, SharedTextureConsumeDesc) {
         return {static_cast<std::int32_t>(0xc00000bbu), 0, 0};
@@ -606,6 +633,7 @@ public:
     std::size_t objectCount() const { return objects.size(); }
     std::size_t objectLimit() const { return wireObjectLimit; }
     std::size_t hwQueueLimit() const { return openglFenceNegotiated ? OpenGlFenceHwQueues : MaxHwQueues; }
+    std::size_t hwQueueSignalLimit() const { return openglFenceNegotiated ? OpenGlFenceHwSignals : MaxHwQueueSignals; }
     std::size_t vendorObjectLimit() const { return openglFenceNegotiated ? OpenGlFenceVendorAllocations : vendorAllocationObjectLimit(driver.capabilities().flags); }
     unsigned requestLimit() const { return streamingNegotiated ? GuestStreamProfile.requestLimit : 10000; }
     Session(const Session&) = delete;
@@ -665,6 +693,14 @@ public:
             streamingNegotiated = true;
             auto out = reply(h, 0); out.resize(sizeof h + sizeof profile);
             std::memcpy(out.data() + sizeof h, &profile, sizeof profile); return out;
+        }
+        if (op == Op::QueryNativeInteropCaps) {
+            if(!negotiated) return reply(h,-71);
+            if(h.handle || packet.size()!=sizeof h) return reply(h,-22);
+            const auto caps=driver.nativeInteropCaps();
+            if(!validNativeInteropCaps(caps)) return reply(h,-95);
+            auto out=reply(h,0); out.resize(sizeof h+sizeof caps);
+            std::memcpy(out.data()+sizeof h,&caps,sizeof caps); return out;
         }
         if (op == Op::BeginOpenGl) {
             if (!negotiated) return reply(h, -71);
@@ -1179,7 +1215,7 @@ public:
                 nativeQueues.push_back(queue->second.nativeHandle);
             }
             if (streamingNegotiated ? hwQueueSignalAttempts + contextSignalAttempts >= GuestStreamProfile.totalSignals :
-                                      hwQueueSignalAttempts >= MaxHwQueueSignals) return reply(h,-24);
+                                      hwQueueSignalAttempts >= hwQueueSignalLimit()) return reply(h,-24);
             ++hwQueueSignalAttempts;
             const auto result = driver.queueHwQueueSignal(sync->second.nativeHandle,nativeQueues,desc);
             if (!validHwSubmitReply(result,desc.fence,AsyncHwSubmitCapability)) return reply(h,-5);
@@ -1233,15 +1269,18 @@ public:
             std::memcpy(out.data(), &response, sizeof response); return out;
         }
         if (op == Op::CreateVendorAllocation || op == Op::CreateVendorResourceAllocation ||
-            op == Op::CreateSharedVendorResourceAllocation || op == Op::CreateNativeSharedVendorResourceAllocation || op == Op::DestroyVendorAllocations) {
+            op == Op::CreateSharedVendorResourceAllocation || op == Op::CreateNativeSharedVendorResourceAllocation ||
+            op == Op::CreateNativeInteropResource || op == Op::DestroyVendorAllocations) {
             if (!negotiated) return reply(h, -71);
             if (!(driver.capabilities().flags & VendorAllocationCapability)) return reply(h, -95);
-            const bool nativeTexture = op == Op::CreateNativeSharedVendorResourceAllocation;
+            const bool interopTexture=op==Op::CreateNativeInteropResource;
+            const bool nativeTexture = op == Op::CreateNativeSharedVendorResourceAllocation || interopTexture;
             const bool sharedResource = op == Op::CreateSharedVendorResourceAllocation || nativeTexture;
             const bool withResource = op == Op::CreateVendorResourceAllocation || sharedResource;
             if (withResource && !(driver.capabilities().flags & VendorResourceCapability)) return reply(h, -95);
             if (sharedResource && !(driver.capabilities().flags & SharedVendorResourceCapability)) return reply(h, -95);
             if (nativeTexture && !(driver.capabilities().flags & NativeSharedTextureCapability)) return reply(h, -95);
+            if(interopTexture && !validNativeInteropCaps(driver.nativeInteropCaps())) return reply(h,-95);
             const auto device = objects.find(h.handle);
             if (device == objects.end() || device->second.kind != Kind::Device) return reply(h, -9);
             if (op == Op::DestroyVendorAllocations) {
@@ -1286,14 +1325,15 @@ public:
             if (nativeTexture) {
                 if (packet.size() < sizeof h + sizeof nativeDesc) return reply(h, -22);
                 std::memcpy(&nativeDesc, packet.data() + sizeof h, sizeof nativeDesc);
-                if (!validNativeSharedVendorAllocation(nativeDesc)) return reply(h, -22);
+                if (interopTexture ? !validNativeInteropAllocation(nativeDesc) : !validNativeSharedVendorAllocation(nativeDesc)) return reply(h, -22);
             }
             const auto dataBytes = desc.privateBytes + (sharedResource ? sharedDesc.runtimeBytes : 0);
             if (!validVendorAllocation(desc) || packet.size() != sizeof h + descriptorBytes + dataBytes) return reply(h, -22);
             const auto count = std::count_if(objects.begin(), objects.end(), [](const auto& item) { return item.second.kind == Kind::VendorAllocation; });
             if (objects.size() > objectLimit() - (withResource ? 2 : 1) || nextId >= UINT32_MAX - (withResource ? 1 : 0) || static_cast<std::size_t>(count) >= vendorObjectLimit()) return reply(h, -24);
             std::vector<std::uint8_t> data(packet.begin() + sizeof h + descriptorBytes, packet.end());
-            const auto created = nativeTexture ? driver.createNativeSharedVendorResourceAllocation(device->second.nativeHandle, nativeDesc, data) :
+            const auto created = interopTexture ? driver.createNativeInteropResource(device->second.nativeHandle,nativeDesc,data) :
+                                nativeTexture ? driver.createNativeSharedVendorResourceAllocation(device->second.nativeHandle, nativeDesc, data) :
                                 sharedResource ? driver.createSharedVendorResourceAllocation(device->second.nativeHandle, sharedDesc, data) :
                                 withResource ? driver.createVendorResourceAllocation(device->second.nativeHandle, desc, data) :
                                                VendorResourceResult{driver.createVendorAllocation(device->second.nativeHandle, desc, data), 0};

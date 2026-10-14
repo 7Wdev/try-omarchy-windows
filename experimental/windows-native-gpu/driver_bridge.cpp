@@ -221,7 +221,8 @@ class KmtDriver : public Driver {
         const bool success = result.shareStatus == 0 && result.deviceResult == S_OK && result.importResult == S_OK &&
             result.handleClosed && result.importedReleased && d.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
             d.Width && d.Width <= 4096 && d.Height && d.Height <= 4096 && d.DepthOrArraySize == 1 && d.MipLevels == 1 &&
-            d.Format == DXGI_FORMAT_R8G8B8A8_UNORM && d.SampleDesc.Count == 1 && d.SampleDesc.Quality == 0 &&
+            (d.Format == DXGI_FORMAT_R8G8B8A8_UNORM || d.Format == DXGI_FORMAT_B8G8R8A8_UNORM ||
+             d.Format == DXGI_FORMAT_B8G8R8X8_UNORM) && d.SampleDesc.Count == 1 && d.SampleDesc.Quality == 0 &&
             d.Flags == D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
         if (success) ++importedSharedResources; else ++failedSharedResourceProbes;
         if (result.shareStatus == 0 && !result.handleClosed) ++cleanupFailures;
@@ -679,7 +680,7 @@ public:
             queues.size() != desc.count || object == syncObjects.end() || object->second.type != 5 ||
             !packetSignalSyncFlags(object->second.flags) || !object->second.lease || !object->second.fence ||
             desc.fence <= object->second.lastSignal || (streamingEnabled ? hwQueueSignalAttempts + contextSignalAttempts >= GuestStreamProfile.totalSignals :
-                                                                        hwQueueSignalAttempts >= MaxHwQueueSignals) ||
+                                                                        hwQueueSignalAttempts >= (openglFencesEnabled ? OpenGlFenceHwSignals : MaxHwQueueSignals)) ||
             pendingHwSignals.size() >= MaxHwQueueSignals) return {Invalid,0,0};
         PendingHwSignal pending{}; pending.sync=sync; pending.flags=desc.flags; pending.count=desc.count; pending.target=desc.fence;
         for (std::size_t n=0;n<queues.size();++n) {
@@ -1117,12 +1118,21 @@ public:
         const auto result = createVendorAllocationImpl(device, desc.allocation, data, true, desc.runtimeBytes);
         return {result, result.ntstatus == 0 ? vendorAllocations.at(result.nativeHandle).resource : 0};
     }
+    NativeInteropCaps nativeInteropCaps() const override {
+        return gpu_diagnostic::HighResolution && nativeMetadataEnabled && sharedResourcesEnabled &&
+               allocationsEnabled && runtime && !runtime->hasStopped() ? NativeInteropProfile : NativeInteropCaps{};
+    }
+    VendorResourceResult createNativeInteropResource(std::uint32_t device, NativeSharedVendorAllocationDesc desc, std::vector<std::uint8_t>& data) override {
+        if(!validNativeInteropCaps(nativeInteropCaps()) || !validNativeInteropAllocation(desc)) return {{Invalid,0,0},0};
+        const auto result=createVendorAllocationImpl(device,desc.shared.allocation,data,true,desc.shared.runtimeBytes,&desc.texture,true);
+        return {result,result.ntstatus==0 ? vendorAllocations.at(result.nativeHandle).resource : 0};
+    }
     VendorResourceResult createNativeSharedVendorResourceAllocation(std::uint32_t device, NativeSharedVendorAllocationDesc desc, std::vector<std::uint8_t>& data) override {
         if (!nativeMetadataEnabled || !validNativeSharedVendorAllocation(desc)) return {{Invalid, 0, 0}, 0};
         const auto result = createVendorAllocationImpl(device, desc.shared.allocation, data, true, desc.shared.runtimeBytes, &desc.texture);
         return {result, result.ntstatus == 0 ? vendorAllocations.at(result.nativeHandle).resource : 0};
     }
-    Result createVendorAllocationImpl(std::uint32_t device, VendorAllocationDesc desc, std::vector<std::uint8_t>& data, bool withResource, std::uint32_t runtimeBytes = 0, const NativeTextureDesc* texture = nullptr) {
+    Result createVendorAllocationImpl(std::uint32_t device, VendorAllocationDesc desc, std::vector<std::uint8_t>& data, bool withResource, std::uint32_t runtimeBytes = 0, const NativeTextureDesc* texture = nullptr, bool interop=false) {
         if (!allocationsEnabled || !validVendorAllocation(desc) || data.size() != desc.privateBytes + runtimeBytes ||
             (runtimeBytes && (!withResource || !sharedResourcesEnabled || !validSharedVendorAllocation({desc, runtimeBytes, 0})))) return {Invalid, 0, 0};
         if (vendorAllocations.size() >= (openglFencesEnabled ? OpenGlFenceVendorAllocations : vendorAllocationObjectLimit(capabilities().flags)) || !reportedGpuUsageAcceptable())
@@ -1143,8 +1153,8 @@ public:
         }
         std::vector<std::uint8_t> nativeRuntime;
         if (texture) {
-            if (!runtimeBytes || !nativeMetadataEnabled || !validNativeTexture(*texture)) return {Invalid, 0, 0};
-            nativeRuntime = driver_metadata::generate(luid, *texture);
+            if (!runtimeBytes || !nativeMetadataEnabled || (interop ? !validNativeInteropTexture(*texture) : !validNativeTexture(*texture))) return {Invalid, 0, 0};
+            nativeRuntime = driver_metadata::generate(luid, *texture,interop);
             a.pPrivateRuntimeData = nativeRuntime.data(); a.PrivateRuntimeDataSize = static_cast<UINT>(nativeRuntime.size());
         }
         auto status = D3DKMTCreateAllocation2(&a);

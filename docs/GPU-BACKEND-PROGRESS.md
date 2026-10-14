@@ -4,7 +4,18 @@ Updated 2026-10-14. **4 of 8 verification stages demonstrated.** This is a
 checklist count, not 50% of engineering effort or a product-readiness estimate.
 The largest integration tasks are still ahead.
 
-Latest lab result: [native resource DMA-BUF ownership](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-NATIVE-BUFFER.md)
+Latest [EGL native-image development checkpoint](LIVE-GPU-EGL-NATIVE-IMAGE.md)
+passes actual owned-buffer import/export/reimport, source-release lifetime and
+shared-storage shader checks for RGBA/BGRA/RGBX/BGRX. RGBA storage is checked
+at 3840×2160; the shader viewport is 130×73. The other formats use odd-sized
+1281×719 buffers. Every enabled run releases all 73 DMA-BUF references before
+process exit; the disabled-feature control also passes. These captures retain
+their exact working-tree source hashes and the earlier failures. GBM and an
+actual DRM/render node, compositor texture-sampling acceptance, sustained work
+and reliable Windows presentation remain open. **No stage or desktop gate is
+completed by this development checkpoint.**
+
+Earlier [native resource DMA-BUF ownership](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-NATIVE-BUFFER.md)
 passes two fresh ordinary-user guests. Genuine Linux DMA-BUF files retain a
 native GPU texture through FD closure and import; both full 4K storage rounds
 pass, including after source release. Each run releases 72 buffers and all

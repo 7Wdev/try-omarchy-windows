@@ -68,6 +68,13 @@ public:
             throw std::system_error(EPROTO,std::generic_category(),"Kernel native buffer stats mismatch");
         return value;
     }
+    wddm_native_buffer_caps nativeBufferCaps() {
+        wddm_native_buffer_caps value{}; value.version=WDDM_APERTURE_VERSION;
+        call(WDDM_NATIVE_BUFFER_CAPS,&value);
+        if(value.version!=WDDM_APERTURE_VERSION || (value.flags&~WDDM_NATIVE_BUFFER_ENABLED) || value.reserved[0] || value.reserved[1])
+            throw std::system_error(EPROTO,std::generic_category(),"Kernel native buffer caps mismatch");
+        return value;
+    }
     ObjectRef reap() {
         wddm_object_reap value{}; value.version=WDDM_APERTURE_VERSION;
         try { call(WDDM_OBJECT_REAP,&value); }

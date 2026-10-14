@@ -184,6 +184,9 @@ template<class Native,class Authority,class ObjectAuthority> int serve(Peer& pee
                 } else if (operation == Operation::NativeBufferStats) {
                     if(!message.payload.empty()) throw std::system_error(EPROTO,std::generic_category(),"Native buffer stats payload");
                     peer.send(operation,message.frame.sequence,encode(objectKernel.nativeBufferStats()));
+                } else if (operation == Operation::NativeBufferCaps) {
+                    if(!message.payload.empty()) throw std::system_error(EPROTO,std::generic_category(),"Native buffer caps payload");
+                    peer.send(operation,message.frame.sequence,encode(objectKernel.nativeBufferCaps()));
                 } else if (operation == Operation::ObjectInfo) {
                     if (!message.payload.empty()) throw std::system_error(EPROTO,std::generic_category(),"Object info payload");
                     peer.send(operation,message.frame.sequence,encode(objectKernel.info()));

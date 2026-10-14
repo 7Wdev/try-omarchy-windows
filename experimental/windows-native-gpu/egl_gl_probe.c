@@ -38,6 +38,10 @@ extern int wddm_mesa_fence_fd_test(EGLDisplay, EGLContext);
 #ifdef WDDM_BRIDGE_MESA_RESOURCE_FD_TEST
 extern int wddm_mesa_resource_fd_test(EGLDisplay, EGLContext);
 #endif
+#ifdef WDDM_BRIDGE_NATIVE_IMAGE_TEST
+extern int wddm_native_image_test(EGLDisplay, EGLContext);
+extern int wddm_native_image_cleanup(void);
+#endif
 static int fail(const char* stage) {
     printf("OPENGL_FAILURE stage=%s eglError=%04x\n", stage, eglGetError());
     return 1;
@@ -60,15 +64,18 @@ static GLuint shader(GLenum type, const char* source) {
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
-#if (defined(WDDM_BRIDGE_EGL_NATIVE_SYNC_TEST) && !defined(WDDM_BRIDGE_EGL_NATIVE_SYNC_DISABLED)) || defined(WDDM_BRIDGE_RESOURCE_DMABUF_TEST)
+#if (defined(WDDM_BRIDGE_EGL_NATIVE_SYNC_TEST) && !defined(WDDM_BRIDGE_EGL_NATIVE_SYNC_DISABLED)) || defined(WDDM_BRIDGE_RESOURCE_DMABUF_TEST) || defined(WDDM_BRIDGE_NATIVE_IMAGE_TEST)
     if (setenv("D3D12_EXPERIMENTAL_NATIVE_SYNC_FILE", "true", 1)) return fail("NativeSyncOptIn");
+#endif
+#ifdef WDDM_BRIDGE_NATIVE_IMAGE_TEST
+    if(setenv("D3D12_EXPERIMENTAL_NATIVE_BUFFERS","true",1)) return fail("NativeBufferOptIn");
 #endif
 #ifdef WDDM_BRIDGE_MESA_FENCE_FD_TEST
     // Explicit private lab opt-in, before Mesa initializes screen caps.
     if (setenv("D3D12_EXPERIMENTAL_FENCE_FD", "true", 1)) return fail("FenceFdOptIn");
 #endif
     puts("OPENGL_TEST_BEGIN api=OpenGL requested=3.3 width=130 height=73 frames=2 display=false");
-#if defined(WDDM_BRIDGE_MESA_FENCE_FD_TEST) || defined(WDDM_BRIDGE_MESA_RESOURCE_FD_TEST) || defined(WDDM_BRIDGE_NATIVE_SYNC_FILE_TEST)
+#if defined(WDDM_BRIDGE_MESA_FENCE_FD_TEST) || defined(WDDM_BRIDGE_MESA_RESOURCE_FD_TEST) || defined(WDDM_BRIDGE_NATIVE_SYNC_FILE_TEST) || defined(WDDM_BRIDGE_NATIVE_IMAGE_TEST)
     const char* begin_name = "wddm_bridge_begin_opengl_fences";
 #else
     const char* begin_name = "wddm_bridge_begin_opengl";
@@ -158,6 +165,9 @@ int main(void) {
 #ifdef WDDM_BRIDGE_MESA_FENCE_FD_TEST
     if (wddm_mesa_fence_fd_test(display, context)) return fail("MesaFenceFd");
 #endif
+#ifdef WDDM_BRIDGE_NATIVE_IMAGE_TEST
+    if(wddm_native_image_test(display,context)) return fail("NativeImage");
+#endif
     glDeleteVertexArrays(1, &array); glUseProgram(0); glDeleteProgram(program);
     glDeleteShader(vertex); glDeleteShader(fragment);
 #ifdef WDDM_BRIDGE_MESA_RESOURCE_FD_TEST
@@ -169,6 +179,9 @@ int main(void) {
     if (!eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT) ||
         !eglDestroyContext(display, context) || !eglDestroySurface(display, surface) || !eglTerminate(display))
         return fail("Teardown");
+#ifdef WDDM_BRIDGE_NATIVE_IMAGE_TEST
+    if(wddm_native_image_cleanup()) return fail("NativeImageCleanup");
+#endif
 #ifdef WDDM_BRIDGE_EXIT_LIFETIME_TEST
     // Leave the DSO loaded. Its ELF finalizer runs after the bridge's atexit
     // hook; retaining an existing CPU fence view must remain safe until exit.

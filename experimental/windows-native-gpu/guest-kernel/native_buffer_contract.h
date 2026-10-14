@@ -1,7 +1,35 @@
 /* SPDX-License-Identifier: MIT */
 #include <linux/dma-buf.h>
+static int native_buffer_caps_contract(int control)
+{
+    unsigned checks=0;
+#define CAPS_REQUIRE(test) do { if(!(test)) { fprintf(stderr,"NATIVE_BUFFER_CAPS_CONTRACT_FAIL line=%d errno=%d\n",__LINE__,errno); exit(1); } ++checks; } while(0)
+    _Static_assert(sizeof(struct wddm_native_buffer_caps)==16,"native buffer caps ABI");
+    struct wddm_native_buffer_caps caps={.version=1};
+    CAPS_REQUIRE(!ioctl(control,WDDM_NATIVE_BUFFER_CAPS,&caps) && caps.version==1 &&
+        !(caps.flags&~WDDM_NATIVE_BUFFER_ENABLED) && !caps.reserved[0] && !caps.reserved[1]);
+    const int enabled=(caps.flags&WDDM_NATIVE_BUFFER_ENABLED)!=0;
+    for(unsigned n=0;n<4;++n) {
+        caps=(struct wddm_native_buffer_caps){.version=1};
+        if(n==0) caps.version=2;
+        if(n==1) caps.flags=1;
+        if(n==2) caps.reserved[0]=1;
+        if(n==3) caps.reserved[1]=1;
+        errno=0; CAPS_REQUIRE(ioctl(control,WDDM_NATIVE_BUFFER_CAPS,&caps)==-1 && errno==EINVAL);
+    }
+    void* readonly=mmap(NULL,4096,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
+    CAPS_REQUIRE(readonly!=MAP_FAILED);
+    *(struct wddm_native_buffer_caps*)readonly=(struct wddm_native_buffer_caps){.version=1};
+    CAPS_REQUIRE(!mprotect(readonly,4096,PROT_READ));
+    errno=0; CAPS_REQUIRE(ioctl(control,WDDM_NATIVE_BUFFER_CAPS,readonly)==-1 && errno==EFAULT);
+    CAPS_REQUIRE(!munmap(readonly,4096));
+    printf("NATIVE_BUFFER_CAPS_CONTRACT_PASS checks=%u enabled=%s readOnly=true gpu=false\n",checks,enabled?"true":"false");
+#undef CAPS_REQUIRE
+    return enabled;
+}
 static void native_buffer_contract(int control)
 {
+    const int caps_enabled=native_buffer_caps_contract(control);
     unsigned count=0;
 #define BUFFER_REQUIRE(test) do { if (!(test)) { \
     fprintf(stderr,"NATIVE_BUFFER_CONTRACT_FAIL line=%d errno=%d\n",__LINE__,errno); exit(1); \
@@ -12,8 +40,10 @@ static void native_buffer_contract(int control)
     struct wddm_native_buffer_create create={.version=1,.native_fd=-1,.bytes=4096};
     errno=0; int result=ioctl(control,WDDM_NATIVE_BUFFER_CREATE,&create);
     if (result==-1 && errno==EOPNOTSUPP) {
+        if(caps_enabled) { fputs("NATIVE_BUFFER_CAPS_CONTRACT_FAIL inconsistent=true\n",stderr); exit(1); }
         puts("NATIVE_BUFFER_CONTRACT disabled=true gpu=false"); return;
     }
+    if(!caps_enabled) { fputs("NATIVE_BUFFER_CAPS_CONTRACT_FAIL inconsistent=true\n",stderr); exit(1); }
     BUFFER_REQUIRE(result==-1 && errno==EINVAL);
     struct wddm_object_create source={.version=1,.kind=WDDM_OBJECT_RESOURCE,.ticket=5000};
     BUFFER_REQUIRE(!ioctl(control,WDDM_OBJECT_CREATE,&source));

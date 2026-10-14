@@ -13,6 +13,31 @@ Use `D3D12_EXPERIMENTAL_NATIVE_SYNC_FILE=true` before screen creation for the
 new path; both native bridge hooks must also be present. That option is
 independent of `D3D12_EXPERIMENTAL_FENCE_FD`. All defaults remain off.
 
+## Native EGL image development patch
+
+Apply `apply_mesa_native_images.py` after both existing timeline patches. It
+checks the pinned Mesa 26.0.8 source and every predecessor/patched file hash,
+rejects mixed or modified source before mutation, and verifies repeated application.
+Enable `D3D12_EXPERIMENTAL_NATIVE_BUFFERS=true` before creating the screen, with
+the matching kernel, broker, shim and native host. Defaults remain off.
+
+This patch adds owned DMA-BUF EGL image import/export and an automatic shared
+allocation hook. It advertises RGBA/RGBX/BGRA/BGRX with implicit opaque layout;
+BGRX uses BGRA native storage. It provides no explicit linear modifier, foreign
+DMA attachment, CPU mapping, GEM/KMS handle or implicit reservation synchronization.
+The shared-allocation hook still requires actual GBM validation.
+
+Use `WDDM_BRIDGE_TEST_NATIVE_IMAGES=1` with `build_opengl_probe.sh` for the
+separate image diagnostic. Optional BGRA, RGBX, BGRX, small-size and disabled
+variants are selected with `WDDM_BRIDGE_TEST_NATIVE_IMAGE_*` options in that
+script. The native image path requires both kernel enablement and the exact
+host interop capability response; the Mesa environment option alone is insufficient.
+
+[Development hardware evidence and limits](../../../docs/LIVE-GPU-EGL-NATIVE-IMAGE.md)
+include four format runs, the disabled control and retained failures. This does
+not establish GBM, a DRM device, compositor sampling, a full 4K shader viewport,
+Hyprland or sustained performance.
+
 ## Private timeline patch
 
 This opt-in patch targets Mesa **26.0.8** and the fork's private QEMU/Windows

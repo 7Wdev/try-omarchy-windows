@@ -29,7 +29,13 @@ There is no reliable completion date yet; the remaining work includes substantia
 
 Vulkan, CUDA, video acceleration, NVIDIA-specific features and concurrent Windows/guest GPU use need separate real-application acceptance tests as part of the wider goal.
 
-Latest lab result: [native resource DMA-BUF ownership](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-NATIVE-BUFFER.md)
+Latest development checkpoint: [EGL native-buffer images](docs/LIVE-GPU-EGL-NATIVE-IMAGE.md)
+pass actual import/export/reimport and shared-storage shader checks for RGBA, BGRA, RGBX and BGRX.
+The RGBA storage test covers 3840×2160; the shader viewport is 130×73. An odd-width export-stride bug is fixed.
+All 73 DMA-BUF references release before process exit in each enabled run. GBM/render-node access,
+Hyprland startup, sustained rendering and reliable Windows presentation remain open. **The counts above remain 4/8 and 0/4.**
+
+Earlier [native resource DMA-BUF ownership](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-NATIVE-BUFFER.md)
 passes two fresh ordinary-user guests: a real Linux DMA-BUF retains the native GPU texture through FD closure,
 and both full 4K storage passes succeed after import. All 72 buffers and 165 memory leases release per run;
 the disabled control and EGL fence regression also pass. GBM allocation, EGL image import, DRM/device integration

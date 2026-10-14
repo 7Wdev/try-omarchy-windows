@@ -14,6 +14,9 @@ constexpr OpenGlProfile GuestOpenGlProfile{1, 2, 64, 16, 16ull * 1024 * 1024 * 1
 constexpr OpenGlProfile GuestOpenGlFenceProfile{2, 2, 64, 16, 16ull * 1024 * 1024 * 1024, 10000, 384};
 constexpr std::uint32_t OpenGlFenceHwQueues = 16;
 constexpr std::uint32_t OpenGlFenceVendorAllocations = 192;
+// Lifetime signals must cover the profile's command budget. Pending native
+// signals retain the independent MaxHwQueueSignals (16) concurrency bound.
+constexpr std::uint32_t OpenGlFenceHwSignals = GuestOpenGlFenceProfile.commandLimit;
 inline bool validOpenGlProfile(OpenGlProfile p) {
     return p.version == 1 && p.frames == 2 && p.commandLimit == 64 && p.reservationLimit == 16 &&
            p.reservedBytes == 16ull * 1024 * 1024 * 1024 && p.requestLimit == 10000 && !p.objectLimit;

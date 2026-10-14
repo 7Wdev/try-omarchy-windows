@@ -122,6 +122,16 @@ public:
            arg.released>arg.created) { errno=EPROTO; return -1; }
         value=arg; return 0;
     }
+    int nativeBufferEnabled() {
+        if(!available()) return -1;
+        wddm_native_buffer_caps value{}; value.version=WDDM_APERTURE_VERSION;
+        if(guest_broker::clientEnabled()) {
+            try { value=guest_broker::client().nativeBufferCaps(); }
+            catch(const std::system_error& error) { errno=error.code().value(); return -1; }
+        } else if(syscall(SYS_ioctl,control,WDDM_NATIVE_BUFFER_CAPS,&value)) return -1;
+        if(value.version!=WDDM_APERTURE_VERSION || (value.flags&~WDDM_NATIVE_BUFFER_ENABLED) || value.reserved[0] || value.reserved[1]) { errno=EPROTO; return -1; }
+        return (value.flags&WDDM_NATIVE_BUFFER_ENABLED) ? 1 : 0;
+    }
     int reap(std::uint32_t& ticket, std::uint32_t* kind = nullptr) {
         if (guest_broker::clientEnabled()) {
             if (!remoteStarted) return 0;

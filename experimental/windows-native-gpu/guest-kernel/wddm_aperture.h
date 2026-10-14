@@ -119,4 +119,10 @@ struct wddm_native_buffer_stats {
 #define WDDM_NATIVE_BUFFER_CREATE _IOWR('W', 0x4c, struct wddm_native_buffer_create)
 #define WDDM_NATIVE_BUFFER_INFO _IOWR('W', 0x4d, struct wddm_native_buffer_info)
 #define WDDM_NATIVE_BUFFER_STATS _IOWR('W', 0x4e, struct wddm_native_buffer_stats)
+/* Read-only feature discovery; never infer support from a zero object count. */
+#define WDDM_NATIVE_BUFFER_ENABLED 1U
+struct wddm_native_buffer_caps {
+	__u32 version, flags, reserved[2];
+};
+#define WDDM_NATIVE_BUFFER_CAPS _IOWR('W', 0x4f, struct wddm_native_buffer_caps)
 #endif

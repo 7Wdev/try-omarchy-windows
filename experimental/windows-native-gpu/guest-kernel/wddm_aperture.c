@@ -229,6 +229,7 @@ static long control_ioctl(struct file *control, unsigned int request, unsigned l
 	if (request == WDDM_NATIVE_BUFFER_CREATE) return native_buffer_create(((struct aperture_owner *)control->private_data)->id, pointer);
 	if (request == WDDM_NATIVE_BUFFER_INFO) return native_buffer_info(((struct aperture_owner *)control->private_data)->id, pointer);
 	if (request == WDDM_NATIVE_BUFFER_STATS) return native_buffer_stats(pointer);
+	if (request == WDDM_NATIVE_BUFFER_CAPS) return native_buffer_caps(pointer);
 	if (request == WDDM_APERTURE_CREATE)
 		return create_lease(control, pointer);
 	if (request == WDDM_APERTURE_REVOKE) {

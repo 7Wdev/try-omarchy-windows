@@ -83,6 +83,24 @@ struct Fake : Driver {
     std::vector<std::uint8_t> lastSharedRuntime;
     bool nativeTextureEnabled = false;
     unsigned nativeTextureCalls = 0;
+    bool nativeInteropEnabled=false;
+    int badNativeInteropCaps=0;
+    unsigned nativeInteropCalls=0;
+    NativeInteropCaps nativeInteropCaps() const override {
+        auto c=nativeInteropEnabled ? NativeInteropProfile : NativeInteropCaps{};
+        if(badNativeInteropCaps==1) c.reserved=1;
+        if(badNativeInteropCaps==2) c.formats=1;
+        if(badNativeInteropCaps==3) ++c.maxWidth;
+        if(badNativeInteropCaps==4) ++c.maxLogicalBytes;
+        if(badNativeInteropCaps==5) c.flags=3;
+        if(badNativeInteropCaps==6) ++c.version;
+        if(badNativeInteropCaps==7) c.maxHeight=0;
+        return c;
+    }
+    VendorResourceResult createNativeInteropResource(std::uint32_t device,NativeSharedVendorAllocationDesc desc,std::vector<std::uint8_t>& data) override {
+        require(nativeInteropEnabled && validNativeInteropAllocation(desc)); ++nativeInteropCalls;
+        return createSharedVendorResourceAllocation(device,desc.shared,data);
+    }
     bool resourceSharingSupported = true;
     int badResourceExport = 0;
     unsigned resourceExports = 0;
@@ -376,6 +394,76 @@ struct Fake : Driver {
 };
 int main() {
     {
+        static_assert(static_cast<unsigned>(Op::EvictVendorAllocations)==0x20a1);
+        static_assert(static_cast<unsigned>(Op::CreateNativeInteropResource)==0x20a2);
+        Fake f; f.vendorEnabled=f.resourceEnabled=f.sharedResourceEnabled=f.nativeTextureEnabled=true;
+        Session s(f);
+        const auto query=request(Op::QueryNativeInteropCaps);
+        require(header(s.dispatch(query)).status==-71);
+        s.dispatch(hello());
+        const auto adapter=header(s.dispatch(request(Op::OpenAdapter))).handle;
+        const auto device=header(s.dispatch(request(Op::CreateDevice,adapter))).handle;
+        const auto other=header(s.dispatch(request(Op::CreateDevice,adapter))).handle;
+        NativeSharedVendorAllocationDesc desc{{{4,0x78100000,0,4,0,0},4,0},{1281,719,87,1}};
+        const auto create=[&](std::uint32_t parent,NativeSharedVendorAllocationDesc d) {
+            auto p=request(Op::CreateNativeInteropResource,parent,d);
+            p.insert(p.end(),{37,38,39,40,5,6,7,8}); return p;
+        };
+        require(header(s.dispatch(query)).status==-95);
+        require(header(s.dispatch(create(device,desc))).status==-95 && !f.nativeInteropCalls);
+        f.nativeInteropEnabled=true;
+        for(int n=1;n<=7;++n) {
+            f.badNativeInteropCaps=n;
+            require(header(s.dispatch(query)).status==-95);
+            require(header(s.dispatch(create(device,desc))).status==-95 && !f.nativeInteropCalls);
+        }
+        f.badNativeInteropCaps=0;
+        auto out=s.dispatch(query); NativeInteropCaps caps{};
+        require(!header(out).status && out.size()==sizeof(Header)+sizeof caps);
+        std::memcpy(&caps,out.data()+sizeof(Header),sizeof caps); require(validNativeInteropCaps(caps));
+        require(header(s.dispatch(request(Op::QueryNativeInteropCaps,device))).status==-22);
+        auto extra=query; extra.push_back(0); require(header(s.dispatch(extra)).status==-22);
+        require(header(s.dispatch(create(adapter,desc))).status==-9 && !f.nativeInteropCalls);
+        for(unsigned n=0;n<13;++n) {
+            auto d=desc;
+            if(n==0) d.texture.width=0;
+            if(n==1) d.texture.height=0;
+            if(n==2) d.texture.width=4097;
+            if(n==3) d.texture.height=4097;
+            if(n==4) d.texture.format=29;
+            if(n==5) d.texture.flags=3;
+            if(n==6) d.shared.reserved=1;
+            if(n==7) d.shared.runtimeBytes=0;
+            if(n==8) d.shared.allocation.flags=0;
+            if(n==9) d.shared.allocation.privateBytes=UINT32_MAX;
+            if(n==10) d.texture.width=UINT32_MAX;
+            auto p=create(device,d);
+            if(n==11) p.pop_back();
+            if(n==12) p.push_back(0);
+            require(header(s.dispatch(p)).status==-22 && !f.nativeInteropCalls);
+        }
+        require(validNativeInteropTexture({4096,4096,28,1}));
+        require(!validNativeTexture(desc.texture)); // Legacy consumer remains fixed RGBA.
+        f.fail=true; out=s.dispatch(create(device,desc));
+        require(!header(out).status && !header(out).handle && out.back()==8 && f.vendorOwners.empty());
+        f.fail=false; f.badResourceReply=1;
+        require(header(s.dispatch(create(device,desc))).status==-5 && f.vendorOwners.empty());
+        f.badResourceReply=0;
+        std::vector<std::uint32_t> resources;
+        for(const auto format:{28u,87u,88u}) {
+            desc.texture.format=format; out=s.dispatch(create(device,desc));
+            VendorResourceReply resource{};
+            require(!header(out).status && header(out).handle);
+            std::memcpy(&resource,out.data()+sizeof(Header)+sizeof(Reply),sizeof resource);
+            require(resource.resource && !resource.reserved && out.back()==8);
+            resources.push_back(resource.resource);
+        }
+        require(f.vendorOwners.size()==3 && f.nativeInteropCalls==5);
+        require(header(s.dispatch(request(Op::DestroyVendorResource,resources[0],other))).status==-9);
+        for(const auto resource:resources) require(!header(s.dispatch(request(Op::DestroyVendorResource,resource,device))).status);
+        require(f.vendorOwners.empty() && f.vendorResources.empty());
+    }
+    {
         Fake f; f.vendorEnabled=true; f.residencyEnabled=true; f.gpuVaEnabled=true; f.cpuEnabled=true;
         Session s(f); s.dispatch(hello());
         const auto adapter=header(s.dispatch(request(Op::OpenAdapter))).handle;
@@ -450,6 +538,30 @@ int main() {
         }
         OpenGlProfile beginOpenGl(std::uint32_t = 1) override { ++begins; return profile; }
     };
+    for(unsigned version:{0u,1u,2u}) {
+        OpenGlFake f; f.contextsEnabled=f.hwQueuesEnabled=f.hwQueueSignalEnabled=true;
+        f.profile=version==2 ? GuestOpenGlFenceProfile : GuestOpenGlProfile;
+        Session s(f); s.dispatch(hello());
+        if(version) require(!header(s.dispatch(version==2 ? request(Op::BeginOpenGl,0,version) : request(Op::BeginOpenGl))).status);
+        const auto adapter=header(s.dispatch(request(Op::OpenAdapter))).handle;
+        const auto device=header(s.dispatch(request(Op::CreateDevice,adapter))).handle;
+        auto contextPacket=request(Op::CreateContext,device,ContextDesc{0,1,16,12,4,0});
+        contextPacket.insert(contextPacket.end(),{1,2,3,4});
+        const auto context=header(s.dispatch(contextPacket)).handle;
+        auto queuePacket=request(Op::CreateHwQueue,context,HwQueueDesc{0,4,0,0});
+        queuePacket.insert(queuePacket.end(),{37,38,39,40});
+        const auto queue=header(s.dispatch(queuePacket)).handle;
+        const auto sync=header(s.dispatch(request(Op::CreateSync,device,SyncDesc{5,128,0,0,0}))).handle;
+        require(context && queue && sync && s.hwQueueSignalLimit()==(version==2 ? 64u : 16u));
+        const auto signal=[&](std::uint64_t target) {
+            auto packet=request(Op::QueueHwQueueSignal,sync,HwQueueSignalDesc{4,1,target});
+            const auto bytes=reinterpret_cast<const std::uint8_t*>(&queue); packet.insert(packet.end(),bytes,bytes+sizeof queue);
+            return s.dispatch(packet);
+        };
+        for(unsigned n=1;n<=s.hwQueueSignalLimit();++n) require(!header(signal(n)).status);
+        const auto calls=f.calls;
+        require(header(signal(s.hwQueueSignalLimit()+1)).status==-24 && f.calls==calls);
+    }
     {
         OpenGlFake f; f.reservationEnabled = true; Session s(f);
         require(header(s.dispatch(request(Op::BeginOpenGl))).status == -71 && !f.begins);

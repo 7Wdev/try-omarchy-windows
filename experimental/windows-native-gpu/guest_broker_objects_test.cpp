@@ -26,6 +26,7 @@ struct ObjectMock {
     Fd nativeBuffer(int,std::uint64_t) { throw std::system_error(EOPNOTSUPP,std::generic_category(),"No native DMA-BUF in mock"); }
     std::uint64_t nativeBufferInfo(int) { throw std::system_error(EOPNOTSUPP,std::generic_category(),"No native DMA-BUF in mock"); }
     wddm_native_buffer_stats nativeBufferStats() { return {WDDM_APERTURE_VERSION,0,0,0,0}; }
+    wddm_native_buffer_caps nativeBufferCaps() { return {WDDM_APERTURE_VERSION,0,{0,0}}; }
     std::pair<Fd,std::uint64_t> resolveSyncFile(int) { throw std::system_error(EINVAL,std::generic_category(),"No real sync-file in mock"); }
     struct Record { Fd watch; ObjectRef ref; std::uint64_t identity; };
     std::map<std::uint32_t,Record> records;
@@ -178,6 +179,7 @@ static void recipientAfterProducer() {
             denied([&]{client.nativeBuffer(cap.fds[0].get(),WDDM_NATIVE_BUFFER_MAX_BYTES+1);},EINVAL);
             denied([&]{client.nativeBufferInfo(cap.fds[0].get());},EOPNOTSUPP);
             const auto buffers=client.nativeBufferStats();
+            const auto bufferCaps=client.nativeBufferCaps(); CHECK(bufferCaps.version==WDDM_APERTURE_VERSION && !bufferCaps.flags);
             CHECK(!buffers.held && !buffers.bytes && !buffers.created && !buffers.released);
             CHECK(fcntl(cap.fds[0].get(),F_GETFD)>=0); // failed SCM_RIGHTS requests preserve caller ownership
             client.driver(packet(Op::QuerySharedResourceInfo,11,encode(SharedResourceQueryDesc{2,0})));

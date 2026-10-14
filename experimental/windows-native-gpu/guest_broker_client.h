@@ -181,6 +181,15 @@ public:
         }
         return result;
     }
+    wddm_native_buffer_caps nativeBufferCaps() {
+        auto reply=request(Operation::NativeBufferCaps);
+        if(!reply.fds.empty() || reply.payload.size()!=sizeof(wddm_native_buffer_caps)) { disconnect(); failed(EPROTO,"Native buffer caps response shape"); }
+        const auto result=decode<wddm_native_buffer_caps>(reply.payload);
+        if(result.version!=WDDM_APERTURE_VERSION || (result.flags&~WDDM_NATIVE_BUFFER_ENABLED) || result.reserved[0] || result.reserved[1]) {
+            disconnect(); failed(EPROTO,"Native buffer caps response mismatch");
+        }
+        return result;
+    }
     wddm_object_stats objectInfo() {
         auto reply=request(Operation::ObjectInfo);
         if (!reply.fds.empty()) { disconnect(); failed(EPROTO,"Object info carried descriptors"); }

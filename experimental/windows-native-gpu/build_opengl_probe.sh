@@ -19,7 +19,28 @@ if [ "${WDDM_BRIDGE_TEST_EXIT_LIFETIME:-0}" = 1 ]; then
         -isystem "$dxg/include" -isystem "$directx/include" -isystem "$directx/include/wsl/stubs" \
         "$base/exit_lifetime_probe.cpp" -o "$output/exit-lifetime-probe.so"
 fi
-if [ "${WDDM_BRIDGE_TEST_NATIVE_SYNC_FILES:-0}" = 1 ] || [ "${WDDM_BRIDGE_TEST_NATIVE_SYNC_LINEAGE:-0}" = 1 ] || [ "${WDDM_BRIDGE_TEST_EGL_NATIVE_SYNC:-0}" = 1 ]; then
+if [ "${WDDM_BRIDGE_TEST_NATIVE_IMAGES:-0}" = 1 ]; then
+    for option in "${WDDM_BRIDGE_TEST_NATIVE_SYNC_FILES:-0}" "${WDDM_BRIDGE_TEST_NATIVE_SYNC_LINEAGE:-0}" "${WDDM_BRIDGE_TEST_EGL_NATIVE_SYNC:-0}" "${WDDM_BRIDGE_TEST_RESOURCE_FDS:-0}" "${WDDM_BRIDGE_TEST_MESA_FENCE_FDS:-0}" "${WDDM_BRIDGE_TEST_SYNC_FDS:-0}"; do
+        if [ "$option" = 1 ]; then echo 'Select one explicit image/FD diagnostic' >&2; exit 2; fi
+    done
+    source=${WDDM_BRIDGE_MESA_SOURCE:?Supply pinned Mesa source}
+    directx=${WDDM_BRIDGE_DIRECTX_HEADERS:?Supply DirectX-Headers source}
+    image_define=-DWDDM_BRIDGE_NATIVE_IMAGE_TEST=1
+    if [ "${WDDM_BRIDGE_TEST_NATIVE_IMAGE_DISABLED:-0}" = 1 ]; then image_define="$image_define -DWDDM_BRIDGE_NATIVE_IMAGE_DISABLED=1"; fi
+    if [ "${WDDM_BRIDGE_TEST_NATIVE_IMAGE_BGRA:-0}" = 1 ]; then image_define="$image_define -DWDDM_BRIDGE_NATIVE_IMAGE_BGRA=1"; fi
+    if [ "${WDDM_BRIDGE_TEST_NATIVE_IMAGE_BGRX:-0}" = 1 ]; then image_define="$image_define -DWDDM_BRIDGE_NATIVE_IMAGE_BGRX=1"; fi
+    if [ "${WDDM_BRIDGE_TEST_NATIVE_IMAGE_RGBX:-0}" = 1 ]; then image_define="$image_define -DWDDM_BRIDGE_NATIVE_IMAGE_RGBX=1"; fi
+    if [ "${WDDM_BRIDGE_TEST_NATIVE_IMAGE_SMALL:-0}" = 1 ]; then image_define="$image_define -DWDDM_BRIDGE_NATIVE_IMAGE_WIDTH=1281 -DWDDM_BRIDGE_NATIVE_IMAGE_HEIGHT=719"; fi
+    "${CXX:-c++}" -std=c++17 -O2 -Wall -Wextra -Werror $image_define \
+        -isystem "$directx/include" -isystem "$directx/include/wsl/stubs" \
+        -isystem "$source/include" -isystem "$source/src/gallium/drivers/d3d12" \
+        -c "$base/egl_native_image_probe.cpp" -o "$output/egl-native-image-probe.o"
+    "${CC:-cc}" -std=c11 -O2 -Wall -Wextra -Werror $exit_define $image_define \
+        -isystem "$mesa/include" -c "$base/egl_gl_probe.c" -o "$output/egl-gl-probe.o"
+    "${CXX:-c++}" -std=c++17 -isystem "$directx/include" -isystem "$directx/include/wsl/stubs" \
+        "$output/egl-gl-probe.o" "$output/egl-native-image-probe.o" "$directx/src/dxguids.cpp" \
+        -L"$mesa/lib" -Wl,-rpath-link,"$mesa/lib" -l:libEGL.so.1 -ldl -o "$output/egl-gl-probe"
+elif [ "${WDDM_BRIDGE_TEST_NATIVE_SYNC_FILES:-0}" = 1 ] || [ "${WDDM_BRIDGE_TEST_NATIVE_SYNC_LINEAGE:-0}" = 1 ] || [ "${WDDM_BRIDGE_TEST_EGL_NATIVE_SYNC:-0}" = 1 ]; then
     if [ "${WDDM_BRIDGE_TEST_RESOURCE_FDS:-0}" = 1 ] || [ "${WDDM_BRIDGE_TEST_MESA_FENCE_FDS:-0}" = 1 ] || [ "${WDDM_BRIDGE_TEST_SYNC_FDS:-0}" = 1 ]; then
         echo 'Select one explicit FD diagnostic at a time' >&2; exit 2
     fi
@@ -121,7 +142,7 @@ if [ "${WDDM_BRIDGE_TEST_BROKER_ROUTE:-0}" = 1 ]; then
     # explicitly bounded 64 MiB single CPU-mapping profile. Keep the broker's
     # receipt validation on that same profile; the default stays at 4 MiB.
     broker_define=
-    if [ "${WDDM_BRIDGE_TEST_RESOURCE_FDS:-0}" = 1 ]; then
+    if [ "${WDDM_BRIDGE_TEST_RESOURCE_FDS:-0}" = 1 ] || [ "${WDDM_BRIDGE_TEST_NATIVE_IMAGES:-0}" = 1 ]; then
         broker_define=-DWDDM_BRIDGE_4K_LAB=1
     fi
     "${CXX:-c++}" -std=c++17 -O2 -Wall -Wextra -Werror -pthread $broker_define \

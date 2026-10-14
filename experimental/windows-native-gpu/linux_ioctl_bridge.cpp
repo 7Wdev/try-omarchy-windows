@@ -260,6 +260,9 @@ class Bridge {
     NativeTextureDesc pendingNativeTexture{};
     std::uint32_t pendingNativeDevice = 0;
     pthread_t pendingNativeThread{};
+    struct NativePreparation { std::uint32_t device; NativeTextureDesc texture; };
+    std::map<pid_t,NativePreparation> nativePreparations;
+    bool nativeInteropQueried=false, nativeInteropSupported=false;
     std::uint32_t lastHwSignalSync = 0;
     struct BorrowedFence { std::uint32_t owner, device; bool hardware; };
     std::map<std::uint32_t, BorrowedFence> borrowedFences;
@@ -762,7 +765,14 @@ public:
                 a.AllocationListSize = 0; a.pPatchLocationList = nullptr; a.PatchLocationListSize = 0;
                 std::fprintf(stderr, "LINUX_BRIDGE deviceCreated=true\n"); return 0;
             }
-            case 25: { auto& a = args<D3DKMT_DESTROYDEVICE>(requestNumber, pointer); destroy(Op::DestroyDevice, a.hDevice); deviceAdapters.erase(a.hDevice); if (pendingNativeDevice == a.hDevice) pendingNativeDevice = 0; return 0; }
+            case 25: {
+                auto& a = args<D3DKMT_DESTROYDEVICE>(requestNumber, pointer);
+                destroy(Op::DestroyDevice, a.hDevice); deviceAdapters.erase(a.hDevice);
+                if (pendingNativeDevice == a.hDevice) pendingNativeDevice = 0;
+                for(auto p=nativePreparations.begin();p!=nativePreparations.end();)
+                    if(p->second.device==a.hDevice) p=nativePreparations.erase(p); else ++p;
+                return 0;
+            }
             case 7: {
                 auto& a = args<D3DKMT_CREATEPAGINGQUEUE>(requestNumber, pointer);
                 if (!(caps.flags & GuestPagingCapability) || a.Priority != D3DDDI_PAGINGQUEUE_PRIORITY_NORMAL || a.PhysicalAdapterIndex) {
@@ -830,9 +840,14 @@ public:
                     }
                 const bool sharedResource = flags == 71; // CreateResource | CreateShared | NonSecure | NtSecuritySharing
                 const bool withResource = flags == 1 || sharedResource;
-                const bool nativeTexture = sharedResource && pendingNativeDevice;
-                const auto profile = pendingNativeTexture;
-                if (nativeTexture) {
+                const auto prepared=nativePreparations.find(static_cast<pid_t>(syscall(SYS_gettid)));
+                const bool nativeInterop=sharedResource && prepared!=nativePreparations.end();
+                const bool nativeTexture = sharedResource && (pendingNativeDevice || nativeInterop);
+                const auto profile = nativeInterop ? prepared->second.texture : pendingNativeTexture;
+                if(nativeInterop) {
+                    const auto preparedDevice=prepared->second.device; nativePreparations.erase(prepared);
+                    if(a.hDevice!=preparedDevice) throw Error(EBADF);
+                } else if (nativeTexture) {
                     const auto preparedDevice = pendingNativeDevice; pendingNativeDevice = 0;
                     if (a.hDevice != preparedDevice || !pthread_equal(pendingNativeThread, pthread_self())) throw Error(EBADF);
                 }
@@ -851,8 +866,9 @@ public:
                 const SharedVendorAllocationDesc sharedDesc{desc, a.PrivateRuntimeDataSize, 0};
                 if (sharedResource && (!validSharedVendorAllocation(sharedDesc) || !a.pPrivateRuntimeData)) throw Error(EINVAL);
                 const NativeSharedVendorAllocationDesc nativeDesc{sharedDesc, profile};
-                if (nativeTexture && !validNativeSharedVendorAllocation(nativeDesc)) throw Error(EINVAL);
-                auto packet = nativeTexture ? request(Op::CreateNativeSharedVendorResourceAllocation, a.hDevice, nativeDesc) :
+                if (nativeTexture && (nativeInterop ? !validNativeInteropAllocation(nativeDesc) : !validNativeSharedVendorAllocation(nativeDesc))) throw Error(EINVAL);
+                auto packet = nativeInterop ? request(Op::CreateNativeInteropResource,a.hDevice,nativeDesc) :
+                    nativeTexture ? request(Op::CreateNativeSharedVendorResourceAllocation, a.hDevice, nativeDesc) :
                     sharedResource ? request(Op::CreateSharedVendorResourceAllocation, a.hDevice, sharedDesc) :
                     request(withResource ? Op::CreateVendorResourceAllocation : Op::CreateVendorAllocation, a.hDevice, desc);
                 const auto begin = static_cast<const std::uint8_t*>(item.pPrivateDriverData);
@@ -906,6 +922,7 @@ public:
                 if (sharedResource) sharedResources.insert(resource.resource);
                 if (nativeTexture) std::fprintf(stderr, "LINUX_BRIDGE nativeTextureDeclared=true width=%u height=%u format=%u flags=%u guestRuntimePreserved=true\n",
                                                profile.width, profile.height, profile.format, profile.flags);
+                if(nativeInterop) std::fprintf(stderr,"LINUX_BRIDGE nativeInteropResource=true threadOwned=true width=%u height=%u format=%u\n",profile.width,profile.height,profile.format);
                 if (withResource) std::fprintf(stderr, "LINUX_BRIDGE nativeVendorResourceCreated=true allocationCount=1 shared=%s systemMemory=false\n", sharedResource ? "true" : "false");
                 if (desc.source == UninitializedDisplaySource)
                     std::fprintf(stderr, "LINUX_BRIDGE standaloneSourceUninitializedAccepted=true primary=false privateDataPreserved=true\n");
@@ -1583,9 +1600,35 @@ public:
         if (!(caps.flags & NativeSharedTextureCapability) || !(caps.flags & SharedVendorResourceCapability)) throw Error(ENOSYS);
         if (gpu_diagnostic::HighResolution && !(caps.flags & gpu_diagnostic::Capability)) throw Error(ENOSYS);
         if (!validNativeTexture(profile)) throw Error(EINVAL);
-        if (pendingNativeDevice || !sharedResources.empty() || deviceAdapters.size() != 1) throw Error(EBUSY);
+        if (pendingNativeDevice || !nativePreparations.empty() || !sharedResources.empty() || deviceAdapters.size() != 1) throw Error(EBUSY);
         pendingNativeTexture = profile; pendingNativeDevice = deviceAdapters.begin()->first; pendingNativeThread = pthread_self();
     }
+    bool nativeInteropAvailable() {
+        if(nativeInteropQueried) return nativeInteropSupported;
+        negotiate();
+        const auto packet=transport.exchange(request(Op::QueryNativeInteropCaps,0));
+        Header header{}; std::memcpy(&header,packet.data(),sizeof header);
+        if(header.type!=static_cast<unsigned>(Op::QueryNativeInteropCaps) || header.handle || header.padding) {
+            transport.fail(); throw Error(EPROTO);
+        }
+        if(header.status==-95 && packet.size()==sizeof header) { nativeInteropQueried=true; return false; }
+        NativeInteropCaps profile{};
+        if(header.status || packet.size()!=sizeof header+sizeof profile) { transport.fail(); throw Error(EPROTO); }
+        std::memcpy(&profile,packet.data()+sizeof header,sizeof profile);
+        if(!validNativeInteropCaps(profile)) { transport.fail(); throw Error(EPROTO); }
+        nativeInteropQueried=nativeInteropSupported=true;
+        std::fprintf(stderr,"LINUX_BRIDGE nativeInteropCaps=true formats=7 maxWidth=4096 maxHeight=4096 maxLogicalBytes=67108864 implicitOpaque=true\n");
+        return true;
+    }
+    void prepareNativeResource(NativeTextureDesc profile) {
+        if(!validNativeInteropTexture(profile)) throw Error(EINVAL);
+        if(nativeBufferEnabled()!=1 || !nativeInteropAvailable()) throw Error(ENOSYS);
+        const auto required=NativeSharedTextureCapability|SharedVendorResourceCapability;
+        if((caps.flags & required)!=required) throw Error(ENOSYS);
+        if(pendingNativeDevice || deviceAdapters.size()!=1 || nativePreparations.size()>=16) throw Error(EBUSY);
+        if(!nativePreparations.emplace(static_cast<pid_t>(syscall(SYS_gettid)),NativePreparation{deviceAdapters.begin()->first,profile}).second) throw Error(EBUSY);
+    }
+    void cancelNativeResource() { nativePreparations.erase(static_cast<pid_t>(syscall(SYS_gettid))); }
     void beginStreaming() {
         if (!gpu_diagnostic::Streaming || streamingNegotiated || openglNegotiated || !sharedResources.empty() || deviceAdapters.size() != 1) throw Error(EINVAL);
         const auto required = NativeSharedTextureCapability | SharedTextureConsumeCapability | AsyncHwSubmitCapability | UINT32_C(0x80000000);
@@ -1650,6 +1693,11 @@ public:
     int exportNativeBuffer(int fd,std::uint64_t bytes) { return kernelObjects.nativeBuffer(fd,bytes); }
     int nativeBufferInfo(int fd,std::uint64_t& bytes) { return kernelObjects.nativeBufferInfo(fd,bytes); }
     int nativeBufferStats(wddm_native_buffer_stats& value) { return kernelObjects.nativeBufferStats(value); }
+    int nativeBufferEnabled() { return kernelObjects.nativeBufferEnabled(); }
+    int nativeBufferSupported() {
+        const auto enabled=nativeBufferEnabled();
+        return enabled==1 ? (nativeInteropAvailable() ? 1 : 0) : enabled;
+    }
     const void* nativeFenceWord(int fd) {
         std::uint32_t ticket=0;
         if (!kernelObjects.resolve(fd,ticket,WDDM_OBJECT_SYNC)) throw Error(errno);
@@ -1781,6 +1829,32 @@ extern "C" int wddm_bridge_native_buffer_stats(wddm_native_buffer_stats* info) {
     catch(const std::system_error& error) { errno=error.code().value(); }
     catch(...) { errno=EIO; }
     return -1;
+}
+extern "C" int wddm_bridge_native_buffer_supported(void) {
+    if(bridgeStopped) { errno=ESHUTDOWN; return -1; }
+    auto& state=bridge(); std::lock_guard<std::mutex> lock(state.guard);
+    if(bridgeStopped) { errno=ESHUTDOWN; return -1; }
+    try { return state.nativeBufferSupported(); }
+    catch(const Error& error) { errno=error.number; }
+    catch(const std::system_error& error) { errno=error.code().value(); }
+    catch(...) { errno=EIO; }
+    return -1;
+}
+extern "C" int wddm_bridge_prepare_native_resource(std::uint32_t width,std::uint32_t height,std::uint32_t format,std::uint32_t flags) {
+    if(bridgeStopped) { errno=ESHUTDOWN; return -1; }
+    auto& state=bridge(); std::lock_guard<std::mutex> lock(state.guard);
+    if(bridgeStopped) { errno=ESHUTDOWN; return -1; }
+    try { state.prepareNativeResource({width,height,format,flags}); return 0; }
+    catch(const Error& error) { errno=error.number; }
+    catch(const std::system_error& error) { errno=error.code().value(); }
+    catch(...) { errno=EIO; }
+    return -1;
+}
+extern "C" int wddm_bridge_cancel_native_resource(void) {
+    if(bridgeStopped) { errno=ESHUTDOWN; return -1; }
+    auto& state=bridge(); std::lock_guard<std::mutex> lock(state.guard);
+    if(bridgeStopped) { errno=ESHUTDOWN; return -1; }
+    state.cancelNativeResource(); return 0;
 }
 extern "C" int wddm_bridge_sync_file_info(wddm_sync_file_stats* info) {
     if (bridgeStopped || !info) { errno=EINVAL; return -1; }

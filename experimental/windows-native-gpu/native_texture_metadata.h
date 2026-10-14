@@ -36,8 +36,9 @@ struct Lease {
     ~Lease() { release(); }
 };
 
-inline std::vector<std::uint8_t> generate(LUID luid, driver_bridge::NativeTextureDesc profile) {
-    if (!driver_bridge::validNativeTexture(profile)) throw std::runtime_error("Unsupported native texture profile");
+inline std::vector<std::uint8_t> generate(LUID luid, driver_bridge::NativeTextureDesc profile, bool interop=false) {
+    if (interop ? !driver_bridge::validNativeInteropTexture(profile) : !driver_bridge::validNativeTexture(profile))
+        throw std::runtime_error("Unsupported native texture profile");
     using Microsoft::WRL::ComPtr;
     ComPtr<IDXGIFactory4> factory; ComPtr<IDXGIAdapter1> adapter;
     ComPtr<ID3D12Device> device; ComPtr<ID3D12Resource> prototype;

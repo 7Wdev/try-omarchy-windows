@@ -170,3 +170,11 @@ static long native_buffer_stats(void __user *pointer)
 	mutex_unlock(&native_buffer_lock);
 	return copy_to_user(pointer, &arg, sizeof(arg)) ? -EFAULT : 0;
 }
+static long native_buffer_caps(void __user *pointer)
+{
+	struct wddm_native_buffer_caps arg;
+	if (copy_from_user(&arg, pointer, sizeof(arg))) return -EFAULT;
+	if (arg.version != WDDM_APERTURE_VERSION || arg.flags || arg.reserved[0] || arg.reserved[1]) return -EINVAL;
+	arg.flags = enable_native_buffers ? WDDM_NATIVE_BUFFER_ENABLED : 0;
+	return copy_to_user(pointer, &arg, sizeof(arg)) ? -EFAULT : 0;
+}
