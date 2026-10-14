@@ -52,6 +52,11 @@ class KmtDriver : public Driver {
     bool asyncSubmitEnabled = false;
     bool openglEnabled = false;
     bool openglFencesEnabled = false;
+    bool openglCompositorEnabled = false;
+    std::size_t syncObjectLimit() const { return openglCompositorEnabled ? OpenGlCompositorSyncObjects : MaxSyncObjects; }
+    std::size_t vendorObjectLimit() const { return openglCompositorEnabled ? OpenGlCompositorVendorAllocations : openglFencesEnabled ? OpenGlFenceVendorAllocations : vendorAllocationObjectLimit(capabilities().flags); }
+    std::uint32_t openGlCommandLimit() const { return openglCompositorEnabled ? GuestOpenGlCompositorProfile.commandLimit : GuestOpenGlProfile.commandLimit; }
+    std::uint32_t hwSignalLimit() const { return openglCompositorEnabled ? OpenGlCompositorHwSignals : openglFencesEnabled ? OpenGlFenceHwSignals : MaxHwQueueSignals; }
     struct PendingSubmission { unsigned index; std::uint32_t queue, bytes, privateBytes; std::uint64_t target; };
     std::vector<PendingSubmission> pendingSubmissions;
     unsigned acceptedAsyncSubmissions = 0, peakPendingSubmissions = 0;
@@ -537,7 +542,7 @@ public:
         if (!hwQueuesEnabled || !runtime || !validHwQueue(desc) || data.size() != desc.privateBytes ||
             parent == contextOwners.end() || parent->second.flags != 16 || hwQueues.size() >= (openglFencesEnabled ? OpenGlFenceHwQueues : MaxHwQueues))
             return {{Invalid, 0, 0}, 0, 0, 0};
-        if (!reportedGpuUsageAcceptable()) return {{static_cast<std::int32_t>(0xc0000017u), 0, 0}, 0, 0, 0};
+        if (!runtime->canMapFence() || !reportedGpuUsageAcceptable()) return {{static_cast<std::int32_t>(0xc0000017u), 0, 0}, 0, 0, 0};
         D3DKMT_CREATEHWQUEUE a{}; a.hHwContext = context; a.Flags.Value = desc.flags;
         D3DDDI_CREATEHWQUEUEFLAGS layout{}; layout.NoBroadcastSignal = 1;
         if (layout.Value != NoBroadcastSignalHwQueueFlag) throw std::runtime_error("Native NoBroadcastSignal bit layout mismatch");
@@ -595,14 +600,16 @@ public:
     OpenGlProfile beginOpenGl(std::uint32_t version = 1) override {
         if (!gpu_diagnostic::HighResolution || openglEnabled || streamingEnabled || !asyncSubmitEnabled || !syncEnabled || !reservationEnabled ||
             !runtime || runtime->hasStopped() || !ownedAdapters.empty() || !deviceAdapters.empty() ||
-            !pendingSubmissions.empty() || !pendingHwSignals.empty() || (version != 1 && version != 2)) return {};
+            !pendingSubmissions.empty() || !pendingHwSignals.empty() || (version != 1 && version != 2 && version != 3)) return {};
         openglEnabled = true;
-        openglFencesEnabled = version == 2;
-        std::cerr << "{\"openGlProfileNegotiated\":true,\"version\":" << version << ",\"frames\":2,\"commandLimit\":64,\"pendingCommands\":16,\"reservationLimit\":16,\"reservedByteLimit\":17179869184,\"requestLimit\":10000";
-        if (version == 2) std::cerr << ",\"objectLimit\":" << GuestOpenGlFenceProfile.objectLimit
-            << ",\"hwQueueLimit\":" << OpenGlFenceHwQueues << ",\"vendorObjectLimit\":" << OpenGlFenceVendorAllocations;
+        openglFencesEnabled = version >= 2;
+        openglCompositorEnabled = version == 3;
+        const auto profile = version == 3 ? GuestOpenGlCompositorProfile : version == 2 ? GuestOpenGlFenceProfile : GuestOpenGlProfile;
+        std::cerr << "{\"openGlProfileNegotiated\":true,\"version\":" << version << ",\"frames\":2,\"commandLimit\":" << profile.commandLimit << ",\"pendingCommands\":16,\"reservationLimit\":16,\"reservedByteLimit\":17179869184,\"requestLimit\":" << profile.requestLimit;
+        if (version >= 2) std::cerr << ",\"objectLimit\":" << profile.objectLimit
+            << ",\"hwQueueLimit\":" << OpenGlFenceHwQueues << ",\"vendorObjectLimit\":" << vendorObjectLimit() << ",\"syncObjectLimit\":" << syncObjectLimit();
         std::cerr << "}\n";
-        return version == 2 ? GuestOpenGlFenceProfile : GuestOpenGlProfile;
+        return profile;
     }
     Result submitNativeHwCommand(std::uint32_t handle, HwSubmitDesc desc, const std::vector<std::uint8_t>& data, bool asynchronous) {
         if (!collectRetiredSubmissions()) throw std::runtime_error("Native asynchronous retirement failed");
@@ -613,7 +620,7 @@ public:
         };
         if (!submitEnabled || !runtime || runtime->hasStopped() || !validHwSubmit(desc) || data.size() != desc.privateBytes ||
             queue == hwQueues.end() || !queue->second.lease || desc.fence <= queue->second.submittedFence ||
-            submissionAttempts >= (streamingEnabled ? GuestStreamProfile.totalCommands : openglEnabled ? GuestOpenGlProfile.commandLimit : MaxHwSubmissions) ||
+            submissionAttempts >= (streamingEnabled ? GuestStreamProfile.totalCommands : openglEnabled ? openGlCommandLimit() : MaxHwSubmissions) ||
             pendingSubmissions.size() >= MaxHwSubmissions) return reject(1);
         unsigned owners = 0;
         for (const auto& item : vendorAllocations) {
@@ -680,7 +687,7 @@ public:
             queues.size() != desc.count || object == syncObjects.end() || object->second.type != 5 ||
             !packetSignalSyncFlags(object->second.flags) || !object->second.lease || !object->second.fence ||
             desc.fence <= object->second.lastSignal || (streamingEnabled ? hwQueueSignalAttempts + contextSignalAttempts >= GuestStreamProfile.totalSignals :
-                                                                        hwQueueSignalAttempts >= (openglFencesEnabled ? OpenGlFenceHwSignals : MaxHwQueueSignals)) ||
+                                                                        hwQueueSignalAttempts >= hwSignalLimit()) ||
             pendingHwSignals.size() >= MaxHwQueueSignals) return {Invalid,0,0};
         PendingHwSignal pending{}; pending.sync=sync; pending.flags=desc.flags; pending.count=desc.count; pending.target=desc.fence;
         for (std::size_t n=0;n<queues.size();++n) {
@@ -861,7 +868,7 @@ public:
         const auto shared = sharedResourceHandles.find(ticket);
         if (!resourceSharingEnabled || !runtime || runtime->hasStopped() || shared == sharedResourceHandles.end() ||
             !deviceAdapters.count(desc.device) || !validSharedResourceOpen(desc) || !reportedGpuUsageAcceptable() ||
-            vendorAllocations.size() >= (openglFencesEnabled ? OpenGlFenceVendorAllocations : vendorAllocationObjectLimit(capabilities().flags)))
+            vendorAllocations.size() >= vendorObjectLimit())
             return {{Invalid, 0, 0}, {}};
         D3DKMT_QUERYRESOURCEINFOFROMNTHANDLE query{}; query.hDevice = desc.device; query.hNtHandle = shared->second.handle.get();
         auto status = D3DKMTQueryResourceInfoFromNtHandle(&query);
@@ -972,7 +979,7 @@ public:
     SyncResult importSync(std::uint32_t ticket, SharedSyncOpenDesc desc) override {
         const auto shared = sharedSyncHandles.find(ticket);
         if (!syncSharingEnabled || !runtime || runtime->hasStopped() || !validSharedSyncOpen(desc) ||
-            shared == sharedSyncHandles.end() || !deviceAdapters.count(desc.device) || syncObjects.size() >= MaxSyncObjects)
+            shared == sharedSyncHandles.end() || !deviceAdapters.count(desc.device) || syncObjects.size() >= syncObjectLimit())
             return {{Invalid, 0, 0}, {0, 0}};
         if (!runtime->canMapFence()) return {{static_cast<std::int32_t>(0xc0000017u), 0, 0}, {0, 0}};
         D3DKMT_OPENSYNCOBJECTFROMNTHANDLE2 a{};
@@ -1000,7 +1007,7 @@ public:
         return {{0, a.hSyncObject, 0}, {owned.lease->offset, owned.gpuAddress}};
     }
     SyncResult createSync(std::uint32_t device, SyncDesc desc) override {
-        if (!syncEnabled || !runtime || !validSync(desc) || !deviceAdapters.count(device) || syncObjects.size() >= MaxSyncObjects)
+        if (!syncEnabled || !runtime || !validSync(desc) || !deviceAdapters.count(device) || syncObjects.size() >= syncObjectLimit())
             return {{Invalid, 0, 0}, {0, 0}};
         if (desc.flags == NtSharedGpuSyncFlags && !syncSharingEnabled) return {{Invalid, 0, 0}, {0, 0}};
         if (desc.type == 5 && !runtime->canMapFence())
@@ -1135,7 +1142,7 @@ public:
     Result createVendorAllocationImpl(std::uint32_t device, VendorAllocationDesc desc, std::vector<std::uint8_t>& data, bool withResource, std::uint32_t runtimeBytes = 0, const NativeTextureDesc* texture = nullptr, bool interop=false) {
         if (!allocationsEnabled || !validVendorAllocation(desc) || data.size() != desc.privateBytes + runtimeBytes ||
             (runtimeBytes && (!withResource || !sharedResourcesEnabled || !validSharedVendorAllocation({desc, runtimeBytes, 0})))) return {Invalid, 0, 0};
-        if (vendorAllocations.size() >= (openglFencesEnabled ? OpenGlFenceVendorAllocations : vendorAllocationObjectLimit(capabilities().flags)) || !reportedGpuUsageAcceptable())
+        if (vendorAllocations.size() >= vendorObjectLimit() || !reportedGpuUsageAcceptable())
             return {static_cast<std::int32_t>(0xc0000017u), 0, 0};
         D3DDDI_ALLOCATIONINFO2 info{}; info.Flags.Value = desc.flags; info.Priority = desc.priority;
         static_assert(UninitializedDisplaySource == D3DDDI_ID_UNINITIALIZED && D3DDDI_ID_NOTAPPLICABLE == 0,
@@ -1577,6 +1584,7 @@ public:
     }
     GuestPagingResult createGuestPagingQueue(std::uint32_t device) override {
         if (!runtime) return Driver::createGuestPagingQueue(device);
+        if (!runtime->canMapFence()) return {{static_cast<std::int32_t>(0xc0000017u),0,0},0,0};
         const auto result = createPagingQueue(device);
         if (result.ntstatus < 0) return {result, 0, 0};
         auto& queue = pagingFences.at(result.nativeHandle);
@@ -1960,7 +1968,7 @@ public:
                   << ",\"liveSyncObjects\":" << syncObjects.size() << ",\"completedSyncObjects\":" << completedSyncs
                   << ",\"destroyedSyncObjects\":" << destroyedSyncs << ",\"failedSyncObjects\":" << failedSyncs
                   << ",\"completedMonitoredFences\":" << monitoredSyncs << ",\"completedSynchronizationMutexes\":" << mutexSyncs
-                  << ",\"completedNoGpuAccessFences\":" << noGpuAccessSyncs << ",\"syncObjectLimit\":" << MaxSyncObjects
+                  << ",\"completedNoGpuAccessFences\":" << noGpuAccessSyncs << ",\"syncObjectLimit\":" << syncObjectLimit()
                   << ",\"completedNoSignalMaxValueOnTdrFences\":" << noSignalMaxValueOnTdrSyncs
                   << ",\"nativeContextSignalAttempts\":" << contextSignalAttempts
                   << ",\"completedNativeContextSignals\":" << completedContextSignals
@@ -2002,7 +2010,7 @@ public:
                   << ",\"failedAdapterQueries\":" << failedQueries
                   << ",\"liveVendorAllocations\":" << vendorAllocations.size()
                   << ",\"peakVendorAllocationObjects\":" << peakVendorAllocationObjects
-                  << ",\"vendorAllocationObjectLimit\":" << (openglFencesEnabled ? OpenGlFenceVendorAllocations : vendorAllocationObjectLimit(capabilities().flags))
+                  << ",\"vendorAllocationObjectLimit\":" << vendorObjectLimit()
                   << ",\"vendorCpuSlotLimit\":" << (runtime ? runtime->allocationSlotLimit() : DefaultVendorCpuSlots)
                   << ",\"vendorCpuMappedByteLimit\":" << vendorCpuByteLimit(capabilities().flags)
                   << ",\"vendorCpuSlotQuotaRejections\":" << vendorCpuSlotQuotaRejections
@@ -2140,10 +2148,17 @@ int main(int argc, char** argv) {
         bool contexts = false, queries = false, allocations = false, gpuVa = false, residency = false, cpu = false, cpuStoreTest = false, cpuEofTest = false, translation = false, hwQueues = false, hwQueueEofTest = false, sync = false, syncEofTest = false, submit = false, retirement = false, reservation = false, reservationEofTest = false, gpuState = false, gpuStateEofTest = false, cpuSpanEofTest = false, syncNoMaxEofTest = false;
         std::size_t cpuSlots = DefaultVendorCpuSlots;
         bool cpuSlotsConfigured = false;
+        std::uint32_t fenceSlots = 0;
         bool hwQueueNoBroadcastEofTest = false;
         bool hwQueueNoBroadcastWaitEofTest = false;
         bool asyncSubmit = false, sharedResources = false, consumeShared = false, presentShared = false, nativeMetadata = false, consumeProcess = false;
         while (argc > 1) {
+            if (argc > 2 && std::string(argv[argc - 2]) == "--driver-fence-slots") {
+                const auto value = std::string(argv[argc - 1]);
+                if (fenceSlots || (value != "64" && value != "128" && value != "256"))
+                    throw std::runtime_error("Fence aperture slots must be specified once as 64, 128 or 256");
+                fenceSlots = static_cast<std::uint32_t>(std::stoul(value)); argc -= 2; continue;
+            }
             if (argc > 2 && std::string(argv[argc - 2]) == "--driver-cpu-slots") {
                 const auto value = std::string(argv[argc - 1]);
                 if (cpuSlotsConfigured || (value != "16" && value != "32" && value != "64" && value != "128" && value != "256"))
@@ -2226,6 +2241,8 @@ int main(int argc, char** argv) {
             throw std::runtime_error("Vendor CPU locks require GPU-address mappings and an owned QEMU runtime");
         if (cpuStoreTest && !cpu) throw std::runtime_error("CPU store control requires explicit CPU-lock opt-in");
         if (cpuSlotsConfigured && !cpu) throw std::runtime_error("CPU aperture capacity requires the explicit CPU-lock opt-in");
+        if (fenceSlots && (!gpu_diagnostic::HighResolution || argc < 2 || std::string(argv[1]) != "--run-qemu"))
+            throw std::runtime_error("Fence aperture capacity requires the diagnostic build and owned QEMU runtime");
         if (syncEofTest && (!sync || cpuStoreTest || cpuEofTest || hwQueueEofTest))
             throw std::runtime_error("Synchronization EOF control requires synchronization opt-in and a separate diagnostic run");
         if (cpuEofTest && (!cpu || cpuStoreTest)) throw std::runtime_error("CPU EOF control requires CPU locks and a separate run from store control");
@@ -2246,7 +2263,7 @@ int main(int argc, char** argv) {
         if (!ownedRuntime && ((argc != 3 && argc != 7) || std::string(argv[1]) != "--listen")) {
             std::cerr << "Usage: driver-bridge.exe --stdio | --listen port [--guest-section name --guest-ram-bytes count] "
                 "[--driver-contexts] [--driver-queries] [--driver-allocations] [--driver-gpuva] [--driver-residency] [--driver-cpu] [--driver-cpu-slots 16|32|64|128|256] [--driver-translation] [--driver-hwqueues] [--driver-syncs] [--driver-submit] [--driver-async-submit] [--driver-retirement] [--driver-reservation] [--driver-gpu-state] [--cpu-store-test | --cpu-eof-test | --cpu-span-eof-test | --hwqueue-eof-test | --hwqueue-no-broadcast-eof-test | --hwqueue-no-broadcast-wait-eof-test | --sync-eof-test | --sync-no-max-eof-test | --reservation-eof-test | --gpu-state-eof-test]\n"
-                "       driver-bridge.exe --run-qemu qemu firmware kernel initramfs fresh-log --driver-contexts --driver-queries\n"; return 2;
+                "       driver-bridge.exe --run-qemu qemu firmware kernel initramfs fresh-log --driver-contexts --driver-queries [--driver-fence-slots 64|128|256]\n"; return 2;
         }
         if (ownedRuntime && (!contexts || !queries)) throw std::runtime_error("Owned QEMU runtime requires explicit query/context opt-ins");
         std::size_t end{}; const auto port = ownedRuntime ? 0ul : std::stoul(argv[2], &end);
@@ -2275,7 +2292,7 @@ int main(int argc, char** argv) {
         std::cout << "{\"port\":" << ntohs(address.sin_port) << ",\"transport\":\"tcp-loopback\"}\n" << std::flush;
         std::unique_ptr<driver_qemu::Runtime> runtime;
         if (ownedRuntime) runtime = std::make_unique<driver_qemu::Runtime>(ntohs(address.sin_port),
-            qemu_fence::Paths{argv[2], argv[3], argv[4], argv[5], argv[6]}, cpu, cpuStoreTest, cpuEofTest, hwQueueEofTest, cpuSlots, syncEofTest, reservationEofTest, gpuStateEofTest, cpuSpanEofTest, syncNoMaxEofTest, hwQueueNoBroadcastEofTest, hwQueueNoBroadcastWaitEofTest);
+            qemu_fence::Paths{argv[2], argv[3], argv[4], argv[5], argv[6]}, cpu, cpuStoreTest, cpuEofTest, hwQueueEofTest, cpuSlots, syncEofTest, reservationEofTest, gpuStateEofTest, cpuSpanEofTest, syncNoMaxEofTest, hwQueueNoBroadcastEofTest, hwQueueNoBroadcastWaitEofTest, fenceSlots);
         fd_set reads; FD_ZERO(&reads); FD_SET(listener.value, &reads); timeval timeout{60, 0};
         if (select(0, &reads, nullptr, nullptr, &timeout) != 1) throw std::runtime_error("Connection timed out");
         Socket client; client.value = accept(listener.value, nullptr, nullptr);

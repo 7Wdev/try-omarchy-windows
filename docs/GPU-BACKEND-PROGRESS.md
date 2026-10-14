@@ -1,8 +1,14 @@
 # NVIDIA backend progress
 
-Updated 2026-10-14. **4 of 8 verification stages demonstrated.** This is a
+Updated 2026-10-15. **4 of 8 verification stages demonstrated.** This is a
 checklist count, not 50% of engineering effort or a product-readiness estimate.
 The largest integration tasks are still ahead.
+
+[Actual Hyprland startup](HYPRLAND-STARTUP-PROGRESS.md) now reaches the native
+NVIDIA graphics path through the Aquamarine/GBM prototype. Initialization
+exposed synchronization and QEMU mapping limits. The compositor profile and
+graceful exhaustion fix are tested; the expanded mapping configuration still
+awaits an end-to-end run. No compositor frame or desktop gate is accepted.
 
 Latest [real render-node/GBM development checkpoint](LIVE-GPU-GBM-NATIVE-RENDER.md)
 passes two fresh ordinary-user guests. The real render node selects the private

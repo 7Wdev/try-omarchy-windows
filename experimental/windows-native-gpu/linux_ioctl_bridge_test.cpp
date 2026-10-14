@@ -92,7 +92,8 @@ int main(int argc, char** argv) {
     }
     if (!std::strncmp(mode,"opengl-profile-",15)) {
         using Begin = int (*)();
-        const auto begin = reinterpret_cast<Begin>(dlsym(RTLD_DEFAULT, std::getenv("OPENGL_EXTENDED_PROFILE") ?
+        const auto begin = reinterpret_cast<Begin>(dlsym(RTLD_DEFAULT, std::getenv("OPENGL_COMPOSITOR_PROFILE") ?
+            "wddm_bridge_begin_opengl_compositor" : std::getenv("OPENGL_EXTENDED_PROFILE") ?
             "wddm_bridge_begin_opengl_fences" : "wddm_bridge_begin_opengl"));
         if (!begin) return failed("OpenGL hook absent");
         if (!std::strcmp(mode,"opengl-profile-late")) {

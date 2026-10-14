@@ -29,7 +29,12 @@ There is no reliable completion date yet; the remaining work includes substantia
 
 Vulkan, CUDA, video acceleration, NVIDIA-specific features and concurrent Windows/guest GPU use need separate real-application acceptance tests as part of the wider goal.
 
-Latest development checkpoint: [real render node and GBM buffers](docs/LIVE-GPU-GBM-NATIVE-RENDER.md)
+Latest integration work: [actual Hyprland startup](docs/HYPRLAND-STARTUP-PROGRESS.md)
+reaches the NVIDIA graphics path, but EGL initialization still fails at the old fence-mapping capacity.
+A separate compositor initialization profile and graceful capacity rejection are implemented;
+the expanded QEMU/guest mapping path awaits end-to-end validation. **No Hyprland frame has been verified yet.**
+
+Latest verified rendering checkpoint: [real render node and GBM buffers](docs/LIVE-GPU-GBM-NATIVE-RENDER.md)
 passes two fresh ordinary-user guests. Real GBM allocations export owned DMA-BUFs, import into EGL,
 retain their textures after the original objects are destroyed, and sample a rendered texture into a distinct GPU buffer.
 Each run verifies 954,706 solid-storage pixels and a separate 130×73 sampled shader image, then releases

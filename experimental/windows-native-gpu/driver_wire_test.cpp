@@ -538,11 +538,11 @@ int main() {
         }
         OpenGlProfile beginOpenGl(std::uint32_t = 1) override { ++begins; return profile; }
     };
-    for(unsigned version:{0u,1u,2u}) {
+    for(unsigned version:{0u,1u,2u,3u}) {
         OpenGlFake f; f.contextsEnabled=f.hwQueuesEnabled=f.hwQueueSignalEnabled=true;
-        f.profile=version==2 ? GuestOpenGlFenceProfile : GuestOpenGlProfile;
+        f.profile=version==3 ? GuestOpenGlCompositorProfile : version==2 ? GuestOpenGlFenceProfile : GuestOpenGlProfile;
         Session s(f); s.dispatch(hello());
-        if(version) require(!header(s.dispatch(version==2 ? request(Op::BeginOpenGl,0,version) : request(Op::BeginOpenGl))).status);
+        if(version) require(!header(s.dispatch(version>=2 ? request(Op::BeginOpenGl,0,version) : request(Op::BeginOpenGl))).status);
         const auto adapter=header(s.dispatch(request(Op::OpenAdapter))).handle;
         const auto device=header(s.dispatch(request(Op::CreateDevice,adapter))).handle;
         auto contextPacket=request(Op::CreateContext,device,ContextDesc{0,1,16,12,4,0});
@@ -552,7 +552,7 @@ int main() {
         queuePacket.insert(queuePacket.end(),{37,38,39,40});
         const auto queue=header(s.dispatch(queuePacket)).handle;
         const auto sync=header(s.dispatch(request(Op::CreateSync,device,SyncDesc{5,128,0,0,0}))).handle;
-        require(context && queue && sync && s.hwQueueSignalLimit()==(version==2 ? 64u : 16u));
+        require(context && queue && sync && s.hwQueueSignalLimit()==(version==3 ? 256u : version==2 ? 64u : 16u));
         const auto signal=[&](std::uint64_t target) {
             auto packet=request(Op::QueueHwQueueSignal,sync,HwQueueSignalDesc{4,1,target});
             const auto bytes=reinterpret_cast<const std::uint8_t*>(&queue); packet.insert(packet.end(),bytes,bytes+sizeof queue);
@@ -603,7 +603,7 @@ int main() {
         require(s.objectLimit() == MaxObjects);
         require(header(s.dispatch(request(Op::BeginOpenGl, 0, std::uint32_t{2}))).status == -71);
         s.dispatch(hello());
-        for (const auto version : {0u, 1u, 3u, UINT32_MAX})
+        for (const auto version : {0u, 1u, 4u, UINT32_MAX})
             require(header(s.dispatch(request(Op::BeginOpenGl, 0, version))).status == -93 && !f.begins);
         for (unsigned field = 0; field < 8; ++field) {
             std::uint32_t words[8]{}; std::memcpy(words, &GuestOpenGlFenceProfile, sizeof words); ++words[field];
@@ -628,14 +628,57 @@ int main() {
         const auto calls = f.calls;
         require(s.objectCount() == 384 && header(s.dispatch(request(Op::OpenAdapter))).status == -24 && f.calls == calls);
     }
-    for (const auto version : {1u, 2u}) {
+    {
+        OpenGlFake f; Session s(f);
+        const auto begin=request(Op::BeginOpenGl,0,std::uint32_t{3});
+        require(header(s.dispatch(begin)).status==-71 && !f.begins);
+        s.dispatch(hello());
+        for (unsigned field=0;field<8;++field) {
+            std::uint32_t words[8]{}; std::memcpy(words,&GuestOpenGlCompositorProfile,sizeof words); ++words[field];
+            std::memcpy(&f.profile,words,sizeof words);
+            require(header(s.dispatch(begin)).status==-95);
+            require(s.objectLimit()==256 && s.syncObjectLimit()==96 && s.requestLimit()==10000);
+        }
+        f.profile=GuestOpenGlFenceProfile;
+        require(header(s.dispatch(begin)).status==-95);
+        f.profile=GuestOpenGlCompositorProfile;
+        const auto out=s.dispatch(begin); OpenGlProfile profile{};
+        require(!header(out).status && out.size()==sizeof(Header)+sizeof profile);
+        std::memcpy(&profile,out.data()+sizeof(Header),sizeof profile);
+        require(validOpenGlCompositorProfile(profile) && s.objectLimit()==512 && s.syncObjectLimit()==192 &&
+                s.requestLimit()==50000 && s.openGlCommandLimit()==256);
+        const auto before=f.begins;
+        require(header(s.dispatch(begin)).status==-16 && f.begins==before);
+        require(header(s.dispatch(request(Op::BeginStreaming))).status==-16);
+        require(!header(s.dispatch(hello())).status);
+        require(s.objectLimit()==256 && s.syncObjectLimit()==96 && s.requestLimit()==10000);
+        require(header(s.dispatch(request(Op::OpenAdapter))).handle);
+        require(header(s.dispatch(begin)).status==-16 && f.begins==before);
+    }
+    for (const auto version : {0u,1u,2u,3u}) {
+        OpenGlFake f; f.syncEnabled=true;
+        f.profile=version==3 ? GuestOpenGlCompositorProfile : version==2 ? GuestOpenGlFenceProfile : GuestOpenGlProfile;
+        Session s(f); s.dispatch(hello());
+        if(version) require(!header(s.dispatch(version>=2 ? request(Op::BeginOpenGl,0,version) : request(Op::BeginOpenGl))).status);
+        require(s.syncObjectLimit()==(version==3 ? 192u : 96u));
+        const auto adapter=header(s.dispatch(request(Op::OpenAdapter))).handle;
+        const auto device=header(s.dispatch(request(Op::CreateDevice,adapter))).handle;
+        const auto create=request(Op::CreateSync,device,SyncDesc{1,0,0,0,0});
+        std::uint32_t last=0;
+        for(std::size_t n=0;n<s.syncObjectLimit();++n) { last=header(s.dispatch(create)).handle; require(last); }
+        const auto before=f.calls;
+        require(header(s.dispatch(create)).status==-24 && f.calls==before);
+        require(!header(s.dispatch(request(Op::DestroySync,last))).status);
+        require(header(s.dispatch(create)).handle && MaxSyncObjects==96);
+    }
+    for (const auto version : {1u, 2u, 3u}) {
         OpenGlFake f;
         f.contextsEnabled = f.hwQueuesEnabled = f.vendorEnabled = f.expandedVendorObjectsEnabled = true;
-        f.profile = version == 2 ? GuestOpenGlFenceProfile : GuestOpenGlProfile;
+        f.profile = version == 3 ? GuestOpenGlCompositorProfile : version == 2 ? GuestOpenGlFenceProfile : GuestOpenGlProfile;
         Session s(f); s.dispatch(hello());
-        require(!header(s.dispatch(version == 2 ? request(Op::BeginOpenGl, 0, version) : request(Op::BeginOpenGl))).status);
-        require(s.hwQueueLimit() == (version == 2 ? 16u : 8u));
-        require(s.vendorObjectLimit() == (version == 2 ? 192u : 128u));
+        require(!header(s.dispatch(version >= 2 ? request(Op::BeginOpenGl, 0, version) : request(Op::BeginOpenGl))).status);
+        require(s.hwQueueLimit() == (version >= 2 ? 16u : 8u));
+        require(s.vendorObjectLimit() == (version == 3 ? 256u : version == 2 ? 192u : 128u));
         const auto adapter = header(s.dispatch(request(Op::OpenAdapter))).handle;
         const auto device = header(s.dispatch(request(Op::CreateDevice, adapter))).handle;
         auto contextPacket = request(Op::CreateContext, device, ContextDesc{0,1,16,12,4,0});

@@ -10,7 +10,13 @@
 #define WDDM_APERTURE_FENCE 1
 #define WDDM_APERTURE_ALLOCATION 2
 #define WDDM_APERTURE_WRITE 1
-#define WDDM_APERTURE_MAX_LEASES 256
+#define WDDM_APERTURE_DEFAULT_LEASES 256
+#define WDDM_APERTURE_MAX_LEASES 512
+/* Only the explicit 256-fence hub needs room for both CPU and fence views. */
+static inline __u32 wddm_aperture_lease_limit(__u32 fence_slots)
+{
+    return fence_slots == 256 ? WDDM_APERTURE_MAX_LEASES : WDDM_APERTURE_DEFAULT_LEASES;
+}
 #define WDDM_APERTURE_CPU_LIMIT (96ULL * 1024 * 1024)
 #define WDDM_OBJECT_SYNC 1
 #define WDDM_OBJECT_RESOURCE 2

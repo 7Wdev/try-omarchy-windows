@@ -20,10 +20,10 @@ public:
         open(); wddm_aperture_info value{}; value.version=WDDM_APERTURE_VERSION;
         if (syscall(SYS_ioctl,control.get(),WDDM_APERTURE_INFO,&value))
             throw std::system_error(errno,std::generic_category(),"Broker kernel layout");
-        if (value.version != WDDM_APERTURE_VERSION || (value.fence_slots != 64 && value.fence_slots != 128) ||
+        if (value.version != WDDM_APERTURE_VERSION || !driver_bridge::validFenceSlots(value.fence_slots) ||
             !driver_bridge::validVendorCpuSlots(value.allocation_slots) || value.cpu_slot_bytes != 1048576 ||
             value.fence_bytes != value.fence_slots*4096ull || value.allocation_bytes != value.allocation_slots*1048576ull ||
-            value.active_leases > WDDM_APERTURE_MAX_LEASES || value.active_cpu_bytes > WDDM_APERTURE_CPU_LIMIT)
+            value.active_leases > wddm_aperture_lease_limit(value.fence_slots) || value.active_cpu_bytes > WDDM_APERTURE_CPU_LIMIT)
             throw std::system_error(EPROTO,std::generic_category(),"Broker kernel layout mismatch");
         return value;
     }

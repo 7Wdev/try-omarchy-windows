@@ -109,10 +109,10 @@ try:
             assert handle == 2 and packet[16:] == struct.pack('<IIIIQ',1 if mutex else 5,flags,0 if mutex else 1,0,1 if mutex else 42)
             failed = mode in ('sync-nt-failure','sync-bad-failure')
             identity = 0 if failed or mode == 'sync-bad-id' else 3
-            offset = 0 if failed or mutex else 1 if mode == 'sync-bad-alignment' else 524288 if mode == 'sync-bad-offset' else 8192
+            offset = 0 if failed or mutex else 1 if mode == 'sync-bad-alignment' else 1048576 if mode == 'sync-bad-offset' else 8192
             gpu = 0 if failed or mutex or mode in ('sync-zero-gpu','sync-nomax-zero-gpu') else 65537 if mode == 'sync-bad-gpu-alignment' else 1 << 48 if mode == 'sync-bad-gpu-range' else 65536
             if no_gpu: gpu = 65536 if mode.endswith('-nonzero-gpu') else 0
-            if mode == 'sync-nogpu-bad-offset': offset = 524288
+            if mode == 'sync-nogpu-bad-offset': offset = 1048576
             if mode in ('sync-bad-failure', 'sync-mutex-bad-map'): offset = 8192
             data = struct.pack('<QQ',offset,gpu)
             if mode == 'sync-short': data = data[:-1]
@@ -139,7 +139,7 @@ try:
             failed = mode in ('hwqueue-nt-failure','hwqueue-bad-failure','hwqueue-nobroadcast-nt-failure','hwqueue-internal-nt-failure')
             queue = 0 if failed or mode == 'hwqueue-bad-id' else 4
             sync = 0 if failed or mode == 'hwqueue-bad-sync' else 4 if mode == 'hwqueue-same-sync' else 5
-            offset = 0 if failed else 1 if mode == 'hwqueue-bad-alignment' else 524288 if mode == 'hwqueue-bad-offset' else 8192
+            offset = 0 if failed else 1 if mode == 'hwqueue-bad-alignment' else 1048576 if mode == 'hwqueue-bad-offset' else 8192
             gpu = 0 if failed or mode == 'hwqueue-zero-gpu' else 65537 if mode == 'hwqueue-bad-gpu-alignment' else 1 << 48 if mode == 'hwqueue-bad-gpu-range' else 65536
             if mode == 'hwqueue-bad-failure': sync = 5
             data = struct.pack('<IIQQ',sync,1 if mode == 'hwqueue-bad-reserved' else 0,offset,gpu) + bytes([37 ^ 255,38,39,40])
@@ -151,7 +151,7 @@ try:
             send(op,handle)
         elif op == 0x2040:
             sync = 0 if mode == 'paging-bad-sync' else 4
-            offset = 524288 if mode == 'paging-bad-offset' else 0
+            offset = 1048576 if mode == 'paging-bad-offset' else 0
             reserved = 1 if mode == 'paging-bad-reserved' else 0
             data = struct.pack('<IIQ',sync,reserved,offset)
             if mode == 'paging-short': data = data[:-1]

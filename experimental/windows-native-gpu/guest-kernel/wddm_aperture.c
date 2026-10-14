@@ -171,7 +171,7 @@ static long create_lease(struct file *control, void __user *pointer)
 		result = -ENODEV;
 	else if (!valid_create(&arg, hub))
 		result = -EINVAL;
-	else if (active_leases >= WDDM_APERTURE_MAX_LEASES || next_cookie == U64_MAX ||
+	else if (active_leases >= wddm_aperture_lease_limit(fence_hub.slots) || next_cookie == U64_MAX ||
 		 (arg.kind == WDDM_APERTURE_ALLOCATION &&
 		  arg.bytes > WDDM_APERTURE_CPU_LIMIT - active_cpu_bytes))
 		result = -ENOSPC;
@@ -310,7 +310,7 @@ static int aperture_probe(struct pci_dev *pci, const struct pci_device_id *id)
 	pci_read_config_dword(pci, 0x44, &slots);
 	if (!fence) pci_read_config_dword(pci, 0x48, &stride);
 	bytes = fence ? (u64)slots * 4096 : (u64)slots * CPU_STRIDE;
-	if ((fence && (magic != FENCE_MAGIC || (slots != 64 && slots != 128))) ||
+	if ((fence && (magic != FENCE_MAGIC || (slots != 64 && slots != 128 && slots != 256))) ||
 	    (!fence && (magic != CPU_MAGIC || stride != CPU_STRIDE || slots < 16 ||
 		       slots > 256 || !is_power_of_2(slots))) ||
 	    !(pci_resource_flags(pci, 0) & IORESOURCE_MEM) ||

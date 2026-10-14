@@ -57,12 +57,12 @@ public:
             if (syscall(SYS_ioctl, control, WDDM_APERTURE_INFO, &value)) failed("info");
         }
         if (value.version != WDDM_APERTURE_VERSION ||
-            (value.fence_slots != 64 && value.fence_slots != 128) ||
+            (value.fence_slots != 64 && value.fence_slots != 128 && value.fence_slots != 256) ||
             value.allocation_slots < 16 || value.allocation_slots > 256 ||
             (value.allocation_slots & (value.allocation_slots - 1)) ||
             value.cpu_slot_bytes != 1048576 || value.fence_bytes != value.fence_slots * 4096ull ||
             value.allocation_bytes != value.allocation_slots * value.cpu_slot_bytes ||
-            value.active_leases > WDDM_APERTURE_MAX_LEASES || value.active_cpu_bytes > WDDM_APERTURE_CPU_LIMIT)
+            value.active_leases > wddm_aperture_lease_limit(value.fence_slots) || value.active_cpu_bytes > WDDM_APERTURE_CPU_LIMIT)
             throw std::runtime_error("Kernel aperture layout mismatch");
         return value;
     }

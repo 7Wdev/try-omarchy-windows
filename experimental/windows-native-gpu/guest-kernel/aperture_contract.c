@@ -120,7 +120,7 @@ int main(void)
     int control=open("/dev/wddm-aperture",O_RDWR|O_CLOEXEC);
     REQUIRE(control>=0);
     struct wddm_aperture_info layout=info(control);
-    REQUIRE(layout.version==1 && (layout.fence_slots==64 || layout.fence_slots==128) &&
+    REQUIRE(layout.version==1 && (layout.fence_slots==64 || layout.fence_slots==128 || layout.fence_slots==256) &&
         layout.fence_bytes==(uint64_t)layout.fence_slots*4096 &&
         layout.allocation_slots>=16 && layout.allocation_slots<=256 &&
         !(layout.allocation_slots&(layout.allocation_slots-1)) &&
@@ -186,13 +186,14 @@ int main(void)
     REQUIRE(!munmap(view,4096)); revoke_lease(control,cpu.cookie); close(cpu.fd);
     /* Exhaustion rejects without allocating an FD or changing accounting. */
     struct wddm_aperture_create leases[WDDM_APERTURE_MAX_LEASES];
-    for (unsigned n=0;n<WDDM_APERTURE_MAX_LEASES;++n) {
+    const unsigned lease_limit=wddm_aperture_lease_limit(layout.fence_slots);
+    for (unsigned n=0;n<lease_limit;++n) {
         leases[n]=fence(); REQUIRE(!ioctl(control,WDDM_APERTURE_CREATE,&leases[n]));
     }
     arg=fence(); errno=0;
     REQUIRE(ioctl(control,WDDM_APERTURE_CREATE,&arg)==-1 && errno==ENOSPC);
-    REQUIRE(info(control).active_leases==WDDM_APERTURE_MAX_LEASES);
-    for (unsigned n=0;n<WDDM_APERTURE_MAX_LEASES;++n) { revoke_lease(control,leases[n].cookie); close(leases[n].fd); }
+    REQUIRE(info(control).active_leases==lease_limit);
+    for (unsigned n=0;n<lease_limit;++n) { revoke_lease(control,leases[n].cookie); close(leases[n].fd); }
     if (layout.allocation_bytes > WDDM_APERTURE_CPU_LIMIT) {
         cpu=(struct wddm_aperture_create){.version=1,.kind=2,.bytes=WDDM_APERTURE_CPU_LIMIT,.host_generation=3,.flags=1};
         REQUIRE(!ioctl(control,WDDM_APERTURE_CREATE,&cpu));

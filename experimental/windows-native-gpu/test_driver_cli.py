@@ -14,6 +14,11 @@ def main():
     cases = [(['--driver-cpu-slots', value], 'CPU aperture slots must be specified once')
              for value in ('0', '8', '17', '33', '65', '127', '129', '255', '257', '512', '-1', '4294967296', '32x')]
     cases += [(['--stdio','--driver-consume-shared-process'],'Shared GPU worker requires explicit consumption opt-in')]
+    cases += [(['--driver-fence-slots', value], 'Fence aperture slots must be specified once')
+              for value in ('0','32','65','127','129','255','257','512','-1','4294967296','128x')]
+    cases += [(['--driver-fence-slots','64','--driver-fence-slots','256'], 'specified once')]
+    cases += [(['--stdio','--driver-fence-slots',value], 'Fence aperture capacity requires')
+              for value in ('64','128','256')]
     cases += [(['--native-texture-worker',value,'0'],'worker handle')
               for value in ('0','-1','32x','18446744073709551615','18446744073709551616')]
     cases += [(['--driver-cpu-slots', '16', '--driver-cpu-slots', '32'], 'specified once'),

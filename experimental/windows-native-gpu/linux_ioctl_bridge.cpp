@@ -238,6 +238,8 @@ class Bridge {
     bool streamingNegotiated = false;
     bool openglNegotiated = false;
     bool openglFencesNegotiated = false;
+    bool openglCompositorNegotiated = false;
+    std::size_t syncObjectLimit() const { return openglCompositorNegotiated ? OpenGlCompositorSyncObjects : MaxSyncObjects; }
     std::uint64_t consumedStreamFrames = 0;
     native_gpu::Capabilities caps{};
     unsigned counts[256]{}, completedQueries = 0, privateQueries = 0, contexts = 0;
@@ -638,7 +640,7 @@ public:
                 std::uint32_t ticket = 0;
                 if (!kernelObjects.resolve(static_cast<int>(handle), ticket)) throw Error(errno);
                 if (!exportedSyncTickets.count(ticket)) { transport.fail(); throw Error(EPROTO); }
-                if (syncObjects.size() >= MaxSyncObjects) throw Error(EMFILE);
+                if (syncObjects.size() >= syncObjectLimit()) throw Error(EMFILE);
                 const auto result = call(request(Op::ImportSync, ticket, desc), sizeof(SyncReply), true);
                 SyncReply output{}; std::memcpy(&output, result.data.data(), sizeof output);
                 if (result.result.ntstatus > 0 || result.result.value ||
@@ -862,7 +864,7 @@ public:
                 const VendorAllocationDesc desc{item.Flags.Value, item.Priority, item.VidPnSourceId, item.PrivateDriverDataSize, 0, 0};
                 if (!validVendorAllocation(desc) || item.pSystemMem || !item.pPrivateDriverData ||
                     std::any_of(std::begin(item.Reserved), std::end(item.Reserved), [](auto value) { return value != 0; })) throw Error(EINVAL);
-                if (vendorOwners.size() >= (openglFencesNegotiated ? OpenGlFenceVendorAllocations : vendorAllocationObjectLimit(caps.flags))) throw Error(EMFILE);
+                if (vendorOwners.size() >= (openglCompositorNegotiated ? OpenGlCompositorVendorAllocations : openglFencesNegotiated ? OpenGlFenceVendorAllocations : vendorAllocationObjectLimit(caps.flags))) throw Error(EMFILE);
                 const SharedVendorAllocationDesc sharedDesc{desc, a.PrivateRuntimeDataSize, 0};
                 if (sharedResource && (!validSharedVendorAllocation(sharedDesc) || !a.pPrivateRuntimeData)) throw Error(EINVAL);
                 const NativeSharedVendorAllocationDesc nativeDesc{sharedDesc, profile};
@@ -1324,7 +1326,7 @@ public:
                 if (!validSync(desc) || a.Info.SharedHandle) throw Error(EINVAL);
                 if (desc.flags == NtSharedGpuSyncFlags) beginSharedFences();
                 if (!deviceAdapters.count(a.hDevice)) throw Error(EBADF);
-                if (syncObjects.size() >= MaxSyncObjects) throw Error(EMFILE);
+                if (syncObjects.size() >= syncObjectLimit()) throw Error(EMFILE);
                 const auto result = call(request(Op::CreateSync, a.hDevice, desc), sizeof(SyncReply), true);
                 SyncReply output{}; std::memcpy(&output, result.data.data(), sizeof output);
                 if (result.result.ntstatus > 0 || result.result.value ||
@@ -1643,12 +1645,12 @@ public:
         streamingNegotiated = true;
         std::fprintf(stderr, "LINUX_BRIDGE guestStreamNegotiated=true frames=64 pendingCommands=16 pendingSignals=16\n");
     }
-    void beginOpenGl(bool fences = false) {
+    void beginOpenGl(std::uint32_t version = 1) {
         if (!gpu_diagnostic::HighResolution || openglNegotiated || streamingNegotiated || !ownedAdapters.empty() || !deviceAdapters.empty()) throw Error(EINVAL);
         negotiate();
         const auto required = AsyncHwSubmitCapability | SyncCapability | GpuReservationCapability | UINT32_C(0x80000000);
         if ((caps.flags & required) != required) throw Error(ENOSYS);
-        const auto packet = transport.exchange(fences ? request(Op::BeginOpenGl, 0, std::uint32_t{2}) : request(Op::BeginOpenGl, 0));
+        const auto packet = transport.exchange(version >= 2 ? request(Op::BeginOpenGl, 0, version) : request(Op::BeginOpenGl, 0));
         Header header{}; std::memcpy(&header, packet.data(), sizeof header);
         if (header.type != static_cast<unsigned>(Op::BeginOpenGl) || header.handle || header.padding ||
             (header.status && (header.status > 0 || header.status < -4095 || packet.size() != sizeof header))) {
@@ -1657,10 +1659,11 @@ public:
         if (header.status) throw Error(-header.status);
         if (packet.size() != sizeof header + sizeof(OpenGlProfile)) { transport.fail(); throw Error(EPROTO); }
         OpenGlProfile profile{}; std::memcpy(&profile, packet.data() + sizeof header, sizeof profile);
-        if (fences ? !validOpenGlFenceProfile(profile) : !validOpenGlProfile(profile)) { transport.fail(); throw Error(EPROTO); }
+        if (version == 1 ? !validOpenGlProfile(profile) : version == 2 ? !validOpenGlFenceProfile(profile) : !validOpenGlCompositorProfile(profile)) { transport.fail(); throw Error(EPROTO); }
         openglNegotiated = true;
-        openglFencesNegotiated = fences;
-        std::fprintf(stderr, "LINUX_BRIDGE openGlProfileNegotiated=true frames=2 commandLimit=64 reservationLimit=16 reservedByteLimit=17179869184\n");
+        openglFencesNegotiated = version >= 2;
+        openglCompositorNegotiated = version == 3;
+        std::fprintf(stderr, "LINUX_BRIDGE openGlProfileNegotiated=true version=%u frames=2 commandLimit=%u reservationLimit=16 reservedByteLimit=17179869184 syncObjectLimit=%zu\n", version, profile.commandLimit, syncObjectLimit());
     }
     std::uint64_t consumeSharedTexture(std::uint64_t target, bool streaming = false) {
         if (streaming != streamingNegotiated || (streaming && (target != consumedStreamFrames + 1 || target > GuestStreamProfile.frames))) throw Error(EINVAL);
@@ -1878,7 +1881,16 @@ extern "C" int wddm_bridge_begin_opengl_fences() {
     if (bridgeStopped) { errno = ESHUTDOWN; return -1; }
     auto& state = bridge(); std::lock_guard<std::mutex> lock(state.guard);
     if (bridgeStopped) { errno = ESHUTDOWN; return -1; }
-    try { state.beginOpenGl(true); return 0; }
+    try { state.beginOpenGl(2); return 0; }
+    catch (const Error& error) { errno = error.number; }
+    catch (...) { state.protocolFailed(); errno = EIO; }
+    return -1;
+}
+extern "C" int wddm_bridge_begin_opengl_compositor() {
+    if (bridgeStopped) { errno = ESHUTDOWN; return -1; }
+    auto& state = bridge(); std::lock_guard<std::mutex> lock(state.guard);
+    if (bridgeStopped) { errno = ESHUTDOWN; return -1; }
+    try { state.beginOpenGl(3); return 0; }
     catch (const Error& error) { errno = error.number; }
     catch (...) { state.protocolFailed(); errno = EIO; }
     return -1;

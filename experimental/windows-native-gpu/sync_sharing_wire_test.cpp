@@ -26,6 +26,7 @@ struct Fake : Driver {
     Result create(Kind kind) { ++calls; const auto id = ++next; live.emplace(id, kind); return {0, id, 0}; }
     native_gpu::Capabilities capabilities() const override { return {Version, capabilityFlags, 0x10de, 1}; }
     SyncSharingProfile beginSyncSharing() override { ++calls; return supported ? GuestSyncSharingProfile : SyncSharingProfile{}; }
+    OpenGlProfile beginOpenGl(std::uint32_t version) override { return version==3 ? GuestOpenGlCompositorProfile : GuestOpenGlFenceProfile; }
     Result openAdapter() override { return create(Kind::Adapter); }
     Result queryVersion(std::uint32_t) override { return {0, 0, 31}; }
     Result queryAdapter(std::uint32_t, QueryDesc, std::vector<std::uint8_t>&) override { return {-1, 0, 0}; }
@@ -223,6 +224,26 @@ static void synchronizationOnlySignals() {
 }
 int main() {
     try {
+        for(const auto version:{2u,3u}) {
+            Fake quota;
+            quota.capabilityFlags |= AsyncHwSubmitCapability|GpuReservationCapability|UINT32_C(0x80000000);
+            {
+                Session s(quota); negotiate(s);
+                require(!header(s.dispatch(request(Op::BeginOpenGl,0,version))).status);
+                const auto adapter=add(s,Op::OpenAdapter,0), device=add(s,Op::CreateDevice,adapter);
+                begin(s); const auto source=sync(s,device);
+                const auto ticket=add(s,Op::ExportSync,source);
+                const auto open=request(Op::ImportSync,ticket,SharedSyncOpenDesc{device,0,1,0});
+                require(s.syncObjectLimit()==(version==3?192u:96u));
+                std::uint32_t last=0;
+                for(std::size_t n=1;n<s.syncObjectLimit();++n) { last=header(s.dispatch(open)).handle; require(last); }
+                const auto before=quota.imports;
+                require(header(s.dispatch(open)).status==-24 && quota.imports==before);
+                require(!header(s.dispatch(request(Op::DestroySync,last))).status);
+                require(header(s.dispatch(open)).handle && quota.imports==before+1);
+            }
+            require(quota.live.empty());
+        }
         Fake fake;
         {
             Session s(fake);

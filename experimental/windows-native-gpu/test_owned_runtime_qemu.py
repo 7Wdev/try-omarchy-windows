@@ -222,6 +222,7 @@ def main():
     parser.add_argument('--minimum-vendor-residency-requests', type=int, default=0)
     parser.add_argument('--driver-cpu', action='store_true')
     parser.add_argument('--driver-cpu-slots', type=int, choices=(16, 32, 64, 128, 256), default=16)
+    parser.add_argument('--driver-fence-slots', type=int, choices=(64, 128, 256), default=None)
     parser.add_argument('--minimum-expanded-cpu-mappings', type=int, default=0)
     parser.add_argument('--expected-cpu-slot-quota-rejections', type=int)
     parser.add_argument('--minimum-vendor-cpu-locks', type=int, default=0)
@@ -353,6 +354,7 @@ def main():
                              (['--driver-allocations'] if args.driver_allocations else []) + (['--driver-gpuva'] if args.driver_gpuva else []) +
                              (['--driver-residency'] if args.driver_residency else []) + (['--driver-cpu'] if args.driver_cpu else []) +
                              (['--driver-cpu-slots', str(args.driver_cpu_slots)] if args.driver_cpu_slots != 16 else []) +
+                             (['--driver-fence-slots', str(args.driver_fence_slots)] if args.driver_fence_slots is not None else []) +
                              (['--driver-translation'] if args.driver_translation else []) +
                              (['--driver-hwqueues'] if args.driver_hwqueues else []) +
                              (['--driver-syncs'] if args.driver_syncs else []) +
@@ -521,7 +523,7 @@ def main():
                     control.get('ownedQemuExited') is True and control.get('qemuExit') == 0 and
                     control.get('qemuForcedStop') is False and control.get('fenceControlFailed') is False and
                     control.get('liveFenceMappings') == 0 and control.get('fenceMappingsCreated') == total_fence_mappings and
-                    control.get('fenceApertureSlots',64) == (128 if args.driver_cpu_slots >= 128 else 64) and
+                    control.get('fenceApertureSlots',64) == (args.driver_fence_slots or (128 if args.driver_cpu_slots >= 128 else 64)) and
                     control.get('fenceUnmapAcknowledgements') == (late_fence_unmaps if late_guest_eof else 0 if early_guest_eof else total_fence_mappings) and
                     cleanup.get('driverCleanupVerified') is True and cleanup.get('failedAdapterQueries') == 0 and
                     len(context_priorities) >= args.minimum_context_priority_changes and
@@ -842,6 +844,7 @@ def main():
                   'minimumVendorResidencyRequestsRequired': args.minimum_vendor_residency_requests,
                   'vendorCpuOptIn': args.driver_cpu, 'nativeVendorCpuLocks': cpu,
                   'configuredCpuApertureSlots': args.driver_cpu_slots, 'guestCpuApertureLayouts': cpu_layouts,
+                  'configuredFenceApertureSlots': args.driver_fence_slots or (128 if args.driver_cpu_slots >= 128 else 64),
                   'directCpuMappingsBeyondDefaultAperture': expanded_cpu,
                   'minimumExpandedCpuMappingsRequired': args.minimum_expanded_cpu_mappings,
                   'expectedCpuSlotQuotaRejections': args.expected_cpu_slot_quota_rejections,
