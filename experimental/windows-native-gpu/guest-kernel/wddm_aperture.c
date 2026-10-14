@@ -17,6 +17,7 @@
 #include <linux/uaccess.h>
 #include "wddm_aperture.h"
 #include "wddm_object_fd.h"
+#include "wddm_native_buffer.h"
 
 #define CPU_STRIDE (1024ULL * 1024)
 #define FENCE_MAGIC 0x31484e46
@@ -225,6 +226,9 @@ static long control_ioctl(struct file *control, unsigned int request, unsigned l
 	if (request == WDDM_SYNC_FILE_NATIVE_CREATE) return native_sync_create(control, pointer, true);
 	if (request == WDDM_SYNC_FILE_NATIVE_RESOLVE) return native_sync_resolve(((struct aperture_owner *)control->private_data)->id, pointer);
 	if (request == WDDM_SYNC_FILE_STATS) return native_sync_stats(pointer);
+	if (request == WDDM_NATIVE_BUFFER_CREATE) return native_buffer_create(((struct aperture_owner *)control->private_data)->id, pointer);
+	if (request == WDDM_NATIVE_BUFFER_INFO) return native_buffer_info(((struct aperture_owner *)control->private_data)->id, pointer);
+	if (request == WDDM_NATIVE_BUFFER_STATS) return native_buffer_stats(pointer);
 	if (request == WDDM_APERTURE_CREATE)
 		return create_lease(control, pointer);
 	if (request == WDDM_APERTURE_REVOKE) {
@@ -369,4 +373,5 @@ static void __exit aperture_exit(void)
 module_init(aperture_init);
 module_exit(aperture_exit);
 MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("Private QEMU WDDM CPU-aperture lease driver; no DRM or graphics ABI");
+MODULE_IMPORT_NS("DMA_BUF");
+MODULE_DESCRIPTION("Private QEMU WDDM memory leases and opt-in native capability buffers; no DRM device");

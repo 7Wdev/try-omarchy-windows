@@ -20,6 +20,12 @@ using HGLRC = HGLRC__*;
 #include <dlfcn.h>
 #include <fcntl.h>
 #include <unistd.h>
+#ifdef WDDM_BRIDGE_RESOURCE_DMABUF_TEST
+#include "guest-kernel/wddm_aperture.h"
+#include <linux/dma-buf.h>
+#include <sys/syscall.h>
+#include <sys/ioctl.h>
+#endif
 #ifdef WDDM_BRIDGE_RESOURCE_FD_RECIPIENT
 #include <poll.h>
 #include <sys/syscall.h>
@@ -28,7 +34,11 @@ using HGLRC = HGLRC__*;
 using Microsoft::WRL::ComPtr;
 
 extern "C" int wddm_mesa_resource_fd_test(EGLDisplay display, EGLContext context) {
+#ifdef WDDM_BRIDGE_RESOURCE_DMABUF_TEST
+    std::puts("MESA_RESOURCE_FD_BEGIN width=3840 height=2160 format=28 native=true dmaBuf=true desktop=false");
+#else
     std::puts("MESA_RESOURCE_FD_BEGIN width=3840 height=2160 format=28 native=true dmaBuf=false desktop=false");
+#endif
     const auto failed = [](const char* stage, HRESULT result) {
         std::printf("MESA_RESOURCE_FD_FAILURE stage=%s status=%08x errno=%d\n", stage,
                     static_cast<unsigned>(result), errno);
@@ -60,8 +70,50 @@ extern "C" int wddm_mesa_resource_fd_test(EGLDisplay display, EGLContext context
     if (FAILED(result)) return failed("ExportTexture", result);
     const auto value = reinterpret_cast<intptr_t>(handle);
     if (value < 0 || value > INT32_MAX) return failed("ExportDescriptor", E_FAIL);
-    const auto fd = static_cast<int>(value);
+    auto fd = static_cast<int>(value);
     if (fcntl(fd, F_GETFD) < 0) return failed("ExportDescriptor", E_FAIL);
+#ifdef WDDM_BRIDGE_RESOURCE_DMABUF_TEST
+    const auto wrap=reinterpret_cast<int(*)(int,std::uint64_t)>(dlsym(RTLD_DEFAULT,"wddm_bridge_export_native_buffer"));
+    const auto bufferInfo=reinterpret_cast<int(*)(int,std::uint64_t*)>(dlsym(RTLD_DEFAULT,"wddm_bridge_native_buffer_info"));
+    const auto bufferStats=reinterpret_cast<int(*)(wddm_native_buffer_stats*)>(dlsym(RTLD_DEFAULT,"wddm_bridge_native_buffer_stats"));
+    wddm_native_buffer_stats baseline{};
+    constexpr std::uint64_t logicalBytes=UINT64_C(3840)*2160*4;
+    if(!wrap || !bufferInfo || !bufferStats || bufferStats(&baseline) || baseline.held || baseline.bytes || baseline.created!=baseline.released) {
+        close(fd); return failed("BufferHooksStats",E_FAIL);
+    }
+    std::uint64_t logical=0; errno=0;
+#ifdef WDDM_BRIDGE_RESOURCE_DMABUF_DISABLED
+    if(bufferInfo(fd,&logical)!=-1 || errno!=EOPNOTSUPP || fcntl(fd,F_GETFD)<0)
+        return failed("DisabledBufferInfo",E_FAIL);
+    errno=0;
+    if(wrap(fd,logicalBytes)!=-1 || errno!=EOPNOTSUPP || fcntl(fd,F_GETFD)<0)
+        return failed("DisabledBufferExport",E_FAIL);
+    if(close(fd) || bufferStats(&baseline) || baseline.held || baseline.bytes || baseline.created || baseline.released)
+        return failed("DisabledBufferCleanup",E_FAIL);
+    std::puts("NATIVE_BUFFER_GPU_DISABLED exportUnsupported=true infoUnsupported=true inputFdRetained=true dmaBufsCreated=0 gpuImport=false desktop=false");
+    return 0;
+#endif
+    if(bufferInfo(fd,&logical)!=-1 || errno!=EINVAL || fcntl(fd,F_GETFD)<0) {
+        close(fd); return failed("RawCapabilityRejected",E_FAIL);
+    }
+    const auto bufferFd=wrap(fd,logicalBytes);
+    const auto originalClosed=close(fd); fd=bufferFd;
+    if(fd<0 || originalClosed) return failed("NativeBufferExport",E_FAIL);
+    if(!(fcntl(fd,F_GETFD)&FD_CLOEXEC) || lseek(fd,0,SEEK_END)!=static_cast<off_t>(logicalBytes) ||
+       lseek(fd,0,SEEK_SET)!=0 || bufferInfo(fd,&logical) || logical!=logicalBytes) {
+        close(fd); return failed("NativeBufferIdentity",E_FAIL);
+    }
+    struct dma_buf_sync cpu{}; cpu.flags=DMA_BUF_SYNC_START|DMA_BUF_SYNC_READ; errno=0;
+    if(syscall(SYS_ioctl,fd,DMA_BUF_IOCTL_SYNC,&cpu)!=-1 || errno!=EOPNOTSUPP) {
+        close(fd); return failed("NativeBufferCpuAccess",E_FAIL);
+    }
+    const auto duplicated=fcntl(fd,F_DUPFD_CLOEXEC,0);
+    const auto bufferClosed=close(fd); fd=duplicated;
+    if(fd<0 || bufferClosed || bufferInfo(fd,&logical) || logical!=logicalBytes) return failed("NativeBufferDupLifetime",E_FAIL);
+    handle=reinterpret_cast<HANDLE>(static_cast<std::intptr_t>(fd));
+    std::printf("NATIVE_BUFFER_GPU_EXPORT dmaBuf=true nativeFdClosed=true duplicateLifetime=true cloexec=true logicalBytes=%llu cpuAccess=false eglImage=false gbm=false\n",
+        (unsigned long long)logicalBytes);
+#endif
     std::puts("MESA_RESOURCE_FD_EXPORTED native=true rawHostHandle=false");
     ComPtr<ID3D12Resource> imported;
     result = native.device->OpenSharedHandle(handle, IID_PPV_ARGS(&imported));
@@ -72,6 +124,13 @@ extern "C" int wddm_mesa_resource_fd_test(EGLDisplay display, EGLContext context
         importedDesc.Format != desc.Format || importedDesc.Flags != desc.Flags)
         return failed("ImportedDescription", E_FAIL);
     std::puts("MESA_RESOURCE_FD_IMPORTED fdClosed=true descriptionMatches=true");
+#ifdef WDDM_BRIDGE_RESOURCE_DMABUF_TEST
+    wddm_native_buffer_stats finished{};
+    if(bufferStats(&finished) || finished.held || finished.bytes || finished.created!=baseline.created+1 ||
+       finished.released!=baseline.released+1) return failed("NativeBufferFdCleanup",E_FAIL);
+    std::printf("NATIVE_BUFFER_GPU_LIFETIME originalNativeFdClosed=true dmaBufFdClosed=true importedGpuReference=true baselineCreated=%llu created=%llu released=%llu held=0 bytes=0\n",
+        (unsigned long long)baseline.created,(unsigned long long)finished.created,(unsigned long long)finished.released);
+#endif
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
     UINT rows = 0; UINT64 rowBytes = 0, totalBytes = 0;
     native.device->GetCopyableFootprints(&desc, 0, 1, 0, &footprint, &rows, &rowBytes, &totalBytes);
@@ -181,7 +240,12 @@ extern "C" int wddm_mesa_resource_fd_test(EGLDisplay display, EGLContext context
             round + 1, round ? "imported" : "source", round ? "true" : "false", round ? "00ff00ff" : "ff0000ff", bands,
             static_cast<unsigned long long>(readbackBytes), static_cast<unsigned long long>(digest));
     }
+#ifdef WDDM_BRIDGE_RESOURCE_DMABUF_TEST
+    std::puts("MESA_RESOURCE_FD_COMPLETE rounds=2 pixelsPerRound=8294400 native=true dmaBuf=true desktop=false");
+    std::puts("NATIVE_BUFFER_GPU_COMPLETE sharedStorage=true sourceReleased=true eglImage=false gbm=false drm=false desktop=false");
+#else
     std::puts("MESA_RESOURCE_FD_COMPLETE rounds=2 pixelsPerRound=8294400 native=true dmaBuf=false desktop=false");
+#endif
 #ifdef WDDM_BRIDGE_RESOURCE_FD_RECIPIENT
     // This recipient holds a real exported kernel capability, but does no
     // GPU work. GPU imports in independent processes require a coordinator.

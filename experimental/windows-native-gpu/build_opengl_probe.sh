@@ -55,8 +55,14 @@ elif [ "${WDDM_BRIDGE_TEST_RESOURCE_FDS:-0}" = 1 ]; then
     source=${WDDM_BRIDGE_MESA_SOURCE:?Supply the pinned Mesa source}
     directx=${WDDM_BRIDGE_DIRECTX_HEADERS:?Supply DirectX-Headers source}
     resource_define=
+    if [ "${WDDM_BRIDGE_TEST_RESOURCE_NATIVE_BUFFERS:-0}" = 1 ]; then
+        resource_define=-DWDDM_BRIDGE_RESOURCE_DMABUF_TEST=1
+        if [ "${WDDM_BRIDGE_TEST_RESOURCE_NATIVE_BUFFERS_DISABLED:-0}" = 1 ]; then
+            resource_define="$resource_define -DWDDM_BRIDGE_RESOURCE_DMABUF_DISABLED=1"
+        fi
+    fi
     if [ "${WDDM_BRIDGE_TEST_RESOURCE_BAD_COLOR:-0}" = 1 ]; then
-        resource_define=-DWDDM_BRIDGE_RESOURCE_FD_BAD_COLOR=1
+        resource_define="$resource_define -DWDDM_BRIDGE_RESOURCE_FD_BAD_COLOR=1"
     fi
     if [ "${WDDM_BRIDGE_TEST_RESOURCE_FULL_READBACK:-0}" = 1 ]; then
         resource_define="$resource_define -DWDDM_BRIDGE_RESOURCE_FD_FULL_READBACK=1"
@@ -68,7 +74,7 @@ elif [ "${WDDM_BRIDGE_TEST_RESOURCE_FDS:-0}" = 1 ]; then
         -isystem "$directx/include" -isystem "$directx/include/wsl/stubs" \
         -isystem "$source/include" -isystem "$source/src/gallium/drivers/d3d12" \
         -c "$base/mesa_resource_fd_probe.cpp" -o "$output/mesa-resource-fd-probe.o"
-    "${CC:-cc}" -std=c11 -O2 -Wall -Wextra -Werror $exit_define -DWDDM_BRIDGE_MESA_RESOURCE_FD_TEST=1 \
+    "${CC:-cc}" -std=c11 -O2 -Wall -Wextra -Werror $exit_define $resource_define -DWDDM_BRIDGE_MESA_RESOURCE_FD_TEST=1 \
         -isystem "$mesa/include" -c "$base/egl_gl_probe.c" -o "$output/egl-gl-probe.o"
     "${CXX:-c++}" -std=c++17 -isystem "$directx/include" -isystem "$directx/include/wsl/stubs" \
         "$output/egl-gl-probe.o" "$output/mesa-resource-fd-probe.o" "$directx/src/dxguids.cpp" \

@@ -1647,6 +1647,9 @@ public:
         return syncFences.syncFile(word,value,fd);
     }
     int resolveSyncFile(int fd,std::uint64_t& value) { return kernelObjects.resolveSyncFile(fd,value); }
+    int exportNativeBuffer(int fd,std::uint64_t bytes) { return kernelObjects.nativeBuffer(fd,bytes); }
+    int nativeBufferInfo(int fd,std::uint64_t& bytes) { return kernelObjects.nativeBufferInfo(fd,bytes); }
+    int nativeBufferStats(wddm_native_buffer_stats& value) { return kernelObjects.nativeBufferStats(value); }
     const void* nativeFenceWord(int fd) {
         std::uint32_t ticket=0;
         if (!kernelObjects.resolve(fd,ticket,WDDM_OBJECT_SYNC)) throw Error(errno);
@@ -1748,6 +1751,35 @@ extern "C" int wddm_bridge_resolve_sync_file(int fd,std::uint64_t* value) {
     catch (const Error& error) { errno=error.number; }
     catch (const std::system_error& error) { errno=error.code().value(); }
     catch (...) { errno=EIO; }
+    return -1;
+}
+extern "C" int wddm_bridge_export_native_buffer(int fd,std::uint64_t bytes) {
+    if(bridgeStopped) { errno=ESHUTDOWN; return -1; }
+    auto& state=bridge(); std::lock_guard<std::mutex> lock(state.guard);
+    if(bridgeStopped) { errno=ESHUTDOWN; return -1; }
+    try { return state.exportNativeBuffer(fd,bytes); }
+    catch(const std::system_error& error) { errno=error.code().value(); }
+    catch(...) { errno=EIO; }
+    return -1;
+}
+extern "C" int wddm_bridge_native_buffer_info(int fd,std::uint64_t* bytes) {
+    if(!bytes) { errno=EINVAL; return -1; }
+    if(bridgeStopped) { errno=ESHUTDOWN; return -1; }
+    auto& state=bridge(); std::lock_guard<std::mutex> lock(state.guard);
+    if(bridgeStopped) { errno=ESHUTDOWN; return -1; }
+    try { return state.nativeBufferInfo(fd,*bytes); }
+    catch(const std::system_error& error) { errno=error.code().value(); }
+    catch(...) { errno=EIO; }
+    return -1;
+}
+extern "C" int wddm_bridge_native_buffer_stats(wddm_native_buffer_stats* info) {
+    if(!info) { errno=EINVAL; return -1; }
+    if(bridgeStopped) { errno=ESHUTDOWN; return -1; }
+    auto& state=bridge(); std::lock_guard<std::mutex> lock(state.guard);
+    if(bridgeStopped) { errno=ESHUTDOWN; return -1; }
+    try { return state.nativeBufferStats(*info); }
+    catch(const std::system_error& error) { errno=error.code().value(); }
+    catch(...) { errno=EIO; }
     return -1;
 }
 extern "C" int wddm_bridge_sync_file_info(wddm_sync_file_stats* info) {

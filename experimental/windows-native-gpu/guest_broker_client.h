@@ -28,7 +28,8 @@ inline std::uint32_t importKind(driver_bridge::Op op) {
 }
 inline bool recoverableObjectError(Operation operation,int error) {
     return (operation==Operation::ResolveObject && (error==EBADF || error==EINVAL || error==EPERM || error==ENODEV)) ||
-           ((operation==Operation::ExportNativeSyncFile || operation==Operation::ResolveNativeSyncFile) &&
+           ((operation==Operation::ExportNativeSyncFile || operation==Operation::ResolveNativeSyncFile ||
+             operation==Operation::ExportNativeBuffer || operation==Operation::NativeBufferInfo) &&
             (error==EBADF || error==EINVAL || error==EPERM || error==ENODEV || error==EOPNOTSUPP || error==ETIMEDOUT || error==EIO || error==ENOMEM || error==ENOSPC)) ||
            (operation==Operation::CreateObject && (error==ENOMEM || error==ENOSPC)) ||
            (operation==Operation::ExportSyncFile && (error==ENOMEM || error==ENOSPC || error==EOPNOTSUPP));
@@ -157,6 +158,28 @@ public:
         auto reply=request(Operation::SyncFileInfo);
         if (!reply.fds.empty()) { disconnect(); failed(EPROTO,"Sync-file info carried descriptors"); }
         return decode<wddm_sync_file_stats>(reply.payload);
+    }
+    Fd nativeBuffer(int fd,std::uint64_t bytes) {
+        auto reply=request(Operation::ExportNativeBuffer,encode(bytes),{fd});
+        if(reply.fds.size()!=1 || !reply.payload.empty()) { disconnect(); failed(EPROTO,"Native buffer export response mismatch"); }
+        return std::move(reply.fds[0]);
+    }
+    std::uint64_t nativeBufferInfo(int fd) {
+        auto reply=request(Operation::NativeBufferInfo,{}, {fd});
+        if(!reply.fds.empty() || reply.payload.size()!=sizeof(std::uint64_t)) { disconnect(); failed(EPROTO,"Native buffer info response shape"); }
+        const auto bytes=decode<std::uint64_t>(reply.payload);
+        if(!bytes || bytes>WDDM_NATIVE_BUFFER_MAX_BYTES) { disconnect(); failed(EPROTO,"Native buffer info response mismatch"); }
+        return bytes;
+    }
+    wddm_native_buffer_stats nativeBufferStats() {
+        auto reply=request(Operation::NativeBufferStats);
+        if(!reply.fds.empty() || reply.payload.size()!=sizeof(wddm_native_buffer_stats)) { disconnect(); failed(EPROTO,"Native buffer stats response shape"); }
+        const auto result=decode<wddm_native_buffer_stats>(reply.payload);
+        if(result.version!=WDDM_APERTURE_VERSION || result.held>WDDM_NATIVE_BUFFER_MAX ||
+           result.bytes>WDDM_NATIVE_BUFFER_TOTAL_BYTES || result.released>result.created) {
+            disconnect(); failed(EPROTO,"Native buffer stats response mismatch");
+        }
+        return result;
     }
     wddm_object_stats objectInfo() {
         auto reply=request(Operation::ObjectInfo);

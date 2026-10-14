@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: MIT */
-/* Private QEMU CPU-aperture ABI. This is not DRM, dma-buf or /dev/dxg. */
+/* Private QEMU bridge ABI. Optional native buffers use genuine DMA-BUF files;
+ * this still does not implement a DRM device or /dev/dxg driver. */
 #ifndef WDDM_APERTURE_H
 #define WDDM_APERTURE_H
 #include <linux/ioctl.h>
@@ -93,4 +94,29 @@ struct wddm_sync_file_native_resolve {
 };
 #define WDDM_SYNC_FILE_NATIVE_CREATE _IOWR('W', 0x4a, struct wddm_sync_file_native_create)
 #define WDDM_SYNC_FILE_NATIVE_RESOLVE _IOWR('W', 0x4b, struct wddm_sync_file_native_resolve)
+
+/* Opt-in opaque native-resource DMA-BUF. bytes is a bounded logical extent,
+ * not a physical layout/pitch, CPU mapping or foreign DMA attachment promise.
+ * Only the same privileged controller may wrap/query its actual resource FD. */
+#define WDDM_NATIVE_BUFFER_MAX 64
+#define WDDM_NATIVE_BUFFER_MAX_BYTES (256ULL * 1024 * 1024)
+#define WDDM_NATIVE_BUFFER_TOTAL_BYTES (1024ULL * 1024 * 1024)
+struct wddm_native_buffer_create {
+	__u32 version, flags;
+	__s32 native_fd, fd;
+	__u64 bytes, reserved;
+};
+struct wddm_native_buffer_info {
+	__u32 version, flags;
+	__s32 fd;
+	__u32 reserved;
+	__u64 bytes;
+};
+struct wddm_native_buffer_stats {
+	__u32 version, held;
+	__u64 bytes, created, released;
+};
+#define WDDM_NATIVE_BUFFER_CREATE _IOWR('W', 0x4c, struct wddm_native_buffer_create)
+#define WDDM_NATIVE_BUFFER_INFO _IOWR('W', 0x4d, struct wddm_native_buffer_info)
+#define WDDM_NATIVE_BUFFER_STATS _IOWR('W', 0x4e, struct wddm_native_buffer_stats)
 #endif

@@ -10,6 +10,8 @@ struct wddm_object {
 	u32 ticket, kind;
 	bool valid, published;
 };
+/* Defined by the optional DMA-BUF implementation after this include. */
+static struct file *object_fd_get(int fd);
 static DEFINE_MUTEX(object_lock);
 static LIST_HEAD(wddm_objects);
 static u64 object_cookie, objects_created, objects_closed, objects_revoked;
@@ -93,9 +95,8 @@ static long object_ioctl(u64 owner, unsigned int request, void __user *pointer)
 		struct wddm_object_resolve arg;
 		if (copy_from_user(&arg, pointer, sizeof(arg))) return -EFAULT;
 		if (arg.version != WDDM_APERTURE_VERSION || (arg.kind != WDDM_OBJECT_SYNC && arg.kind != WDDM_OBJECT_RESOURCE) || arg.fd < 0 || arg.ticket || arg.cookie || arg.reserved) return -EINVAL;
-		file = fget(arg.fd);
-		if (!file) return -EBADF;
-		if (file->f_op != &object_fops) { fput(file); return -EINVAL; }
+		file = object_fd_get(arg.fd);
+		if (IS_ERR(file)) return PTR_ERR(file);
 		object = file->private_data;
 		mutex_lock(&object_lock);
 		if (!object->valid) result = -ENODEV;

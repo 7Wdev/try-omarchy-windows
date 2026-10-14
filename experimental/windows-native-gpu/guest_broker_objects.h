@@ -47,6 +47,27 @@ public:
             throw std::system_error(EPROTO,std::generic_category(),"Kernel sync-file lineage mismatch");
         return {Fd(value.native_fd),value.value};
     }
+    Fd nativeBuffer(int fd,std::uint64_t bytes) {
+        wddm_native_buffer_create value{}; value.version=WDDM_APERTURE_VERSION; value.native_fd=fd; value.bytes=bytes;
+        call(WDDM_NATIVE_BUFFER_CREATE,&value); Fd descriptor(value.fd);
+        if(value.version!=WDDM_APERTURE_VERSION || descriptor.get()<0 || value.native_fd!=fd || value.bytes!=bytes || value.flags || value.reserved)
+            throw std::system_error(EPROTO,std::generic_category(),"Kernel native buffer publication mismatch");
+        return descriptor;
+    }
+    std::uint64_t nativeBufferInfo(int fd) {
+        wddm_native_buffer_info value{}; value.version=WDDM_APERTURE_VERSION; value.fd=fd;
+        call(WDDM_NATIVE_BUFFER_INFO,&value);
+        if(value.version!=WDDM_APERTURE_VERSION || value.fd!=fd || !value.bytes || value.bytes>WDDM_NATIVE_BUFFER_MAX_BYTES || value.flags || value.reserved)
+            throw std::system_error(EPROTO,std::generic_category(),"Kernel native buffer info mismatch");
+        return value.bytes;
+    }
+    wddm_native_buffer_stats nativeBufferStats() {
+        wddm_native_buffer_stats value{}; value.version=WDDM_APERTURE_VERSION;
+        call(WDDM_NATIVE_BUFFER_STATS,&value);
+        if(value.version!=WDDM_APERTURE_VERSION || value.held>WDDM_NATIVE_BUFFER_MAX || value.bytes>WDDM_NATIVE_BUFFER_TOTAL_BYTES || value.released>value.created)
+            throw std::system_error(EPROTO,std::generic_category(),"Kernel native buffer stats mismatch");
+        return value;
+    }
     ObjectRef reap() {
         wddm_object_reap value{}; value.version=WDDM_APERTURE_VERSION;
         try { call(WDDM_OBJECT_REAP,&value); }

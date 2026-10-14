@@ -109,6 +109,21 @@ class OpenGlPackaging(unittest.TestCase):
         self.assertFalse(manifest['nativeSyncFilesEnabled'])
         self.assertNotIn(b'native-sync-files-required',gzip.decompress(self.output.read_bytes()))
 
+    def test_native_buffers_require_module_and_opt_in(self):
+        with self.assertRaises(SystemExit): self.run_packer('--guest-native-buffers')
+        self.assertFalse(self.output.exists())
+        self.run_packer(*self.broker_kernel_arguments(),'--guest-native-buffers')
+        manifest=json.loads(self.output.with_suffix('.manifest.json').read_text())
+        self.assertTrue(manifest['nativeBuffersEnabled'])
+        self.assertFalse(manifest['nativeSyncFilesEnabled'])
+        self.assertIn(b'native-buffers-required',gzip.decompress(self.output.read_bytes()))
+
+    def test_native_buffers_are_disabled_in_default_images(self):
+        self.run_packer(*self.broker_kernel_arguments())
+        manifest=json.loads(self.output.with_suffix('.manifest.json').read_text())
+        self.assertFalse(manifest['nativeBuffersEnabled'])
+        self.assertNotIn(b'native-buffers-required',gzip.decompress(self.output.read_bytes()))
+
     def test_graphics_broker_elf_is_validated(self):
         bad=self.base/'invalid-graphics-broker'; bad.write_bytes(b'not an ELF')
         with self.assertRaises(SystemExit):

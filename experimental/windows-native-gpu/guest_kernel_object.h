@@ -87,6 +87,41 @@ public:
         if (arg.native_fd<0 || arg.value==UINT64_MAX || arg.reserved || arg.flags) { errno=EPROTO; return -1; }
         value=arg.value; return arg.native_fd;
     }
+    int nativeBuffer(int fd,std::uint64_t bytes) {
+        if(!available()) return -1;
+        if(guest_broker::clientEnabled()) {
+            try { return guest_broker::client().nativeBuffer(fd,bytes).release(); }
+            catch(const std::system_error& error) { errno=error.code().value(); return -1; }
+        }
+        wddm_native_buffer_create arg{}; arg.version=WDDM_APERTURE_VERSION; arg.native_fd=fd; arg.bytes=bytes;
+        if(syscall(SYS_ioctl,control,WDDM_NATIVE_BUFFER_CREATE,&arg)) return -1;
+        guest_broker::Fd descriptor(arg.fd);
+        if(descriptor.get()<0 || arg.native_fd!=fd || arg.bytes!=bytes || arg.flags || arg.reserved) { errno=EPROTO; return -1; }
+        return descriptor.release();
+    }
+    int nativeBufferInfo(int fd,std::uint64_t& bytes) {
+        if(!available()) return -1;
+        if(guest_broker::clientEnabled()) {
+            try { bytes=guest_broker::client().nativeBufferInfo(fd); return 0; }
+            catch(const std::system_error& error) { errno=error.code().value(); return -1; }
+        }
+        wddm_native_buffer_info arg{}; arg.version=WDDM_APERTURE_VERSION; arg.fd=fd;
+        if(syscall(SYS_ioctl,control,WDDM_NATIVE_BUFFER_INFO,&arg)) return -1;
+        if(arg.fd!=fd || !arg.bytes || arg.bytes>WDDM_NATIVE_BUFFER_MAX_BYTES || arg.flags || arg.reserved) { errno=EPROTO; return -1; }
+        bytes=arg.bytes; return 0;
+    }
+    int nativeBufferStats(wddm_native_buffer_stats& value) {
+        if(!available()) return -1;
+        if(guest_broker::clientEnabled()) {
+            try { value=guest_broker::client().nativeBufferStats(); return 0; }
+            catch(const std::system_error& error) { errno=error.code().value(); return -1; }
+        }
+        wddm_native_buffer_stats arg{}; arg.version=WDDM_APERTURE_VERSION;
+        if(syscall(SYS_ioctl,control,WDDM_NATIVE_BUFFER_STATS,&arg)) return -1;
+        if(arg.version!=WDDM_APERTURE_VERSION || arg.held>WDDM_NATIVE_BUFFER_MAX || arg.bytes>WDDM_NATIVE_BUFFER_TOTAL_BYTES ||
+           arg.released>arg.created) { errno=EPROTO; return -1; }
+        value=arg; return 0;
+    }
     int reap(std::uint32_t& ticket, std::uint32_t* kind = nullptr) {
         if (guest_broker::clientEnabled()) {
             if (!remoteStarted) return 0;

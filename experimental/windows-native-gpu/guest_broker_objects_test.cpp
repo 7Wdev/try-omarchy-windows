@@ -23,6 +23,9 @@ static std::vector<std::uint8_t> receipt(Op op,std::uint32_t id,const std::vecto
     auto bytes=packet(op,id,encode(Reply{})); bytes.insert(bytes.end(),data.begin(),data.end()); return bytes;
 }
 struct ObjectMock {
+    Fd nativeBuffer(int,std::uint64_t) { throw std::system_error(EOPNOTSUPP,std::generic_category(),"No native DMA-BUF in mock"); }
+    std::uint64_t nativeBufferInfo(int) { throw std::system_error(EOPNOTSUPP,std::generic_category(),"No native DMA-BUF in mock"); }
+    wddm_native_buffer_stats nativeBufferStats() { return {WDDM_APERTURE_VERSION,0,0,0,0}; }
     std::pair<Fd,std::uint64_t> resolveSyncFile(int) { throw std::system_error(EINVAL,std::generic_category(),"No real sync-file in mock"); }
     struct Record { Fd watch; ObjectRef ref; std::uint64_t identity; };
     std::map<std::uint32_t,Record> records;
@@ -169,6 +172,14 @@ static void recipientAfterProducer() {
             Fd foreign(open("/dev/null",O_RDONLY|O_CLOEXEC));
             denied([&]{client.resolveObject(foreign.get(),WDDM_OBJECT_RESOURCE);},EBADF);
             CHECK(client.resolveObject(cap.fds[0].get(),WDDM_OBJECT_RESOURCE).ticket==11);
+            denied([&]{client.nativeBuffer(cap.fds[0].get(),4096);},EOPNOTSUPP);
+            denied([&]{client.nativeBuffer(foreign.get(),4096);},EBADF);
+            denied([&]{client.nativeBuffer(cap.fds[0].get(),0);},EINVAL);
+            denied([&]{client.nativeBuffer(cap.fds[0].get(),WDDM_NATIVE_BUFFER_MAX_BYTES+1);},EINVAL);
+            denied([&]{client.nativeBufferInfo(cap.fds[0].get());},EOPNOTSUPP);
+            const auto buffers=client.nativeBufferStats();
+            CHECK(!buffers.held && !buffers.bytes && !buffers.created && !buffers.released);
+            CHECK(fcntl(cap.fds[0].get(),F_GETFD)>=0); // failed SCM_RIGHTS requests preserve caller ownership
             client.driver(packet(Op::QuerySharedResourceInfo,11,encode(SharedResourceQueryDesc{2,0})));
             const auto recipient=fork(); CHECK(recipient>=0);
             if (!recipient) { poll(nullptr,0,400); _exit(0); }

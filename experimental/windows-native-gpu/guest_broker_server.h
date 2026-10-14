@@ -126,7 +126,8 @@ template<class Native,class Authority,class ObjectAuthority> int serve(Peer& pee
             try {
                 const auto operation=message.frame.operation;
                 if (operation!=Operation::DriverCall && operation!=Operation::ResolveObject &&
-                    operation!=Operation::ExportNativeSyncFile && operation!=Operation::ResolveNativeSyncFile && !message.fds.empty())
+                    operation!=Operation::ExportNativeSyncFile && operation!=Operation::ResolveNativeSyncFile &&
+                    operation!=Operation::ExportNativeBuffer && operation!=Operation::NativeBufferInfo && !message.fds.empty())
                     throw std::system_error(EPROTO,std::generic_category(),"Unsolicited broker descriptors");
                 if (operation == Operation::Hello) {
                     if (!message.payload.empty()) throw std::system_error(EINVAL,std::generic_category(),"Broker hello payload");
@@ -167,6 +168,22 @@ template<class Native,class Authority,class ObjectAuthority> int serve(Peer& pee
                     auto result=objectKernel.resolveSyncFile(message.fds[0].get());
                     (void)objects.resolve(result.first.get(),WDDM_OBJECT_SYNC,objectKernel);
                     peer.send(operation,message.frame.sequence,encode(result.second), {result.first.get()});
+                } else if (operation == Operation::ExportNativeBuffer) {
+                    if(message.fds.size()!=1) throw std::system_error(EPROTO,std::generic_category(),"Native buffer export requires one resource FD");
+                    const auto bytes=decode<std::uint64_t>(message.payload); expectedObjectError=true;
+                    if(!bytes || bytes>WDDM_NATIVE_BUFFER_MAX_BYTES) throw std::system_error(EINVAL,std::generic_category(),"Invalid native buffer logical extent");
+                    (void)objects.resolve(message.fds[0].get(),WDDM_OBJECT_RESOURCE,objectKernel);
+                    auto fd=objectKernel.nativeBuffer(message.fds[0].get(),bytes);
+                    peer.send(operation,message.frame.sequence,{}, {fd.get()});
+                } else if (operation == Operation::NativeBufferInfo) {
+                    if(message.fds.size()!=1 || !message.payload.empty()) throw std::system_error(EPROTO,std::generic_category(),"Native buffer info requires exactly one FD");
+                    expectedObjectError=true;
+                    const auto bytes=objectKernel.nativeBufferInfo(message.fds[0].get());
+                    (void)objects.resolve(message.fds[0].get(),WDDM_OBJECT_RESOURCE,objectKernel);
+                    peer.send(operation,message.frame.sequence,encode(bytes));
+                } else if (operation == Operation::NativeBufferStats) {
+                    if(!message.payload.empty()) throw std::system_error(EPROTO,std::generic_category(),"Native buffer stats payload");
+                    peer.send(operation,message.frame.sequence,encode(objectKernel.nativeBufferStats()));
                 } else if (operation == Operation::ObjectInfo) {
                     if (!message.payload.empty()) throw std::system_error(EPROTO,std::generic_category(),"Object info payload");
                     peer.send(operation,message.frame.sequence,encode(objectKernel.info()));

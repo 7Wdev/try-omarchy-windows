@@ -21,22 +21,27 @@ def uniform_digest(rgba):
     return f'{value:016x}'
 
 
-def validate_resource_fds(report, guest, records, *, full_readback=False, transport='virtio-port', retained_recipient=False):
+def validate_resource_fds(report, guest, records, *, full_readback=False, transport='virtio-port', retained_recipient=False, native_buffers=False):
     require(type(full_readback) is bool, 'Full-readback audit selection must be explicit')
     require(type(retained_recipient) is bool and (not retained_recipient or transport=='authenticated-broker'),
             'Retained-recipient audit requires the explicit broker transport')
+    require(type(native_buffers) is bool and (not native_buffers or
+            (transport=='authenticated-broker' and not retained_recipient and not full_readback)),
+            'Native buffer audit requires the explicit bounded broker profile')
     allocation_slots = 256 if full_readback else 128
     bands, readback_bytes = (1, 33177600) if full_readback else (5, 7864320)
-    result = validate_kernel_aperture(report, guest, records, allocation_slots=allocation_slots, transport=transport)
+    result = validate_kernel_aperture(report, guest, records, allocation_slots=allocation_slots, transport=transport,
+        contract_checks=583 if native_buffers else 581)
     lines = guest.splitlines()
     def exactly(line):
         require(lines.count(line) == 1, 'Missing or duplicated resource-FD receipt: ' + line)
         return lines.index(line)
-    start = exactly('MESA_RESOURCE_FD_BEGIN width=3840 height=2160 format=28 native=true dmaBuf=false desktop=false')
+    buffer_label = 'true' if native_buffers else 'false'
+    start = exactly(f'MESA_RESOURCE_FD_BEGIN width=3840 height=2160 format=28 native=true dmaBuf={buffer_label} desktop=false')
     created = exactly('MESA_RESOURCE_FD_TEXTURE_CREATED width=3840 height=2160 shared=true')
     exported = exactly('MESA_RESOURCE_FD_EXPORTED native=true rawHostHandle=false')
     imported = exactly('MESA_RESOURCE_FD_IMPORTED fdClosed=true descriptionMatches=true')
-    complete = exactly('MESA_RESOURCE_FD_COMPLETE rounds=2 pixelsPerRound=8294400 native=true dmaBuf=false desktop=false')
+    complete = exactly(f'MESA_RESOURCE_FD_COMPLETE rounds=2 pixelsPerRound=8294400 native=true dmaBuf={buffer_label} desktop=false')
     exactly('RESOURCE_FD_CONTRACT_PASS checks=15 held=0 active=0 typeIsolation=true ownerIsolation=true dupLifetime=true dmaBuf=false')
     if full_readback:
         exactly('MESA_RESOURCE_FD_READBACK_PROFILE fullBuffer=true bandsPerRound=1 bytes=33177600')

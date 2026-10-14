@@ -60,7 +60,7 @@ static GLuint shader(GLenum type, const char* source) {
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
-#if defined(WDDM_BRIDGE_EGL_NATIVE_SYNC_TEST) && !defined(WDDM_BRIDGE_EGL_NATIVE_SYNC_DISABLED)
+#if (defined(WDDM_BRIDGE_EGL_NATIVE_SYNC_TEST) && !defined(WDDM_BRIDGE_EGL_NATIVE_SYNC_DISABLED)) || defined(WDDM_BRIDGE_RESOURCE_DMABUF_TEST)
     if (setenv("D3D12_EXPERIMENTAL_NATIVE_SYNC_FILE", "true", 1)) return fail("NativeSyncOptIn");
 #endif
 #ifdef WDDM_BRIDGE_MESA_FENCE_FD_TEST
