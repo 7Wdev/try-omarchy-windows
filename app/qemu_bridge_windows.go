@@ -49,9 +49,12 @@ func acceptQEMUBridge(listener net.Listener, name string, limit int32, serve fun
 
 func lifecycleConnectionFromQEMU(conn net.Conn) bool {
 	peer, err := loopbackPeerPID(conn)
-	if err != nil {
-		return false
-	}
+	return err == nil && lifecyclePIDFromQEMU(peer)
+}
+
+// lifecyclePIDFromQEMU checks an already looked-up peer, so the lifecycle
+// listener applies its QEMU and same-user checks to one lookup.
+func lifecyclePIDFromQEMU(peer uint32) bool {
 	deadline := time.Now().Add(500 * time.Millisecond)
 	return lifecyclePeerMatches(peer, qemuPid.Load, func() bool {
 		if time.Now().After(deadline) {

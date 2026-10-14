@@ -225,7 +225,11 @@ type displayWindowState struct {
 	target         *windowPlacement // where the window belongs (see nextPlacementStep)
 	themeSet       bool             // the title bar theme below was applied or refused
 	darkTitle      bool
-	topologyRepair bool // retained while minimized or being dragged
+	topologyRepair bool             // retained while minimized or being dragged
+	fullscreen     bool             // QEMU's Ctrl+Alt+F fullscreen, seen on the last pass
+	beforeFull     *windowPlacement // what to put back when fullscreen ends
+	previous       *windowPlacement // last before its most recent save
+	savedAt        time.Time
 }
 
 func (state *displayWindowState) repairTopology(now *windowPlacement, dragging bool, monitors []hostMonitor, apply func(*windowPlacement) bool) *windowPlacement {
@@ -337,7 +341,7 @@ func enumTitleProc(hwnd, _ uintptr) uintptr {
 	if enumTitleTopologyChanged {
 		state.topologyRepair = true
 	}
-	if !enumTitleFullscreen {
+	if !enumTitleFullscreen && !state.fullscreen {
 		if restored := state.repairTopology(capturePlacement(hwnd), beingDragged(hwnd), enumTitleMonitorDetails, func(p *windowPlacement) bool {
 			return correctPlacement(hwnd, p)
 		}); restored != nil {
@@ -361,11 +365,24 @@ func enumTitleProc(hwnd, _ uintptr) uintptr {
 		}
 	}
 	if !enumTitleFullscreen {
+		fullscreen := displayWindowFullscreen(hwnd)
+		if fullscreen && !state.fullscreen {
+			state.beforeFull = placementBeforeFullscreen(state.last, state.previous, time.Since(state.savedAt))
+		}
+		restore, handled := fullscreenPlacement(state.fullscreen, fullscreen, state.beforeFull)
+		state.fullscreen = fullscreen
+		if handled {
+			if restore != nil && applyPlacement(hwnd, restore) {
+				state.target = restore
+			}
+			return 1
+		}
 		now := capturePlacement(hwnd)
 		switch nextPlacementStep(now, state.last, state.target, takeUserMoved(hwnd), beingDragged(hwnd), !guestFollowsWindow.Load()) {
 		case placementSave:
 			now.SavedAt = time.Now()
 			if saveDisplayPlacement(enumTitleDir, state.index, *now) == nil {
+				state.previous, state.savedAt = state.last, now.SavedAt
 				state.last = now
 			}
 			state.target = now

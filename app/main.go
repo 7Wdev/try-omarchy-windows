@@ -137,6 +137,15 @@ func finishSetupCancellation(cfg *config, err error) bool {
 }
 
 func main() {
+	// Windows runs this for an allowed link. The link is untrusted text, so
+	// it is never mixed with the ordinary flags; see parseURLActivation.
+	if dir, url, activation, ok := parseURLActivation(os.Args[1:]); activation {
+		if !ok {
+			errorBox(uiText("control.open_url.usage"))
+			os.Exit(2)
+		}
+		os.Exit(sendOpenURL(dir, url))
+	}
 	cfg := &config{}
 	removeDataOnCancel := false
 	defaultDir := filepath.Join(os.Getenv("LOCALAPPDATA"), defaultDataDirectoryName)
@@ -1629,7 +1638,20 @@ func runLifecycleListener() {
 			case gate <- struct{}{}:
 				go func() {
 					defer func() { <-gate }()
-					serveLifecycle(c, lifecycleConnectionFromQEMU, func(line string, c net.Conn) {
+					serveLifecycle(c, loopbackPeerPID, lifecyclePIDFromQEMU, processFromSameUser, func(line string, c net.Conn) {
+						if url, ok := parseOpenURLLine(line); ok {
+							c.SetWriteDeadline(time.Now().Add(3 * time.Second))
+							err := errors.New(uiText("error.links.not_ready"))
+							if a := theAgent.Load(); a != nil {
+								err = a.requestURLOpen(url)
+							}
+							if err != nil {
+								fmt.Fprintln(c, "error: "+err.Error())
+							} else {
+								fmt.Fprintln(c, "ok: forwarded")
+							}
+							return
+						}
 						switch line {
 						case "shutdown":
 							guestCompositorHealth.stop()
@@ -1778,6 +1800,47 @@ func compactAfterShutdown(cfg *config) {
 	} else {
 		infoBox(uiText("reclaim.done_unknown"))
 	}
+}
+
+// sendOpenURL hands a link to the running launcher, which forwards it to
+// Omarchy. It never starts Omarchy, and sends the link only to a listener of
+// this Windows user in this session.
+func sendOpenURL(dir, url string) int {
+	prefs, err := loadApprovedURLSchemes(dir)
+	if err != nil {
+		errorBox(uiTextWith("control.open_url.failed", map[string]string{"error": uiText("error.links.read_failed")}))
+		return 1
+	}
+	url, ok := validOpenURL(url, prefs.Schemes)
+	if !ok {
+		errorBox(uiTextWith("control.open_url.failed", map[string]string{"error": uiText("error.links.not_allowed")}))
+		return 1
+	}
+	c, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", lifecyclePort), 3*time.Second)
+	if err != nil {
+		errorBox(uiText("control.not_running"))
+		return 1
+	}
+	defer c.Close()
+	if !connectionFromSameUser(c) {
+		errorBox(uiTextWith("control.open_url.failed", map[string]string{"error": uiText("error.links.unverified")}))
+		return 1
+	}
+	c.SetDeadline(time.Now().Add(5 * time.Second))
+	if _, err := io.WriteString(c, openURLLine(url)); err != nil {
+		errorBox(uiTextWith("control.error", map[string]string{"error": err.Error()}))
+		return 1
+	}
+	reply, err := bufio.NewReader(io.LimitReader(c, 4096)).ReadString('\n')
+	if err != nil {
+		errorBox(uiText("control.open_url.unconfirmed"))
+		return 1
+	}
+	if !strings.HasPrefix(reply, "ok: ") {
+		errorBox(uiTextWith("control.open_url.failed", map[string]string{"error": strings.TrimSpace(strings.TrimPrefix(reply, "error: "))}))
+		return 1
+	}
+	return 0
 }
 
 // sendLifecycleCommand hands one line to the running launcher on loopback.
