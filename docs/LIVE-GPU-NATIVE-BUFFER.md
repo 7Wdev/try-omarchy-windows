@@ -88,6 +88,14 @@ auditors check actual guest/native receipts, independent pixels and complete
 cleanup. Corruption tests reject missing/reordered ownership evidence, wrong
 pixels, unretired commands, leaks and the mismatched-kernel launch.
 
+The subsequent namespace declaration compatibility fix (`755614a`) builds on
+both CI's 6.8.0-147-generic headers and the tested guest's 7.2.8 headers. It emits
+the same `import_ns=DMA_BUF` metadata using the stable `MODULE_INFO` form.
+[The rebuilt guest module](evidence/NATIVE-BUFFER-BUILD-COMPAT-2026-10-14.json)
+has identical bytes in every executable section to the hardware-tested module;
+the original capture hashes remain intact. This metadata-only fix was compiled
+and compared, rather than represented as another hardware run.
+
 `WDDM_BRIDGE_TEST_RESOURCE_NATIVE_BUFFERS_DISABLED=1` builds the explicit
 disabled control. Pair it with a module loaded without native buffers: export
 and info must return unsupported, input ownership must survive both failures,
