@@ -273,6 +273,18 @@ func fullscreenPlacement(wasFullscreen, fullscreen bool, last *windowPlacement) 
 	return nil, false
 }
 
+// placementBeforeFullscreen picks the placement to put back after fullscreen.
+// SDL un-maximizes a maximized window on its way into fullscreen, and that
+// step can be saved like a user's change just before the window covers the
+// screen. A save that recent belongs to the transition, so the placement it
+// replaced is the one to restore.
+func placementBeforeFullscreen(last, previous *windowPlacement, sinceSave time.Duration) *windowPlacement {
+	if previous != nil && sinceSave >= 0 && sinceSave < 2*time.Second {
+		return previous
+	}
+	return last
+}
+
 type placementStep int
 
 const (
