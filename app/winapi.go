@@ -226,6 +226,7 @@ type displayWindowState struct {
 	themeSet       bool             // the title bar theme below was applied or refused
 	darkTitle      bool
 	topologyRepair bool // retained while minimized or being dragged
+	fullscreen     bool // QEMU's Ctrl+Alt+F fullscreen, seen on the last pass
 }
 
 func (state *displayWindowState) repairTopology(now *windowPlacement, dragging bool, monitors []hostMonitor, apply func(*windowPlacement) bool) *windowPlacement {
@@ -337,7 +338,7 @@ func enumTitleProc(hwnd, _ uintptr) uintptr {
 	if enumTitleTopologyChanged {
 		state.topologyRepair = true
 	}
-	if !enumTitleFullscreen {
+	if !enumTitleFullscreen && !state.fullscreen {
 		if restored := state.repairTopology(capturePlacement(hwnd), beingDragged(hwnd), enumTitleMonitorDetails, func(p *windowPlacement) bool {
 			return correctPlacement(hwnd, p)
 		}); restored != nil {
@@ -361,6 +362,15 @@ func enumTitleProc(hwnd, _ uintptr) uintptr {
 		}
 	}
 	if !enumTitleFullscreen {
+		fullscreen := displayWindowFullscreen(hwnd)
+		restore, handled := fullscreenPlacement(state.fullscreen, fullscreen, state.last)
+		state.fullscreen = fullscreen
+		if handled {
+			if restore != nil && applyPlacement(hwnd, restore) {
+				state.target = restore
+			}
+			return 1
+		}
 		now := capturePlacement(hwnd)
 		switch nextPlacementStep(now, state.last, state.target, takeUserMoved(hwnd), beingDragged(hwnd), !guestFollowsWindow.Load()) {
 		case placementSave:
