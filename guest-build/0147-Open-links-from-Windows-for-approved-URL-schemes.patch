@@ -1,0 +1,1127 @@
+From 40db09fd05ccd16dc61523d483948e909d3087fa Mon Sep 17 00:00:00 2001
+From: seunghan Kim <13017634+seunghan91@users.noreply.github.com>
+Date: Tue, 13 Oct 2026 17:50:29 +0900
+Subject: [PATCH] Open links from Windows for approved URL schemes
+
+---
+ .../usr/local/lib/try-omarchy/agent           |  44 +-
+ .../usr/local/lib/try-omarchy/url-schemes     | 383 ++++++++++++++++
+ guest/scripts/finalize-rootfs.sh              |   4 +-
+ guest/tests/test_aquamarine_contract.py       |   2 +-
+ guest/tests/test_battery_details.py           |   2 +-
+ guest/tests/test_clipboard_pull.py            |   2 +-
+ guest/tests/test_compositor_health.py         |   2 +-
+ guest/tests/test_guest_qol.py                 |   2 +-
+ guest/tests/test_live_update.py               |   2 +-
+ guest/tests/test_native_nightlight.py         |   2 +-
+ guest/tests/test_notification_privacy.py      |   2 +-
+ guest/tests/test_overlay_scripts.py           |  10 +
+ guest/tests/test_qt612_palette.py             |   2 +-
+ guest/tests/test_snapper_guest.py             |   2 +-
+ guest/tests/test_url_schemes.py               | 409 ++++++++++++++++++
+ guest/tests/test_windows_volume_sync.py       |   2 +-
+ guest/tests/verify.py                         |   3 +-
+ 17 files changed, 858 insertions(+), 17 deletions(-)
+ create mode 100755 guest/factory-overlay/usr/local/lib/try-omarchy/url-schemes
+ create mode 100644 guest/tests/test_url_schemes.py
+
+diff --git a/guest/factory-overlay/usr/local/lib/try-omarchy/agent b/guest/factory-overlay/usr/local/lib/try-omarchy/agent
+index 127e893..c5aab74 100755
+--- a/guest/factory-overlay/usr/local/lib/try-omarchy/agent
++++ b/guest/factory-overlay/usr/local/lib/try-omarchy/agent
+@@ -11,16 +11,24 @@ host=${TRY_OMARCHY_AGENT_HOST:-10.0.2.2}
+ port=${TRY_OMARCHY_AGENT_PORT:-4451}
+ set_time=${TRY_OMARCHY_SET_TIME:-date -s}
+ fill_dir=${TRY_OMARCHY_FILL_DIR:-/var/tmp}
+-version=5
++version=6
+ health_probe=${TRY_OMARCHY_HEALTH_PROBE:-/usr/local/lib/try-omarchy/compositor-health}
+ app_sync=${TRY_OMARCHY_APP_SYNC:-/usr/local/lib/try-omarchy/approved-apps-sync}
++url_schemes=${TRY_OMARCHY_URL_SCHEMES:-/usr/local/lib/try-omarchy/url-schemes}
++url_state=${TRY_OMARCHY_URL_STATE:-/run/try-omarchy/url-schemes-approved}
++write_lock=${TRY_OMARCHY_AGENT_WRITE_LOCK:-/run/try-omarchy/agent-write.lock}
+ max_drift=2
+ # Space left free while zero-filling, so running programs keep working.
+ fill_reserve_mib=512
+ 
+ reply() {
+   # The network loop keeps the channel on fd 3; the test entry point has none.
+-  if [[ -e /dev/fd/3 ]]; then printf '%s\n' "$1" >&3; else printf '%s\n' "$1"; fi
++  # The health loop writes to the same socket, so one lock keeps lines whole.
++  if [[ -e /dev/fd/3 ]]; then
++    { flock 9; printf '%s\n' "$1" >&3; } 9>>"$write_lock"
++  else
++    printf '%s\n' "$1"
++  fi
+ }
+ 
+ # zero_fill writes zeros over the free space of the root filesystem, minus a
+@@ -59,7 +67,7 @@ zero_fill() {
+ }
+ 
+ handle() {
+-  local line=$1 target now drift
++  local line=$1 target now drift report
+   case $line in
+     apps\ *)
+       if [[ -n ${TRY_OMARCHY_APP_SYNC:-} ]]; then
+@@ -68,6 +76,30 @@ handle() {
+         printf '%s\n' "${line#apps }" | runuser -u omarchy -- "$app_sync" || echo 'could not sync approved Windows apps' >&2
+       fi
+       ;;
++    url-approved\ *)
++      # Links stay disabled unless this connection's latest snapshot installed.
++      if printf '%s\n' "${line#url-approved }" | timeout 5 "$url_schemes" approve 3>&-; then
++        report=$(timeout 20 "$url_schemes" report 3>&-)
++        if [[ $report == 'url-schemes '* && ${#report} -le 8192 && ${report#url-schemes } =~ ^[A-Za-z0-9+/=]+$ ]]; then
++          reply "$report"
++        fi
++      else
++        rm -f -- "$url_state"
++        echo 'could not apply approved link types' >&2
++      fi
++      ;;
++    open-url\ *)
++      printf '%s\n' "${line#open-url }" | timeout 5 "$url_schemes" open 3>&- ||
++        echo 'did not open a link from Windows' >&2
++      ;;
++    url-approved|url-approved[[:space:]]*)
++      # A missing or malformed snapshot still replaces the previous one: disabled.
++      rm -f -- "$url_state"
++      echo 'could not apply approved link types' >&2
++      ;;
++    open-url|open-url[[:space:]]*)
++      echo 'did not open a link from Windows' >&2
++      ;;
+     battery-details\ *)
+       printf '%s\n' "${line#battery-details }" | /usr/local/lib/try-omarchy/battery-apply --details ||
+         echo 'could not apply host battery details' >&2
+@@ -101,16 +133,20 @@ if [[ ${1:-} == --handle ]]; then
+   exit 0
+ fi
+ 
++mkdir -p -- "${write_lock%/*}" 2>/dev/null || true
+ # A restarted agent may reconnect to an older launcher with no details message.
+ /usr/local/lib/try-omarchy/battery-apply --offline || true
+ while :; do
++  # Every connection starts with links disabled until the launcher sends approvals.
++  rm -f -- "$url_state"
+   exec 3<>"/dev/tcp/$host/$port" 2>/dev/null || { sleep 10; continue; }
+   printf 'hello %s\n' "$version" >&3
+   # Probe separately so clock/app handling and disk reclaim cannot hold up
+   # health reports. The helper bounds Hyprland IPC to two seconds.
+   (
+     while :; do
+-      "$health_probe" >&3
++      status=$("$health_probe")
++      [[ -n $status ]] && reply "$status"
+       sleep 5
+     done
+   ) &
+diff --git a/guest/factory-overlay/usr/local/lib/try-omarchy/url-schemes b/guest/factory-overlay/usr/local/lib/try-omarchy/url-schemes
+new file mode 100755
+index 0000000..db98fcc
+--- /dev/null
++++ b/guest/factory-overlay/usr/local/lib/try-omarchy/url-schemes
+@@ -0,0 +1,383 @@
++#!/usr/bin/env python3
++"""Open links from Windows only for URL schemes the user approved in host Settings.
++
++The agent runs this as root:
++  approve  reads one base64 JSON scheme list from stdin and installs it as the
++           approval state for the current connection; anything invalid removes it.
++  report   prints "url-schemes <base64 JSON>" with the schemes whose links a
++           guest desktop app opens by default.
++  open     reads one base64 URL from stdin and passes it to xdg-open as the
++           desktop user when its scheme is approved and still has a handler.
++Logs carry reason codes only, never a URL.
++"""
++import base64
++import binascii
++import fcntl
++import json
++import os
++import pwd
++import re
++import stat
++import subprocess
++import sys
++import tempfile
++import time
++
++# Shared with the Windows launcher; both sides must accept exactly the same input.
++SCHEME = re.compile(r"[a-z][a-z0-9+.-]{1,31}")
++URL_SCHEME = re.compile(rb"[A-Za-z][A-Za-z0-9+.-]{1,31}")
++DENIED = frozenset("""
++    http https file mailto ftp ftps sftp data javascript vbscript about blob ws wss
++    smb nfs news nntp telnet rlogin ldap ldaps shell res mk its search search-ms
++""".split())
++MAX_SCHEMES = 32
++MAX_URL = 2048
++HANDLER = "x-scheme-handler/"
++
++STATE = os.environ.get("TRY_OMARCHY_URL_STATE", "/run/try-omarchy/url-schemes-approved")
++RATE = os.environ.get("TRY_OMARCHY_URL_RATE", "/run/try-omarchy/url-open.rate")
++USER = os.environ.get("TRY_OMARCHY_URL_USER", "omarchy")
++XDG_OPEN = os.environ.get("TRY_OMARCHY_XDG_OPEN", "/usr/bin/xdg-open")
++XDG_MIME = os.environ.get("TRY_OMARCHY_XDG_MIME", "/usr/bin/xdg-mime")
++NOTIFY = os.environ.get("TRY_OMARCHY_NOTIFY", "/usr/bin/notify-send")
++SYSTEMCTL = os.environ.get("TRY_OMARCHY_SYSTEMCTL", "/usr/bin/systemctl")
++
++# Discovery bounds: candidates come from plain readdir of the XDG application dirs.
++MAX_DIRS = 16
++MAX_FILES = 2000
++MAX_DESKTOP_FILE = 64 * 1024
++MAX_QUERIES = 64
++QUERY_TIMEOUT = 2
++REPORT_BUDGET = 10
++REJECTED = "A link from Windows was not opened. Check Links from Windows in Try Omarchy Settings."
++
++
++class Rejected(Exception):
++    """A request refused for a logged reason code."""
++
++
++def valid_scheme(value) -> bool:
++    return (isinstance(value, str) and SCHEME.fullmatch(value) is not None
++            and value not in DENIED and not value.startswith("ms-"))
++
++
++def valid_open_url(raw: bytes, approved) -> str | None:
++    """Return the URL with its scheme lowercased, or None. Nothing else is rewritten."""
++    if not isinstance(raw, bytes) or len(raw) > MAX_URL:
++        return None
++    try:
++        text = raw.decode("utf-8")
++    except UnicodeDecodeError:
++        return None
++    if any(byte < 0x21 or byte in (0x22, 0x5C, 0x7F) for byte in raw):
++        return None
++    scheme, colon, rest = raw.partition(b":")
++    # Check ASCII before lowercasing: str.lower() maps U+212A KELVIN SIGN to "k".
++    if not colon or not rest or URL_SCHEME.fullmatch(scheme) is None:
++        return None
++    scheme = scheme.lower().decode("ascii")
++    if not valid_scheme(scheme) or scheme not in approved:
++        return None
++    return scheme + text[len(scheme):]
++
++
++def scheme_list(raw: bytes) -> list[str]:
++    value = json.loads(raw)
++    if not isinstance(value, list) or len(value) > MAX_SCHEMES:
++        raise ValueError("invalid scheme list")
++    for scheme in value:
++        if not valid_scheme(scheme):
++            raise ValueError("invalid scheme")
++    return sorted(set(value))
++
++
++def read_line(limit: int) -> str:
++    data = sys.stdin.readline(limit + 1).rstrip("\r\n")
++    if not data or len(data) > limit or sys.stdin.read(1):
++        raise ValueError("invalid input")
++    return data
++
++
++def remove_state() -> None:
++    try:
++        os.unlink(STATE)
++    except FileNotFoundError:
++        pass
++    except OSError:
++        # The agent removes the state again when this helper fails.
++        print("url-schemes: could not remove approval state", file=sys.stderr)
++
++
++def approve() -> int:
++    try:
++        raw = base64.b64decode(read_line(8192), validate=True)
++        if len(raw) > 4096:
++            raise ValueError("approval list too large")
++        schemes = scheme_list(raw)
++        directory = os.path.dirname(STATE)
++        os.makedirs(directory, mode=0o755, exist_ok=True)
++        fd, temp = tempfile.mkstemp(prefix=".url-schemes-", dir=directory)
++        try:
++            with os.fdopen(fd, "w", encoding="ascii") as output:
++                output.write(json.dumps(schemes, separators=(",", ":")))
++            os.chmod(temp, 0o644)
++            os.replace(temp, STATE)
++        finally:
++            if os.path.exists(temp):
++                os.unlink(temp)
++    except (OSError, ValueError, binascii.Error) as error:
++        # A rejected or unwritable snapshot never leaves an older approval active.
++        remove_state()
++        print(f"url-schemes: approval rejected: {type(error).__name__}", file=sys.stderr)
++        return 1
++    return 0
++
++
++def approved_schemes() -> list[str]:
++    fd = os.open(STATE, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
++    with os.fdopen(fd, "rb") as state:
++        if not stat.S_ISREG(os.fstat(state.fileno()).st_mode):
++            raise ValueError("state is not a file")
++        raw = state.read(4097)
++    if len(raw) > 4096:
++        raise ValueError("state too large")
++    return scheme_list(raw)
++
++
++def desktop_user() -> pwd.struct_passwd:
++    return pwd.getpwnam(USER)
++
++
++def user_options(user: pwd.struct_passwd) -> dict:
++    # Tests run as the desktop user itself; dropping to the same identity is a no-op.
++    if user.pw_uid == os.geteuid():
++        return {}
++    return {"user": user.pw_uid, "group": user.pw_gid, "extra_groups": []}
++
++
++def session_environment(user: pwd.struct_passwd) -> dict[str, str]:
++    """The desktop user's systemd session environment, as their apps see it."""
++    base = {"PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8",
++            "HOME": user.pw_dir, "USER": user.pw_name, "LOGNAME": user.pw_name,
++            "XDG_RUNTIME_DIR": f"/run/user/{user.pw_uid}",
++            "DBUS_SESSION_BUS_ADDRESS": f"unix:path=/run/user/{user.pw_uid}/bus"}
++    environment = dict(base)
++    try:
++        result = subprocess.run([SYSTEMCTL, "--user", "show-environment"], env=base,
++                                stdin=subprocess.DEVNULL, capture_output=True, text=True,
++                                timeout=3, cwd="/", **user_options(user))
++    except (OSError, subprocess.SubprocessError):
++        return environment
++    if result.returncode != 0:
++        return environment
++    for line in result.stdout.splitlines()[:512]:
++        key, separator, value = line.partition("=")
++        # systemd quotes values with special characters as $'...'; skip those.
++        if separator and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key) and not value.startswith("$'"):
++            environment[key] = value
++    # The identity always comes from the password database.
++    environment.update({key: base[key] for key in ("HOME", "USER", "LOGNAME", "XDG_RUNTIME_DIR")})
++    return environment
++
++
++def default_handler(scheme: str, user: pwd.struct_passwd, environment: dict[str, str]) -> bool:
++    try:
++        result = subprocess.run([XDG_MIME, "query", "default", HANDLER + scheme], env=environment,
++                                stdin=subprocess.DEVNULL, capture_output=True, text=True,
++                                timeout=QUERY_TIMEOUT, cwd=user.pw_dir if os.path.isdir(user.pw_dir) else "/",
++                                **user_options(user))
++    except (OSError, subprocess.SubprocessError):
++        return False
++    return result.returncode == 0 and result.stdout.strip() != ""
++
++
++def application_dirs(environment: dict[str, str]) -> list[str]:
++    home = environment["HOME"]
++    data_home = environment.get("XDG_DATA_HOME") or os.path.join(home, ".local/share")
++    data_dirs = (environment.get("XDG_DATA_DIRS") or "/usr/local/share:/usr/share").split(":")
++    roots = [data_home, *data_dirs, "/usr/local/share", "/usr/share",
++             os.path.join(home, ".local/share/flatpak/exports/share"), "/var/lib/flatpak/exports/share"]
++    if "TRY_OMARCHY_URL_APP_DIRS" in os.environ:
++        return os.environ["TRY_OMARCHY_URL_APP_DIRS"].split(":")[:MAX_DIRS]
++    result = []
++    for root in roots:
++        path = os.path.join(root, "applications")
++        if os.path.isabs(root) and path not in result:
++            result.append(path)
++    return result[:MAX_DIRS]
++
++
++def declared_schemes(content: bytes) -> set[str]:
++    found, in_entry = set(), False
++    for line in content.splitlines():
++        line = line.strip()
++        if line.startswith(b"["):
++            in_entry = line == b"[Desktop Entry]"
++        elif in_entry and line.startswith(b"MimeType="):
++            for item in line[len(b"MimeType="):].split(b";"):
++                item = item.strip()
++                if item[:len(HANDLER)].lower() == HANDLER.encode():
++                    scheme = item[len(HANDLER):]
++                    if URL_SCHEME.fullmatch(scheme):
++                        scheme = scheme.lower().decode("ascii")
++                        if valid_scheme(scheme):
++                            found.add(scheme)
++    return found
++
++
++def candidates(environment: dict[str, str]) -> list[str]:
++    found, files = set(), 0
++    for directory in application_dirs(environment):
++        try:
++            entries = os.scandir(directory)
++        except OSError:
++            continue
++        with entries:
++            for entry in entries:
++                if not entry.name.endswith(".desktop"):
++                    continue
++                files += 1
++                if files > MAX_FILES:
++                    return sorted(found)
++                try:
++                    # Non-blocking, so a FIFO named *.desktop cannot stall the scan.
++                    fd = os.open(entry.path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
++                    with os.fdopen(fd, "rb") as desktop:
++                        if not stat.S_ISREG(os.fstat(desktop.fileno()).st_mode):
++                            continue
++                        content = desktop.read(MAX_DESKTOP_FILE + 1)
++                except OSError:
++                    continue
++                if len(content) <= MAX_DESKTOP_FILE:
++                    found |= declared_schemes(content)
++    return sorted(found)
++
++
++def scan() -> int:
++    """Runs as the desktop user: list candidate schemes with an effective default handler."""
++    user = desktop_user()
++    environment = dict(os.environ)
++    deadline = time.monotonic() + REPORT_BUDGET
++    handled = []
++    for scheme in candidates(environment)[:MAX_QUERIES]:
++        if len(handled) >= MAX_SCHEMES or time.monotonic() > deadline:
++            break
++        if default_handler(scheme, user, environment):
++            handled.append(scheme)
++    print(json.dumps(handled, separators=(",", ":")))
++    return 0
++
++
++def report() -> int:
++    schemes = []
++    try:
++        user = desktop_user()
++        environment = session_environment(user)
++        for key in ("TRY_OMARCHY_URL_USER", "TRY_OMARCHY_URL_APP_DIRS", "TRY_OMARCHY_XDG_MIME"):
++            if key in os.environ:
++                environment[key] = os.environ[key]
++        # Desktop files under the user's home are read as that user, never as root.
++        result = subprocess.run([sys.executable, "-I", os.path.abspath(__file__), "scan"],
++                                env=environment, stdin=subprocess.DEVNULL, capture_output=True,
++                                timeout=REPORT_BUDGET + QUERY_TIMEOUT + 3, cwd="/",
++                                **user_options(user))
++        if result.returncode != 0 or len(result.stdout) > 4096:
++            raise ValueError("scan failed")
++        schemes = scheme_list(result.stdout)
++    except (OSError, KeyError, ValueError, subprocess.SubprocessError) as error:
++        print(f"url-schemes: report empty: {type(error).__name__}", file=sys.stderr)
++    payload = base64.b64encode(json.dumps(schemes, separators=(",", ":")).encode()).decode()
++    print(f"url-schemes {payload}")
++    return 0
++
++
++def rate_limited() -> bool:
++    """Allow one open per second across helpers, using boot-relative time."""
++    directory = os.path.dirname(RATE)
++    os.makedirs(directory, mode=0o755, exist_ok=True)
++    fd = os.open(RATE, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
++    with os.fdopen(fd, "r+") as gate:
++        fcntl.flock(gate, fcntl.LOCK_EX)
++        now = time.monotonic()
++        try:
++            last = float(gate.read(64))
++        except ValueError:
++            last = None
++        if last is not None and 0 <= now - last < 1:
++            return True
++        gate.seek(0)
++        gate.truncate()
++        gate.write(f"{now:.6f}")
++        gate.flush()
++    return False
++
++
++def notify(user: pwd.struct_passwd, environment: dict[str, str]) -> None:
++    try:
++        subprocess.run([NOTIFY, "Try Omarchy", REJECTED], env=environment, stdin=subprocess.DEVNULL,
++                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3, cwd="/",
++                       **user_options(user))
++    except (OSError, subprocess.SubprocessError):
++        pass
++
++
++def open_url() -> int:
++    try:
++        if rate_limited():
++            print("url-schemes: open rejected: rate-limited", file=sys.stderr)
++            return 1
++    except OSError:
++        print("url-schemes: open rejected: rate-gate", file=sys.stderr)
++        return 1
++    try:
++        user = desktop_user()
++    except KeyError:
++        print("url-schemes: open rejected: no-user", file=sys.stderr)
++        return 1
++    environment = session_environment(user)
++    try:
++        try:
++            raw = base64.b64decode(read_line(4096), validate=True)
++        except (ValueError, binascii.Error):
++            raise Rejected("bad-encoding")
++        try:
++            approved = approved_schemes()
++        except (OSError, ValueError):
++            raise Rejected("not-ready")
++        url = valid_open_url(raw, approved)
++        if url is None:
++            raise Rejected("not-allowed")
++        if not (environment.get("WAYLAND_DISPLAY") or environment.get("DISPLAY")):
++            raise Rejected("no-session")
++        if not default_handler(url.partition(":")[0], user, environment):
++            raise Rejected("no-handler")
++        try:
++            subprocess.Popen([XDG_OPEN, url], env=environment, stdin=subprocess.DEVNULL,
++                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True,
++                             start_new_session=True, cwd=user.pw_dir if os.path.isdir(user.pw_dir) else "/",
++                             **user_options(user))
++        except (OSError, subprocess.SubprocessError):
++            raise Rejected("spawn-failed")
++    except Rejected as rejection:
++        print(f"url-schemes: open rejected: {rejection}", file=sys.stderr)
++        notify(user, environment)
++        return 1
++    return 0
++
++
++def main() -> int:
++    mode = sys.argv[1] if len(sys.argv) == 2 else ""
++    if mode == "approve":
++        return approve()
++    if mode == "report":
++        return report()
++    if mode == "scan":
++        return scan()
++    if mode == "open":
++        return open_url()
++    print("usage: url-schemes approve|report|open", file=sys.stderr)
++    return 2
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+diff --git a/guest/scripts/finalize-rootfs.sh b/guest/scripts/finalize-rootfs.sh
+index 046c988..2dd5a66 100755
+--- a/guest/scripts/finalize-rootfs.sh
++++ b/guest/scripts/finalize-rootfs.sh
+@@ -139,6 +139,7 @@ compat_paths=(
+   usr/share/applications/try-omarchy-host-settings.desktop
+   usr/local/bin/try-omarchy-windows-app
+   usr/local/lib/try-omarchy/approved-apps-sync
++  usr/local/lib/try-omarchy/url-schemes
+   etc/systemd/user/clipboard-bridge.service
+   etc/systemd/user/omarchy-fcitx5.service.d/10-try-omarchy.conf
+   etc/systemd/user/graphical-session.target.wants/clipboard-bridge.service
+@@ -248,7 +249,8 @@ tar -C / -cf /usr/share/try-omarchy/compat-overlay.tar "${compat_paths[@]}"
+ # Revision 58 receives large clipboard frames without suffix-pattern stalls.
+ # Revision 59 restores the Windows audio default when the QEMU transport is picked.
+ # Revision 61 delivers the QEMU CPU cursor profile and patched package offer.
+-compat_revision=61
++# Revision 62 opens links from Windows for approved URL schemes.
++compat_revision=62
+ printf '%s:%s\n' "$compat_revision" "$kernel_release" >/usr/share/try-omarchy/compat-version
+ 
+ # Fail the build if DKMS or networking modules were not packaged for this kernel.
+diff --git a/guest/tests/test_aquamarine_contract.py b/guest/tests/test_aquamarine_contract.py
+index f7a8268..73a5911 100644
+--- a/guest/tests/test_aquamarine_contract.py
++++ b/guest/tests/test_aquamarine_contract.py
+@@ -76,7 +76,7 @@ class AquamarineContractTests(unittest.TestCase):
+         runtime = (GUEST / 'scripts/register-omarchy-runtime.sh').read_text()
+         self.assertIn('depend = aquamarine>={version}', runtime)
+         finalizer = (GUEST / 'scripts/finalize-rootfs.sh').read_text()
+-        self.assertIn('compat_revision=61', finalizer)
++        self.assertIn('compat_revision=62', finalizer)
+         self.assertIn('cp /usr/share/try-omarchy/repo/*.pkg.tar.zst', finalizer)
+         self.assertIn('usr/share/try-omarchy/skel-fragments/hypr-monitors-qemu.append.lua', finalizer)
+         repo = (GUEST / 'scripts/register-local-repository.sh').read_text()
+diff --git a/guest/tests/test_battery_details.py b/guest/tests/test_battery_details.py
+index 1b51e57..15084d5 100644
+--- a/guest/tests/test_battery_details.py
++++ b/guest/tests/test_battery_details.py
+@@ -204,7 +204,7 @@ class BatteryDetailsFlowTests(unittest.TestCase):
+     def test_compatibility_delivery_and_dkms_version(self):
+         overlay = GUEST / "factory-overlay"
+         finalize = (GUEST / "scripts/finalize-rootfs.sh").read_text()
+-        self.assertIn("compat_revision=61", finalize)
++        self.assertIn("compat_revision=62", finalize)
+         self.assertIn("usr/src/try-omarchy-battery-1.1.0", finalize)
+         self.assertIn("usr/local/lib/try-omarchy/update-battery-dkms", finalize)
+         self.assertIn('PACKAGE_VERSION="1.1.0"', (MODULE_SOURCE.parent / "dkms.conf").read_text())
+diff --git a/guest/tests/test_clipboard_pull.py b/guest/tests/test_clipboard_pull.py
+index fdf2c44..45b9b0e 100644
+--- a/guest/tests/test_clipboard_pull.py
++++ b/guest/tests/test_clipboard_pull.py
+@@ -71,4 +71,4 @@ class ClipboardPullTests(unittest.TestCase):
+         finalizer = (GUEST / 'scripts/finalize-rootfs.sh').read_text()
+         paths = finalizer.split('compat_paths=(', 1)[1].split(')', 1)[0]
+         self.assertIn('usr/local/bin/clipboard-bridge', paths)
+-        self.assertIn('compat_revision=61', finalizer)
++        self.assertIn('compat_revision=62', finalizer)
+diff --git a/guest/tests/test_compositor_health.py b/guest/tests/test_compositor_health.py
+index 642a3c4..4715b0e 100644
+--- a/guest/tests/test_compositor_health.py
++++ b/guest/tests/test_compositor_health.py
+@@ -34,7 +34,7 @@ class CompositorHealthTests(unittest.TestCase):
+ 
+     def test_existing_disks_receive_health_files(self):
+         finalizer = (GUEST / 'scripts/finalize-rootfs.sh').read_text()
+-        self.assertIn('compat_revision=61', finalizer)
++        self.assertIn('compat_revision=62', finalizer)
+         for name in ['agent', 'compositor-health']:
+             self.assertIn('  usr/local/lib/try-omarchy/' + name, finalizer)
+         self.assertTrue(HELPER.stat().st_mode & 0o111)
+diff --git a/guest/tests/test_guest_qol.py b/guest/tests/test_guest_qol.py
+index f14e729..ec88687 100644
+--- a/guest/tests/test_guest_qol.py
++++ b/guest/tests/test_guest_qol.py
+@@ -221,7 +221,7 @@ class GuestQolTests(unittest.TestCase):
+     def test_compatibility_delivers_guarded_payload_once_per_revision(self):
+         finalize = (GUEST / "scripts/finalize-rootfs.sh").read_text()
+         paths = finalize.split("compat_paths=(", 1)[1].split(")", 1)[0]
+-        self.assertIn("compat_revision=61", finalize)
++        self.assertIn("compat_revision=62", finalize)
+         for path in ("usr/local/bin/omarchy-native-screensaver-text", "usr/local/lib/try-omarchy/install-guest-qol", "usr/share/try-omarchy/guest-qol", "usr/local/bin/omarchy-windows-audio-bridge"):
+             self.assertIn(path, paths)
+         self.assertNotIn("etc/fonts/conf.d/30-try-omarchy.conf", paths)
+diff --git a/guest/tests/test_live_update.py b/guest/tests/test_live_update.py
+index 15a39ba..9efe36d 100644
+--- a/guest/tests/test_live_update.py
++++ b/guest/tests/test_live_update.py
+@@ -176,7 +176,7 @@ class LiveUpdateTests(unittest.TestCase):
+ 
+     def test_delivery_and_best_effort_hook(self):
+         finalizer = (GUEST / 'scripts/finalize-rootfs.sh').read_text()
+-        self.assertIn('compat_revision=61', finalizer)
++        self.assertIn('compat_revision=62', finalizer)
+         for path in ['usr/local/lib/try-omarchy/live-update', 'etc/pacman.d/hooks/00-try-omarchy-live-update.hook', 'etc/pacman.d/hooks/zz-try-omarchy-live-update.hook']:
+             self.assertIn(path, finalizer)
+         pre = (GUEST / 'factory-overlay/etc/pacman.d/hooks/00-try-omarchy-live-update.hook').read_text()
+diff --git a/guest/tests/test_native_nightlight.py b/guest/tests/test_native_nightlight.py
+index 6ea0ac9..331d686 100644
+--- a/guest/tests/test_native_nightlight.py
++++ b/guest/tests/test_native_nightlight.py
+@@ -214,5 +214,5 @@ class PersistentNightlightTests(unittest.TestCase):
+         catch_up = (self.overlay / 'usr/local/lib/try-omarchy/catch-up').read_text()
+         for path in ['usr/local/bin/omarchy-native-nightlight', 'usr/local/share/try-omarchy/nightlight.frag', 'usr/local/lib/try-omarchy/install-nightlight', 'usr/share/try-omarchy/nightlight']:
+             self.assertIn(path, finalizer)
+-        self.assertIn('compat_revision=61', finalizer)
++        self.assertIn('compat_revision=62', finalizer)
+         self.assertIn('previous_revision < 55', catch_up)
+diff --git a/guest/tests/test_notification_privacy.py b/guest/tests/test_notification_privacy.py
+index 774317e..1e038a7 100644
+--- a/guest/tests/test_notification_privacy.py
++++ b/guest/tests/test_notification_privacy.py
+@@ -116,7 +116,7 @@ for (const state of [null, {screensaverStateKnown:false}, {screensaverStateKnown
+     def test_compatibility_overlay_and_catch_up_revision(self):
+         finalizer = (GUEST / 'scripts/finalize-rootfs.sh').read_text()
+         catch_up = (GUEST / 'factory-overlay/usr/local/lib/try-omarchy/catch-up').read_text()
+-        self.assertIn('compat_revision=61', finalizer)
++        self.assertIn('compat_revision=62', finalizer)
+         self.assertIn('usr/share/try-omarchy/notifications', finalizer)
+         self.assertIn('usr/local/lib/try-omarchy/install-notifications', finalizer)
+         self.assertIn('previous_revision < 52', catch_up)
+diff --git a/guest/tests/test_overlay_scripts.py b/guest/tests/test_overlay_scripts.py
+index b4afb4e..61e32f7 100644
+--- a/guest/tests/test_overlay_scripts.py
++++ b/guest/tests/test_overlay_scripts.py
+@@ -602,6 +602,16 @@ class CatchUpTests(OverlayCase):
+         self.assertEqual(self.run_catch_up().returncode, 0)
+         self.assertEqual(monitors.read_text(), "-- user cursor config\n")
+ 
++    def test_revision_62_records_the_link_helper_delivery_and_keeps_user_config(self) -> None:
++        monitors = self.user / ".config/hypr/monitors.lua"
++        monitors.write_text("-- user cursor config\n")
++        self.state.mkdir()
++        (self.state / "catch-up-revision").write_text("61\n")
++        self.version.write_text("62:7.2.3-arch1\n")
++        self.assertEqual(self.run_catch_up().returncode, 0)
++        self.assertEqual((self.state / "catch-up-revision").read_text(), "62\n")
++        self.assertEqual(monitors.read_text(), "-- user cursor config\n")
++
+     def test_quick_start_disk_gets_key_only_ssh_once(self) -> None:
+         dropin = self.root / "sshd_config.d/90-try-omarchy-quick-start.conf"
+         self.state.mkdir(parents=True)
+diff --git a/guest/tests/test_qt612_palette.py b/guest/tests/test_qt612_palette.py
+index 79e5de2..b5ebda9 100644
+--- a/guest/tests/test_qt612_palette.py
++++ b/guest/tests/test_qt612_palette.py
+@@ -166,7 +166,7 @@ class Qt612PaletteTests(unittest.TestCase):
+     def test_compatibility_delivery_runs_after_older_repairs_and_before_login(self):
+         finalizer = (GUEST / 'scripts/finalize-rootfs.sh').read_text()
+         paths = finalizer.split('compat_paths=(', 1)[1].split(')', 1)[0]
+-        self.assertIn('compat_revision=61', finalizer)
++        self.assertIn('compat_revision=62', finalizer)
+         self.assertIn('usr/local/lib/try-omarchy/install-qt612-palette', paths)
+         self.assertIn('usr/share/try-omarchy/qt612-palette', paths)
+         self.assertEqual(self.build_spec['upstream']['packageRelease'], 10)
+diff --git a/guest/tests/test_snapper_guest.py b/guest/tests/test_snapper_guest.py
+index 22d0ca8..dacfd17 100644
+--- a/guest/tests/test_snapper_guest.py
++++ b/guest/tests/test_snapper_guest.py
+@@ -44,5 +44,5 @@ class GuestSnapperTests(unittest.TestCase):
+         finalizer = (GUEST / 'scripts/finalize-rootfs.sh').read_text()
+         paths = finalizer.split('compat_paths=(', 1)[1].split(')', 1)[0]
+         self.assertIn(TARGET, paths)
+-        self.assertIn('compat_revision=61', finalizer)
++        self.assertIn('compat_revision=62', finalizer)
+         self.assertEqual(json.loads((GUEST / 'spec.json').read_text())['upstream']['packageRelease'], 10)
+diff --git a/guest/tests/test_url_schemes.py b/guest/tests/test_url_schemes.py
+new file mode 100644
+index 0000000..44764fb
+--- /dev/null
++++ b/guest/tests/test_url_schemes.py
+@@ -0,0 +1,409 @@
++"""Links from Windows: the approved-scheme helper and its agent messages."""
++from __future__ import annotations
++
++import base64
++import importlib.util
++import json
++import os
++import pwd
++import shutil
++import socket
++import subprocess
++import tempfile
++import threading
++import time
++import unittest
++from importlib.machinery import SourceFileLoader
++from pathlib import Path
++
++GUEST = Path(__file__).resolve().parents[1]
++OVERLAY = GUEST / "factory-overlay"
++HELPER = OVERLAY / "usr/local/lib/try-omarchy/url-schemes"
++AGENT = OVERLAY / "usr/local/lib/try-omarchy/agent"
++
++_loader = SourceFileLoader("url_schemes", str(HELPER))
++_spec = importlib.util.spec_from_loader("url_schemes", _loader)
++urls = importlib.util.module_from_spec(_spec)
++_loader.exec_module(urls)
++
++# The same table lives in the Windows launcher's Go tests; keep them identical.
++APPROVED = {"zoommtg", "steam"}
++ACCEPT = [
++    (b"zoommtg:join?x=1", "zoommtg:join?x=1"),
++    (b"ZoomMtg:join", "zoommtg:join"),
++    (b"steam://run/10", "steam://run/10"),
++]
++REJECT = [
++    b"-x:y",
++    b" zoommtg:x",
++    "\ufeffzoommtg:x".encode(),
++    b"c:\\x",
++    b"\\\\srv\\share",
++    b"zoommtg%3ax",
++    b"http://a",
++    b"ms-settings:x",
++    b"zoommtg:",
++    b"zoommtg:a b",
++    b'zoommtg:a"b',
++    b"zoommtg:a\\b",
++    b"zoommtg:\xff\xfe",
++    b"zoommtg:" + b"a" * (2049 - len(b"zoommtg:")),
++    b"a:x",
++    b"unapproved:x",
++]
++
++
++def b64(value: bytes | str) -> str:
++    return base64.b64encode(value.encode() if isinstance(value, str) else value).decode()
++
++
++def schemes_line(schemes: list[str]) -> str:
++    return b64(json.dumps(schemes, separators=(",", ":")))
++
++
++class ContractTests(unittest.TestCase):
++    def test_shared_vectors(self) -> None:
++        for raw, expected in ACCEPT:
++            self.assertEqual(urls.valid_open_url(raw, APPROVED), expected, raw)
++        for raw in REJECT:
++            self.assertIsNone(urls.valid_open_url(raw, APPROVED), raw)
++
++    def test_boundaries_and_guest_extras(self) -> None:
++        longest = b"zoommtg:" + b"a" * (2048 - len(b"zoommtg:"))
++        self.assertEqual(urls.valid_open_url(longest, APPROVED), longest.decode())
++        # Approval never overrides the denylist or the grammar.
++        everything = APPROVED | {"http", "ms-settings", "a", "search-ms"}
++        for raw in [b"http://a", b"ms-settings:x", b"a:x", b"search-ms:query=x"]:
++            self.assertIsNone(urls.valid_open_url(raw, everything), raw)
++        # str.lower() maps U+212A KELVIN SIGN to "k"; the ASCII check comes first.
++        for raw in ["zoom\u212amtg:x".encode(), b"zoommtg:a\x7fb", b"zoommtg:a\tb", b"zoommtg:a\nb"]:
++            self.assertIsNone(urls.valid_open_url(raw, APPROVED), raw)
++        self.assertEqual(urls.valid_open_url("zoommtg:caf\u00e9".encode(), APPROVED), "zoommtg:caf\u00e9")
++
++    def test_scheme_grammar_and_denylist(self) -> None:
++        for scheme in ["zoommtg", "steam", "web+app", "a1", "x-y.z", "s" * 32]:
++            self.assertTrue(urls.valid_scheme(scheme), scheme)
++        for scheme in ["a", "A1", "Zoommtg", "1abc", "-x", "s" * 33, "zo om", "zoom\u212amtg", "http", "https",
++                       "file", "mailto", "javascript", "search", "search-ms", "ms-settings", "ms-", "ldaps", 5, None]:
++            self.assertFalse(urls.valid_scheme(scheme), scheme)
++
++
++class HelperCase(unittest.TestCase):
++    def setUp(self) -> None:
++        self.root = Path(tempfile.mkdtemp())
++        self.addCleanup(shutil.rmtree, self.root, True)
++        self.bin = self.root / "bin"
++        self.bin.mkdir()
++        self.apps = self.root / "applications"
++        self.apps.mkdir()
++        self.state = self.root / "run/url-schemes-approved"
++        self.opened = self.root / "opened"
++        self.notified = self.root / "notified"
++        self.queries = self.root / "queries"
++        self.handled = self.root / "handled"
++        self.handled.write_text("zoommtg\nsteam\n")
++        self.fake("xdg-mime", f'echo "$3" >>"{self.queries}"\n'
++                  f'grep -qxF -- "${{3#x-scheme-handler/}}" "{self.handled}" && echo handler.desktop\nexit 0')
++        self.fake("xdg-open", f'printf "%s\\0" "$@" >"{self.opened}.part"\n'
++                  f'ls /proc/$$/fd >"{self.opened}.fds"\nmv "{self.opened}.part" "{self.opened}"')
++        self.fake("notify-send", f'printf "%s|" "$@" >>"{self.notified}"; echo >>"{self.notified}"')
++        # systemd prints values with special characters as $'...'; the helper skips them.
++        self.fake("systemctl", "cat <<'EOF'\nWAYLAND_DISPLAY=wayland-1\nXDG_DATA_DIRS=/nowhere\nODD=$'a\\nb'\nEOF")
++        self.rates = 0
++        self.env = dict(os.environ,
++                        TRY_OMARCHY_URL_STATE=str(self.state),
++                        TRY_OMARCHY_URL_USER=pwd.getpwuid(os.geteuid()).pw_name,
++                        TRY_OMARCHY_XDG_OPEN=str(self.bin / "xdg-open"),
++                        TRY_OMARCHY_XDG_MIME=str(self.bin / "xdg-mime"),
++                        TRY_OMARCHY_NOTIFY=str(self.bin / "notify-send"),
++                        TRY_OMARCHY_SYSTEMCTL=str(self.bin / "systemctl"),
++                        TRY_OMARCHY_URL_APP_DIRS=str(self.apps))
++        self.desktop("zoom.desktop", "x-scheme-handler/zoommtg;application/x-zoom;")
++        self.desktop("steam.desktop", "x-scheme-handler/steam;x-scheme-handler/http;")
++
++    def fake(self, name: str, body: str) -> None:
++        path = self.bin / name
++        path.write_text("#!/bin/bash\n" + body + "\n")
++        path.chmod(0o755)
++
++    def desktop(self, name: str, mime: str, extra: str = "") -> None:
++        (self.apps / name).write_text(f"[Desktop Entry]\nType=Application\nName={name}\nMimeType={mime}\n{extra}")
++
++    def helper(self, mode: str, data: str | None, **extra: str) -> subprocess.CompletedProcess:
++        env = dict(self.env, **extra)
++        return subprocess.run([str(HELPER), mode], input=None if data is None else data + "\n", env=env,
++                              capture_output=True, text=True, timeout=30)
++
++    def approve(self, schemes: list[str]) -> None:
++        result = self.helper("approve", schemes_line(schemes))
++        self.assertEqual(result.returncode, 0, result.stderr)
++
++    def open(self, url: bytes | str, rate: Path | None = None) -> subprocess.CompletedProcess:
++        if rate is None:
++            # A fresh gate per call, so the one-per-second limit is tested on its own.
++            self.rates += 1
++            rate = self.root / f"rate{self.rates}"
++        return self.helper("open", b64(url), TRY_OMARCHY_URL_RATE=str(rate))
++
++    def wait_opened(self) -> list[str]:
++        deadline = time.monotonic() + 5
++        while not self.opened.exists():
++            self.assertLess(time.monotonic(), deadline, "xdg-open was not called")
++            time.sleep(0.02)
++        return self.opened.read_bytes().split(b"\0")[:-1]
++
++    def report(self) -> list[str]:
++        result = self.helper("report", None)
++        self.assertEqual(result.returncode, 0, result.stderr)
++        line = result.stdout.rstrip("\n")
++        self.assertNotIn("\n", line)
++        self.assertLessEqual(len(line), 8192)
++        self.assertTrue(line.startswith("url-schemes "), line)
++        return json.loads(base64.b64decode(line.removeprefix("url-schemes "), validate=True))
++
++
++class ApproveTests(HelperCase):
++    def test_valid_snapshot_installs_and_invalid_update_removes_it(self) -> None:
++        self.approve(["zoommtg", "steam", "zoommtg"])
++        self.assertEqual(self.state.read_text(), '["steam","zoommtg"]')
++        self.approve([])
++        self.assertEqual(self.state.read_text(), "[]")
++        invalid = ["!!!", schemes_line(["http"]), schemes_line(["ms-settings"]), schemes_line(["Zoommtg"]),
++                   b64('{"zoommtg":1}'), b64("[1]"), b64("not json"), schemes_line([f"s{n:02}" for n in range(33)]),
++                   schemes_line(["zoommtg"]).rstrip("="), b64("[" + '"zoommtg",' * 500 + '"steam"]'), ""]
++        for data in invalid:
++            self.approve(["zoommtg"])
++            result = self.helper("approve", data)
++            self.assertEqual(result.returncode, 1, data)
++            self.assertFalse(self.state.exists(), data)
++        self.approve(["zoommtg"])
++        result = self.helper("approve", schemes_line(["steam"]) + "\n" + schemes_line(["zoommtg"]))
++        self.assertEqual(result.returncode, 1)
++        self.assertFalse(self.state.exists())
++
++
++class OpenTests(HelperCase):
++    def test_open_passes_the_url_as_one_argument(self) -> None:
++        self.approve(["zoommtg"])
++        url = "ZoomMtg:join?confno=1&pwd=$(id);`id`|x*y'z"
++        result = self.open(url)
++        self.assertEqual(result.returncode, 0, result.stderr)
++        self.assertEqual(self.wait_opened(), [b"zoommtg:join?confno=1&pwd=$(id);`id`|x*y'z"])
++        # Only the standard streams and bash's own script descriptor reach the opener.
++        fds = set(self.opened.with_suffix(".fds").read_text().split())
++        self.assertLessEqual(fds, {"0", "1", "2", "255"})
++        self.assertFalse(self.notified.exists())
++        self.assertNotIn("confno", result.stderr)
++
++    def test_rejections_never_reach_xdg_open(self) -> None:
++        url = "zoommtg:join?secret=abc"
++        result = self.open(url)
++        self.assertEqual(result.returncode, 1)
++        self.assertIn("not-ready", result.stderr)
++        self.approve(["steam"])
++        result = self.open(url)
++        self.assertIn("not-allowed", result.stderr)
++        self.approve(["zoommtg"])
++        self.handled.write_text("steam\n")
++        result = self.open(url)
++        self.assertIn("no-handler", result.stderr)
++        self.handled.write_text("zoommtg\n")
++        self.fake("systemctl", "exit 1")
++        result = self.open(url)
++        self.assertIn("no-session", result.stderr)
++        result = self.helper("open", "@@@", TRY_OMARCHY_URL_RATE=str(self.root / "rate-bad"))
++        self.assertIn("bad-encoding", result.stderr)
++        for raw in REJECT:
++            self.assertEqual(self.open(raw).returncode, 1, raw)
++        time.sleep(0.2)
++        self.assertFalse(self.opened.exists())
++        notices = self.notified.read_text().splitlines()
++        self.assertEqual(len(notices), 5 + len(REJECT))
++        for notice in notices:
++            self.assertEqual(notice, f"Try Omarchy|{urls.REJECTED}|")
++        self.assertNotIn("secret", self.notified.read_text())
++
++    def test_one_open_per_second(self) -> None:
++        self.approve(["zoommtg"])
++        rate = self.root / "rate"
++        self.assertEqual(self.open("zoommtg:first", rate).returncode, 0)
++        self.wait_opened()
++        self.opened.unlink()
++        result = self.open("zoommtg:second", rate)
++        self.assertEqual(result.returncode, 1)
++        self.assertIn("rate-limited", result.stderr)
++        self.assertFalse(self.notified.exists())
++        time.sleep(1.1)
++        self.assertEqual(self.open("zoommtg:third", rate).returncode, 0)
++        self.assertEqual(self.wait_opened(), [b"zoommtg:third"])
++
++    def test_concurrent_opens_share_one_gate(self) -> None:
++        self.approve(["zoommtg"])
++        rate = self.root / "rate"
++        results = []
++        threads = [threading.Thread(target=lambda: results.append(self.open("zoommtg:x", rate).returncode))
++                   for _ in range(6)]
++        for thread in threads:
++            thread.start()
++        for thread in threads:
++            thread.join()
++        self.assertEqual(sorted(results), [0, 1, 1, 1, 1, 1])
++
++
++class ReportTests(HelperCase):
++    def test_reports_only_effective_handlers(self) -> None:
++        self.desktop("other.desktop", "x-scheme-handler/obsidian;x-scheme-handler/MS-Teams;x-scheme-handler/a;")
++        self.desktop("hidden.desktop", "", "[Other Group]\nMimeType=x-scheme-handler/sneaky;\n")
++        (self.apps / "notes.txt").write_text("[Desktop Entry]\nMimeType=x-scheme-handler/text;\n")
++        (self.apps / "huge.desktop").write_text("[Desktop Entry]\nMimeType=x-scheme-handler/huge;\n" + "#" * 70000)
++        os.mkfifo(self.apps / "fifo.desktop")
++        self.assertEqual(self.report(), ["steam", "zoommtg"])
++        queried = set(self.queries.read_text().split())
++        self.assertEqual(queried, {"x-scheme-handler/obsidian", "x-scheme-handler/steam", "x-scheme-handler/zoommtg"})
++
++    def test_report_is_capped(self) -> None:
++        names = [f"sch{n:02}" for n in range(40)]
++        for name in names:
++            self.desktop(f"{name}.desktop", f"x-scheme-handler/{name};")
++        self.handled.write_text("\n".join(name for name in names if name != "sch05") + "\n")
++        reported = self.report()
++        self.assertEqual(len(reported), 32)
++        self.assertEqual(reported, sorted(reported))
++        self.assertNotIn("sch05", reported)
++
++    def test_failed_queries_report_an_empty_list(self) -> None:
++        self.handled.write_text("")
++        self.assertEqual(self.report(), [])
++        self.fake("xdg-mime", "sleep 10")
++        started = time.monotonic()
++        self.assertEqual(self.report(), [])
++        self.assertLess(time.monotonic() - started, 20)
++
++
++class AgentLinkTests(HelperCase):
++    def agent_env(self, **extra: str) -> dict[str, str]:
++        return dict(self.env, **dict(dict(TRY_OMARCHY_URL_SCHEMES=str(HELPER),
++                                          TRY_OMARCHY_URL_RATE=str(self.root / "rate")), **extra))
++
++    def handle(self, *lines: str) -> subprocess.CompletedProcess:
++        return subprocess.run([str(AGENT), "--handle"], input="".join(line + "\n" for line in lines),
++                              env=self.agent_env(), capture_output=True, text=True, timeout=60)
++
++    def test_agent_speaks_version_6(self) -> None:
++        self.assertIn("\nversion=6\n", AGENT.read_text())
++
++    def test_approval_reports_and_invalid_update_disables(self) -> None:
++        result = self.handle("url-approved " + schemes_line(["zoommtg"]))
++        self.assertEqual(result.returncode, 0, result.stderr)
++        reports = [line for line in result.stdout.splitlines() if line.startswith("url-schemes ")]
++        self.assertEqual(reports, ["url-schemes " + schemes_line(["steam", "zoommtg"])])
++        self.assertEqual(self.state.read_text(), '["zoommtg"]')
++        result = self.handle("url-approved " + schemes_line(["http"]))
++        self.assertEqual(result.returncode, 0, result.stderr)
++        self.assertNotIn("url-schemes", result.stdout)
++        self.assertFalse(self.state.exists())
++
++    def test_bare_or_malformed_approval_disables_links(self) -> None:
++        valid = "url-approved " + schemes_line(["zoommtg"])
++        for line in ["url-approved", "url-approved ", "url-approved\t" + schemes_line(["zoommtg"]),
++                     "url-approved  " + schemes_line(["zoommtg"])]:
++            self.assertEqual(self.handle(valid).returncode, 0)
++            self.assertTrue(self.state.exists())
++            result = self.handle(line)
++            self.assertEqual(result.returncode, 0, result.stderr)
++            self.assertFalse(self.state.exists(), repr(line))
++            self.assertNotIn("url-schemes", result.stdout)
++
++    def test_bare_or_malformed_open_is_rejected(self) -> None:
++        for line in ["open-url", "open-url ", "open-url\t" + b64("zoommtg:join")]:
++            self.rates += 1
++            env = self.agent_env(TRY_OMARCHY_URL_RATE=str(self.root / f"agent-rate{self.rates}"))
++            result = subprocess.run([str(AGENT), "--handle"],
++                                    input=f"url-approved {schemes_line(['zoommtg'])}\n{line}\n",
++                                    env=env, capture_output=True, text=True, timeout=60)
++            self.assertEqual(result.returncode, 0, result.stderr)
++            self.assertIn("did not open a link from Windows", result.stderr, repr(line))
++        time.sleep(0.2)
++        self.assertFalse(self.opened.exists())
++
++    def test_open_follows_the_snapshot_sent_before_it(self) -> None:
++        result = self.handle("url-approved " + schemes_line(["zoommtg"]), "open-url " + b64("zoommtg:join?x=1"))
++        self.assertEqual(result.returncode, 0, result.stderr)
++        self.assertEqual(self.wait_opened(), [b"zoommtg:join?x=1"])
++        self.opened.unlink()
++        time.sleep(1.1)
++        result = self.handle("url-approved W10=", "open-url " + b64("zoommtg:join?x=1"))
++        self.assertEqual(result.returncode, 0, result.stderr)
++        self.assertIn("did not open a link from Windows", result.stderr)
++        time.sleep(0.2)
++        self.assertFalse(self.opened.exists())
++
++
++class AgentFramingTests(unittest.TestCase):
++    """Health reports and link reports share the socket without splitting lines."""
++
++    def test_concurrent_writers_keep_lines_whole(self) -> None:
++        root = Path(tempfile.mkdtemp())
++        self.addCleanup(shutil.rmtree, root, True)
++        report = "url-schemes " + "A" * 8000
++        health = "compositor " + "B" * 8000000
++        probe = root / "probe"
++        probe.write_text(f"#!/bin/bash\nprintf 'compositor %s\\n' \"$(head -c 8000000 /dev/zero | tr '\\0' B)\"\n")
++        helper = root / "url-schemes"
++        helper.write_text("#!/bin/bash\ncat >/dev/null 2>&1\n"
++                          f"[[ $1 == report ]] && printf 'url-schemes %s\\n' \"$(head -c 8000 /dev/zero | tr '\\0' A)\"\n"
++                          "exit 0\n")
++        for path in (probe, helper):
++            path.chmod(0o755)
++        approvals = 40
++        with socket.socket() as server:
++            server.bind(("127.0.0.1", 0))
++            server.listen(1)
++            server.settimeout(10)
++            env = dict(os.environ, TRY_OMARCHY_AGENT_HOST="127.0.0.1", TRY_OMARCHY_AGENT_PORT=str(server.getsockname()[1]),
++                       TRY_OMARCHY_HEALTH_PROBE=str(probe), TRY_OMARCHY_URL_SCHEMES=str(helper),
++                       TRY_OMARCHY_URL_STATE=str(root / "run/state"),
++                       TRY_OMARCHY_AGENT_WRITE_LOCK=str(root / "run/agent-write.lock"))
++            agent = subprocess.Popen([str(AGENT)], env=env, stdin=subprocess.DEVNULL,
++                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
++            try:
++                connection, _ = server.accept()
++                with connection:
++                    connection.settimeout(10)
++                    received = b""
++                    deadline = time.monotonic() + 30
++                    # Ask for link reports while the large health line is still being written.
++                    while b"\ncompositor " not in received and time.monotonic() < deadline:
++                        received += connection.recv(16384)
++                    connection.sendall(b"".join(b"url-approved W10=\n" for _ in range(approvals)))
++                    while (received.count(b"\nurl-schemes ") < approvals or b"\ncompositor " not in received
++                           or not received.endswith(b"\n")) and time.monotonic() < deadline:
++                        chunk = connection.recv(16384)
++                        if not chunk:
++                            break
++                        received += chunk
++                        time.sleep(0.001)
++            finally:
++                os.killpg(agent.pid, 9)
++                agent.wait(timeout=5)
++        lines = received.decode().split("\n")[:-1]
++        self.assertEqual(lines[0], "hello 6")
++        for line in lines[1:]:
++            self.assertIn(line, (report, health), line[:40] + "...")
++        self.assertEqual(lines.count(report), approvals)
++        self.assertGreaterEqual(lines.count(health), 1)
++
++
++class DeliveryTests(unittest.TestCase):
++    def test_revision_62_delivers_the_link_helper(self) -> None:
++        finalizer = (GUEST / "scripts/finalize-rootfs.sh").read_text()
++        paths = finalizer.split("compat_paths=(", 1)[1].split(")", 1)[0].split()
++        self.assertIn("compat_revision=62", finalizer)
++        self.assertIn("# Revision 62 opens links from Windows for approved URL schemes.", finalizer)
++        for path in ("usr/local/lib/try-omarchy/url-schemes", "usr/local/lib/try-omarchy/agent"):
++            self.assertIn(path, paths)
++            self.assertTrue((OVERLAY / path).stat().st_mode & 0o111, path)
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/guest/tests/test_windows_volume_sync.py b/guest/tests/test_windows_volume_sync.py
+index d2c3327..2deea89 100644
+--- a/guest/tests/test_windows_volume_sync.py
++++ b/guest/tests/test_windows_volume_sync.py
+@@ -285,7 +285,7 @@ class VolumeSyncTests(unittest.TestCase):
+ 
+     def test_revision_delivers_bridge_to_existing_disks(self):
+         finalize = (Path(__file__).resolve().parents[1] / "scripts/finalize-rootfs.sh").read_text()
+-        self.assertIn("compat_revision=61", finalize)
++        self.assertIn("compat_revision=62", finalize)
+         self.assertIn("usr/local/bin/omarchy-windows-audio-bridge", finalize)
+ 
+ 
+diff --git a/guest/tests/verify.py b/guest/tests/verify.py
+index 780df10..e0ca1f0 100755
+--- a/guest/tests/verify.py
++++ b/guest/tests/verify.py
+@@ -324,7 +324,7 @@ def main() -> None:
+         "system services run without watchdogs, which fire after Windows sleeps",
+     )
+     check(
+-        "compat_revision=61" in finalize_rootfs
++        "compat_revision=62" in finalize_rootfs
+         and "usr/local/bin/mpv" in compat_paths
+         and "usr/share/dkms/modules_to_force_install/try-omarchy" in compat_paths
+         and "usr/local/lib/try-omarchy/try-omarchy-import.pyz" in compat_paths
+@@ -355,6 +355,7 @@ def main() -> None:
+         and (GUEST / "factory-overlay/etc/systemd/user/graphical-session.target.wants/omarchy-windows-audio-bridge.service").is_symlink()
+         and "usr/local/bin/try-omarchy-windows-app" in compat_paths
+         and "usr/local/lib/try-omarchy/approved-apps-sync" in compat_paths
++        and "usr/local/lib/try-omarchy/url-schemes" in compat_paths
+         and "usr/share/try-omarchy/skel-fragments/hypr-monitors-qemu.append.lua" in compat_paths
+         and "etc/skel/.config/nvim/lua/plugins/theme.lua" in compat_paths
+         and "etc/systemd/user/omarchy-fcitx5.service.d/10-try-omarchy.conf" in compat_paths
+-- 
+2.55.0
+

@@ -189,6 +189,9 @@ func activateMovedInstallation(m *installationMove) error {
 	if err := registerUninstallEntry(target, m.Destination); err != nil {
 		return err
 	}
+	if err := moveURLSchemeRegistrations(m.Source, m.Destination); err != nil {
+		return err
+	}
 	return unregisterUninstallEntry(m.Source)
 }
 

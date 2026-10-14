@@ -99,6 +99,22 @@ func virtualScreenRect() (screenRect, bool) {
 // behavior. Fullscreen is decided from the window itself every tick so a
 // runtime Ctrl+Alt+F toggle takes effect without relaunching, including the
 // return to windowed use.
+// displayWindowFullscreen reports whether a VM window is in SDL's borderless
+// fullscreen on its monitor.
+func displayWindowFullscreen(hwnd uintptr) bool {
+	monitor, ok := hostMonitorForWindow(hwnd)
+	if !ok {
+		return false
+	}
+	var window screenRect
+	if result, _, _ := procGetWindowRect.Call(hwnd, uintptr(unsafe.Pointer(&window))); result == 0 {
+		return false
+	}
+	maximized, _, _ := procIsZoomed.Call(hwnd)
+	style, _, _ := procGetWindowLongW.Call(hwnd, gwlStyle)
+	return windowIsFullscreen(window, monitor.Bounds, maximized != 0, style&wsCaption == wsCaption)
+}
+
 func updateQemuCursorClip() {
 	pid := qemuPid.Load()
 	if pid == 0 || foregroundPid() != pid {

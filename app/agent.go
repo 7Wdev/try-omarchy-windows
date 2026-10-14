@@ -18,6 +18,9 @@ import (
 //   guest -> host: "hello <version>"       the agent connected
 //   guest -> host: "compositor ok|unresponsive|inactive" bounded Hyprland IPC probe
 //   guest -> host: "zero-fill done|failed" the fill finished
+//   host -> guest: "url-approved <base64 JSON>" the link types allowed in Settings
+//   guest -> host: "url-schemes <base64 JSON>" link types the guest can open, after each url-approved
+//   host -> guest: "open-url <base64 link>" open an allowed link clicked in Windows
 //   guest -> host: "open-settings"     one-shot request on a separate connection
 //   guest -> host: "launch-app <approved ID>" one-shot allowlisted Windows app request
 //   guest -> host: "drop-drag <ticket ID> <x> <y>" one-shot: drag a drop into the app (see drop_drag.go)
@@ -39,6 +42,18 @@ type guestAgent struct {
 	peerAllowed   func(net.Conn) bool
 	health        *compositorHealth
 	lastAppLaunch time.Time
+	// urlSend keeps each url-approved snapshot and the open-url that follows
+	// it together on one connection. urlReady is set when this connection's
+	// guest reported its link types, so an older agent never gets a link.
+	urlSend     sync.Mutex
+	urlReady    bool
+	lastURLOpen time.Time
+	// reportMu orders recording a connection's url-schemes report against
+	// replacing that connection, so a replaced reader never writes later.
+	reportMu sync.Mutex
+	// urlApprovals and saveURLReport default to the files in appsDir.
+	urlApprovals  func() ([]string, error)
+	saveURLReport func([]string) error
 	// zeroFilled is set when the guest reports that it zero-filled its free
 	// space, so the launcher compacts disk.raw after the guest powers off.
 	zeroFilled      bool
@@ -117,11 +132,13 @@ func (a *guestAgent) serve(c net.Conn) {
 	if !strings.HasPrefix(first, "hello ") {
 		return
 	}
+	a.reportMu.Lock()
 	a.mu.Lock()
 	if a.conn != nil {
 		a.conn.Close()
 	}
 	a.conn = c
+	a.urlReady = false
 	if a.health != nil {
 		a.health.connect(a.now())
 	}
@@ -130,11 +147,13 @@ func (a *guestAgent) serve(c net.Conn) {
 		a.zeroFillStatus = uiText("reclaim.status.reconnected")
 	}
 	a.mu.Unlock()
+	a.reportMu.Unlock()
 	logf("agent: guest agent connected (%s)", strings.TrimSpace(strings.TrimPrefix(first, "hello ")))
 	guestAgentConnected()
 	a.sendTime("connect")
 	a.sendBattery()
 	a.sendApprovedApps()
+	a.sendApprovedURLSchemes()
 	a.read(c, r)
 }
 
@@ -165,6 +184,84 @@ func (a *guestAgent) sendApprovedApps() bool {
 	return err == nil && a.sendLine(line)
 }
 
+func (a *guestAgent) approvedURLSchemes() ([]string, error) {
+	if a.urlApprovals != nil {
+		return a.urlApprovals()
+	}
+	if a.appsDir == "" {
+		return nil, fmt.Errorf("no installation")
+	}
+	prefs, err := loadApprovedURLSchemes(a.appsDir)
+	return prefs.Schemes, err
+}
+
+// sendApprovedURLSchemes sends an empty list when the file cannot be read,
+// so the guest stops opening links rather than keeping an older list.
+func (a *guestAgent) sendApprovedURLSchemes() bool {
+	if a.appsDir == "" && a.urlApprovals == nil {
+		return false
+	}
+	a.urlSend.Lock()
+	defer a.urlSend.Unlock()
+	schemes, err := a.approvedURLSchemes()
+	if err != nil {
+		logf("agent: could not read allowed link types: %v", err)
+		schemes = nil
+	}
+	return a.sendLine(urlApprovedLine(schemes))
+}
+
+// requestURLOpen forwards a link from the -open-url process. The link is
+// checked again against the file as it is now; the guest checks it once more.
+// Reading the file, checking the link and sending the snapshot and link all
+// happen under urlSend, so a newer snapshot from the periodic sender can
+// never be followed by a link allowed only by an older one.
+func (a *guestAgent) requestURLOpen(raw string) error {
+	a.urlSend.Lock()
+	defer a.urlSend.Unlock()
+	approved, err := a.approvedURLSchemes()
+	if err != nil {
+		logf("links: refused a link (approvals unreadable)")
+		return uiError(uiText("error.links.read_failed"), err)
+	}
+	url, ok := validOpenURL(raw, approved)
+	if !ok {
+		logf("links: refused a link (not allowed)")
+		return uiError(uiText("error.links.not_allowed"), nil)
+	}
+	a.mu.Lock()
+	c, ready := a.conn, a.urlReady
+	if c == nil || !ready {
+		a.mu.Unlock()
+		logf("links: refused a link (guest not ready)")
+		return uiError(uiText("error.links.not_ready"), nil)
+	}
+	if !a.lastURLOpen.IsZero() && a.now().Sub(a.lastURLOpen) < time.Second {
+		a.mu.Unlock()
+		logf("links: refused a link (rate limit)")
+		return uiError(uiText("error.links.rate_limit"), nil)
+	}
+	a.lastURLOpen = a.now()
+	a.mu.Unlock()
+	if !a.sendLineOn(c, urlApprovedLine(approved)) || !a.sendLineOn(c, openURLLine(url)) {
+		logf("links: refused a link (guest disconnected)")
+		return uiError(uiText("error.links.not_ready"), nil)
+	}
+	logf("links: forwarded a link to the guest")
+	return nil
+}
+
+func (a *guestAgent) recordURLReport(schemes []string) error {
+	if a.saveURLReport != nil {
+		return a.saveURLReport(schemes)
+	}
+	if a.appsDir == "" {
+		return nil
+	}
+	_, err := saveGuestURLSchemes(a.appsDir, schemes)
+	return err
+}
+
 func (a *guestAgent) read(c net.Conn, r *bufio.Reader) {
 	for {
 		line, err := readAgentLine(r)
@@ -184,6 +281,25 @@ func (a *guestAgent) read(c net.Conn, r *bufio.Reader) {
 				a.health.heartbeat(a.now(), line == "compositor ok\n")
 			}
 			a.mu.Unlock()
+		case strings.HasPrefix(line, "url-schemes "):
+			schemes, err := parseURLSchemesLine(line)
+			if err != nil {
+				logf("agent: ignored the guest's link types: %v", err)
+				continue
+			}
+			a.reportMu.Lock()
+			a.mu.Lock()
+			current := a.conn == c
+			if current {
+				a.urlReady = true
+			}
+			a.mu.Unlock()
+			if current {
+				if err := a.recordURLReport(schemes); err != nil {
+					logf("agent: could not record the guest's link types: %v", err)
+				}
+			}
+			a.reportMu.Unlock()
 		case strings.HasPrefix(line, "hello"):
 			logf("agent: guest agent connected (%s)", strings.TrimSpace(strings.TrimPrefix(line, "hello")))
 		case strings.TrimSpace(line) == "zero-fill done":
@@ -250,10 +366,14 @@ func (a *guestAgent) sendBattery() bool {
 	return line != "" && a.sendLine(line)
 }
 
-func (a *guestAgent) sendLine(line string) bool {
+func (a *guestAgent) sendLine(line string) bool { return a.sendLineOn(nil, line) }
+
+// sendLineOn sends only while want is still the current connection; nil
+// means whichever connection is current.
+func (a *guestAgent) sendLineOn(want net.Conn, line string) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.conn == nil || line == "" || len(line) > 16<<10 || !strings.HasSuffix(line, "\n") {
+	if a.conn == nil || want != nil && a.conn != want || line == "" || len(line) > 16<<10 || !strings.HasSuffix(line, "\n") {
 		return false
 	}
 	a.conn.SetWriteDeadline(time.Now().Add(3 * time.Second))
@@ -284,6 +404,7 @@ func (a *guestAgent) run(l net.Listener, resumed <-chan struct{}) {
 	runAgentUpdates(timeTicker.C, batteryTicker.C, resumed, nil, retry.C, retry, func(reason string) { a.sendTime(reason) }, func() {
 		a.sendBattery()
 		a.sendApprovedApps()
+		a.sendApprovedURLSchemes()
 	})
 }
 

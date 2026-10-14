@@ -233,6 +233,9 @@ func completeUninstall(dir string) error {
 	if _, err := s.checkUninstall(dir); err != nil {
 		return err
 	}
+	// Link types are found from the registry alone, so a retry after the
+	// folder is gone finds them again.
+	linkSchemes, linkErr := ownedURLSchemes(dir)
 	if err := removeUninstallDirectory(dir, removeAllWithRetry); err != nil {
 		return err
 	}
@@ -242,6 +245,14 @@ func completeUninstall(dir string) error {
 		func() error { return syncSignInShortcut(filepath.Join(dir, stableLauncherName), dir, false) },
 		func() error { return removeLauncherShortcuts(filepath.Join(dir, stableLauncherName)) },
 		func() error { return unregisterUninstallEntry(dir) },
+		func() error {
+			if linkErr != nil {
+				if linkSchemes, linkErr = ownedURLSchemes(dir); linkErr != nil {
+					return linkErr
+				}
+			}
+			return removeOwnedURLSchemes(dir, linkSchemes)
+		},
 		func() error { return cleanupUninstallBootstrap(defaultDataDirectory(), dir) },
 	} {
 		if err := cleanup(); err != nil {
