@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.12.0 - 2026-10-14
 
 - Links clicked in Windows can open in Omarchy. Allow a link type that an
   Omarchy app handles in Settings > Apps > Links from Windows (#348).
