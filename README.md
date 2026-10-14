@@ -29,7 +29,13 @@ There is no reliable completion date yet; the remaining work includes substantia
 
 Vulkan, CUDA, video acceleration, NVIDIA-specific features and concurrent Windows/guest GPU use need separate real-application acceptance tests as part of the wider goal.
 
-Latest lab result: [actual EGL native-fence callbacks](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-EGL-NATIVE-SYNC.md)
+Latest lab result: [native resource DMA-BUF ownership](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-NATIVE-BUFFER.md)
+passes two fresh ordinary-user guests: a real Linux DMA-BUF retains the native GPU texture through FD closure,
+and both full 4K storage passes succeed after import. All 72 buffers and 165 memory leases release per run;
+the disabled control and EGL fence regression also pass. GBM allocation, EGL image import, DRM/device integration
+and stable presentation remain open. **No desktop gate is closed by this diagnostic.**
+
+Earlier [actual EGL native-fence callbacks](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-EGL-NATIVE-SYNC.md)
 pass two fresh ordinary-user guests, including a GPU wait that gates a subsequently exported EGL fence,
 completed-source lifetime, error rejection and full cleanup. The disabled-extension and legacy timeline regressions also pass.
 Compositor-compatible DRM/GBM buffers, sustained compositor work and reliable Windows presentation remain the next integration steps.
@@ -57,7 +63,7 @@ The [native texture-FD diagnostic](https://github.com/7Wdev/try-omarchy-windows/
 now passes full 4K storage checks through an imported resource, including after source/FD release, in two fresh guests.
 The [CPU aperture capacity fix](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/CPU-APERTURE-CAPACITY.md)
 now passes that full 33 MB readback in two fresh guests using 256 virtual slots and the same 96 MiB physical mapping limit.
-The old 128-slot failure is retained. General fragmentation, dma-buf, GBM and Hyprland integration remain pending.
+The old 128-slot failure is retained. General fragmentation, DMA-BUF interoperability, GBM and Hyprland integration remain pending.
 The [opt-in guest graphics broker](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-BROKER-ROUTING.md)
 now renders both 130×73 NVIDIA OpenGL shader frames as UID 65534 in two fresh guests.
 A third also verifies a real native fence in a library finalizer after channel close; all three exit cleanly.
