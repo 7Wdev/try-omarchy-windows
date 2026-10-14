@@ -258,6 +258,33 @@ func repairDisplayPlacement(now *windowPlacement, index int, monitors []hostMoni
 	return fitPlacement(now, monitors)
 }
 
+// fullscreenPlacement handles QEMU's own fullscreen toggle (Ctrl+Alt+F) for
+// a windowed VM. Nothing is remembered while the window is fullscreen. On the
+// way out SDL sizes the window to the guest's fullscreen display, larger than
+// the work area, so the placement from before fullscreen goes back instead of
+// being saved as the user's. handled is false when neither applies.
+func fullscreenPlacement(wasFullscreen, fullscreen bool, last *windowPlacement) (restore *windowPlacement, handled bool) {
+	switch {
+	case fullscreen:
+		return nil, true
+	case wasFullscreen:
+		return last, true
+	}
+	return nil, false
+}
+
+// placementBeforeFullscreen picks the placement to put back after fullscreen.
+// SDL un-maximizes a maximized window on its way into fullscreen, and that
+// step can be saved like a user's change just before the window covers the
+// screen. A save that recent belongs to the transition, so the placement it
+// replaced is the one to restore.
+func placementBeforeFullscreen(last, previous *windowPlacement, sinceSave time.Duration) *windowPlacement {
+	if previous != nil && sinceSave >= 0 && sinceSave < 2*time.Second {
+		return previous
+	}
+	return last
+}
+
 type placementStep int
 
 const (

@@ -177,3 +177,36 @@ func TestLivePlacementRepairAfterWorkAreaChanges(t *testing.T) {
 		t.Fatal("repaired an unavailable window or desktop")
 	}
 }
+
+func TestFullscreenPlacementRestoresTheWindowedPlacement(t *testing.T) {
+	before := &windowPlacement{Normal: screenRect{Left: 100, Top: 80, Right: 1100, Bottom: 700}, Maximized: true}
+	if restore, handled := fullscreenPlacement(false, true, before); !handled || restore != nil {
+		t.Fatalf("entering fullscreen = %v, %t; want nothing remembered", restore, handled)
+	}
+	if restore, handled := fullscreenPlacement(true, true, before); !handled || restore != nil {
+		t.Fatalf("staying fullscreen = %v, %t; want nothing remembered", restore, handled)
+	}
+	if restore, handled := fullscreenPlacement(true, false, before); !handled || restore != before {
+		t.Fatalf("leaving fullscreen = %v, %t; want the placement from before", restore, handled)
+	}
+	if restore, handled := fullscreenPlacement(true, false, nil); !handled || restore != nil {
+		t.Fatalf("leaving fullscreen with nothing remembered = %v, %t; want no restore", restore, handled)
+	}
+	if _, handled := fullscreenPlacement(false, false, before); handled {
+		t.Fatal("ordinary windowed pass was handled; want the usual placement rules")
+	}
+}
+
+func TestPlacementBeforeFullscreenSkipsTheTransitionSave(t *testing.T) {
+	maximized := &windowPlacement{Normal: screenRect{Left: 100, Top: 80, Right: 1100, Bottom: 700}, Maximized: true}
+	restored := &windowPlacement{Normal: screenRect{Left: 100, Top: 80, Right: 1100, Bottom: 700}}
+	if got := placementBeforeFullscreen(restored, maximized, 300*time.Millisecond); got != maximized {
+		t.Fatalf("save during the transition: got %v, want the maximized placement", got)
+	}
+	if got := placementBeforeFullscreen(restored, maximized, 10*time.Second); got != restored {
+		t.Fatalf("older save: got %v, want the latest placement", got)
+	}
+	if got := placementBeforeFullscreen(restored, nil, 0); got != restored {
+		t.Fatalf("nothing earlier: got %v, want the latest placement", got)
+	}
+}

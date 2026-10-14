@@ -7,6 +7,8 @@
 - In fullscreen with an auto-hiding Windows taskbar, clicks at the bottom edge
   stay in Omarchy instead of opening the taskbar. Ctrl+Alt+G still releases the
   pointer so the taskbar can be reached (#320).
+- Leaving fullscreen with Ctrl+Alt+F puts the Omarchy window back where it was,
+  instead of leaving it larger than the screen.
 - Diagnostics remove folder paths, account, computer and display names, and
   private network addresses from every file, so the zip can be shared as is.
 - Omarchy's network keeps working when many connections are open. Before,
