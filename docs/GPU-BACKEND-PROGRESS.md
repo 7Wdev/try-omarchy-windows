@@ -1,10 +1,19 @@
 # NVIDIA backend progress
 
-Updated 2026-10-13. **4 of 8 verification stages demonstrated.** This is a
+Updated 2026-10-14. **4 of 8 verification stages demonstrated.** This is a
 checklist count, not 50% of engineering effort or a product-readiness estimate.
 The largest integration tasks are still ahead.
 
-Latest lab result: [actual EGL native-fence callbacks](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-EGL-NATIVE-SYNC.md)
+Latest lab result: [native resource DMA-BUF ownership](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-NATIVE-BUFFER.md)
+passes two fresh ordinary-user guests. Genuine Linux DMA-BUF files retain a
+native GPU texture through FD closure and import; both full 4K storage rounds
+pass, including after source release. Each run releases 72 buffers and all
+165 memory leases. Disabled-feature and EGL regressions pass. This proves the
+owned buffer boundary; actual GBM allocation, EGL image import, DRM/device
+integration, implicit synchronization and a Hyprland session remain open.
+Stage 5 advances; the desktop acceptance count remains **0/4**.
+
+Earlier [actual EGL native-fence callbacks](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-EGL-NATIVE-SYNC.md)
 pass two fresh ordinary-user guests. An EGL server wait gates a subsequently
 exported EGL fence and a native acknowledgement until independent GPU release.
 Completed-source lifetime, error rejection and full cleanup pass; a disabled
