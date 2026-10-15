@@ -8,6 +8,7 @@ experimental/windows-native-gpu/aquamarine-*.patch text eol=lf whitespace=-blank
 docs/evidence/HYPRLAND-LOGGING-LIFETIME-DEVELOPMENT-2026-10-15.json text eol=lf
 docs/evidence/HYPRLAND-COMPOSITOR-CAPTURE-DEVELOPMENT-2026-10-15.json text eol=lf
 docs/evidence/HYPRLAND-NATIVE-WINDOW-DEVELOPMENT-2026-10-15.json text eol=lf
+docs/evidence/HYPRLAND-FRAME-PACING-DEVELOPMENT-2026-10-15.json text eol=lf
 
 # Unified-diff context lines and format-patch trailers carry intentional spaces.
 guest-build/*.patch text eol=lf whitespace=-blank-at-eol,-blank-at-eof

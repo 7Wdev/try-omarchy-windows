@@ -10,12 +10,14 @@ class TexturePresenter {
     std::array<Microsoft::WRL::ComPtr<ID3D12Resource>, 2> buffers;
     Microsoft::WRL::ComPtr<ID3D12Fence> retirement;
     HWND window = nullptr;
+    HANDLE frameLatency = nullptr;
     ATOM windowClass = 0;
     bool opened = false;
-    bool compositorOutput = false, closeRequested = false;
+    bool compositorOutput = false, closeRequested = false, acceptedCompositor = false;
     UINT outputWidth = 0, outputHeight = 0;
     const wchar_t* registeredClass = nullptr;
     UINT index = 0;
+    unsigned preparedFrames = 0;
     static constexpr const wchar_t* ClassName = L"7WdevGuestShaderPresentationLab";
     static constexpr const wchar_t* CompositorClassName = L"7WdevHyprlandPresentationLab";
     static LRESULT CALLBACK procedure(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
@@ -31,21 +33,63 @@ class TexturePresenter {
         }
         return DefWindowProcW(hwnd, message, wparam, lparam);
     }
-    void pump() const {
+    void pump() {
         MSG message{};
-        while (PeekMessageW(&message, window, 0, 0, PM_REMOVE)) {
+        while (PeekMessageW(&message, compositorOutput ? nullptr : window, 0, 0, PM_REMOVE)) {
+            if (compositorOutput && message.message == WM_QUIT) { closeRequested = true; continue; }
             TranslateMessage(&message); DispatchMessageW(&message);
+        }
+    }
+    HRESULT waitForFrameSlot() {
+        if (!frameLatency) return S_OK;
+        const auto started = GetTickCount64(), deadline = started + 5000;
+        for (;;) {
+            pump(); if (closeRequested) return HRESULT_FROM_WIN32(ERROR_CANCELLED);
+            const auto now = GetTickCount64();
+            if (now >= deadline) return HRESULT_FROM_WIN32(WAIT_TIMEOUT);
+            const auto result = MsgWaitForMultipleObjectsEx(1, &frameLatency, static_cast<DWORD>(deadline - now),
+                QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+            if (result == WAIT_OBJECT_0) {
+                DXGI_FRAME_STATISTICS stats{};
+                const auto status = swapchain->GetFrameStatistics(&stats);
+                std::cerr << "{\"nativeCompositorFrameSlotReady\":true,\"frame\":" << ++preparedFrames
+                    << ",\"maximumFrameLatency\":1,\"waitMilliseconds\":" << GetTickCount64() - started
+                    << ",\"statisticsHresult\":" << status << ",\"statisticsPresentCount\":" << stats.PresentCount
+                    << ",\"syncQpc\":" << stats.SyncQPCTime.QuadPart
+                    << ",\"presentProcessId\":" << GetCurrentProcessId()
+                    << ",\"presentSwapChain\":" << reinterpret_cast<std::uintptr_t>(swapchain.Get()) << "}\n";
+                return S_OK;
+            }
+            if (result == WAIT_OBJECT_0 + 1) continue;
+            return HRESULT_FROM_WIN32(result == WAIT_TIMEOUT ? WAIT_TIMEOUT : result == WAIT_FAILED ? GetLastError() : ERROR_INVALID_DATA);
         }
     }
 public:
     ~TexturePresenter() {
+        // Only this bounded capture diagnostic holds its last output at EOF.
+        // There is no per-frame hold in the compositor handoff.
+        if (acceptedCompositor && !closeRequested) {
+            const auto until = GetTickCount64() + 1000;
+            do { pump(); Sleep(1); } while (!closeRequested && GetTickCount64() < until);
+            DXGI_FRAME_STATISTICS stats{};
+            const auto status = swapchain->GetFrameStatistics(&stats);
+            std::cerr << "{\"nativeCompositorShutdownStatistics\":true,\"statisticsHresult\":" << status
+                << ",\"statisticsPresentCount\":" << stats.PresentCount << ",\"syncQpc\":" << stats.SyncQPCTime.QuadPart
+                << ",\"presentProcessId\":" << GetCurrentProcessId()
+                << ",\"presentSwapChain\":" << reinterpret_cast<std::uintptr_t>(swapchain.Get())
+                << ",\"windowVisible\":" << (!closeRequested && IsWindowVisible(window) && !IsIconic(window) ? "true" : "false")
+                << ",\"diagnosticShutdownHoldMilliseconds\":1000}\n";
+        }
+        const bool latencyClosed = !frameLatency || CloseHandle(frameLatency) != FALSE;
+        frameLatency = nullptr;
         for (auto& buffer : buffers) buffer.Reset();
         swapchain.Reset(); retirement.Reset();
         const bool destroyed = !window || DestroyWindow(window) != FALSE;
         const bool unregistered = !windowClass || UnregisterClassW(registeredClass, GetModuleHandleW(nullptr)) != FALSE;
         if (opened) std::cerr << "{\"nativeSharedTexturePresenterReleased\":true,\"gpuWorkRetired\":true,\"windowDestroyed\":"
-            << (destroyed ? "true" : "false") << ",\"classUnregistered\":" << (unregistered ? "true" : "false") << "}\n";
-        if (!destroyed || !unregistered) ExitProcess(3);
+            << (destroyed ? "true" : "false") << ",\"classUnregistered\":" << (unregistered ? "true" : "false")
+            << (compositorOutput ? (latencyClosed ? ",\"frameLatencyHandleClosed\":true" : ",\"frameLatencyHandleClosed\":false") : "") << "}\n";
+        if (!destroyed || !unregistered || !latencyClosed) ExitProcess(3);
     }
     HRESULT initialize(IDXGIFactory4* factory, ID3D12Device* device, ID3D12CommandQueue* queue,
                        UINT width = gpu_diagnostic::Width, UINT height = gpu_diagnostic::Height,
@@ -73,12 +117,19 @@ public:
         DXGI_SWAP_CHAIN_DESC1 desc{}; desc.Width = width; desc.Height = height;
         desc.Format = format; desc.SampleDesc.Count = 1;
         desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT; desc.BufferCount = 2;
-        desc.Scaling = DXGI_SCALING_STRETCH; desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
+        desc.Scaling = DXGI_SCALING_STRETCH;
+        desc.SwapEffect = compositorOutput ? DXGI_SWAP_EFFECT_FLIP_DISCARD : DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
         desc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
+        if (compositorOutput) desc.Flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
         Microsoft::WRL::ComPtr<IDXGISwapChain1> created;
         auto hr = factory->CreateSwapChainForHwnd(queue, window, &desc, nullptr, nullptr, &created);
         if (FAILED(hr)) return hr;
         hr = created.As(&swapchain); if (FAILED(hr)) return hr;
+        if (compositorOutput) {
+            hr = swapchain->SetMaximumFrameLatency(1); if (FAILED(hr)) return hr;
+            frameLatency = swapchain->GetFrameLatencyWaitableObject();
+            if (!frameLatency || frameLatency == INVALID_HANDLE_VALUE) { frameLatency = nullptr; return E_FAIL; }
+        }
         hr = factory->MakeWindowAssociation(window, DXGI_MWA_NO_ALT_ENTER | DXGI_MWA_NO_WINDOW_CHANGES);
         if (FAILED(hr)) return hr;
         for (UINT i = 0; i < buffers.size(); ++i) {
@@ -93,7 +144,7 @@ public:
         opened = true;
         std::cerr << "{\"nativeSharedTexturePresenterOpened\":true,\"width\":" << outputWidth
             << ",\"height\":" << outputHeight << ",\"bufferCount\":2"
-            << (compositorOutput ? ",\"compositorOutput\":true" : "")
+            << (compositorOutput ? ",\"compositorOutput\":true,\"flipDiscard\":true,\"frameLatencyWaitable\":true,\"maximumFrameLatency\":1" : "")
             << ",\"flipModel\":true,\"clientWidth\":" << client.right << ",\"clientHeight\":" << client.bottom
             << ",\"windowVisible\":true,\"sameAdapter\":true,\"cpuUpload\":false}\n";
         return S_OK;
@@ -102,6 +153,7 @@ public:
                  ID3D12Resource* readback, D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint) {
         if (!opened) return E_FAIL;
         pump(); if (closeRequested) return HRESULT_FROM_WIN32(ERROR_CANCELLED);
+        const auto ready = waitForFrameSlot(); if (FAILED(ready)) return ready;
         index = swapchain->GetCurrentBackBufferIndex(); if (index >= buffers.size()) return E_FAIL;
         const auto barrier = [&](D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after) {
             D3D12_RESOURCE_BARRIER b{}; b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -145,7 +197,7 @@ public:
             << ",\"allFramesDisplayedVerified\":false,\"cpuUpload\":false}\n";
         return presented == S_OK && counted == S_OK && count == frame ? S_OK : E_FAIL;
     }
-    HRESULT present(ID3D12CommandQueue* queue, UINT64 round, UINT64 hash) {
+    HRESULT present(ID3D12CommandQueue* queue, UINT64 round, UINT64 hash, bool requireDisplayProof = true) {
         if (!opened || !round || round > 2) return E_INVALIDARG;
         pump();
         LARGE_INTEGER before{}, after{}, frequency{};
@@ -166,7 +218,7 @@ public:
         HRESULT flushed=S_OK; unsigned flushes=0;
         DXGI_FRAME_STATISTICS stats{};
         const auto statsDeadline = GetTickCount64() + 2500;
-        do {
+        if (requireDisplayProof) do {
             // Hardware Flip Queue systems can require a DWM flush before
             // statistics update. Flush each observation, not just the first.
             pump(); flushed=DwmFlush(); ++flushes;
@@ -176,11 +228,14 @@ public:
             if (FAILED(hr) && hr != DXGI_ERROR_FRAME_STATISTICS_DISJOINT) break;
             Sleep(10);
         } while (GetTickCount64() < statsDeadline);
+        else hr = swapchain->GetFrameStatistics(&stats);
         const bool visible = IsWindowVisible(window) != FALSE && !IsIconic(window);
         const bool complete = hr == S_OK && SUCCEEDED(flushed) && stats.PresentCount == count && stats.SyncQPCTime.QuadPart > 0 && visible;
         std::cerr << "{\"nativeSharedTexturePresented\":" << (complete ? "true" : "false") << ",\"round\":" << round
             << ",\"width\":" << outputWidth << ",\"height\":" << outputHeight << ",\"backBufferIndex\":" << index << ",\"backBufferFnv1a\":" << hash
             << (compositorOutput ? ",\"compositorOutput\":true" : "")
+            << (compositorOutput ? (requireDisplayProof ? ",\"presentSubmissionAccepted\":true,\"displayProofRequired\":true" :
+                ",\"presentSubmissionAccepted\":true,\"displayProofRequired\":false") : "")
             << ",\"presentProcessId\":" << GetCurrentProcessId()
             << ",\"presentSwapChain\":" << reinterpret_cast<std::uintptr_t>(swapchain.Get())
             << ",\"presentCallQpcBefore\":" << before.QuadPart << ",\"presentCallQpcAfter\":" << after.QuadPart
@@ -194,11 +249,12 @@ public:
             << ",\"presentQueueFenceTarget\":" << round << ",\"presentQueueFenceObserved\":" << observed
             << ",\"backBufferState\":\"PRESENT\",\"cpuUpload\":false}\n";
         // Leave the verified frame visible briefly, pumping its window messages.
-        if (complete) { const auto hold = GetTickCount64() + 3000; do { pump(); Sleep(10); } while (GetTickCount64() < hold); }
+        if (complete && requireDisplayProof) { const auto hold = GetTickCount64() + 3000; do { pump(); Sleep(10); } while (GetTickCount64() < hold); }
         // Statistics can be stale even when ETW records the frame as displayed.
         // Preserve strict diagnostic failure; an offline ETW verifier needs exact
         // PID/swapchain/QPC correlation, never Present(S_OK) or a retired GPU fence alone.
-        return complete ? S_OK : E_FAIL;
+        if (compositorOutput && !requireDisplayProof) acceptedCompositor = true;
+        return complete || !requireDisplayProof ? S_OK : E_FAIL;
     }
 };
 }

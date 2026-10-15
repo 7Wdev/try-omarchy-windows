@@ -4,6 +4,14 @@ Updated 2026-10-15. **4 of 8 verification stages demonstrated.** This is a
 checklist count, not 50% of engineering effort or a product-readiness estimate.
 The largest integration tasks are still ahead.
 
+[Paced compositor handoff](LIVE-HYPRLAND-FRAME-PACING.md) now passes exact deferred
+display observations for both frames in two fresh guests. A targeted ETW trace
+confirms that a prior second frame displayed while its DXGI statistics stayed
+on frame one. The compositor handoff no longer polls display statistics or holds
+each frame for three seconds; strict immediate audits and their failures remain.
+The normal launcher, sustained rendering, full scene correctness and performance
+remain unverified. Counts stay 4/8 stages and 0/4 desktop gates.
+
 [Actual Hyprland native-window presentation](LIVE-HYPRLAND-NATIVE-WINDOW.md)
 now passes both strict DXGI display checks once, with exact backbuffer bytes.
 Its immediate repeat fails the second statistics check; that failure is retained.

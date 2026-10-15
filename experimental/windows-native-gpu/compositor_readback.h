@@ -127,7 +127,7 @@ public:
             << ",\"copyFenceObserved\":" << observed << ",\"fnv1a\":" << hash
             << (presenter ? ",\"backBufferReadback\":true" : "")
             << ",\"sourceReturnedToCommon\":true,\"cpuUpload\":false,\"windowsPresentation\":false}\n";
-        return presenter ? presenter->present(queue.Get(), frame, hash) : S_OK;
+        return presenter ? presenter->present(queue.Get(), frame, hash, false) : S_OK;
     }
 };
 }

@@ -30,7 +30,13 @@ There is no reliable completion date yet; the remaining work includes substantia
 
 Vulkan, CUDA, video acceleration, NVIDIA-specific features and concurrent Windows/guest GPU use need separate real-application acceptance tests as part of the wider goal.
 
-Latest integration work: [actual Hyprland in a native Windows test window](docs/LIVE-HYPRLAND-NATIVE-WINDOW.md)
+Latest integration work: [paced Hyprland handoff with deferred display evidence](docs/LIVE-HYPRLAND-FRAME-PACING.md)
+passes both exact display counts/timings in two fresh guests. The compositor path no longer polls display statistics
+or holds each frame for three seconds. An independent trace confirms that a prior second frame displayed while its DXGI statistics stayed stale.
+Capture, submission and display remain separate checks. Normal launcher integration, sustained rendering and 4K desktop performance remain open.
+**No desktop gate is closed; the counts remain 4/8 and 0/4.**
+
+The earlier [actual Hyprland native Windows test window](docs/LIVE-HYPRLAND-NATIVE-WINDOW.md)
 passes two strictly verified presents once. Its repeat fails the second display-statistics check despite correct backbuffer pixels;
 **reliable display and normal launcher integration remain unverified**. A fresh capture-only regression passes.
 The counts remain 4/8 verification stages and 0/4 desktop gates.

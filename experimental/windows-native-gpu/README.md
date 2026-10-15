@@ -1,5 +1,12 @@
 # Native Windows GPU experiment
 
+The [paced compositor handoff](../../docs/LIVE-HYPRLAND-FRAME-PACING.md) separates
+native submission from display telemetry. Two fresh guests pass exact deferred
+display observations for both frames; an earlier targeted ETW trace confirms
+display despite stale DXGI statistics. The compositor path has no per-frame
+statistics polling or fixed three-second hold. CPU readback remains diagnostic;
+sustained rendering and normal launcher integration remain unfinished.
+
 The [actual Hyprland native-window experiment](../../docs/LIVE-HYPRLAND-NATIVE-WINDOW.md)
 passes two strict display checks once; its immediate repeat fails at the second
 DXGI statistics check despite correct backbuffer bytes. The retained presenter
