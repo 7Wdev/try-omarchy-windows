@@ -16,6 +16,9 @@ constexpr OpenGlProfile GuestOpenGlFenceProfile{2, 2, 64, 16, 16ull * 1024 * 102
 // exceeds the two-frame probe's 96 sync objects. Version 3 is an explicit
 // initialization profile, not a sustained desktop or performance guarantee.
 constexpr OpenGlProfile GuestOpenGlCompositorProfile{3, 2, 256, 16, 16ull * 1024 * 1024 * 1024, 50000, 512};
+// The real compositor's first draw creates additional small GPUVA reservations.
+// Preserve version 3; rendering capacity is a distinct, exact negotiation.
+constexpr OpenGlProfile GuestOpenGlCompositorRenderProfile{4, 2, 256, 32, 16ull * 1024 * 1024 * 1024, 50000, 768};
 constexpr std::uint32_t OpenGlCompositorSyncObjects = 192;
 constexpr std::uint32_t OpenGlCompositorVendorAllocations = 256;
 constexpr std::uint32_t OpenGlCompositorHwSignals = GuestOpenGlCompositorProfile.commandLimit;
@@ -35,5 +38,9 @@ inline bool validOpenGlFenceProfile(OpenGlProfile p) {
 inline bool validOpenGlCompositorProfile(OpenGlProfile p) {
     return p.version == 3 && p.frames == 2 && p.commandLimit == 256 && p.reservationLimit == 16 &&
            p.reservedBytes == 16ull * 1024 * 1024 * 1024 && p.requestLimit == 50000 && p.objectLimit == 512;
+}
+inline bool validOpenGlCompositorRenderProfile(OpenGlProfile p) {
+    return p.version == 4 && p.frames == 2 && p.commandLimit == 256 && p.reservationLimit == 32 &&
+           p.reservedBytes == 16ull * 1024 * 1024 * 1024 && p.requestLimit == 50000 && p.objectLimit == 768;
 }
 }

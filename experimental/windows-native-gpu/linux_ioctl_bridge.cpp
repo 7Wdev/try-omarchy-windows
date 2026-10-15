@@ -8,6 +8,7 @@
 #include "guest_paging_fence.h"
 #include "guest_allocation_memory.h"
 #include "guest_kernel_object.h"
+#include "native_resource_preparation.h"
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -239,6 +240,8 @@ class Bridge {
     bool openglNegotiated = false;
     bool openglFencesNegotiated = false;
     bool openglCompositorNegotiated = false;
+    bool openglRenderNegotiated = false;
+    std::size_t reservationLimit() const { return openglRenderNegotiated ? GuestOpenGlCompositorRenderProfile.reservationLimit : openglNegotiated ? GuestOpenGlProfile.reservationLimit : MaxGpuReservations; }
     std::size_t syncObjectLimit() const { return openglCompositorNegotiated ? OpenGlCompositorSyncObjects : MaxSyncObjects; }
     std::uint64_t consumedStreamFrames = 0;
     native_gpu::Capabilities caps{};
@@ -262,8 +265,7 @@ class Bridge {
     NativeTextureDesc pendingNativeTexture{};
     std::uint32_t pendingNativeDevice = 0;
     pthread_t pendingNativeThread{};
-    struct NativePreparation { std::uint32_t device; NativeTextureDesc texture; };
-    std::map<pid_t,NativePreparation> nativePreparations;
+    NativeResourcePreparations nativePreparations;
     bool nativeInteropQueried=false, nativeInteropSupported=false;
     std::uint32_t lastHwSignalSync = 0;
     struct BorrowedFence { std::uint32_t owner, device; bool hardware; };
@@ -771,8 +773,7 @@ public:
                 auto& a = args<D3DKMT_DESTROYDEVICE>(requestNumber, pointer);
                 destroy(Op::DestroyDevice, a.hDevice); deviceAdapters.erase(a.hDevice);
                 if (pendingNativeDevice == a.hDevice) pendingNativeDevice = 0;
-                for(auto p=nativePreparations.begin();p!=nativePreparations.end();)
-                    if(p->second.device==a.hDevice) p=nativePreparations.erase(p); else ++p;
+                nativePreparations.destroyDevice(a.hDevice);
                 return 0;
             }
             case 7: {
@@ -842,13 +843,14 @@ public:
                     }
                 const bool sharedResource = flags == 71; // CreateResource | CreateShared | NonSecure | NtSecuritySharing
                 const bool withResource = flags == 1 || sharedResource;
-                const auto prepared=nativePreparations.find(static_cast<pid_t>(syscall(SYS_gettid)));
-                const bool nativeInterop=sharedResource && prepared!=nativePreparations.end();
+                const auto thread=static_cast<std::uint64_t>(syscall(SYS_gettid));
+                const bool nativeInterop=sharedResource && nativePreparations.contains(thread);
                 const bool nativeTexture = sharedResource && (pendingNativeDevice || nativeInterop);
-                const auto profile = nativeInterop ? prepared->second.texture : pendingNativeTexture;
+                auto profile = pendingNativeTexture;
                 if(nativeInterop) {
-                    const auto preparedDevice=prepared->second.device; nativePreparations.erase(prepared);
-                    if(a.hDevice!=preparedDevice) throw Error(EBADF);
+                    const auto prepared=nativePreparations.take(thread,a.hDevice,deviceAdapters);
+                    if(!prepared) throw Error(EBADF);
+                    profile=*prepared;
                 } else if (nativeTexture) {
                     const auto preparedDevice = pendingNativeDevice; pendingNativeDevice = 0;
                     if (a.hDevice != preparedDevice || !pthread_equal(pendingNativeThread, pthread_self())) throw Error(EBADF);
@@ -1040,7 +1042,7 @@ public:
                 const GpuReservationDesc desc{a.BaseAddress, a.MinimumAddress, a.MaximumAddress, a.Size};
                 if (a.Reserved0 || a.Reserved1 || a.Reserved2 || !validGpuReservation(desc)) throw Error(EINVAL);
                 if (!ownedAdapters.count(a.hAdapter)) throw Error(EBADF);
-                if (gpuReservations.size() >= (openglNegotiated ? GuestOpenGlProfile.reservationLimit : MaxGpuReservations) ||
+                if (gpuReservations.size() >= reservationLimit() ||
                     desc.bytes > MaxGpuReservedBytes - gpuReservedBytes) throw Error(EMFILE);
                 if (desc.base) for (const auto& range : gpuReservations)
                     if (gpuRangesOverlap(desc.base, desc.bytes, range.second.address, range.second.bytes)) throw Error(EBUSY);
@@ -1627,10 +1629,9 @@ public:
         if(nativeBufferEnabled()!=1 || !nativeInteropAvailable()) throw Error(ENOSYS);
         const auto required=NativeSharedTextureCapability|SharedVendorResourceCapability;
         if((caps.flags & required)!=required) throw Error(ENOSYS);
-        if(pendingNativeDevice || deviceAdapters.size()!=1 || nativePreparations.size()>=16) throw Error(EBUSY);
-        if(!nativePreparations.emplace(static_cast<pid_t>(syscall(SYS_gettid)),NativePreparation{deviceAdapters.begin()->first,profile}).second) throw Error(EBUSY);
+        if(pendingNativeDevice || !nativePreparations.stage(static_cast<std::uint64_t>(syscall(SYS_gettid)),profile,deviceAdapters)) throw Error(EBUSY);
     }
-    void cancelNativeResource() { nativePreparations.erase(static_cast<pid_t>(syscall(SYS_gettid))); }
+    void cancelNativeResource() { nativePreparations.cancel(static_cast<std::uint64_t>(syscall(SYS_gettid))); }
     void beginStreaming() {
         if (!gpu_diagnostic::Streaming || streamingNegotiated || openglNegotiated || !sharedResources.empty() || deviceAdapters.size() != 1) throw Error(EINVAL);
         const auto required = NativeSharedTextureCapability | SharedTextureConsumeCapability | AsyncHwSubmitCapability | UINT32_C(0x80000000);
@@ -1659,11 +1660,12 @@ public:
         if (header.status) throw Error(-header.status);
         if (packet.size() != sizeof header + sizeof(OpenGlProfile)) { transport.fail(); throw Error(EPROTO); }
         OpenGlProfile profile{}; std::memcpy(&profile, packet.data() + sizeof header, sizeof profile);
-        if (version == 1 ? !validOpenGlProfile(profile) : version == 2 ? !validOpenGlFenceProfile(profile) : !validOpenGlCompositorProfile(profile)) { transport.fail(); throw Error(EPROTO); }
+        if (version == 1 ? !validOpenGlProfile(profile) : version == 2 ? !validOpenGlFenceProfile(profile) : version == 3 ? !validOpenGlCompositorProfile(profile) : !validOpenGlCompositorRenderProfile(profile)) { transport.fail(); throw Error(EPROTO); }
         openglNegotiated = true;
         openglFencesNegotiated = version >= 2;
-        openglCompositorNegotiated = version == 3;
-        std::fprintf(stderr, "LINUX_BRIDGE openGlProfileNegotiated=true version=%u frames=2 commandLimit=%u reservationLimit=16 reservedByteLimit=17179869184 syncObjectLimit=%zu\n", version, profile.commandLimit, syncObjectLimit());
+        openglCompositorNegotiated = version >= 3;
+        openglRenderNegotiated = version == 4;
+        std::fprintf(stderr, "LINUX_BRIDGE openGlProfileNegotiated=true version=%u frames=2 commandLimit=%u reservationLimit=%u reservedByteLimit=17179869184 syncObjectLimit=%zu\n", version, profile.commandLimit, profile.reservationLimit, syncObjectLimit());
     }
     std::uint64_t consumeSharedTexture(std::uint64_t target, bool streaming = false) {
         if (streaming != streamingNegotiated || (streaming && (target != consumedStreamFrames + 1 || target > GuestStreamProfile.frames))) throw Error(EINVAL);
@@ -1891,6 +1893,15 @@ extern "C" int wddm_bridge_begin_opengl_compositor() {
     auto& state = bridge(); std::lock_guard<std::mutex> lock(state.guard);
     if (bridgeStopped) { errno = ESHUTDOWN; return -1; }
     try { state.beginOpenGl(3); return 0; }
+    catch (const Error& error) { errno = error.number; }
+    catch (...) { state.protocolFailed(); errno = EIO; }
+    return -1;
+}
+extern "C" int wddm_bridge_begin_opengl_compositor_render() {
+    if (bridgeStopped) { errno = ESHUTDOWN; return -1; }
+    auto& state = bridge(); std::lock_guard<std::mutex> lock(state.guard);
+    if (bridgeStopped) { errno = ESHUTDOWN; return -1; }
+    try { state.beginOpenGl(4); return 0; }
     catch (const Error& error) { errno = error.number; }
     catch (...) { state.protocolFailed(); errno = EIO; }
     return -1;

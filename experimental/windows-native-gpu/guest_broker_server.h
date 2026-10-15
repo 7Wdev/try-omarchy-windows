@@ -208,6 +208,13 @@ template<class Native,class Authority,class ObjectAuthority> int serve(Peer& pee
                     peer.send(operation,message.frame.sequence,encode(objects.reap(objectKernel)));
                 } else throw std::system_error(EOPNOTSUPP,std::generic_category(),"Broker operation not implemented");
             } catch (const std::system_error& error) {
+                // A valid request may finish after its producer closes the
+                // socket. send() disconnects on these errors. Retain authority
+                // until pidfd-confirmed exit, just as for ordinary EOF.
+                if (!peer.connected() && (error.code().value()==EPIPE || error.code().value()==ECONNRESET || error.code().value()==ENOTCONN)) {
+                    std::fprintf(stderr,"BROKER_ROUTE replyDisconnected=true processExitRequired=true\n");
+                    break;
+                }
                 if (expectedObjectError && recoverableObjectError(message.frame.operation,error.code().value())) {
                     ++recoverable;
                     peer.send(message.frame.operation,message.frame.sequence,{}, {},error.code().value());

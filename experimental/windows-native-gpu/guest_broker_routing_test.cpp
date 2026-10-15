@@ -197,12 +197,57 @@ static void realRpc(bool attack,const char* probe=nullptr,const char* shim=nullp
     if (probe) std::cout<<"BROKER_SHIM_CONTRACT clientUid=65534 oldDeadlockControl="<<(expectTimeout?"true":"false")<<" native=mock kernel=mock gpu=false\n";
     else std::cout<<"BROKER_RPC_CONTRACT clientUid=65534 readonlyFd=true retainedAfterEof=true attack="<<(attack?"rejected":"none")<<" native=mock kernel=mock gpu=false\n";
 }
+static void replyDisconnect() {
+    char directory[]="/tmp/wddm-broker-reply-XXXXXX"; CHECK(mkdtemp(directory)); CHECK(!chmod(directory,0755));
+    const auto path=std::string(directory)+"/broker.sock";
+    sockaddr_un address{}; address.sun_family=AF_UNIX; std::memcpy(address.sun_path,path.c_str(),path.size()+1);
+    Fd listener(socket(AF_UNIX,SOCK_SEQPACKET|SOCK_CLOEXEC,0)); const int enabled=1;
+    CHECK(listener.get()>=0 && !setsockopt(listener.get(),SOL_SOCKET,SO_PASSCRED,&enabled,sizeof enabled));
+    CHECK(!bind(listener.get(),reinterpret_cast<sockaddr*>(&address),sizeof address));
+    CHECK(!chown(path.c_str(),65534,65534) && !chmod(path.c_str(),0600) && !listen(listener.get(),1));
+    int notices[2],commands[2]; CHECK(!pipe2(notices,O_CLOEXEC) && !pipe2(commands,O_CLOEXEC));
+    const auto child=fork(); CHECK(child>=0);
+    if(!child) {
+        try {
+            close(listener.get()); close(notices[0]); close(commands[1]);
+            CHECK(!setgroups(0,nullptr) && !setgid(65534) && !setuid(65534));
+            Fd connection(socket(AF_UNIX,SOCK_SEQPACKET|SOCK_CLOEXEC,0));
+            CHECK(connection.get()>=0 && !connect(connection.get(),reinterpret_cast<sockaddr*>(&address),sizeof address));
+            const auto request=packet(Op::OpenAdapter);
+            Frame frame; frame.operation=Operation::DriverCall; frame.bytes=static_cast<std::uint32_t>(request.size());
+            std::vector<std::uint8_t> data(sizeof frame+request.size());
+            std::memcpy(data.data(),&frame,sizeof frame); std::memcpy(data.data()+sizeof frame,request.data(),request.size());
+            CHECK(send(connection.get(),data.data(),data.size(),MSG_NOSIGNAL)==static_cast<ssize_t>(data.size()));
+            connection=Fd(); const char closed='C'; CHECK(write(notices[1],&closed,1)==1);
+            char finish=0; CHECK(read(commands[0],&finish,1)==1 && finish=='F'); _exit(0);
+        } catch(const std::exception& e) { dprintf(2,"Reply disconnect client: %s\n",e.what()); _exit(1); }
+    }
+    close(notices[1]); close(commands[0]);
+    Peer peer(Fd(accept4(listener.get(),nullptr,nullptr,SOCK_CLOEXEC|SOCK_NONBLOCK)),65534,65534);
+    struct DelayedNative : NativeMock {
+        int notice; std::atomic<bool> completed{false};
+        explicit DelayedNative(int fd):notice(fd) {}
+        std::vector<std::uint8_t> exchange(const std::vector<std::uint8_t>& bytes) {
+            char closed=0; CHECK(read(notice,&closed,1)==1 && closed=='C');
+            auto result=NativeMock::exchange(bytes); completed=true; return result;
+        }
+    } native(notices[0]);
+    KernelMock kernel; std::atomic<bool> done{false}; int result=-1;
+    std::thread server([&]{result=serve(peer,native,kernel); done=true;});
+    for(unsigned n=0;n<100 && !native.completed;++n) poll(nullptr,0,10);
+    CHECK(native.completed && !done && !peer.processExited());
+    const char finish='F'; CHECK(write(commands[1],&finish,1)==1);
+    int status=0; CHECK(waitpid(child,&status,0)==child); server.join();
+    CHECK(WIFEXITED(status) && !WEXITSTATUS(status) && result==0 && native.calls==1 && peer.processExited());
+    close(commands[1]); close(notices[0]); CHECK(!unlink(path.c_str()) && !rmdir(directory));
+    std::cout<<"BROKER_REPLY_DISCONNECT validRequest=true replyLost=true pidfdExitRequired=true native=mock kernel=mock gpu=false\n";
+}
 int main(int argc,char** argv) {
     try {
         if (argc!=1 && argc!=3 && (argc!=4 || std::strcmp(argv[3],"--expect-close-deadlock"))) throw std::runtime_error("Use optional PROBE SHIM [--expect-close-deadlock]");
         viewPolicy();
         if (geteuid()) { std::cout<<"BROKER_RPC_CONTRACT skipped=root-required\n"; return 0; }
-        alarm(25); realRpc(false); realRpc(true);
+        alarm(25); realRpc(false); realRpc(true); replyDisconnect();
         if (argc>=3) realRpc(false,argv[1],argv[2],argc==4);
         alarm(0); return 0;
     } catch (const std::exception& error) { std::cerr<<error.what()<<'\n'; return 1; }

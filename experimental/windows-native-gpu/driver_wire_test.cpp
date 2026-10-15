@@ -603,7 +603,7 @@ int main() {
         require(s.objectLimit() == MaxObjects);
         require(header(s.dispatch(request(Op::BeginOpenGl, 0, std::uint32_t{2}))).status == -71);
         s.dispatch(hello());
-        for (const auto version : {0u, 1u, 4u, UINT32_MAX})
+        for (const auto version : {0u, 1u, 5u, UINT32_MAX})
             require(header(s.dispatch(request(Op::BeginOpenGl, 0, version))).status == -93 && !f.begins);
         for (unsigned field = 0; field < 8; ++field) {
             std::uint32_t words[8]{}; std::memcpy(words, &GuestOpenGlFenceProfile, sizeof words); ++words[field];
@@ -628,32 +628,41 @@ int main() {
         const auto calls = f.calls;
         require(s.objectCount() == 384 && header(s.dispatch(request(Op::OpenAdapter))).status == -24 && f.calls == calls);
     }
-    {
-        OpenGlFake f; Session s(f);
-        const auto begin=request(Op::BeginOpenGl,0,std::uint32_t{3});
+    for(const auto version:{3u,4u}) {
+        const auto expected=version==4 ? GuestOpenGlCompositorRenderProfile : GuestOpenGlCompositorProfile;
+        OpenGlFake f; f.reservationEnabled=true; Session s(f);
+        const auto begin=request(Op::BeginOpenGl,0,version);
         require(header(s.dispatch(begin)).status==-71 && !f.begins);
         s.dispatch(hello());
         for (unsigned field=0;field<8;++field) {
-            std::uint32_t words[8]{}; std::memcpy(words,&GuestOpenGlCompositorProfile,sizeof words); ++words[field];
+            std::uint32_t words[8]{}; std::memcpy(words,&expected,sizeof words); ++words[field];
             std::memcpy(&f.profile,words,sizeof words);
             require(header(s.dispatch(begin)).status==-95);
             require(s.objectLimit()==256 && s.syncObjectLimit()==96 && s.requestLimit()==10000);
         }
         f.profile=GuestOpenGlFenceProfile;
         require(header(s.dispatch(begin)).status==-95);
-        f.profile=GuestOpenGlCompositorProfile;
+        f.profile=expected;
         const auto out=s.dispatch(begin); OpenGlProfile profile{};
         require(!header(out).status && out.size()==sizeof(Header)+sizeof profile);
         std::memcpy(&profile,out.data()+sizeof(Header),sizeof profile);
-        require(validOpenGlCompositorProfile(profile) && s.objectLimit()==512 && s.syncObjectLimit()==192 &&
-                s.requestLimit()==50000 && s.openGlCommandLimit()==256);
+        require((version==4 ? validOpenGlCompositorRenderProfile(profile) : validOpenGlCompositorProfile(profile)) &&
+                s.objectLimit()==expected.objectLimit && s.syncObjectLimit()==192 &&
+                s.requestLimit()==50000 && s.openGlCommandLimit()==256 && s.reservationLimit()==expected.reservationLimit);
         const auto before=f.begins;
         require(header(s.dispatch(begin)).status==-16 && f.begins==before);
         require(header(s.dispatch(request(Op::BeginStreaming))).status==-16);
         require(!header(s.dispatch(hello())).status);
         require(s.objectLimit()==256 && s.syncObjectLimit()==96 && s.requestLimit()==10000);
-        require(header(s.dispatch(request(Op::OpenAdapter))).handle);
+        require(s.reservationLimit()==8);
+        const auto adapter=header(s.dispatch(request(Op::OpenAdapter))).handle; require(adapter);
         require(header(s.dispatch(begin)).status==-16 && f.begins==before);
+        Session reservation(f); reservation.dispatch(hello()); require(!header(reservation.dispatch(begin)).status);
+        const auto owner=header(reservation.dispatch(request(Op::OpenAdapter))).handle;
+        const auto reserve=request(Op::ReserveGpuAddress,owner,GpuReservationDesc{0,67108864,1ull<<40,65536});
+        for(std::size_t n=0;n<expected.reservationLimit;++n) require(header(reservation.dispatch(reserve)).handle);
+        const auto calls=f.calls;
+        require(header(reservation.dispatch(reserve)).status==-24 && f.calls==calls && MaxGpuReservations==8);
     }
     for (const auto version : {0u,1u,2u,3u}) {
         OpenGlFake f; f.syncEnabled=true;
@@ -2460,6 +2469,48 @@ int main() {
     // Native resource references are separately negotiated and typed. They
     // outlive the source resource/device but retain their owning adapter.
     Fake exported; exported.vendorEnabled = exported.resourceEnabled = exported.sharedResourceEnabled = exported.nativeTextureEnabled = true;
+    for(const auto version:{3u,4u}) {
+        struct PhysicalFake : OpenGlFake {
+            std::set<std::uint32_t> sameGpu;
+            bool equivalent=true;
+            Result openAdapter() override {
+                auto result=Fake::openAdapter();
+                if(sameGpu.size()<2) sameGpu.insert(result.nativeHandle);
+                return result;
+            }
+            bool samePhysicalAdapter(std::uint32_t a,std::uint32_t b) const override {
+                return equivalent && sameGpu.count(a) && sameGpu.count(b);
+            }
+        } f;
+        f.profile=version==4 ? GuestOpenGlCompositorRenderProfile : GuestOpenGlCompositorProfile;
+        f.vendorEnabled=f.resourceEnabled=f.sharedResourceEnabled=f.nativeTextureEnabled=true;
+        Session s(f); s.dispatch(hello()); require(!header(s.dispatch(request(Op::BeginOpenGl,0,version))).status);
+        require(!header(s.dispatch(request(Op::BeginResourceSharing))).status);
+        const auto a=header(s.dispatch(request(Op::OpenAdapter))).handle;
+        const auto first=header(s.dispatch(request(Op::CreateDevice,a))).handle;
+        const auto b=header(s.dispatch(request(Op::OpenAdapter))).handle;
+        const auto second=header(s.dispatch(request(Op::CreateDevice,b))).handle;
+        const auto foreign=header(s.dispatch(request(Op::OpenAdapter))).handle;
+        const auto foreignDevice=header(s.dispatch(request(Op::CreateDevice,foreign))).handle;
+        NativeSharedVendorAllocationDesc desc{{{4,0x78100000,0,4,0,0},4,0},{130,73,28,1}};
+        auto create=request(Op::CreateNativeSharedVendorResourceAllocation,first,desc);
+        create.insert(create.end(),{37,38,39,40,5,6,7,8});
+        const auto out=s.dispatch(create); VendorResourceReply resource{};
+        require(!header(out).status && out.size()>=sizeof(Header)+sizeof(Reply)+sizeof resource);
+        std::memcpy(&resource,out.data()+sizeof(Header)+sizeof(Reply),sizeof resource);
+        const auto ticket=header(s.dispatch(request(Op::ExportResource,resource.resource))).handle; require(ticket);
+        auto query=[&](std::uint32_t device) { return s.dispatch(request(Op::QuerySharedResourceInfo,ticket,SharedResourceQueryDesc{device,0})); };
+        auto open=[&](std::uint32_t device) { return s.dispatch(request(Op::ImportResource,ticket,SharedResourceOpenDesc{device,4,8,0})); };
+        require(!header(query(first)).status);
+        require(header(query(foreignDevice)).status==-9 && header(open(foreignDevice)).status==-9);
+        require(header(query(b)).status==-9 && header(open(0)).status==-22);
+        f.equivalent=false;
+        require(header(query(second)).status==-9 && header(open(second)).status==-9);
+        f.equivalent=true;
+        require(header(query(second)).status==(version==4?0:-9));
+        require(header(open(second)).status==(version==4?0:-9));
+        require(!s.resourceAdaptersCompatible(a,UINT32_MAX));
+    }
     {
         Session session(exported);
         require(header(session.dispatch(request(Op::BeginResourceSharing))).status == -71);

@@ -53,6 +53,8 @@ class KmtDriver : public Driver {
     bool openglEnabled = false;
     bool openglFencesEnabled = false;
     bool openglCompositorEnabled = false;
+    bool openglRenderEnabled = false;
+    std::size_t reservationLimit() const { return openglRenderEnabled ? GuestOpenGlCompositorRenderProfile.reservationLimit : openglEnabled ? GuestOpenGlProfile.reservationLimit : MaxGpuReservations; }
     std::size_t syncObjectLimit() const { return openglCompositorEnabled ? OpenGlCompositorSyncObjects : MaxSyncObjects; }
     std::size_t vendorObjectLimit() const { return openglCompositorEnabled ? OpenGlCompositorVendorAllocations : openglFencesEnabled ? OpenGlFenceVendorAllocations : vendorAllocationObjectLimit(capabilities().flags); }
     std::uint32_t openGlCommandLimit() const { return openglCompositorEnabled ? GuestOpenGlCompositorProfile.commandLimit : GuestOpenGlProfile.commandLimit; }
@@ -466,6 +468,11 @@ public:
         }
         return {status, a.hAdapter, 0};
     }
+    bool samePhysicalAdapter(std::uint32_t first, std::uint32_t second) const override {
+        // Every owned adapter is opened above using this worker's immutable,
+        // selected LUID. No guest-supplied LUID or foreign native handle enters it.
+        return ownedAdapters.count(first) && ownedAdapters.count(second);
+    }
     Result queryVersion(std::uint32_t adapter) override {
         D3DKMT_DRIVERVERSION version{};
         D3DKMT_QUERYADAPTERINFO a{}; a.hAdapter = adapter; a.Type = KMTQAITYPE_DRIVERVERSION;
@@ -600,12 +607,13 @@ public:
     OpenGlProfile beginOpenGl(std::uint32_t version = 1) override {
         if (!gpu_diagnostic::HighResolution || openglEnabled || streamingEnabled || !asyncSubmitEnabled || !syncEnabled || !reservationEnabled ||
             !runtime || runtime->hasStopped() || !ownedAdapters.empty() || !deviceAdapters.empty() ||
-            !pendingSubmissions.empty() || !pendingHwSignals.empty() || (version != 1 && version != 2 && version != 3)) return {};
+            !pendingSubmissions.empty() || !pendingHwSignals.empty() || (version != 1 && version != 2 && version != 3 && version != 4)) return {};
         openglEnabled = true;
         openglFencesEnabled = version >= 2;
-        openglCompositorEnabled = version == 3;
-        const auto profile = version == 3 ? GuestOpenGlCompositorProfile : version == 2 ? GuestOpenGlFenceProfile : GuestOpenGlProfile;
-        std::cerr << "{\"openGlProfileNegotiated\":true,\"version\":" << version << ",\"frames\":2,\"commandLimit\":" << profile.commandLimit << ",\"pendingCommands\":16,\"reservationLimit\":16,\"reservedByteLimit\":17179869184,\"requestLimit\":" << profile.requestLimit;
+        openglCompositorEnabled = version >= 3;
+        openglRenderEnabled = version == 4;
+        const auto profile = version == 4 ? GuestOpenGlCompositorRenderProfile : version == 3 ? GuestOpenGlCompositorProfile : version == 2 ? GuestOpenGlFenceProfile : GuestOpenGlProfile;
+        std::cerr << "{\"openGlProfileNegotiated\":true,\"version\":" << version << ",\"frames\":2,\"commandLimit\":" << profile.commandLimit << ",\"pendingCommands\":16,\"reservationLimit\":" << profile.reservationLimit << ",\"reservedByteLimit\":17179869184,\"requestLimit\":" << profile.requestLimit;
         if (version >= 2) std::cerr << ",\"objectLimit\":" << profile.objectLimit
             << ",\"hwQueueLimit\":" << OpenGlFenceHwQueues << ",\"vendorObjectLimit\":" << vendorObjectLimit() << ",\"syncObjectLimit\":" << syncObjectLimit();
         std::cerr << "}\n";
@@ -762,7 +770,7 @@ public:
     }
     Result reserveGpuAddress(std::uint32_t adapter, GpuReservationDesc desc) override {
         if (!reservationEnabled || !runtime || !ownedAdapters.count(adapter) || !validGpuReservation(desc) ||
-            gpuReservations.size() >= (openglEnabled ? GuestOpenGlProfile.reservationLimit : MaxGpuReservations) || nextGpuReservation == UINT32_MAX ||
+            gpuReservations.size() >= reservationLimit() || nextGpuReservation == UINT32_MAX ||
             desc.bytes > MaxGpuReservedBytes - gpuReservedBytes) return {Invalid, 0, 0};
         D3DDDI_RESERVEGPUVIRTUALADDRESS a{}; a.hAdapter = adapter;
         a.BaseAddress = desc.base; a.MinimumAddress = desc.minimum; a.MaximumAddress = desc.maximum; a.Size = desc.bytes;

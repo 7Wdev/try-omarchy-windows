@@ -36,6 +36,10 @@ cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\driver_wire_test.cpp" /Fe
 if not "%errorlevel%"=="0" exit /b %errorlevel%
 driver-wire-test.exe
 if not "%errorlevel%"=="0" exit /b %errorlevel%
+cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\native_resource_preparation_test.cpp" /Fe:native-resource-preparation-test.exe
+if not "%errorlevel%"=="0" exit /b %errorlevel%
+native-resource-preparation-test.exe
+if not "%errorlevel%"=="0" exit /b %errorlevel%
 cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\sync_sharing_wire_test.cpp" /Fe:sync-sharing-wire-test.exe
 if not "%errorlevel%"=="0" exit /b %errorlevel%
 sync-sharing-wire-test.exe

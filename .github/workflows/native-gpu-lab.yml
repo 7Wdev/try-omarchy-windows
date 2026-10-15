@@ -73,10 +73,22 @@ jobs:
           repository: microsoft/libdxg
           ref: 5c28ebb4ead460c23ec5e87decb7d1af7285bb59
           path: .runtime-dxg
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: hyprwm/aquamarine
+          ref: f31c47a1b9d300847d8fc3108ad959448103dfc1
+          path: .aquamarine-native-check
+      - name: Check the pinned Aquamarine prototype and startup observer source
+        run: |
+          python3 experimental/windows-native-gpu/apply_aquamarine_native_render_patch.py .aquamarine-native-check
+          python3 experimental/windows-native-gpu/apply_aquamarine_native_render_patch.py .aquamarine-native-check
+          cc -std=c11 -O2 -Wall -Wextra -Werror -shared -fPIC experimental/windows-native-gpu/hyprland_startup_probe.c -ldl -pthread -o /tmp/hyprland-startup-probe.so
       - run: |
           c++ -std=c++17 -Wall -Wextra -Werror experimental/windows-native-gpu/wire_test.cpp -o /tmp/native-wire-test
           /tmp/native-wire-test
           c++ -std=c++17 -Wall -Wextra -Werror experimental/windows-native-gpu/driver_wire_test.cpp -o /tmp/driver-wire-test
+          c++ -std=c++17 -Wall -Wextra -Werror experimental/windows-native-gpu/native_resource_preparation_test.cpp -o /tmp/native-resource-preparation-test
+          /tmp/native-resource-preparation-test
           /tmp/driver-wire-test
           c++ -std=c++17 -Wall -Wextra -Werror experimental/windows-native-gpu/sync_sharing_wire_test.cpp -o /tmp/sync-sharing-wire-test
           /tmp/sync-sharing-wire-test
@@ -126,9 +138,11 @@ jobs:
           python3 experimental/windows-native-gpu/test_opengl_transport.py --disabled-profile --shim /tmp/linux-ioctl-bridge.so --probe /tmp/linux-ioctl-bridge-test
           python3 experimental/windows-native-gpu/test_opengl_transport.py --disabled-profile --extended-profile --shim /tmp/linux-ioctl-bridge.so --probe /tmp/linux-ioctl-bridge-test
           python3 experimental/windows-native-gpu/test_opengl_transport.py --disabled-profile --compositor-profile --shim /tmp/linux-ioctl-bridge.so --probe /tmp/linux-ioctl-bridge-test
+          python3 experimental/windows-native-gpu/test_opengl_transport.py --disabled-profile --compositor-render-profile --shim /tmp/linux-ioctl-bridge.so --probe /tmp/linux-ioctl-bridge-test
           python3 experimental/windows-native-gpu/test_opengl_transport.py --shim /tmp/linux-ioctl-bridge-4k.so --probe /tmp/linux-ioctl-bridge-test
           python3 experimental/windows-native-gpu/test_opengl_transport.py --extended-profile --shim /tmp/linux-ioctl-bridge-4k.so --probe /tmp/linux-ioctl-bridge-test
           python3 experimental/windows-native-gpu/test_opengl_transport.py --compositor-profile --shim /tmp/linux-ioctl-bridge-4k.so --probe /tmp/linux-ioctl-bridge-test
+          python3 experimental/windows-native-gpu/test_opengl_transport.py --compositor-render-profile --shim /tmp/linux-ioctl-bridge-4k.so --probe /tmp/linux-ioctl-bridge-test
           python3 experimental/windows-native-gpu/test_stream_transport.py --disabled-profile --shim /tmp/linux-ioctl-bridge.so --probe /tmp/linux-ioctl-bridge-test
           c++ -std=c++17 -Wall -Wextra -Werror -DWDDM_BRIDGE_4K_LAB=1 -DWDDM_BRIDGE_STREAM_LAB=1 -isystem .runtime-headers/include -isystem .runtime-headers/include/wsl/stubs -isystem .runtime-dxg/include -shared -fPIC experimental/windows-native-gpu/linux_ioctl_bridge.cpp -pthread -o /tmp/linux-ioctl-bridge-stream.so
           c++ -std=c++17 -Wall -Wextra -Werror -DWDDM_BRIDGE_4K_LAB=1 -DWDDM_BRIDGE_STREAM_LAB=1 -isystem .runtime-headers/include -isystem .runtime-headers/include/wsl/stubs -c experimental/windows-native-gpu/umd_context_probe.cpp -o /tmp/runtime-probe-stream.o

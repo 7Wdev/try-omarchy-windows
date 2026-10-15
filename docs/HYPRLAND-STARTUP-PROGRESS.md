@@ -4,6 +4,11 @@ Updated 2026-10-15. **No verified Hyprland frame yet.** The desktop acceptance
 count remains 0/4. There is no reliable first-frame ETA while graphics
 initialization and Windows presentation remain incomplete.
 
+**Superseded by the [compositor-buffer development checkpoint](LIVE-HYPRLAND-COMPOSITOR-BUFFERS.md).**
+The expanded mapping path now clears initialization and Hyprland commits native
+output buffers. Pixel verification, Windows presentation and a finalizer crash
+remain open. The original capacity failures below are retained unchanged.
+
 The private diagnostic now boots the actual Hyprland 0.56.2 binary
 (`efb50993780079460b0cbed1363e2166a2de1d9f`) in an ordinary-user, disk-free
 QEMU/WHPX guest. An Aquamarine 0.15.1 prototype connects its allocator to the

@@ -456,6 +456,8 @@ public:
         return {static_cast<std::int32_t>(0xc00000bbu), 0, 0};
     }
     virtual Result openAdapter() = 0;
+    // Trusted native identity check; wire IDs alone cannot establish equivalence.
+    virtual bool samePhysicalAdapter(std::uint32_t, std::uint32_t) const { return false; }
     virtual Result queryVersion(std::uint32_t adapter) = 0;
     virtual Result queryAdapter(std::uint32_t adapter, QueryDesc desc, std::vector<std::uint8_t>& data) = 0;
     virtual Result createDevice(std::uint32_t adapter) = 0;
@@ -605,6 +607,7 @@ class Session {
     bool openglNegotiated = false;
     bool openglFenceNegotiated = false;
     bool openglCompositorNegotiated = false;
+    bool openglRenderNegotiated = false;
     std::size_t wireObjectLimit = MaxObjects;
     bool syncSharingNegotiated = false;
     bool resourceSharingNegotiated = false;
@@ -631,9 +634,17 @@ class Session {
     }
 public:
     explicit Session(Driver& d) : driver(d) {}
+    bool resourceAdaptersCompatible(std::uint32_t first, std::uint32_t second) const {
+        if (first==second) return true;
+        if (!openglRenderNegotiated) return false;
+        const auto a=objects.find(first), b=objects.find(second);
+        return a!=objects.end() && b!=objects.end() && a->second.kind==Kind::Adapter && b->second.kind==Kind::Adapter &&
+               driver.samePhysicalAdapter(a->second.nativeHandle,b->second.nativeHandle);
+    }
     std::size_t objectCount() const { return objects.size(); }
     std::size_t objectLimit() const { return wireObjectLimit; }
     std::size_t hwQueueLimit() const { return openglFenceNegotiated ? OpenGlFenceHwQueues : MaxHwQueues; }
+    std::size_t reservationLimit() const { return openglRenderNegotiated ? GuestOpenGlCompositorRenderProfile.reservationLimit : openglNegotiated ? GuestOpenGlProfile.reservationLimit : MaxGpuReservations; }
     std::size_t syncObjectLimit() const { return openglCompositorNegotiated ? OpenGlCompositorSyncObjects : MaxSyncObjects; }
     std::size_t openGlCommandLimit() const { return openglCompositorNegotiated ? GuestOpenGlCompositorProfile.commandLimit : GuestOpenGlProfile.commandLimit; }
     std::size_t hwQueueSignalLimit() const { return openglCompositorNegotiated ? OpenGlCompositorHwSignals : openglFenceNegotiated ? OpenGlFenceHwSignals : MaxHwQueueSignals; }
@@ -676,6 +687,7 @@ public:
             wireObjectLimit = MaxObjects;
             openglFenceNegotiated = false;
             openglCompositorNegotiated = false;
+            openglRenderNegotiated = false;
             if (version != Version) return reply(h, -93);
             const auto caps = driver.capabilities();
             if (caps.version != Version) return reply(h, -93);
@@ -712,16 +724,17 @@ public:
             std::uint32_t version = 1;
             if (packet.size() != sizeof h) {
                 std::memcpy(&version, packet.data() + sizeof h, sizeof version);
-                if (version != 2 && version != 3) return reply(h, -93);
+                if (version != 2 && version != 3 && version != 4) return reply(h, -93);
             }
             if (openglNegotiated || streamingNegotiated || !objects.empty()) return reply(h, -16);
             const auto required = AsyncHwSubmitCapability | SyncCapability | GpuReservationCapability | UINT32_C(0x80000000);
             if ((driver.capabilities().flags & required) != required) return reply(h, -95);
             const auto profile = driver.beginOpenGl(version);
-            if (version == 1 ? !validOpenGlProfile(profile) : version == 2 ? !validOpenGlFenceProfile(profile) : !validOpenGlCompositorProfile(profile)) return reply(h, -95);
+            if (version == 1 ? !validOpenGlProfile(profile) : version == 2 ? !validOpenGlFenceProfile(profile) : version == 3 ? !validOpenGlCompositorProfile(profile) : !validOpenGlCompositorRenderProfile(profile)) return reply(h, -95);
             openglNegotiated = true;
             openglFenceNegotiated = version >= 2;
-            openglCompositorNegotiated = version == 3;
+            openglCompositorNegotiated = version >= 3;
+            openglRenderNegotiated = version == 4;
             if (version >= 2) wireObjectLimit = profile.objectLimit;
             auto out = reply(h, 0); out.resize(sizeof h + sizeof profile);
             std::memcpy(out.data() + sizeof h, &profile, sizeof profile); return out;
@@ -994,7 +1007,7 @@ public:
             if (!desc.device || desc.runtimeCapacity > MaxSharedResourceRuntimeBytes) return reply(h, -22);
             const auto ticket = objects.find(h.handle), device = objects.find(desc.device);
             if (ticket == objects.end() || ticket->second.kind != Kind::SharedResource || device == objects.end() ||
-                device->second.kind != Kind::Device || device->second.parent != ticket->second.parent) return reply(h, -9);
+                device->second.kind != Kind::Device || !resourceAdaptersCompatible(device->second.parent,ticket->second.parent)) return reply(h, -9);
             SharedResourceInfo info{}; std::vector<std::uint8_t> runtime;
             const auto result = driver.querySharedResourceInfo(ticket->second.nativeHandle, device->second.nativeHandle, info, runtime);
             if (result.ntstatus > 0 || result.nativeHandle || result.value ||
@@ -1015,7 +1028,7 @@ public:
             if (!validSharedResourceOpen(desc)) return reply(h, -22);
             const auto ticket = objects.find(h.handle), device = objects.find(desc.device);
             if (ticket == objects.end() || ticket->second.kind != Kind::SharedResource || device == objects.end() ||
-                device->second.kind != Kind::Device || device->second.parent != ticket->second.parent) return reply(h, -9);
+                device->second.kind != Kind::Device || !resourceAdaptersCompatible(device->second.parent,ticket->second.parent)) return reply(h, -9);
             const auto count = std::count_if(objects.begin(), objects.end(), [](const auto& item) { return item.second.kind == Kind::VendorAllocation; });
             if (objects.size() > objectLimit() - 2 || nextId >= UINT32_MAX - 1 || static_cast<std::size_t>(count) >= vendorObjectLimit()) return reply(h, -24);
             const auto dataBytes = desc.runtimeBytes + desc.resourceDriverBytes + desc.driverBytes;
@@ -1528,7 +1541,7 @@ public:
             if (!validGpuReservation(desc)) return reply(h, -22);
             const auto count = std::count_if(objects.begin(), objects.end(), [](const auto& item) { return item.second.kind == Kind::GpuReservation; });
             if (objects.size() >= objectLimit() || nextId == UINT32_MAX ||
-                static_cast<std::size_t>(count) >= (openglNegotiated ? GuestOpenGlProfile.reservationLimit : MaxGpuReservations) ||
+                static_cast<std::size_t>(count) >= reservationLimit() ||
                 desc.bytes > MaxGpuReservedBytes - gpuReservedBytes) return reply(h, -24);
             if (desc.base) for (const auto& item : objects)
                 if (item.second.kind == Kind::GpuReservation && gpuRangesOverlap(desc.base, desc.bytes, item.second.gpuAddress, item.second.reservedGpuBytes))

@@ -1,0 +1,100 @@
+// Private, bounded actual-compositor startup. No Windows display acceptance.
+#define _GNU_SOURCE
+#include <dlfcn.h>
+#include <errno.h>
+#include <pthread.h>
+#include <signal.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#include <stdint.h>
+#include <stdatomic.h>
+
+typedef int (*main_function)(int,char**,char**);
+static main_function compositor_main;
+static _Atomic unsigned compositor_commits;
+int wddm_bridge_compositor_commit(int fd,uint32_t width,uint32_t height,uint32_t format,uint32_t stride,uint64_t modifier) {
+    int (*info)(int,uint64_t*)=(int (*)(int,uint64_t*))dlsym(RTLD_DEFAULT,"wddm_bridge_native_buffer_info");
+    uint64_t bytes=0;
+    if(!info || !width || !height || width>4096 || height>4096 || stride!=width*4 ||
+       info(fd,&bytes) || bytes!=(uint64_t)stride*height) return -1;
+    const unsigned frame=atomic_fetch_add(&compositor_commits,1)+1;
+    printf("HYPRLAND_COMPOSITOR_COMMIT index=%u width=%u height=%u format=%u stride=%u modifier=%llu ownedNativeBuffer=true pixelsVerified=false windowsPresentation=false\n",
+        frame,width,height,format,stride,(unsigned long long)modifier);
+    return 0;
+}
+static int run_ctl(char* const arguments[]) {
+    char signature[512];
+    const char* instance=getenv("HYPRLAND_INSTANCE_SIGNATURE");
+    if(!instance || snprintf(signature,sizeof(signature),"HYPRLAND_INSTANCE_SIGNATURE=%s",instance)>=(int)sizeof(signature)) return -1;
+    char* const environment[]={signature,"XDG_RUNTIME_DIR=/tmp/hypr-runtime","HOME=/tmp/hypr-home",
+        "LD_LIBRARY_PATH=/opt/wddm-mesa/lib:/usr/lib/x86_64-linux-gnu","PATH=/usr/bin",NULL};
+    const pid_t child=fork();
+    if(child<0) return -1;
+    if(!child) { execve("/usr/bin/hyprctl",arguments,environment); _exit(127); }
+    int status=0;
+    if(waitpid(child,&status,0)!=child) return -1;
+    if(!WIFEXITED(status)) {
+        printf("HYPRLAND_STARTUP_CONTROL_SIGNAL number=%d\n",WIFSIGNALED(status)?WTERMSIG(status):0);
+        return -1;
+    }
+    return WEXITSTATUS(status);
+}
+static void* bounded_control(void* unused) {
+    (void)unused;
+    for(unsigned n=0;n<60;++n) {
+        sleep(1);
+        const char* instance=getenv("HYPRLAND_INSTANCE_SIGNATURE");
+        if(!instance || !instance[0]) continue;
+        char socket[768];
+        if(snprintf(socket,sizeof(socket),"/tmp/hypr-runtime/hypr/%s/.socket.sock",instance)>=(int)sizeof(socket) || access(socket,F_OK)) continue;
+        char* const create[]={"/usr/bin/hyprctl","output","create","headless","WDDM-1",NULL};
+        const int created=run_ctl(create);
+        printf("HYPRLAND_STARTUP_OUTPUT createExit=%d windowsPresentation=false\n",created);
+        for(unsigned tick=0;tick<100 && atomic_load(&compositor_commits)<2;++tick) usleep(50000);
+        char* const monitors[]={"/usr/bin/hyprctl","-j","monitors","all",NULL};
+        printf("HYPRLAND_STARTUP_MONITORS exit=%d\n",run_ctl(monitors));
+        char* const stop[]={"/usr/bin/hyprctl","dispatch","exit",NULL};
+        puts("HYPRLAND_STARTUP_EXIT_REQUEST method=hyprctl-dispatch-exit");
+        run_ctl(stop);
+        break;
+    }
+    sleep(15);
+    puts("HYPRLAND_STARTUP_STOP reason=bounded-diagnostic signal=TERM windowsPresentation=false");
+    kill(getpid(),SIGTERM);
+    return NULL;
+}
+static int startup_main(int argc,char** argv,char** environment) {
+    if(argc<1 || strcmp(argv[0],"/guest-probe")) return compositor_main(argc,argv,environment);
+    setvbuf(stdout,NULL,_IONBF,0);
+    if(setenv("D3D12_EXPERIMENTAL_NATIVE_SYNC_FILE","true",1) ||
+       setenv("D3D12_EXPERIMENTAL_NATIVE_BUFFERS","true",1) ||
+       setenv("AQ_EXPERIMENTAL_NATIVE_RENDER","1",1) ||
+       setenv("GBM_BACKENDS_PATH","/opt/wddm-mesa/lib/gbm",1) ||
+       setenv("XDG_RUNTIME_DIR","/tmp/hypr-runtime",1) ||
+       setenv("HOME","/tmp/hypr-home",1) ||
+       setenv("HYPRLAND_LOG_WLR","1",1) ||
+       setenv("HYPRLAND_TRACE","1",1)) return 121;
+    if((mkdir("/tmp/hypr-runtime",0700) && errno!=EEXIST) ||
+       (mkdir("/tmp/hypr-home",0700) && errno!=EEXIST)) return 122;
+    int (*begin)(void)=(int (*)(void))dlsym(RTLD_DEFAULT,"wddm_bridge_begin_opengl_compositor_render");
+    if(!begin || begin()) { perror("Hyprland profile negotiation"); return 123; }
+    puts("HYPRLAND_STARTUP_BEGIN version=0.56.2 boundedProfile=4 actualCompositor=true windowsPresentation=false");
+    pthread_t thread;
+    if(pthread_create(&thread,NULL,bounded_control,NULL) || pthread_detach(thread)) return 124;
+    char* arguments[]={"/guest-probe","--config","/hyprland.conf",NULL};
+    const int result=compositor_main(3,arguments,environment);
+    printf("HYPRLAND_STARTUP_MAIN_RETURN exit=%d windowsPresentation=false\n",result);
+    return result;
+}
+int __libc_start_main(main_function main,int argc,char** argv,void (*init)(void),
+    void (*fini)(void),void (*rtld_fini)(void),void* stack_end) {
+    typedef int (*start_function)(main_function,int,char**,void (*)(void),void (*)(void),void (*)(void),void*);
+    start_function original=(start_function)dlsym(RTLD_NEXT,"__libc_start_main");
+    if(!original) _exit(120);
+    compositor_main=main;
+    return original(startup_main,argc,argv,init,fini,rtld_fini,stack_end);
+}

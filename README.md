@@ -29,10 +29,10 @@ There is no reliable completion date yet; the remaining work includes substantia
 
 Vulkan, CUDA, video acceleration, NVIDIA-specific features and concurrent Windows/guest GPU use need separate real-application acceptance tests as part of the wider goal.
 
-Latest integration work: [actual Hyprland startup](docs/HYPRLAND-STARTUP-PROGRESS.md)
-reaches the NVIDIA graphics path, but EGL initialization still fails at the old fence-mapping capacity.
-A separate compositor initialization profile and graceful capacity rejection are implemented;
-the expanded QEMU/guest mapping path awaits end-to-end validation. **No Hyprland frame has been verified yet.**
+Latest integration work: [actual Hyprland output buffers](docs/LIVE-HYPRLAND-COMPOSITOR-BUFFERS.md)
+now reaches the NVIDIA renderer, allocates a three-buffer 640×360 swapchain and commits owned buffers.
+The latest diagnostic retires 28 GPU commands and cleans up the broker/native/VM state, but crashes in a library finalizer.
+Compositor pixel verification and Windows presentation remain open. **No displayed Hyprland frame has been verified yet.**
 
 Latest verified rendering checkpoint: [real render node and GBM buffers](docs/LIVE-GPU-GBM-NATIVE-RENDER.md)
 passes two fresh ordinary-user guests. Real GBM allocations export owned DMA-BUFs, import into EGL,
