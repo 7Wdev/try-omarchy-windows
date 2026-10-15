@@ -84,6 +84,9 @@ All 211 retained milestone tests also pass on Windows after these changes.
 All four hosted workflows for the earlier 172d12f capacity checkpoint pass,
 including QEMU build 38642267443. Its artifact digest and corresponding source
 are verified. Hosted checks for this additional integration change are pending.
+GitHub had disabled Actions on the fork; the existing workflow triggers were
+reviewed and Actions restored. The native validation workflow also supports
+manual runs. A fresh push resumes the hosted integration checks.
 
 Next work is compositor pixel capture and Windows presentation, finalizer-crash
 diagnosis, and a sustained resource/queue profile. Input, real applications,

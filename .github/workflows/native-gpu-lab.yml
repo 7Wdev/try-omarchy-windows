@@ -1,5 +1,6 @@
 name: Native GPU experiment
 on:
+  workflow_dispatch:
   push:
     branches: [master, windows-nvgpu-lab]
   pull_request:
