@@ -144,17 +144,25 @@ Its results currently come from isolated diagnostic workloads.
 | 2. Windows bridge and D3D12 initialization | Demonstrated in the lab | Genuine Linux NVIDIA runtime initializes through QEMU and creates owned Windows KMT objects. |
 | 3. 4K guest shaders and shared GPU textures | Demonstrated in the lab | [Independent 4K pixel checks, GPU copies and fence retirement](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-4K.md). |
 | 4. Repeated guest rendering | Demonstrated in the bounded lab | [64-frame guest runs](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-GUEST-STREAM.md), safe allocator/texture reuse, first/last audits and complete cleanup. This does not establish long-run stability or all-frame display. |
-| 5. Guest graphics/device integration | In progress | Replace the diagnostic interposer with a usable guest device/driver path. Integrate graphics buffers, memory ownership, synchronization and the compositor's DRM/GBM/display requirements. |
+| 5. Guest graphics/device integration | In progress: native GBM buffers, EGL fences and actual Hyprland readback pass | Replace the diagnostic interposer with a supported guest device/driver path; sustain graphics buffers, memory ownership, synchronization and compositor display requirements. |
 | 6. Interactive Omarchy/Hyprland desktop | Pending | Capture the first correctly displayed Hyprland session and update PR #2, then validate real apps, cursor/keyboard input, focus, resizing, fullscreen, multiple windows and correct continuously displayed frames. |
 | 7. Required APIs and NVIDIA features | Pending | Test OpenGL, Vulkan, CUDA, video acceleration and NVIDIA-specific capabilities in real guest applications. Device identity and D3D12 shader success do not establish feature support. |
 | 8. Reliability and ≥93% native performance | Pending | Matched guest/native benchmarks across resolutions up to 4K, concurrent Windows/guest GPU workloads, long runs, stable memory use, and device/VM failure recovery. |
 
 ## How much work remains?
 
-We have working evidence for the driver bridge and a controlled graphics path.
-We do not yet have the Linux graphics/display integration that lets Hyprland use
-that path. Reaching the first real Hyprland frame is the next major integration
-milestone, followed by interactive use and sustained correctness.
+Real Hyprland now renders through the NVIDIA bridge into native GBM buffers.
+The Windows GPU captures four actual 640×360 compositor frames across two fresh
+guests, with independently checked background regions and complete cleanup.
+Full scene correctness and display in the Windows app remain unverified.
+
+The next work is reliable GPU presentation into the Windows app, normal Omarchy
+fonts/themes/configuration and a real application scene, plus resource and queue
+capacity that can start and sustain that workload. Bare compositor startup
+already peaks at 252 of 256 guest allocations. The finite 256-command /
+50,000-request diagnostic profile cannot sustain a desktop; simply capturing
+more images does not solve that capacity limit. Input, recovery, compositor 4K
+operation and performance need real-session acceptance afterward.
 
 **0 of 4 desktop acceptance gates are complete.** Guest graphics integration is
 in progress. The gates below are not equally sized, and some implementation can
@@ -163,9 +171,9 @@ an unmeasured partial percentage.
 
 | Gate | Current evidence | What closes the gate |
 | --- | --- | --- |
-| Guest graphics device, buffers and synchronization | In progress: kernel memory leases, owned EGL native-fence callbacks with GPU ordering, isolated Mesa OpenGL draws, and opt-in GL native timeline FDs. | The compositor can access the backend through a supported guest device path, import/export its buffers, and synchronize their use correctly. |
-| First Hyprland frame | Pending. No Omarchy/Hyprland session has rendered through this backend. | Boot the real guest session and independently verify a correctly displayed compositor frame in the Windows app. |
-| Usable interactive desktop | Pending. Bounded shader diagnostics do not exercise a desktop session. | Continuously display real apps and multiple windows, with working input, focus, resizing and fullscreen up to 4K. |
+| Guest graphics device, buffers and synchronization | In progress: native render node, GBM allocation/import, EGL fences, actual Hyprland output and explicit cleanup pass in a bounded prototype. | The compositor can access the backend through a supported guest device path, import/export its buffers, and synchronize sustained use correctly. |
+| First Hyprland frame | Actual compositor framebuffer readback passes; full scene correctness and Windows app presentation are pending. | Boot the real guest session and independently verify a correctly displayed compositor frame in the Windows app. |
+| Usable interactive desktop | Pending. The small compositor capture guest lacks normal Omarchy assets and real apps; finite resource/command limits cannot sustain desktop use. | Continuously display real apps and multiple windows, with working input, focus, resizing and fullscreen up to 4K. |
 | Stable and performant product | Pending. No matched near-native result or long desktop run has passed. | Sustain desktop workloads, recover from failures, keep memory bounded, and meet ≥93% of matched native performance on the agreed workloads. |
 
 The first three gates describe the route to a usable desktop. The fourth is
@@ -206,6 +214,10 @@ their own implementation and application evidence as well.
 - **Legacy capacity:** an unchanged V1 OpenGL/FD image reached the 256 aggregate
   object limit in a separate run. Its rejection is retained as a failure;
   reliable capacity/lifetime handling for that workload remains open.
+- **Compositor capacity:** bare Hyprland startup peaks at 252 of 256 guest
+  allocations. The retained guest CPU-map attempt hits that bound and aborts;
+  host GPU capture avoids the extra guest allocations without raising it.
+  The finite startup command/request limits still cannot sustain a desktop.
 - **Resource buffers:** native texture FDs pass all-pixel 4K storage checks,
   source/FD-release lifetime and a wrong-color control. They are scoped to one
   connection and are not dma-buf/DRM PRIME. The explicit 256-slot virtual layout

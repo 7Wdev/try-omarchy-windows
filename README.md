@@ -14,15 +14,16 @@ through QEMU/WHPX. Full acceleration of the Omarchy/Hyprland desktop through thi
 **4/8 verification stages demonstrated; 0/4 desktop acceptance gates complete.** These are checklist counts, not percentages of engineering work completed.
 Guest graphics integration is in progress. The largest integration work remains. [See the roadmap and evidence](docs/GPU-BACKEND-PROGRESS.md).
 
-**Distance to the full desktop:** the new backend renders verified test workloads, but has not yet rendered an Omarchy/Hyprland session.
-The next major milestone is the **first correctly displayed Hyprland frame**. Getting there requires a guest graphics device path,
-compositor-compatible buffers and synchronization, and continuous presentation into the Windows app.
+**Distance to the full desktop:** real Hyprland now renders into native GPU buffers, and the Windows GPU captures actual 640×360 output.
+The next major milestone is the **first correctly displayed Hyprland frame in the Windows app**. A full Omarchy scene also needs
+normal fonts/themes/configuration and real apps, plus enough resource and queue capacity to start and sustain them.
+The bare diagnostic compositor already peaks at 252 of 256 guest allocations; its finite 256-command / 50,000-request profile cannot sustain a desktop.
 Interactive use, long-run stability and the ≥93% native-performance target then need their own acceptance tests.
 There is no reliable completion date yet; the remaining work includes substantial driver and compositor integration.
 
 | Desktop gate | Status | Acceptance requirement |
 | --- | --- | --- |
-| Guest graphics integration | In progress | Hyprland can access the graphics device and safely share buffers and synchronization. |
+| Guest graphics integration | In progress: bounded native buffers, fences and compositor readback pass | Hyprland can access a supported guest device path and safely share buffers and synchronization for sustained work. |
 | First Hyprland frame | Pending | Independently verify a correctly displayed compositor frame in the Windows app, capture its image and update PR #2 with the result. |
 | Interactive desktop | Pending | Continuously display real apps with input, multiple windows, resizing and fullscreen up to 4K. |
 | Stable, near-native product | Pending | Pass long runs, bounded-memory and recovery checks, plus matched benchmarks meeting ≥93% of native performance. |
@@ -34,18 +35,18 @@ passes two captures in each of two fresh guests, with 133,120 known background p
 and a changed-background control. The image shows an actual 640×360 compositor output with missing-font placeholders.
 Full scene correctness and Windows app presentation remain unverified. **No displayed Hyprland frame is accepted yet.**
 
-Earlier [actual Hyprland output buffers](docs/LIVE-HYPRLAND-COMPOSITOR-BUFFERS.md)
-now reaches the NVIDIA renderer, allocates a three-buffer 640×360 swapchain and commits owned buffers.
+The earlier [actual Hyprland output-buffer experiment](docs/LIVE-HYPRLAND-COMPOSITOR-BUFFERS.md)
+reached the NVIDIA renderer, allocated a three-buffer 640×360 swapchain and committed owned buffers.
 The [shutdown ownership fix](docs/LIVE-HYPRLAND-LOGGING-LIFETIME.md) passes three fresh compositor runs,
 including two without fault tracing. Each retires 29 GPU commands and explicitly releases all native mappings and broker views before VM exit.
-Full compositor pixel verification and Windows presentation remain open. **No displayed Hyprland frame has been verified yet.**
+That checkpoint verified lifecycle rather than pixels. Full scene correctness and Windows presentation remain open.
 
-Latest verified rendering checkpoint: [real render node and GBM buffers](docs/LIVE-GPU-GBM-NATIVE-RENDER.md)
+Earlier rendering checkpoint: [real render node and GBM buffers](docs/LIVE-GPU-GBM-NATIVE-RENDER.md)
 passes two fresh ordinary-user guests. Real GBM allocations export owned DMA-BUFs, import into EGL,
 retain their textures after the original objects are destroyed, and sample a rendered texture into a distinct GPU buffer.
 Each run verifies 954,706 solid-storage pixels and a separate 130×73 sampled shader image, then releases
-all 73 DMA-BUF references and 165 memory leases before VM exit. Hyprland startup, sustained rendering,
-and reliable Windows presentation remain open. **The counts above remain 4/8 and 0/4.**
+all 73 DMA-BUF references and 165 memory leases before VM exit. Those runs did not exercise Hyprland startup.
+Sustained rendering and reliable Windows presentation remain open. **The counts above remain 4/8 and 0/4.**
 
 Earlier [EGL native-buffer images](docs/LIVE-GPU-EGL-NATIVE-IMAGE.md)
 pass actual import/export/reimport and shared-storage shader checks for RGBA, BGRA, RGBX and BGRX.
