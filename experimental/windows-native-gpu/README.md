@@ -1,5 +1,12 @@
 # Native Windows GPU experiment
 
+The [actual Hyprland native-window experiment](../../docs/LIVE-HYPRLAND-NATIVE-WINDOW.md)
+passes two strict display checks once; its immediate repeat fails at the second
+DXGI statistics check despite correct backbuffer bytes. The retained presenter
+reuses the NVIDIA device, queue and window across compositor buffers. A fresh
+capture-only regression passes. Stable display and normal launcher integration
+remain unverified; no desktop gate is closed.
+
 The [actual compositor capture checkpoint](../../docs/LIVE-HYPRLAND-COMPOSITOR-CAPTURE.md)
 copies Hyprland's current owned output buffer on the Windows GPU after a native
 renderer-fence wait. Four captures in two fresh guests pass known-background
@@ -12,8 +19,7 @@ The [actual Hyprland shutdown fix](../../docs/LIVE-HYPRLAND-LOGGING-LIFETIME.md)
 removes a global logger's strong backend ownership. Three fresh bounded
 compositor runs, including two without fault tracing, now exit cleanly with all
 GPU mappings and broker views explicitly released. Seven output-buffer commits
-per run remain pixel-unverified; Windows presentation is not implemented for
-this compositor path. Apply the additive Aquamarine `logging-lifetime` patch
+per run were pixel-unverified at that earlier checkpoint. Apply the additive Aquamarine `logging-lifetime` patch
 after the native-render patch. Desktop progress remains 4/8 stages and 0/4 gates.
 
 The [process-exit lifetime fix](../../docs/LIVE-GPU-EXIT-LIFETIME.md) now keeps

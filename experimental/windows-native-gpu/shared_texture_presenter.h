@@ -12,11 +12,23 @@ class TexturePresenter {
     HWND window = nullptr;
     ATOM windowClass = 0;
     bool opened = false;
+    bool compositorOutput = false, closeRequested = false;
+    UINT outputWidth = 0, outputHeight = 0;
+    const wchar_t* registeredClass = nullptr;
     UINT index = 0;
     static constexpr const wchar_t* ClassName = L"7WdevGuestShaderPresentationLab";
+    static constexpr const wchar_t* CompositorClassName = L"7WdevHyprlandPresentationLab";
     static LRESULT CALLBACK procedure(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
-        // This short owned test destroys its window after GPU retirement.
-        if (message == WM_CLOSE) return 0;
+        if (message == WM_NCCREATE) {
+            const auto create = reinterpret_cast<const CREATESTRUCTW*>(lparam);
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(create->lpCreateParams));
+        }
+        // Retire submitted work before destroying the compositor window.
+        if (message == WM_CLOSE) {
+            const auto owner = reinterpret_cast<TexturePresenter*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+            if (owner && owner->compositorOutput) owner->closeRequested = true;
+            return 0;
+        }
         return DefWindowProcW(hwnd, message, wparam, lparam);
     }
     void pump() const {
@@ -30,26 +42,36 @@ public:
         for (auto& buffer : buffers) buffer.Reset();
         swapchain.Reset(); retirement.Reset();
         const bool destroyed = !window || DestroyWindow(window) != FALSE;
-        const bool unregistered = !windowClass || UnregisterClassW(ClassName, GetModuleHandleW(nullptr)) != FALSE;
+        const bool unregistered = !windowClass || UnregisterClassW(registeredClass, GetModuleHandleW(nullptr)) != FALSE;
         if (opened) std::cerr << "{\"nativeSharedTexturePresenterReleased\":true,\"gpuWorkRetired\":true,\"windowDestroyed\":"
             << (destroyed ? "true" : "false") << ",\"classUnregistered\":" << (unregistered ? "true" : "false") << "}\n";
         if (!destroyed || !unregistered) ExitProcess(3);
     }
-    HRESULT initialize(IDXGIFactory4* factory, ID3D12Device* device, ID3D12CommandQueue* queue) {
+    HRESULT initialize(IDXGIFactory4* factory, ID3D12Device* device, ID3D12CommandQueue* queue,
+                       UINT width = gpu_diagnostic::Width, UINT height = gpu_diagnostic::Height,
+                       DXGI_FORMAT format = DXGI_FORMAT_R8G8B8A8_UNORM, bool compositor = false) {
+        if (!factory || !device || !queue || windowClass || !width || !height || width > 4096 || height > 4096 ||
+            (format != DXGI_FORMAT_R8G8B8A8_UNORM && format != DXGI_FORMAT_B8G8R8A8_UNORM)) return E_INVALIDARG;
+        outputWidth = width; outputHeight = height; compositorOutput = compositor;
+        registeredClass = compositor ? CompositorClassName : ClassName;
         WNDCLASSEXW type{}; type.cbSize = sizeof type; type.lpfnWndProc = procedure;
-        type.hInstance = GetModuleHandleW(nullptr); type.lpszClassName = ClassName;
+        type.hInstance = GetModuleHandleW(nullptr); type.lpszClassName = registeredClass;
         windowClass = RegisterClassExW(&type);
         if (!windowClass) return HRESULT_FROM_WIN32(GetLastError());
         constexpr DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU;
         constexpr DWORD extended = WS_EX_NOACTIVATE;
-        RECT bounds{0, 0, 780, 438};
+        UINT clientWidth = compositor ? (std::min)(width, 1280u) : 780u;
+        UINT clientHeight = compositor ? (std::max)(1u, height * clientWidth / width) : 438u;
+        if (compositor && clientHeight > 720) { clientHeight = 720; clientWidth = (std::max)(1u, width * clientHeight / height); }
+        RECT bounds{0, 0, static_cast<LONG>(clientWidth), static_cast<LONG>(clientHeight)};
         if (!AdjustWindowRectEx(&bounds, style, FALSE, extended)) return HRESULT_FROM_WIN32(GetLastError());
-        window = CreateWindowExW(extended, ClassName, L"NVIDIA guest shader - QEMU Windows GPU bridge lab", style,
+        window = CreateWindowExW(extended, registeredClass,
+            compositor ? L"Try Omarchy - NVIDIA Hyprland output (experimental)" : L"NVIDIA guest shader - QEMU Windows GPU bridge lab", style,
             CW_USEDEFAULT, CW_USEDEFAULT, bounds.right - bounds.left, bounds.bottom - bounds.top,
-            nullptr, nullptr, type.hInstance, nullptr);
+            nullptr, nullptr, type.hInstance, this);
         if (!window) return HRESULT_FROM_WIN32(GetLastError());
-        DXGI_SWAP_CHAIN_DESC1 desc{}; desc.Width = gpu_diagnostic::Width; desc.Height = gpu_diagnostic::Height;
-        desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM; desc.SampleDesc.Count = 1;
+        DXGI_SWAP_CHAIN_DESC1 desc{}; desc.Width = width; desc.Height = height;
+        desc.Format = format; desc.SampleDesc.Count = 1;
         desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT; desc.BufferCount = 2;
         desc.Scaling = DXGI_SCALING_STRETCH; desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
         desc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
@@ -69,8 +91,9 @@ public:
         RECT client{};
         if (!IsWindowVisible(window) || !GetClientRect(window, &client) || client.right <= 0 || client.bottom <= 0) return E_FAIL;
         opened = true;
-        std::cerr << "{\"nativeSharedTexturePresenterOpened\":true,\"width\":" << gpu_diagnostic::Width
-            << ",\"height\":" << gpu_diagnostic::Height << ",\"bufferCount\":2"
+        std::cerr << "{\"nativeSharedTexturePresenterOpened\":true,\"width\":" << outputWidth
+            << ",\"height\":" << outputHeight << ",\"bufferCount\":2"
+            << (compositorOutput ? ",\"compositorOutput\":true" : "")
             << ",\"flipModel\":true,\"clientWidth\":" << client.right << ",\"clientHeight\":" << client.bottom
             << ",\"windowVisible\":true,\"sameAdapter\":true,\"cpuUpload\":false}\n";
         return S_OK;
@@ -78,7 +101,8 @@ public:
     HRESULT copy(ID3D12GraphicsCommandList* commands, ID3D12Resource* source,
                  ID3D12Resource* readback, D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint) {
         if (!opened) return E_FAIL;
-        pump(); index = swapchain->GetCurrentBackBufferIndex(); if (index >= buffers.size()) return E_FAIL;
+        pump(); if (closeRequested) return HRESULT_FROM_WIN32(ERROR_CANCELLED);
+        index = swapchain->GetCurrentBackBufferIndex(); if (index >= buffers.size()) return E_FAIL;
         const auto barrier = [&](D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after) {
             D3D12_RESOURCE_BARRIER b{}; b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
             b.Transition.pResource = buffers[index].Get(); b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
@@ -155,7 +179,8 @@ public:
         const bool visible = IsWindowVisible(window) != FALSE && !IsIconic(window);
         const bool complete = hr == S_OK && SUCCEEDED(flushed) && stats.PresentCount == count && stats.SyncQPCTime.QuadPart > 0 && visible;
         std::cerr << "{\"nativeSharedTexturePresented\":" << (complete ? "true" : "false") << ",\"round\":" << round
-            << ",\"width\":" << gpu_diagnostic::Width << ",\"height\":" << gpu_diagnostic::Height << ",\"backBufferIndex\":" << index << ",\"backBufferFnv1a\":" << hash
+            << ",\"width\":" << outputWidth << ",\"height\":" << outputHeight << ",\"backBufferIndex\":" << index << ",\"backBufferFnv1a\":" << hash
+            << (compositorOutput ? ",\"compositorOutput\":true" : "")
             << ",\"presentProcessId\":" << GetCurrentProcessId()
             << ",\"presentSwapChain\":" << reinterpret_cast<std::uintptr_t>(swapchain.Get())
             << ",\"presentCallQpcBefore\":" << before.QuadPart << ",\"presentCallQpcAfter\":" << after.QuadPart

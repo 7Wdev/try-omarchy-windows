@@ -15,7 +15,7 @@ def fnv(data):
     return result
 
 
-def validate(report, guest, records, frames, expected_rgb):
+def _validate_readback(report, guest, records, frames, expected_rgb, *, retained_presenter=False):
     lifecycle = validate_lifecycle(report, guest)
     require(type(expected_rgb) is tuple and len(expected_rgb) == 3 and
             all(type(value) is int and 0 <= value <= 255 for value in expected_rgb), 'Invalid independent background reference')
@@ -27,7 +27,8 @@ def validate(report, guest, records, frames, expected_rgb):
     copied = [row for row in records if row.get('nativeCompositorCaptured') is True]
     binary = [row for row in records if row.get('nativeCompositorBinaryCapture') is True]
     released = [row for row in records if row.get('nativeCompositorCaptureReleased') is True]
-    require(len(copied) == len(binary) == len(released) == 2, 'Incomplete native capture/copy/release sequence')
+    require(len(copied) == len(binary) == 2 and len(released) == (1 if retained_presenter else 2),
+            'Incomplete native capture/copy/release sequence')
     require(all(row.get('submitted') is True and row.get('gpuWorkRetired') is True for row in released), 'Native capture resources released before retirement')
     clean = report['disconnectCleanup']
     require(clean.get('compositorCaptureAttempts') == clean.get('completedCompositorCaptures') == 2 and
@@ -42,9 +43,11 @@ def validate(report, guest, records, frames, expected_rgb):
                     dict(width=640, height=360, fourcc=875713112).items()), 'Unexpected compositor storage layout')
         require(gpu.get('dxgiFormat') == 87 and gpu.get('sourceReturnedToCommon') is True and
                 gpu.get('cpuUpload') is False and gpu.get('windowsPresentation') is False, 'Wrong GPU copy/ownership route')
+        require(gpu.get('backBufferReadback') is (True if retained_presenter else None), 'Wrong source/backbuffer readback route')
         target, observed, before = (gpu.get(key) for key in ('producerFenceTarget', 'producerFenceObserved', 'producerFenceBefore'))
         require(all(type(value) is int and 0 <= value < (1 << 64) - 1 for value in (target, observed, before)) and
-                0 < target <= observed and gpu.get('copyFenceObserved') == 1, 'Unretired producer/copy GPU dependency')
+                0 < target <= observed and gpu.get('copyFenceObserved') == (index if retained_presenter else 1),
+                'Unretired producer/copy GPU dependency')
         pixels = frames[name]
         require(type(pixels) is bytes and len(pixels) == file.get('bytes') == 640 * 360 * 4, 'Wrong/truncated capture byte count')
         checksum = fnv(pixels)
@@ -66,6 +69,10 @@ def validate(report, guest, records, frames, expected_rgb):
         fullScenePixelCorrectnessVerified=False, windowsPresentationVerified=False, desktopVerified=False,
         nearNativePerformanceVerified=False, guestCpuMapUsed=False, cpuUploadUsed=False,
         lifecycle=lifecycle, frames=accepted)
+
+
+def validate(report, guest, records, frames, expected_rgb):
+    return _validate_readback(report, guest, records, frames, expected_rgb)
 
 
 if __name__ == '__main__':

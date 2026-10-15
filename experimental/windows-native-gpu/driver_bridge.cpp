@@ -56,6 +56,7 @@ class KmtDriver : public Driver {
     bool openglCompositorEnabled = false;
     bool openglRenderEnabled = false;
     unsigned compositorCaptureAttempts = 0, completedCompositorCaptures = 0, failedCompositorCaptures = 0;
+    std::unique_ptr<driver_shared::CompositorReadback> compositorPresenter;
     std::size_t reservationLimit() const { return openglRenderEnabled ? GuestOpenGlCompositorRenderProfile.reservationLimit : openglEnabled ? GuestOpenGlProfile.reservationLimit : MaxGpuReservations; }
     std::size_t syncObjectLimit() const { return openglCompositorEnabled ? OpenGlCompositorSyncObjects : MaxSyncObjects; }
     std::size_t vendorObjectLimit() const { return openglCompositorEnabled ? OpenGlCompositorVendorAllocations : openglFencesEnabled ? OpenGlFenceVendorAllocations : vendorAllocationObjectLimit(capabilities().flags); }
@@ -1282,7 +1283,10 @@ public:
             return {Invalid,0,0};
         const auto frame = ++compositorCaptureAttempts;
         std::uint64_t hash = 0; HRESULT hr = E_FAIL;
-        {
+        if (presentSharedEnabled) {
+            if (!compositorPresenter) compositorPresenter = std::make_unique<driver_shared::CompositorReadback>();
+            hr = compositorPresenter->capture(source->second.handle.get(), fence->second.get(), luid, desc, frame, hash, true);
+        } else {
             driver_shared::CompositorReadback capture;
             hr = capture.capture(source->second.handle.get(), fence->second.get(), luid, desc, frame, hash);
         }
@@ -1946,6 +1950,7 @@ public:
         return {status, 0, 0};
     }
     void releaseGuestMemory() {
+        compositorPresenter.reset();
         if (!allocations.empty() || !vendorAllocations.empty()) return;
         copyQueue.Reset(); copyFence.Reset(); copyHeap.Reset(); copyDevice.Reset();
         if (copyEvent) {
@@ -1965,7 +1970,7 @@ public:
         return !asyncRetirementFailed && pendingSubmissions.empty() && pendingHwSignals.empty() && pendingHwWaits.empty() && pendingContextSignals.empty() && !activeAdapters && !activeDevices && !activeContexts && pagingFences.empty() && allocations.empty() && vendorAllocations.empty() &&
                !vendorMappedPages && !vendorResidencyAttempts && !vendorCpuBytes && deviceAdapters.empty() && translatedAllocations.empty() &&
                sharedResourceIds.empty() && resourceGuestRuntime.empty() && sharedResourceHandles.empty() && textureConsumers.empty() && contextOwners.empty() && hwQueues.empty() && syncObjects.empty() && sharedSyncHandles.empty() && gpuReservations.empty() && !gpuReservedBytes && gpuStates.empty() && ownedAdapters.empty() &&
-               !guestMemory && !guestSection && !copyDevice && !copyHeap && !copyQueue && !copyFence && !copyEvent && !cleanupFailures &&
+               !compositorPresenter && !guestMemory && !guestSection && !copyDevice && !copyHeap && !copyQueue && !copyFence && !copyEvent && !cleanupFailures &&
                nativeWorkers.started==nativeWorkers.exited && !nativeWorkers.failed && !nativeWorkers.forced;
     }
     void reportCleanup() const {

@@ -4,6 +4,13 @@ Updated 2026-10-15. **4 of 8 verification stages demonstrated.** This is a
 checklist count, not 50% of engineering effort or a product-readiness estimate.
 The largest integration tasks are still ahead.
 
+[Actual Hyprland native-window presentation](LIVE-HYPRLAND-NATIVE-WINDOW.md)
+now passes both strict DXGI display checks once, with exact backbuffer bytes.
+Its immediate repeat fails the second statistics check; that failure is retained.
+A fresh capture-only regression passes. This is an experimental native window,
+not the normal Try Omarchy launcher integration. Reliable presentation remains
+open; no stage or desktop gate is closed.
+
 [Actual Hyprland GPU framebuffer capture](LIVE-HYPRLAND-COMPOSITOR-CAPTURE.md)
 now passes two captures in each of two fresh guests. Each frame independently
 matches 133,120 background-reference pixels, including a changed-background
@@ -17,7 +24,7 @@ renderer device. The [logging ownership fix](LIVE-HYPRLAND-LOGGING-LIFETIME.md)
 passes three fresh compositor runs, including two without fault tracing.
 Each records seven output-buffer commits, 29 retired GPU commands and explicit
 resource cleanup before VM exit. That checkpoint did not verify pixels or presentation.
-No displayed compositor frame or desktop gate is accepted.
+No normal-launcher compositor frame or desktop gate is accepted.
 
 Latest [real render-node/GBM development checkpoint](LIVE-GPU-GBM-NATIVE-RENDER.md)
 passes two fresh ordinary-user guests. The real render node selects the private

@@ -30,10 +30,15 @@ There is no reliable completion date yet; the remaining work includes substantia
 
 Vulkan, CUDA, video acceleration, NVIDIA-specific features and concurrent Windows/guest GPU use need separate real-application acceptance tests as part of the wider goal.
 
-Latest integration work: [actual Hyprland GPU framebuffer capture](docs/LIVE-HYPRLAND-COMPOSITOR-CAPTURE.md)
+Latest integration work: [actual Hyprland in a native Windows test window](docs/LIVE-HYPRLAND-NATIVE-WINDOW.md)
+passes two strictly verified presents once. Its repeat fails the second display-statistics check despite correct backbuffer pixels;
+**reliable display and normal launcher integration remain unverified**. A fresh capture-only regression passes.
+The counts remain 4/8 verification stages and 0/4 desktop gates.
+
+Earlier [actual Hyprland GPU framebuffer capture](docs/LIVE-HYPRLAND-COMPOSITOR-CAPTURE.md)
 passes two captures in each of two fresh guests, with 133,120 known background pixels checked per frame
 and a changed-background control. The image shows an actual 640×360 compositor output with missing-font placeholders.
-Full scene correctness and Windows app presentation remain unverified. **No displayed Hyprland frame is accepted yet.**
+Full scene correctness and Windows app presentation remain unverified. **No normal-launcher Hyprland frame is accepted yet.**
 
 The earlier [actual Hyprland output-buffer experiment](docs/LIVE-HYPRLAND-COMPOSITOR-BUFFERS.md)
 reached the NVIDIA renderer, allocated a three-buffer 640×360 swapchain and committed owned buffers.
