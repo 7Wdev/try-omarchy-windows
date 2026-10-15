@@ -31,7 +31,8 @@ Vulkan, CUDA, video acceleration, NVIDIA-specific features and concurrent Window
 
 Latest integration work: [actual Hyprland output buffers](docs/LIVE-HYPRLAND-COMPOSITOR-BUFFERS.md)
 now reaches the NVIDIA renderer, allocates a three-buffer 640×360 swapchain and commits owned buffers.
-The latest diagnostic retires 28 GPU commands and cleans up the broker/native/VM state, but crashes in a library finalizer.
+The [shutdown ownership fix](docs/LIVE-HYPRLAND-LOGGING-LIFETIME.md) passes three fresh compositor runs,
+including two without fault tracing. Each retires 29 GPU commands and explicitly releases all native mappings and broker views before VM exit.
 Compositor pixel verification and Windows presentation remain open. **No displayed Hyprland frame has been verified yet.**
 
 Latest verified rendering checkpoint: [real render node and GBM buffers](docs/LIVE-GPU-GBM-NATIVE-RENDER.md)

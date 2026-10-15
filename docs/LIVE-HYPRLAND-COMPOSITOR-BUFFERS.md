@@ -2,7 +2,9 @@
 
 Updated 2026-10-15. **Actual Hyprland now initializes its NVIDIA renderer and
 commits owned output buffers. Compositor pixels and Windows presentation remain
-unverified.** The final diagnostic also crashes during library finalization.
+unverified.** The final diagnostic in this original checkpoint crashes during
+library finalization. The later [logging ownership fix](LIVE-HYPRLAND-LOGGING-LIFETIME.md)
+passes three fresh compositor lifecycle runs; the failed records below are preserved.
 This closes no desktop acceptance gate: progress remains 4/8 stages and 0/4
 desktop gates. There is no defensible first-Windows-frame ETA yet.
 
@@ -83,13 +85,17 @@ All 211 retained milestone tests also pass on Windows after these changes.
 
 All four hosted workflows for the earlier 172d12f capacity checkpoint pass,
 including QEMU build 38642267443. Its artifact digest and corresponding source
-are verified. Hosted checks for this additional integration change are pending.
+are verified. Hosted CI, native push and native PR checks for the 356a6f1
+integration checkpoint pass. The PR portable job passed on its second attempt
+after the first failed only on Mesa archive download timeouts. Checks for the
+later logging ownership fix are tracked separately.
 GitHub had disabled Actions on the fork; the existing workflow triggers were
 reviewed and Actions restored. The native validation workflow also supports
 manual runs. A fresh push resumes the hosted integration checks.
 
-Next work is compositor pixel capture and Windows presentation, finalizer-crash
-diagnosis, and a sustained resource/queue profile. Input, real applications,
+Next work is compositor pixel capture and Windows presentation, and a sustained
+resource/queue profile. The finalizer crash is addressed by the later logging
+ownership checkpoint. Input, real applications,
 4K desktop operation, recovery, required APIs and ≥93% matched-native performance
 remain separate product acceptance requirements. The first verified frame
 displayed through the Windows backend will be captured and added to PR #2.

@@ -6,9 +6,10 @@ The largest integration tasks are still ahead.
 
 [Actual Hyprland output buffers](LIVE-HYPRLAND-COMPOSITOR-BUFFERS.md) now pass
 renderer initialization, native swapchain allocation and import into a separate
-renderer device. The latest diagnostic records seven output-buffer commits and
-28 retired GPU commands with complete broker/native/VM cleanup; library
-finalization still crashes. Pixels and Windows presentation remain unverified.
+renderer device. The [logging ownership fix](LIVE-HYPRLAND-LOGGING-LIFETIME.md)
+passes three fresh compositor runs, including two without fault tracing.
+Each records seven output-buffer commits, 29 retired GPU commands and explicit
+resource cleanup before VM exit. Pixels and Windows presentation remain unverified.
 No displayed compositor frame or desktop gate is accepted.
 
 Latest [real render-node/GBM development checkpoint](LIVE-GPU-GBM-NATIVE-RENDER.md)

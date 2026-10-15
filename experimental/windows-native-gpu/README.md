@@ -1,5 +1,13 @@
 # Native Windows GPU experiment
 
+The [actual Hyprland shutdown fix](../../docs/LIVE-HYPRLAND-LOGGING-LIFETIME.md)
+removes a global logger's strong backend ownership. Three fresh bounded
+compositor runs, including two without fault tracing, now exit cleanly with all
+GPU mappings and broker views explicitly released. Seven output-buffer commits
+per run remain pixel-unverified; Windows presentation is not implemented for
+this compositor path. Apply the additive Aquamarine `logging-lifetime` patch
+after the native-render patch. Desktop progress remains 4/8 stages and 0/4 gates.
+
 The [process-exit lifetime fix](../../docs/LIVE-GPU-EXIT-LIFETIME.md) now keeps
 native CPU views valid through late driver-library finalizers. The old bridge
 segfaults in a deterministic real-fence control; three fixed guests pass, along
