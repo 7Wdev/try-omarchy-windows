@@ -146,11 +146,11 @@ class WaylandScene(unittest.TestCase):
             for name in ('driver_bridge.cpp','driver_wire.h','opengl_profile.h','linux_ioctl_bridge.cpp',
                          'hyprland_startup_probe.c','hyprland_queue_probe.h'):
                 path='experimental/windows-native-gpu/'+name
-                # The retained Windows build used CRLF for one header. Accept
-                # only checkout line-ending conversion, never changed source.
-                source=(self.root/path).read_bytes().replace(b'\r\n',b'\n')
-                self.assertIn(inputs['repositorySourceSha256'][path],
-                    {hashlib.sha256(source).hexdigest(),hashlib.sha256(source.replace(b'\n',b'\r\n')).hexdigest()})
+                # Compare the retained build inputs to each other. Current
+                # source can improve without rewriting historical evidence.
+                self.assertEqual(inputs['repositorySourceSha256'][path],inputs['guestBuildInputs']['files'][name])
+                if name.endswith(('.cpp','.h')):
+                    self.assertEqual(inputs['repositorySourceSha256'][path],inputs['nativeBuildReceipt']['sources'][path])
 
 
 if __name__=='__main__': unittest.main()

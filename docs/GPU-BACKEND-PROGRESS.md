@@ -4,6 +4,14 @@ Updated 2026-10-16. **4 of 8 verification stages demonstrated.** This is a
 checklist count, not 50% of engineering effort or a product-readiness estimate.
 The largest integration tasks are still ahead.
 
+[Normal-image boot groundwork](LIVE-NORMAL-OMARCHY-ROOT-BOOT.md) passes two fresh
+QEMU/WHPX boots of the real Omarchy 4.0.4 root image. Its normal systemd 262
+starts with a read-only base and a bounded RAM overlay, then powers off cleanly;
+full before/after image hashes match. A missing-disk control fails before the
+root switch. This proves the OS boot prerequisite only. Connecting the NVIDIA
+backend to the normal Lua/UWSM session and supporting separate Hyprland and
+Quickshell GPU clients are the next integration work. Counts stay 4/8 and 0/4.
+
 [A real Wayland scene](LIVE-HYPRLAND-WAYLAND-SCENE.md) now passes two fresh
 300-frame runs at 640×360: readable fonts, an actual Foot terminal and changing
 PTY content composed by Hyprland on NVIDIA. 298 ordinary frames per run avoid

@@ -39,6 +39,11 @@ full Omarchy, application GPU acceleration, normal launcher integration, long-ru
 
 ![Actual Hyprland frame 300 with a real Foot terminal and changing PTY content](docs/images/hyprland-wayland-scene-frame-300-2026-10-15.png)
 
+[Normal-image boot groundwork](docs/LIVE-NORMAL-OMARCHY-ROOT-BOOT.md) now passes two fresh QEMU/WHPX boots of the real Omarchy 4.0.4 image.
+Its normal systemd starts with the base disk read-only and all writes in a bounded RAM overlay; the complete source-image digest stays unchanged.
+This clears an OS boot prerequisite. The NVIDIA path still needs connection to that graphical session, including separate GPU clients for Hyprland and Quickshell.
+The full Omarchy frame, launcher integration and desktop gates remain pending.
+
 Earlier [repeated Hyprland GPU presentation](docs/LIVE-HYPRLAND-QUEUED-PRESENTATION.md)
 passes twelve submissions and explicit cleanup in each of two fresh guests. A three-slot GPU ring moves presentation to its own UI thread;
 only the first and twelfth frames use diagnostic readback. The actual later frame, missing-font placeholders and failed controls are retained.

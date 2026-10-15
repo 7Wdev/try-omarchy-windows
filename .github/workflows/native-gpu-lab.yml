@@ -159,6 +159,8 @@ jobs:
           c++ -std=c++17 -Wall -Wextra -Werror -DWDDM_BRIDGE_4K_LAB=1 -DWDDM_BRIDGE_STREAM_LAB=1 -isystem .runtime-headers/include -isystem .runtime-headers/include/wsl/stubs -c experimental/windows-native-gpu/umd_context_probe.cpp -o /tmp/runtime-probe-stream.o
           python3 experimental/windows-native-gpu/test_stream_transport.py --shim /tmp/linux-ioctl-bridge-stream.so --probe /tmp/linux-ioctl-bridge-test
           cc -static -std=c11 -Wall -Wextra -Werror -O2 experimental/windows-native-gpu/runtime_guest_init.c -o /tmp/runtime-init
+          cc -static -std=c11 -Wall -Wextra -Werror -O2 experimental/windows-native-gpu/normal_root_guest_init.c -o /tmp/normal-root-init
+          python3 -m py_compile experimental/windows-native-gpu/make_normal_root_initramfs.py
           python3 -m py_compile experimental/windows-native-gpu/make_runtime_initramfs.py experimental/windows-native-gpu/test_runtime_qemu.py experimental/windows-native-gpu/test_owned_runtime_qemu.py
       - name: Compile the OpenGL probe without running against the CI host GPU
         run: |
