@@ -1667,6 +1667,28 @@ public:
         openglRenderNegotiated = version == 4;
         std::fprintf(stderr, "LINUX_BRIDGE openGlProfileNegotiated=true version=%u frames=2 commandLimit=%u reservationLimit=%u reservedByteLimit=17179869184 syncObjectLimit=%zu\n", version, profile.commandLimit, profile.reservationLimit, syncObjectLimit());
     }
+    std::uint64_t captureCompositorBuffer(int bufferFd, int syncFileFd, std::uint32_t width, std::uint32_t height,
+                                        std::uint32_t format, std::uint32_t stride) {
+        if (!openglRenderNegotiated || !(caps.flags & SharedTextureConsumeCapability)) throw Error(ENOSYS);
+        std::uint64_t bytes = 0, target = 0;
+        if (nativeBufferInfo(bufferFd, bytes)) throw Error(errno);
+        if (bytes != std::uint64_t(stride)*height) throw Error(EINVAL);
+        std::uint32_t resource = 0, sync = 0;
+        if (!kernelObjects.resolve(bufferFd, resource, WDDM_OBJECT_RESOURCE)) throw Error(errno);
+        guest_broker::Fd nativeSync(kernelObjects.resolveSyncFile(syncFileFd, target));
+        if (nativeSync.get() < 0 || !kernelObjects.resolve(nativeSync.get(), sync)) throw Error(errno);
+        if (!exportedResourceTickets.count(resource) || !exportedSyncTickets.count(sync)) throw Error(EBADF);
+        const CompositorCaptureDesc desc{sync,width,height,format,stride,0,target};
+        if (!validCompositorCapture(desc)) throw Error(EINVAL);
+        const auto result = call(request(Op::CaptureCompositorResource, resource, desc), 0, true);
+        if (result.header.handle != resource || result.result.ntstatus > 0 || (result.result.ntstatus < 0 && result.result.value)) {
+            transport.fail(); throw Error(EPROTO);
+        }
+        checkNt(result.result.ntstatus);
+        std::fprintf(stderr,"LINUX_BRIDGE compositorHostCapture=true width=%u height=%u format=%u fence=%llu windowsPresentation=false\n",
+            width,height,format,static_cast<unsigned long long>(target));
+        return result.result.value;
+    }
     std::uint64_t consumeSharedTexture(std::uint64_t target, bool streaming = false) {
         if (streaming != streamingNegotiated || (streaming && (target != consumedStreamFrames + 1 || target > GuestStreamProfile.frames))) throw Error(EINVAL);
         if (!(caps.flags & SharedTextureConsumeCapability)) throw Error(ENOSYS);
@@ -1811,6 +1833,17 @@ extern "C" int wddm_bridge_export_native_buffer(int fd,std::uint64_t bytes) {
     auto& state=bridge(); std::lock_guard<std::mutex> lock(state.guard);
     if(bridgeStopped) { errno=ESHUTDOWN; return -1; }
     try { return state.exportNativeBuffer(fd,bytes); }
+    catch(const std::system_error& error) { errno=error.code().value(); }
+    catch(...) { errno=EIO; }
+    return -1;
+}
+extern "C" int wddm_bridge_capture_compositor_buffer(int bufferFd,int syncFileFd,std::uint32_t width,std::uint32_t height,
+    std::uint32_t format,std::uint32_t stride,std::uint64_t* hash) {
+    if (bridgeStopped || bufferFd<0 || syncFileFd<0 || !hash) { errno=EINVAL; return -1; }
+    auto& state=bridge(); std::lock_guard<std::mutex> lock(state.guard);
+    if (bridgeStopped) { errno=ESHUTDOWN; return -1; }
+    try { *hash=state.captureCompositorBuffer(bufferFd,syncFileFd,width,height,format,stride); return 0; }
+    catch(const Error& error) { errno=error.number; }
     catch(const std::system_error& error) { errno=error.code().value(); }
     catch(...) { errno=EIO; }
     return -1;

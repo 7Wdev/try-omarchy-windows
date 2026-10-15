@@ -26,6 +26,7 @@
 #include "native_texture_metadata.h"
 #include "qemu_runtime_host.h"
 #include "shared_texture_worker.h"
+#include "compositor_readback.h"
 using Microsoft::WRL::ComPtr;
 using namespace driver_bridge;
 class KmtDriver : public Driver {
@@ -54,6 +55,7 @@ class KmtDriver : public Driver {
     bool openglFencesEnabled = false;
     bool openglCompositorEnabled = false;
     bool openglRenderEnabled = false;
+    unsigned compositorCaptureAttempts = 0, completedCompositorCaptures = 0, failedCompositorCaptures = 0;
     std::size_t reservationLimit() const { return openglRenderEnabled ? GuestOpenGlCompositorRenderProfile.reservationLimit : openglEnabled ? GuestOpenGlProfile.reservationLimit : MaxGpuReservations; }
     std::size_t syncObjectLimit() const { return openglCompositorEnabled ? OpenGlCompositorSyncObjects : MaxSyncObjects; }
     std::size_t vendorObjectLimit() const { return openglCompositorEnabled ? OpenGlCompositorVendorAllocations : openglFencesEnabled ? OpenGlFenceVendorAllocations : vendorAllocationObjectLimit(capabilities().flags); }
@@ -1271,6 +1273,27 @@ public:
         } else ++cleanupFailures;
         return {status, 0, 0};
     }
+    Result captureCompositorResource(std::uint32_t resource, std::uint32_t sync, CompositorCaptureDesc desc) override {
+        const auto source = sharedResourceHandles.find(resource);
+        const auto fence = sharedSyncHandles.find(sync);
+        if (!consumeSharedEnabled || !openglRenderEnabled || !runtime || runtime->hasStopped() ||
+            !validNativeInteropCaps(nativeInteropCaps()) || !validCompositorCapture(desc) || desc.syncTicket != sync ||
+            source == sharedResourceHandles.end() || fence == sharedSyncHandles.end() || compositorCaptureAttempts >= 2)
+            return {Invalid,0,0};
+        const auto frame = ++compositorCaptureAttempts;
+        std::uint64_t hash = 0; HRESULT hr = E_FAIL;
+        {
+            driver_shared::CompositorReadback capture;
+            hr = capture.capture(source->second.handle.get(), fence->second.get(), luid, desc, frame, hash);
+        }
+        if (FAILED(hr)) {
+            ++failedCompositorCaptures;
+            std::cerr << "{\"nativeCompositorCaptureFailed\":true,\"frame\":" << frame << ",\"hresult\":" << hr << "}\n";
+            return {static_cast<std::int32_t>(0xc0000001u),0,0};
+        }
+        ++completedCompositorCaptures;
+        return {0,0,hash};
+    }
     Result consumeSharedTexture(std::uint32_t resource, std::uint32_t sync, SharedTextureConsumeDesc desc) override {
         if (streamingEnabled) return {Invalid,0,0};
         return consumeTexture(resource, sync, desc, false);
@@ -1963,6 +1986,9 @@ public:
                   << ",\"releasedTextureConsumers\":" << releasedTextureConsumers
                   << ",\"completedSharedTextureConsumes\":" << completedSharedConsumes
                   << ",\"failedSharedTextureConsumes\":" << failedSharedConsumes
+                  << ",\"compositorCaptureAttempts\":" << compositorCaptureAttempts
+                  << ",\"completedCompositorCaptures\":" << completedCompositorCaptures
+                  << ",\"failedCompositorCaptures\":" << failedCompositorCaptures
                   << ",\"sharedResourceProbes\":" << sharedResourceProbes
                   << ",\"importedSharedResources\":" << importedSharedResources
                   << ",\"failedSharedResourceProbes\":" << failedSharedResourceProbes

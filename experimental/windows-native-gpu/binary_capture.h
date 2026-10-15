@@ -2,6 +2,7 @@
 // Diagnostic readback only. Each fixed-name capture is created exactly once.
 #pragma once
 #include "diagnostic_profile.h"
+#include "compositor_capture_wire.h"
 #include <filesystem>
 #include <iostream>
 #include <stdexcept>
@@ -48,6 +49,30 @@ inline HRESULT write(const char* prefix, unsigned round, const void* mapped,
     std::cerr << "{\"nativeBinaryCapture\":true,\"file\":\"" << name << "\",\"round\":" << round
               << ",\"bytes\":" << std::uint64_t(gpu_diagnostic::Width) * gpu_diagnostic::Height * 4
               << ",\"fnv1a\":" << hash << "}\n";
+    return S_OK;
+}
+inline HRESULT writeCompositor(unsigned frame, unsigned width, unsigned height, unsigned format,
+                               const void* mapped, unsigned pitch, std::uint64_t& hash) {
+    const driver_bridge::CompositorCaptureDesc desc{1,width,height,format,width*4,0,1};
+    if (!mapped || !frame || frame > 2 || !driver_bridge::validCompositorCapture(desc) ||
+        pitch < desc.stride || pitch > 16384 || pitch % 256) return E_INVALIDARG;
+    const auto name = std::string("compositor-copy-") + std::to_string(frame) + ".raw";
+    const auto path = directory() / name;
+    const auto file = CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) return HRESULT_FROM_WIN32(GetLastError());
+    bool ok = true; hash = UINT64_C(14695981039346656037);
+    for (unsigned y = 0; ok && y < height; ++y) {
+        const auto* row = static_cast<const std::uint8_t*>(mapped) + std::uint64_t(y) * pitch;
+        DWORD written = 0;
+        ok = WriteFile(file, row, desc.stride, &written, nullptr) && written == desc.stride;
+        for (unsigned x = 0; ok && x < desc.stride; ++x) hash = (hash ^ row[x]) * UINT64_C(1099511628211);
+    }
+    if (ok) ok = FlushFileBuffers(file) != FALSE;
+    if (!CloseHandle(file)) ExitProcess(3);
+    if (!ok) return E_FAIL;
+    std::cerr << "{\"nativeCompositorBinaryCapture\":true,\"file\":\"" << name << "\",\"frame\":" << frame
+        << ",\"width\":" << width << ",\"height\":" << height << ",\"fourcc\":" << format
+        << ",\"bytes\":" << std::uint64_t(width)*height*4 << ",\"fnv1a\":" << hash << "}\n";
     return S_OK;
 }
 } // namespace driver_capture

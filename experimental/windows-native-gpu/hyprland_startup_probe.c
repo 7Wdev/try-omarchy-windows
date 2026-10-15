@@ -12,6 +12,9 @@
 #include <unistd.h>
 #include <stdint.h>
 #include <stdatomic.h>
+#ifdef WDDM_BRIDGE_COMPOSITOR_HOST_CAPTURE
+#include "hyprland_capture_probe.h"
+#endif
 
 typedef int (*main_function)(int,char**,char**);
 static main_function compositor_main;
@@ -24,6 +27,9 @@ int wddm_bridge_compositor_commit(int fd,uint32_t width,uint32_t height,uint32_t
     const unsigned frame=atomic_fetch_add(&compositor_commits,1)+1;
     printf("HYPRLAND_COMPOSITOR_COMMIT index=%u width=%u height=%u format=%u stride=%u modifier=%llu ownedNativeBuffer=true pixelsVerified=false windowsPresentation=false\n",
         frame,width,height,format,stride,(unsigned long long)modifier);
+#ifdef WDDM_BRIDGE_COMPOSITOR_HOST_CAPTURE
+    if(frame==2 || frame==4) return capture_output(fd,width,height,format,stride);
+#endif
     return 0;
 }
 static int run_ctl(char* const arguments[]) {
@@ -54,7 +60,12 @@ static void* bounded_control(void* unused) {
         char* const create[]={"/usr/bin/hyprctl","output","create","headless","WDDM-1",NULL};
         const int created=run_ctl(create);
         printf("HYPRLAND_STARTUP_OUTPUT createExit=%d windowsPresentation=false\n",created);
-        for(unsigned tick=0;tick<100 && atomic_load(&compositor_commits)<2;++tick) usleep(50000);
+#ifdef WDDM_BRIDGE_COMPOSITOR_HOST_CAPTURE
+        const unsigned minimum_commits=4;
+#else
+        const unsigned minimum_commits=2;
+#endif
+        for(unsigned tick=0;tick<100 && atomic_load(&compositor_commits)<minimum_commits;++tick) usleep(50000);
         char* const monitors[]={"/usr/bin/hyprctl","-j","monitors","all",NULL};
         printf("HYPRLAND_STARTUP_MONITORS exit=%d\n",run_ctl(monitors));
         char* const stop[]={"/usr/bin/hyprctl","dispatch","exit",NULL};

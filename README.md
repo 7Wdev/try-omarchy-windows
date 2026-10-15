@@ -29,11 +29,16 @@ There is no reliable completion date yet; the remaining work includes substantia
 
 Vulkan, CUDA, video acceleration, NVIDIA-specific features and concurrent Windows/guest GPU use need separate real-application acceptance tests as part of the wider goal.
 
-Latest integration work: [actual Hyprland output buffers](docs/LIVE-HYPRLAND-COMPOSITOR-BUFFERS.md)
+Latest integration work: [actual Hyprland GPU framebuffer capture](docs/LIVE-HYPRLAND-COMPOSITOR-CAPTURE.md)
+passes two captures in each of two fresh guests, with 133,120 known background pixels checked per frame
+and a changed-background control. The image shows an actual 640×360 compositor output with missing-font placeholders.
+Full scene correctness and Windows app presentation remain unverified. **No displayed Hyprland frame is accepted yet.**
+
+Earlier [actual Hyprland output buffers](docs/LIVE-HYPRLAND-COMPOSITOR-BUFFERS.md)
 now reaches the NVIDIA renderer, allocates a three-buffer 640×360 swapchain and commits owned buffers.
 The [shutdown ownership fix](docs/LIVE-HYPRLAND-LOGGING-LIFETIME.md) passes three fresh compositor runs,
 including two without fault tracing. Each retires 29 GPU commands and explicitly releases all native mappings and broker views before VM exit.
-Compositor pixel verification and Windows presentation remain open. **No displayed Hyprland frame has been verified yet.**
+Full compositor pixel verification and Windows presentation remain open. **No displayed Hyprland frame has been verified yet.**
 
 Latest verified rendering checkpoint: [real render node and GBM buffers](docs/LIVE-GPU-GBM-NATIVE-RENDER.md)
 passes two fresh ordinary-user guests. Real GBM allocations export owned DMA-BUFs, import into EGL,

@@ -1,5 +1,13 @@
 # Native Windows GPU experiment
 
+The [actual compositor capture checkpoint](../../docs/LIVE-HYPRLAND-COMPOSITOR-CAPTURE.md)
+copies Hyprland's current owned output buffer on the Windows GPU after a native
+renderer-fence wait. Four captures in two fresh guests pass known-background
+reference and lifecycle audits. No guest CPU map or CPU upload is used.
+Full scene correctness and Windows app presentation remain unverified; this
+does not close a desktop gate. The public startup probe enables the bounded
+two-capture mode only with `WDDM_BRIDGE_COMPOSITOR_HOST_CAPTURE=1` at build time.
+
 The [actual Hyprland shutdown fix](../../docs/LIVE-HYPRLAND-LOGGING-LIFETIME.md)
 removes a global logger's strong backend ownership. Three fresh bounded
 compositor runs, including two without fault tracing, now exit cleanly with all

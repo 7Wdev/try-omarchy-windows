@@ -4,12 +4,19 @@ Updated 2026-10-15. **4 of 8 verification stages demonstrated.** This is a
 checklist count, not 50% of engineering effort or a product-readiness estimate.
 The largest integration tasks are still ahead.
 
-[Actual Hyprland output buffers](LIVE-HYPRLAND-COMPOSITOR-BUFFERS.md) now pass
+[Actual Hyprland GPU framebuffer capture](LIVE-HYPRLAND-COMPOSITOR-CAPTURE.md)
+now passes two captures in each of two fresh guests. Each frame independently
+matches 133,120 background-reference pixels, including a changed-background
+control, and all mappings release before exit. The image is a real 640×360
+compositor readback with missing-font placeholders. Full scene correctness and
+Windows app presentation remain unverified. No desktop gate is closed.
+
+Earlier [actual Hyprland output buffers](LIVE-HYPRLAND-COMPOSITOR-BUFFERS.md) pass
 renderer initialization, native swapchain allocation and import into a separate
 renderer device. The [logging ownership fix](LIVE-HYPRLAND-LOGGING-LIFETIME.md)
 passes three fresh compositor runs, including two without fault tracing.
 Each records seven output-buffer commits, 29 retired GPU commands and explicit
-resource cleanup before VM exit. Pixels and Windows presentation remain unverified.
+resource cleanup before VM exit. That checkpoint did not verify pixels or presentation.
 No displayed compositor frame or desktop gate is accepted.
 
 Latest [real render-node/GBM development checkpoint](LIVE-GPU-GBM-NATIVE-RENDER.md)
