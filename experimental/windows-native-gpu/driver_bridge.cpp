@@ -57,40 +57,41 @@ class KmtDriver : public Driver {
     bool openglFencesEnabled = false;
     bool openglCompositorEnabled = false;
     bool openglRenderEnabled = false;
+    bool openglDesktopEnabled = false;
     unsigned compositorCaptureAttempts = 0, completedCompositorCaptures = 0, failedCompositorCaptures = 0;
     std::unique_ptr<driver_shared::CompositorReadback> compositorPresenter;
     std::unique_ptr<driver_shared::CompositorPresenter> compositorOutput;
     std::uint64_t completedCompositorFrames = 0, failedCompositorFrames = 0, compositorBackpressure = 0;
-    std::size_t reservationLimit() const { return openglRenderEnabled ? GuestOpenGlCompositorRenderProfile.reservationLimit : openglEnabled ? GuestOpenGlProfile.reservationLimit : MaxGpuReservations; }
+    std::size_t reservationLimit() const { return openglDesktopEnabled ? GuestOpenGlDesktopProfile.reservationLimit : openglRenderEnabled ? GuestOpenGlCompositorRenderProfile.reservationLimit : openglEnabled ? GuestOpenGlProfile.reservationLimit : MaxGpuReservations; }
     std::size_t syncObjectLimit() const { return openglCompositorEnabled ? OpenGlCompositorSyncObjects : MaxSyncObjects; }
-    std::size_t vendorObjectLimit() const { return openglCompositorEnabled ? OpenGlCompositorVendorAllocations : openglFencesEnabled ? OpenGlFenceVendorAllocations : vendorAllocationObjectLimit(capabilities().flags); }
-    std::uint32_t openGlCommandLimit() const { return openglCompositorEnabled ? GuestOpenGlCompositorProfile.commandLimit : GuestOpenGlProfile.commandLimit; }
-    std::uint32_t hwSignalLimit() const { return openglCompositorEnabled ? OpenGlCompositorHwSignals : openglFencesEnabled ? OpenGlFenceHwSignals : MaxHwQueueSignals; }
-    struct PendingSubmission { unsigned index; std::uint32_t queue, bytes, privateBytes; std::uint64_t target; };
+    std::size_t vendorObjectLimit() const { return openglDesktopEnabled ? OpenGlDesktopVendorAllocations : openglCompositorEnabled ? OpenGlCompositorVendorAllocations : openglFencesEnabled ? OpenGlFenceVendorAllocations : vendorAllocationObjectLimit(capabilities().flags); }
+    std::uint32_t openGlCommandLimit() const { return openglDesktopEnabled ? 0 : openglCompositorEnabled ? GuestOpenGlCompositorProfile.commandLimit : GuestOpenGlProfile.commandLimit; }
+    std::uint32_t hwSignalLimit() const { return openglDesktopEnabled ? 0 : openglCompositorEnabled ? OpenGlCompositorHwSignals : openglFencesEnabled ? OpenGlFenceHwSignals : MaxHwQueueSignals; }
+    struct PendingSubmission { std::uint64_t index; std::uint32_t queue, bytes, privateBytes; std::uint64_t target; };
     std::vector<PendingSubmission> pendingSubmissions;
-    unsigned acceptedAsyncSubmissions = 0, peakPendingSubmissions = 0;
+    std::uint64_t acceptedAsyncSubmissions = 0; unsigned peakPendingSubmissions = 0;
     struct PendingHwSignal {
-        unsigned index; std::uint32_t sync, flags, count; std::uint64_t target;
+        std::uint64_t index; std::uint32_t sync, flags, count; std::uint64_t target;
         std::array<std::uint32_t,MaxHwQueues> queues;
     };
     std::vector<PendingHwSignal> pendingHwSignals;
     struct PendingHwWait {
-        unsigned index; std::uint32_t queue, count;
+        std::uint64_t index; std::uint32_t queue, count;
         bool contextStream;
         std::array<std::uint32_t, MaxHwQueueWaitObjects> syncs;
         std::array<std::uint64_t, MaxHwQueueWaitObjects> targets;
     };
     std::vector<PendingHwWait> pendingHwWaits;
-    struct PendingContextSignal { unsigned index; std::uint32_t context, sync; std::uint64_t target; };
+    struct PendingContextSignal { std::uint64_t index; std::uint32_t context, sync; std::uint64_t target; };
     std::vector<PendingContextSignal> pendingContextSignals;
-    unsigned acceptedContextSignals = 0, retiredAsyncContextSignals = 0, peakPendingContextSignals = 0;
-    unsigned acceptedHwQueueWaits = 0, satisfiedHwQueueWaits = 0, failedHwQueueWaits = 0, peakPendingHwQueueWaits = 0;
-    unsigned hwQueueSignalAttempts = 0, acceptedHwQueueSignals = 0, completedHwQueueSignals = 0, failedHwQueueSignals = 0;
+    std::uint64_t acceptedContextSignals = 0, retiredAsyncContextSignals = 0; unsigned peakPendingContextSignals = 0;
+    std::uint64_t acceptedHwQueueWaits = 0, satisfiedHwQueueWaits = 0, failedHwQueueWaits = 0; unsigned peakPendingHwQueueWaits = 0;
+    std::uint64_t hwQueueSignalAttempts = 0, acceptedHwQueueSignals = 0, completedHwQueueSignals = 0, failedHwQueueSignals = 0;
     unsigned peakPendingHwQueueSignals = 0;
     bool asyncRetirementFailed = false;
-    unsigned submissionAttempts = 0, completedSubmissions = 0, failedSubmissions = 0;
-    unsigned submissionTimeouts = 0;
-    std::uint64_t submittedCommandBytes = 0;
+    std::uint64_t submissionAttempts = 0, completedSubmissions = 0, failedSubmissions = 0;
+    std::uint64_t submissionTimeouts = 0;
+    std::uint64_t submittedCommandBytes = 0, acceptedCommandBytes = 0;
     bool collectRetiredSubmissions() {
         if (asyncRetirementFailed) return false;
         for (auto it = pendingSubmissions.begin(); it != pendingSubmissions.end();) {
@@ -191,7 +192,7 @@ class KmtDriver : public Driver {
     unsigned completedSyncs = 0, destroyedSyncs = 0, failedSyncs = 0, monitoredSyncs = 0, mutexSyncs = 0;
     unsigned syncsReleasedAfterVmExit = 0;
     unsigned noGpuAccessSyncs = 0, noSignalMaxValueOnTdrSyncs = 0;
-    unsigned contextSignalAttempts = 0, completedContextSignals = 0, failedContextSignals = 0, contextSignalTimeouts = 0;
+    std::uint64_t contextSignalAttempts = 0, completedContextSignals = 0, failedContextSignals = 0, contextSignalTimeouts = 0;
     driver_qemu::Runtime* runtime = nullptr;
     struct Allocation {
         std::uint32_t device, resource, size;
@@ -614,13 +615,14 @@ public:
     OpenGlProfile beginOpenGl(std::uint32_t version = 1) override {
         if (!gpu_diagnostic::HighResolution || openglEnabled || streamingEnabled || !asyncSubmitEnabled || !syncEnabled || !reservationEnabled ||
             !runtime || runtime->hasStopped() || !ownedAdapters.empty() || !deviceAdapters.empty() ||
-            !pendingSubmissions.empty() || !pendingHwSignals.empty() || (version != 1 && version != 2 && version != 3 && version != 4)) return {};
+            !pendingSubmissions.empty() || !pendingHwSignals.empty() || (version != 1 && version != 2 && version != 3 && version != 4 && version != 5)) return {};
         openglEnabled = true;
         openglFencesEnabled = version >= 2;
         openglCompositorEnabled = version >= 3;
-        openglRenderEnabled = version == 4;
-        const auto profile = version == 4 ? GuestOpenGlCompositorRenderProfile : version == 3 ? GuestOpenGlCompositorProfile : version == 2 ? GuestOpenGlFenceProfile : GuestOpenGlProfile;
-        std::cerr << "{\"openGlProfileNegotiated\":true,\"version\":" << version << ",\"frames\":2,\"commandLimit\":" << profile.commandLimit << ",\"pendingCommands\":16,\"reservationLimit\":" << profile.reservationLimit << ",\"reservedByteLimit\":17179869184,\"requestLimit\":" << profile.requestLimit;
+        openglRenderEnabled = version >= 4;
+        openglDesktopEnabled = version == 5;
+        const auto profile = version == 5 ? GuestOpenGlDesktopProfile : version == 4 ? GuestOpenGlCompositorRenderProfile : version == 3 ? GuestOpenGlCompositorProfile : version == 2 ? GuestOpenGlFenceProfile : GuestOpenGlProfile;
+        std::cerr << "{\"openGlProfileNegotiated\":true,\"version\":" << version << ",\"frames\":" << profile.frames << ",\"commandLimit\":" << profile.commandLimit << ",\"pendingCommands\":16,\"reservationLimit\":" << profile.reservationLimit << ",\"reservedByteLimit\":17179869184,\"requestLimit\":" << profile.requestLimit;
         if (version >= 2) std::cerr << ",\"objectLimit\":" << profile.objectLimit
             << ",\"hwQueueLimit\":" << OpenGlFenceHwQueues << ",\"vendorObjectLimit\":" << vendorObjectLimit() << ",\"syncObjectLimit\":" << syncObjectLimit();
         std::cerr << "}\n";
@@ -635,7 +637,8 @@ public:
         };
         if (!submitEnabled || !runtime || runtime->hasStopped() || !validHwSubmit(desc) || data.size() != desc.privateBytes ||
             queue == hwQueues.end() || !queue->second.lease || desc.fence <= queue->second.submittedFence ||
-            submissionAttempts >= (streamingEnabled ? GuestStreamProfile.totalCommands : openglEnabled ? openGlCommandLimit() : MaxHwSubmissions) ||
+            !lifetimeBudgetAvailable(submissionAttempts,streamingEnabled ? GuestStreamProfile.totalCommands : openglEnabled ? openGlCommandLimit() : MaxHwSubmissions) ||
+            desc.bytes>UINT64_MAX-acceptedCommandBytes ||
             pendingSubmissions.size() >= MaxHwSubmissions) return reject(1);
         unsigned owners = 0;
         for (const auto& item : vendorAllocations) {
@@ -666,6 +669,7 @@ public:
                   << ",\"async\":" << (asynchronous ? "true" : "false") << "}\n";
         if (status < 0) { ++failedSubmissions; return {status, 0, 0}; }
         queue->second.submittedFence = desc.fence;
+        acceptedCommandBytes += desc.bytes;
         if (status != 0) { ++failedSubmissions; throw std::runtime_error("Unexpected native submission status"); }
         if (asynchronous) {
             // The KMT call accepts work; a progress fence proves completion.
@@ -702,7 +706,7 @@ public:
             queues.size() != desc.count || object == syncObjects.end() || object->second.type != 5 ||
             !packetSignalSyncFlags(object->second.flags) || !object->second.lease || !object->second.fence ||
             desc.fence <= object->second.lastSignal || (streamingEnabled ? hwQueueSignalAttempts + contextSignalAttempts >= GuestStreamProfile.totalSignals :
-                                                                        hwQueueSignalAttempts >= hwSignalLimit()) ||
+                                                                        !lifetimeBudgetAvailable(hwQueueSignalAttempts,hwSignalLimit())) ||
             pendingHwSignals.size() >= MaxHwQueueSignals) return {Invalid,0,0};
         PendingHwSignal pending{}; pending.sync=sync; pending.flags=desc.flags; pending.count=desc.count; pending.target=desc.fence;
         for (std::size_t n=0;n<queues.size();++n) {
@@ -744,7 +748,7 @@ public:
         const auto context = contextOwners.find(queueId);
         if (!syncSharingEnabled || !asyncSubmitEnabled || !runtime || runtime->hasStopped() ||
             (contextStream ? context == contextOwners.end() || context->second.flags != 16 : queue == hwQueues.end()) ||
-            items.empty() || items.size() > MaxHwQueueWaitObjects) return {Invalid, 0, 0};
+            items.empty() || items.size() > MaxHwQueueWaitObjects || acceptedHwQueueWaits==UINT64_MAX) return {Invalid, 0, 0};
         if (pendingHwWaits.size() >= MaxPendingHwQueueWaits) return {static_cast<std::int32_t>(0xc0000017u), 0, 0};
         const auto device = contextStream ? context->second.device : queue->second.device;
         PendingHwWait pending{}; pending.queue = queueId; pending.count = static_cast<std::uint32_t>(items.size()); pending.contextStream = contextStream;
@@ -1091,7 +1095,7 @@ public:
             object->second.device != owner->second.device || object->second.type != 5 || !packetSignalSyncFlags(object->second.flags) ||
             !object->second.lease || !object->second.fence || desc.fence <= object->second.lastSignal ||
             (streamingEnabled ? contextSignalAttempts + hwQueueSignalAttempts >= GuestStreamProfile.totalSignals :
-                                contextSignalAttempts >= MaxContextSignals))
+                                !lifetimeBudgetAvailable(contextSignalAttempts,openglDesktopEnabled ? 0 : MaxContextSignals)))
             return {Invalid,0,0};
         D3DKMT_SIGNALSYNCHRONIZATIONOBJECTFROMGPU2 a{};
         a.ObjectCount = 1; a.ObjectHandleArray = &sync; a.Flags.Value = desc.flags;
@@ -2172,10 +2176,10 @@ static void serve(Stream& stream, const std::string& sectionName = {}, std::uint
     {
       Session session(driver);
       std::size_t peakWireObjects = 0;
+      std::uint64_t count = 0;
       try {
-      unsigned count = 0;
       const auto deadline = GetTickCount64() + 60000;
-      for (; count < session.requestLimit(); ++count) {
+      for (; lifetimeBudgetAvailable(count,session.requestLimit()); ++count) {
         if (runtime && GetTickCount64() >= deadline) throw std::runtime_error("Owned runtime diagnostic deadline exceeded");
         // A byte stream needs a length prefix outside the borrowed 16-byte
         // descriptor header. Both are little endian; target host/guest are x64.
@@ -2195,9 +2199,9 @@ static void serve(Stream& stream, const std::string& sectionName = {}, std::uint
         size = static_cast<std::uint32_t>(reply.size()); stream.write(&size, sizeof size);
         stream.write(reply.data(), reply.size());
       }
-      if (count == session.requestLimit()) throw std::runtime_error("Session request quota exceeded");
+      if (!lifetimeBudgetAvailable(count,session.requestLimit())) throw std::runtime_error("Session request quota exceeded");
       } catch (...) { failure = std::current_exception(); }
-      std::cerr << "{\"wireObjectSummary\":true,\"peakLiveObjects\":" << peakWireObjects
+      std::cerr << "{\"wireObjectSummary\":true,\"requestsHandled\":" << count << ",\"peakLiveObjects\":" << peakWireObjects
                 << ",\"liveObjectsBeforeDisconnect\":" << session.objectCount()
                 << ",\"objectLimit\":" << session.objectLimit() << "}\n";
       // Session destruction releases queue pages. A transport failure must

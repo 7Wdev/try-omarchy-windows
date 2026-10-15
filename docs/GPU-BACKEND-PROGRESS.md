@@ -1,10 +1,22 @@
 # NVIDIA backend progress
 
-Updated 2026-10-15. **4 of 8 verification stages demonstrated.** This is a
+Updated 2026-10-16. **4 of 8 verification stages demonstrated.** This is a
 checklist count, not 50% of engineering effort or a product-readiness estimate.
 The largest integration tasks are still ahead.
 
-[Repeated Hyprland GPU presentation](LIVE-HYPRLAND-QUEUED-PRESENTATION.md) now
+[A real Wayland scene](LIVE-HYPRLAND-WAYLAND-SCENE.md) now passes two fresh
+300-frame runs at 640×360: readable fonts, an actual Foot terminal and changing
+PTY content composed by Hyprland on NVIDIA. 298 ordinary frames per run avoid
+CPU readback; 948/951 guest GPU commands retire and all mappings release before
+VM exit. A separately negotiated rolling profile replaces the 256-command
+lifetime limit and raises the live vendor-object cap to 512; live-work and byte
+limits remain. The retained 256-object exhaustion and Foot startup failures
+explain these changes. Final DXGI counts are stale at 297/117, so display remains
+unverified. Foot uses software rendering; independent guest GPU applications,
+the normal Omarchy session/assets, launcher/input integration, long runs and
+4K desktop acceptance remain open. Counts stay 4/8 stages and 0/4 desktop gates.
+
+Earlier [repeated Hyprland GPU presentation](LIVE-HYPRLAND-QUEUED-PRESENTATION.md)
 passes twelve real compositor submissions per fresh guest, twice. Ten ordinary
 frames have no CPU readback; a three-slot GPU ring and dedicated Windows UI
 thread handle presentation. The two audited backbuffers pass scoped background

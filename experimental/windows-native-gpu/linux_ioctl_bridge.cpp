@@ -244,7 +244,8 @@ class Bridge {
     bool openglFencesNegotiated = false;
     bool openglCompositorNegotiated = false;
     bool openglRenderNegotiated = false;
-    std::size_t reservationLimit() const { return openglRenderNegotiated ? GuestOpenGlCompositorRenderProfile.reservationLimit : openglNegotiated ? GuestOpenGlProfile.reservationLimit : MaxGpuReservations; }
+    bool openglDesktopNegotiated = false;
+    std::size_t reservationLimit() const { return openglDesktopNegotiated ? GuestOpenGlDesktopProfile.reservationLimit : openglRenderNegotiated ? GuestOpenGlCompositorRenderProfile.reservationLimit : openglNegotiated ? GuestOpenGlProfile.reservationLimit : MaxGpuReservations; }
     std::size_t syncObjectLimit() const { return openglCompositorNegotiated ? OpenGlCompositorSyncObjects : MaxSyncObjects; }
     std::uint64_t consumedStreamFrames = 0;
     native_gpu::Capabilities caps{};
@@ -869,7 +870,7 @@ public:
                 const VendorAllocationDesc desc{item.Flags.Value, item.Priority, item.VidPnSourceId, item.PrivateDriverDataSize, 0, 0};
                 if (!validVendorAllocation(desc) || item.pSystemMem || !item.pPrivateDriverData ||
                     std::any_of(std::begin(item.Reserved), std::end(item.Reserved), [](auto value) { return value != 0; })) throw Error(EINVAL);
-                if (vendorOwners.size() >= (openglCompositorNegotiated ? OpenGlCompositorVendorAllocations : openglFencesNegotiated ? OpenGlFenceVendorAllocations : vendorAllocationObjectLimit(caps.flags))) throw Error(EMFILE);
+                if (vendorOwners.size() >= (openglDesktopNegotiated ? OpenGlDesktopVendorAllocations : openglCompositorNegotiated ? OpenGlCompositorVendorAllocations : openglFencesNegotiated ? OpenGlFenceVendorAllocations : vendorAllocationObjectLimit(caps.flags))) throw Error(EMFILE);
                 const SharedVendorAllocationDesc sharedDesc{desc, a.PrivateRuntimeDataSize, 0};
                 if (sharedResource && (!validSharedVendorAllocation(sharedDesc) || !a.pPrivateRuntimeData)) throw Error(EINVAL);
                 const NativeSharedVendorAllocationDesc nativeDesc{sharedDesc, profile};
@@ -1663,12 +1664,13 @@ public:
         if (header.status) throw Error(-header.status);
         if (packet.size() != sizeof header + sizeof(OpenGlProfile)) { transport.fail(); throw Error(EPROTO); }
         OpenGlProfile profile{}; std::memcpy(&profile, packet.data() + sizeof header, sizeof profile);
-        if (version == 1 ? !validOpenGlProfile(profile) : version == 2 ? !validOpenGlFenceProfile(profile) : version == 3 ? !validOpenGlCompositorProfile(profile) : !validOpenGlCompositorRenderProfile(profile)) { transport.fail(); throw Error(EPROTO); }
+        if (version == 1 ? !validOpenGlProfile(profile) : version == 2 ? !validOpenGlFenceProfile(profile) : version == 3 ? !validOpenGlCompositorProfile(profile) : version == 4 ? !validOpenGlCompositorRenderProfile(profile) : !validOpenGlDesktopProfile(profile)) { transport.fail(); throw Error(EPROTO); }
         openglNegotiated = true;
         openglFencesNegotiated = version >= 2;
         openglCompositorNegotiated = version >= 3;
-        openglRenderNegotiated = version == 4;
-        std::fprintf(stderr, "LINUX_BRIDGE openGlProfileNegotiated=true version=%u frames=2 commandLimit=%u reservationLimit=%u reservedByteLimit=17179869184 syncObjectLimit=%zu\n", version, profile.commandLimit, profile.reservationLimit, syncObjectLimit());
+        openglRenderNegotiated = version >= 4;
+        openglDesktopNegotiated = version == 5;
+        std::fprintf(stderr, "LINUX_BRIDGE openGlProfileNegotiated=true version=%u frames=%u commandLimit=%u reservationLimit=%u reservedByteLimit=17179869184 syncObjectLimit=%zu\n", version, profile.frames, profile.commandLimit, profile.reservationLimit, syncObjectLimit());
     }
     std::uint64_t captureCompositorBuffer(int bufferFd, int syncFileFd, std::uint32_t width, std::uint32_t height,
                                         std::uint32_t format, std::uint32_t stride) {
@@ -1979,6 +1981,15 @@ extern "C" int wddm_bridge_begin_opengl_compositor_render() {
     try { state.beginOpenGl(4); return 0; }
     catch (const Error& error) { errno = error.number; }
     catch (...) { state.protocolFailed(); errno = EIO; }
+    return -1;
+}
+extern "C" int wddm_bridge_begin_opengl_desktop_render() {
+    if (bridgeStopped) { errno=ESHUTDOWN; return -1; }
+    auto& state=bridge(); std::lock_guard<std::mutex> lock(state.guard);
+    if (bridgeStopped) { errno=ESHUTDOWN; return -1; }
+    try { state.beginOpenGl(5); return 0; }
+    catch (const Error& error) { errno=error.number; }
+    catch (...) { state.protocolFailed(); errno=EIO; }
     return -1;
 }
 extern "C" int wddm_bridge_consume_streaming_texture(std::uint64_t target, std::uint64_t* hash) {

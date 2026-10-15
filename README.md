@@ -14,24 +14,32 @@ through QEMU/WHPX. Full acceleration of the Omarchy/Hyprland desktop through thi
 **4/8 verification stages demonstrated; 0/4 desktop acceptance gates complete.** These are checklist counts, not percentages of engineering work completed.
 Guest graphics integration is in progress. The largest integration work remains. [See the roadmap and evidence](docs/GPU-BACKEND-PROGRESS.md).
 
-**Distance to the full desktop:** real Hyprland now renders actual 640×360 output into an experimental Windows GPU window.
-Two fresh guests each submit twelve frames, with no CPU readback on ten ordinary frames. Final-frame display is verified in one repeat and remains unverified in the other.
-The next major milestone is the **first correctly displayed Hyprland frame in the Windows app**. A full Omarchy scene also needs
-normal fonts/themes/configuration and real apps, plus enough resource and queue capacity to start and sustain them.
-The repeated-frame diagnostic compositor already peaks at 253 of 256 guest allocations; its finite 256-command / 50,000-request profile cannot sustain a desktop.
+**Distance to the full desktop:** real Hyprland now composes a readable Foot terminal with changing content at 640×360 into an experimental Windows GPU window.
+Two fresh guests each submit **300 frames**, with no CPU readback on 298 ordinary frames and clean teardown after 948/951 guest GPU commands.
+The new negotiated profile removes the old lifetime command/request cap while keeping live-work and memory limits; fonts and a real Wayland surface now work.
+Final display statistics remain stale in both runs, so reliable scanout is still unverified.
+The next major milestone is the **first full Omarchy scene displayed in the Windows app**. It needs the normal Omarchy session, themes/configuration and app startup,
+launcher presentation/input integration, and capacity for independent GPU applications. Foot currently supplies a software-rendered surface; Hyprland composes it on NVIDIA.
 Interactive use, long-run stability and the ≥93% native-performance target then need their own acceptance tests.
 There is no reliable completion date yet; the remaining work includes substantial driver and compositor integration.
 
 | Desktop gate | Status | Acceptance requirement |
 | --- | --- | --- |
-| Guest graphics integration | In progress: bounded native buffers, fences and compositor readback pass | Hyprland can access a supported guest device path and safely share buffers and synchronization for sustained work. |
+| Guest graphics integration | In progress: real Wayland surface, fonts and 300-frame GPU composition pass | Hyprland can access a supported guest device path and safely share buffers and synchronization for sustained work. |
 | First Hyprland frame | Pending | Independently verify a correctly displayed compositor frame in the Windows app, capture its image and update PR #2 with the result. |
 | Interactive desktop | Pending | Continuously display real apps with input, multiple windows, resizing and fullscreen up to 4K. |
 | Stable, near-native product | Pending | Pass long runs, bounded-memory and recovery checks, plus matched benchmarks meeting ≥93% of native performance. |
 
 Vulkan, CUDA, video acceleration, NVIDIA-specific features and concurrent Windows/guest GPU use need separate real-application acceptance tests as part of the wider goal.
 
-Latest integration work: [repeated Hyprland GPU presentation](docs/LIVE-HYPRLAND-QUEUED-PRESENTATION.md)
+Latest integration work: [a real Wayland scene through the NVIDIA compositor](docs/LIVE-HYPRLAND-WAYLAND-SCENE.md)
+passes two fresh 300-frame runs and independent background/color checks on the first and last GPU backbuffers.
+The actual last frame is shown below. This is a short diagnostic with a software-rendered terminal, separate native window and stale final display telemetry;
+full Omarchy, application GPU acceleration, normal launcher integration, long-run stability and 4K desktop performance remain open. Counts stay 4/8 and 0/4.
+
+![Actual Hyprland frame 300 with a real Foot terminal and changing PTY content](docs/images/hyprland-wayland-scene-frame-300-2026-10-15.png)
+
+Earlier [repeated Hyprland GPU presentation](docs/LIVE-HYPRLAND-QUEUED-PRESENTATION.md)
 passes twelve submissions and explicit cleanup in each of two fresh guests. A three-slot GPU ring moves presentation to its own UI thread;
 only the first and twelfth frames use diagnostic readback. The actual later frame, missing-font placeholders and failed controls are retained.
 Normal launcher integration, real Omarchy apps/assets, sustained rendering and 4K desktop performance remain open. Counts stay 4/8 and 0/4.

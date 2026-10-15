@@ -15,6 +15,13 @@
 #if defined(WDDM_BRIDGE_COMPOSITOR_HOST_CAPTURE) && defined(WDDM_BRIDGE_COMPOSITOR_HOST_PRESENT)
 #error Select one compositor output diagnostic
 #endif
+#if defined(WDDM_BRIDGE_COMPOSITOR_HOST_SCENE) && !defined(WDDM_BRIDGE_COMPOSITOR_HOST_PRESENT)
+#error Scene diagnostics require queued presentation
+#endif
+#ifdef WDDM_BRIDGE_COMPOSITOR_HOST_SCENE
+static _Atomic int scene_ready;
+static char last_control_reply[8192];
+#endif
 #ifdef WDDM_BRIDGE_COMPOSITOR_HOST_PRESENT
 #include "hyprland_queue_probe.h"
 #include <sys/socket.h>
@@ -41,6 +48,9 @@ int wddm_bridge_compositor_commit(int fd,uint32_t width,uint32_t height,uint32_t
     if(frame==2 || frame==4) return capture_output(fd,width,height,format,stride);
 #endif
 #ifdef WDDM_BRIDGE_COMPOSITOR_HOST_PRESENT
+#ifdef WDDM_BRIDGE_COMPOSITOR_HOST_SCENE
+    if(!atomic_load(&scene_ready)) return 0;
+#endif
     if(frame>=2) return queue_output(fd,width,height,format,stride);
 #endif
     return 0;
@@ -83,6 +93,10 @@ static int run_ctl(char* const arguments[]) {
         received+=(size_t)count;
     }
     reply[received]='\0';
+#ifdef WDDM_BRIDGE_COMPOSITOR_HOST_SCENE
+    memcpy(last_control_reply,reply,received+1);
+    if(strcmp(request,"j/clients"))
+#endif
     printf("HYPRLAND_CONTROL_REPLY command=%s reply=%s\n",request,reply);
     result=(received && (json ? reply[0]=='[' : !strcmp(reply,"ok"))) ? 0 : -1;
 done:
@@ -106,6 +120,77 @@ done:
     return WEXITSTATUS(status);
 #endif
 }
+#ifdef WDDM_BRIDGE_COMPOSITOR_HOST_SCENE
+static void scene_hex_receipt(const char* label,const char* data,size_t bytes) {
+    static const char hex[]="0123456789abcdef";
+    char line[17000];
+    const int prefix=snprintf(line,sizeof(line),"%s ",label);
+    if(prefix<=0 || (size_t)prefix+bytes*2+1>=sizeof(line)) return;
+    for(size_t index=0;index<bytes;++index) {
+        const unsigned char value=(unsigned char)data[index];
+        line[prefix+index*2]=hex[value>>4]; line[prefix+index*2+1]=hex[value&15];
+    }
+    line[prefix+bytes*2]='\n';
+    const size_t count=(size_t)prefix+bytes*2+1;
+    if(write(STDOUT_FILENO,line,count)!=(ssize_t)count) atomic_store(&queue_failed,1);
+}
+static void scene_diagnostics(void) {
+    const char* paths[]={"/tmp/foot-scene.log","/tmp/scene-font-sans","/tmp/scene-font-mono","/tmp/desktop-scene-ready"};
+    for(unsigned index=0;index<sizeof(paths)/sizeof(paths[0]);++index) {
+        FILE* file=fopen(paths[index],"rb");
+        if(!file) { printf("HYPRLAND_SCENE_MISSING file=%s errno=%d\n",paths[index],errno); continue; }
+        char data[2048]; const size_t bytes=fread(data,1,sizeof(data),file);
+        fclose(file);
+        printf("HYPRLAND_SCENE_DIAGNOSTIC file=%s bytes=%zu\n",paths[index],bytes);
+        scene_hex_receipt("HYPRLAND_SCENE_DIAGNOSTIC_HEX",data,bytes);
+    }
+}
+static int prepare_scene(void) {
+    char* const launch[]={"/usr/bin/hyprctl","dispatch","exec",
+        "[float; size 480 200; move 80 120] LC_ALL=C.UTF-8 XCOMPOSEFILE=/usr/share/X11/locale/en_US.UTF-8/Compose LD_PRELOAD= /usr/bin/foot --config=/foot.ini --app-id=wddm-scene --title='Wayland desktop scene' /bin/sh /desktop-scene.sh > /tmp/foot-scene.log 2>&1",NULL};
+    if(run_ctl(launch)) return -1;
+    for(unsigned tick=0;tick<100;++tick) {
+        char* const clients[]={"/usr/bin/hyprctl","-j","clients",NULL};
+        if(!run_ctl(clients) && strstr(last_control_reply,"\"class\": \"wddm-scene\"") && !access("/tmp/desktop-scene-ready",F_OK)) {
+            scene_hex_receipt("HYPRLAND_SCENE_CLIENTS_HEX",last_control_reply,strlen(last_control_reply));
+            for(unsigned index=0;index<2;++index) {
+                const char* path=index?"/tmp/scene-font-mono":"/tmp/scene-font-sans";
+                FILE* file=fopen(path,"rb"); char font[256]={0};
+                if(!file) return -1;
+                const size_t bytes=fread(font,1,sizeof(font)-1,file);
+                const int error=ferror(file),closed=fclose(file);
+                if(error || closed || bytes==0 || bytes==sizeof(font)-1 ||
+                    strcmp(font,index?"/usr/share/fonts/TTF/JetBrainsMonoNerdFont-Regular.ttf\n":"/usr/share/fonts/noto/NotoSans-Regular.ttf\n")) return -1;
+                printf("HYPRLAND_SCENE_FONT index=%u file=%s",index+1,font);
+            }
+            // Allow the terminal's PTY update to reach its first surface commit,
+            // then force actual compositor repaints through the existing loop.
+            usleep(200000);
+            atomic_store(&scene_ready,1);
+            puts("HYPRLAND_SCENE_READY realWaylandClient=true applicationGpuAccelerated=false compositorGpu=true");
+            return 0;
+        }
+        usleep(100000);
+    }
+    puts("HYPRLAND_SCENE_FAILURE reason=client-or-font-readiness");
+    scene_diagnostics();
+    return -1;
+}
+static int close_scene(void) {
+    char* const close_window[]={"/usr/bin/hyprctl","dispatch","closewindow","class:wddm-scene",NULL};
+    if(run_ctl(close_window)) return -1;
+    for(unsigned tick=0;tick<50;++tick) {
+        char* const clients[]={"/usr/bin/hyprctl","-j","clients",NULL};
+        if(!run_ctl(clients) && !strstr(last_control_reply,"\"class\": \"wddm-scene\"") && !access("/tmp/desktop-scene-exit",F_OK)) {
+            puts("HYPRLAND_SCENE_CLOSED clientUnmapped=true childExitMarker=true");
+            return 0;
+        }
+        usleep(100000);
+    }
+    puts("HYPRLAND_SCENE_FAILURE reason=client-shutdown");
+    return -1;
+}
+#endif
 static void* bounded_control(void* unused) {
     (void)unused;
     for(unsigned n=0;n<60;++n) {
@@ -118,13 +203,19 @@ static void* bounded_control(void* unused) {
         const int created=run_ctl(create);
         printf("HYPRLAND_STARTUP_OUTPUT createExit=%d windowsPresentation=false\n",created);
 #ifdef WDDM_BRIDGE_COMPOSITOR_HOST_PRESENT
-        for(unsigned tick=0;tick<100 && atomic_load(&queued_frames)<HYPRLAND_QUEUE_FRAMES && !atomic_load(&queue_failed);++tick) {
+#ifdef WDDM_BRIDGE_COMPOSITOR_HOST_SCENE
+        if(created || prepare_scene()) atomic_store(&queue_failed,1);
+#endif
+        for(unsigned tick=0;tick<HYPRLAND_QUEUE_FRAMES*2+100 && atomic_load(&queued_frames)<HYPRLAND_QUEUE_FRAMES && !atomic_load(&queue_failed);++tick) {
             char* const repaint[]={"/usr/bin/hyprctl","keyword","decoration:rounding","0",NULL};
             if (run_ctl(repaint)) { atomic_store(&queue_failed,1); break; }
             usleep(50000);
         }
         if (atomic_load(&queued_frames)!=HYPRLAND_QUEUE_FRAMES) atomic_store(&queue_failed,1);
         printf("HYPRLAND_HOST_QUEUE_END frames=%u target=%u failed=%d\n",atomic_load(&queued_frames),HYPRLAND_QUEUE_FRAMES,atomic_load(&queue_failed));
+#ifdef WDDM_BRIDGE_COMPOSITOR_HOST_SCENE
+        if(close_scene()) atomic_store(&queue_failed,1);
+#endif
 #else
 #ifdef WDDM_BRIDGE_COMPOSITOR_HOST_CAPTURE
         const unsigned minimum_commits=4;
@@ -158,9 +249,16 @@ static int startup_main(int argc,char** argv,char** environment) {
        setenv("HYPRLAND_TRACE","1",1)) return 121;
     if((mkdir("/tmp/hypr-runtime",0700) && errno!=EEXIST) ||
        (mkdir("/tmp/hypr-home",0700) && errno!=EEXIST)) return 122;
-    int (*begin)(void)=(int (*)(void))dlsym(RTLD_DEFAULT,"wddm_bridge_begin_opengl_compositor_render");
+#ifdef WDDM_BRIDGE_COMPOSITOR_HOST_SCENE
+    const unsigned profile=5;
+    const char* begin_name="wddm_bridge_begin_opengl_desktop_render";
+#else
+    const unsigned profile=4;
+    const char* begin_name="wddm_bridge_begin_opengl_compositor_render";
+#endif
+    int (*begin)(void)=(int (*)(void))dlsym(RTLD_DEFAULT,begin_name);
     if(!begin || begin()) { perror("Hyprland profile negotiation"); return 123; }
-    puts("HYPRLAND_STARTUP_BEGIN version=0.56.2 boundedProfile=4 actualCompositor=true windowsPresentation=false");
+    printf("HYPRLAND_STARTUP_BEGIN version=0.56.2 boundedProfile=%u actualCompositor=true windowsPresentation=false\n",profile);
     pthread_t thread;
     if(pthread_create(&thread,NULL,bounded_control,NULL) || pthread_detach(thread)) return 124;
     char* arguments[]={"/guest-probe","--config","/hyprland.conf",NULL};

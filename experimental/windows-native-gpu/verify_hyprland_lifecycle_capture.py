@@ -10,7 +10,8 @@ def require(condition, message):
         raise ValueError(message)
 
 
-def validate(report, guest):
+def validate(report, guest, *, profile=4):
+    require(type(profile) is int and profile in (4,5),'Unsupported expected compositor profile')
     lines = guest.splitlines()
     def once(line):
         require(lines.count(line) == 1, 'Missing or duplicate lifecycle receipt: ' + line)
@@ -22,7 +23,7 @@ def validate(report, guest):
     require(not any(text in guest for text in ('BRIDGE_RUNTIME_SIGNAL', 'HYPRLAND_STARTUP_STOP',
             'Oops:', 'BUG:', 'cleanup=false')), 'Compositor signal, forced stop or cleanup failure')
     user = once('BROKER_RENDER_CLIENT uid=65534 gid=65534 effectiveCapabilities=0 noNewPrivs=true controllerOpen=denied nativePortOpen=denied')
-    start = once('HYPRLAND_STARTUP_BEGIN version=0.56.2 boundedProfile=4 actualCompositor=true windowsPresentation=false')
+    start = once(f'HYPRLAND_STARTUP_BEGIN version=0.56.2 boundedProfile={profile} actualCompositor=true windowsPresentation=false')
     main = once('HYPRLAND_STARTUP_MAIN_RETURN exit=0 windowsPresentation=false')
     exited = once('BRIDGE_RUNTIME_EXIT=0')
     commits = re.findall(r'^HYPRLAND_COMPOSITOR_COMMIT index=(\d+) width=(\d+) height=(\d+) format=(\d+) stride=(\d+) modifier=(\d+) ownedNativeBuffer=true pixelsVerified=false windowsPresentation=false$', guest, re.M)

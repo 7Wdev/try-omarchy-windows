@@ -604,9 +604,9 @@ class Session {
     std::uint32_t allocatedBytes = 0;
     std::uint32_t vendorMappedPages = 0;
     std::uint32_t vendorCpuBytes = 0;
-    std::uint32_t submissionAttempts = 0;
-    std::uint32_t contextSignalAttempts = 0;
-    std::uint32_t hwQueueSignalAttempts = 0;
+    std::uint64_t submissionAttempts = 0;
+    std::uint64_t contextSignalAttempts = 0;
+    std::uint64_t hwQueueSignalAttempts = 0;
     std::uint64_t gpuReservedBytes = 0;
     GpuStateRanges gpuStates;
     bool negotiated = false;
@@ -615,6 +615,7 @@ class Session {
     bool openglFenceNegotiated = false;
     bool openglCompositorNegotiated = false;
     bool openglRenderNegotiated = false;
+    bool openglDesktopNegotiated = false;
     unsigned compositorCaptureAttempts = 0;
     bool compositorQueueUsed = false;
     std::uint64_t compositorQueuedFrames = 0;
@@ -655,12 +656,12 @@ public:
     std::size_t objectCount() const { return objects.size(); }
     std::size_t objectLimit() const { return wireObjectLimit; }
     std::size_t hwQueueLimit() const { return openglFenceNegotiated ? OpenGlFenceHwQueues : MaxHwQueues; }
-    std::size_t reservationLimit() const { return openglRenderNegotiated ? GuestOpenGlCompositorRenderProfile.reservationLimit : openglNegotiated ? GuestOpenGlProfile.reservationLimit : MaxGpuReservations; }
+    std::size_t reservationLimit() const { return openglDesktopNegotiated ? GuestOpenGlDesktopProfile.reservationLimit : openglRenderNegotiated ? GuestOpenGlCompositorRenderProfile.reservationLimit : openglNegotiated ? GuestOpenGlProfile.reservationLimit : MaxGpuReservations; }
     std::size_t syncObjectLimit() const { return openglCompositorNegotiated ? OpenGlCompositorSyncObjects : MaxSyncObjects; }
-    std::size_t openGlCommandLimit() const { return openglCompositorNegotiated ? GuestOpenGlCompositorProfile.commandLimit : GuestOpenGlProfile.commandLimit; }
-    std::size_t hwQueueSignalLimit() const { return openglCompositorNegotiated ? OpenGlCompositorHwSignals : openglFenceNegotiated ? OpenGlFenceHwSignals : MaxHwQueueSignals; }
-    std::size_t vendorObjectLimit() const { return openglCompositorNegotiated ? OpenGlCompositorVendorAllocations : openglFenceNegotiated ? OpenGlFenceVendorAllocations : vendorAllocationObjectLimit(driver.capabilities().flags); }
-    unsigned requestLimit() const { return streamingNegotiated ? GuestStreamProfile.requestLimit : openglCompositorNegotiated ? GuestOpenGlCompositorProfile.requestLimit : 10000; }
+    std::uint32_t openGlCommandLimit() const { return openglDesktopNegotiated ? 0 : openglCompositorNegotiated ? GuestOpenGlCompositorProfile.commandLimit : GuestOpenGlProfile.commandLimit; }
+    std::uint32_t hwQueueSignalLimit() const { return openglDesktopNegotiated ? 0 : openglCompositorNegotiated ? OpenGlCompositorHwSignals : openglFenceNegotiated ? OpenGlFenceHwSignals : MaxHwQueueSignals; }
+    std::size_t vendorObjectLimit() const { return openglDesktopNegotiated ? OpenGlDesktopVendorAllocations : openglCompositorNegotiated ? OpenGlCompositorVendorAllocations : openglFenceNegotiated ? OpenGlFenceVendorAllocations : vendorAllocationObjectLimit(driver.capabilities().flags); }
+    unsigned requestLimit() const { return openglDesktopNegotiated ? 0 : streamingNegotiated ? GuestStreamProfile.requestLimit : openglCompositorNegotiated ? GuestOpenGlCompositorProfile.requestLimit : 10000; }
     Session(const Session&) = delete;
     Session& operator=(const Session&) = delete;
     // A disconnect releases child objects before their parents. The Windows
@@ -699,6 +700,7 @@ public:
             openglFenceNegotiated = false;
             openglCompositorNegotiated = false;
             openglRenderNegotiated = false;
+            openglDesktopNegotiated = false;
             if (version != Version) return reply(h, -93);
             const auto caps = driver.capabilities();
             if (caps.version != Version) return reply(h, -93);
@@ -735,17 +737,18 @@ public:
             std::uint32_t version = 1;
             if (packet.size() != sizeof h) {
                 std::memcpy(&version, packet.data() + sizeof h, sizeof version);
-                if (version != 2 && version != 3 && version != 4) return reply(h, -93);
+                if (version != 2 && version != 3 && version != 4 && version != 5) return reply(h, -93);
             }
             if (openglNegotiated || streamingNegotiated || !objects.empty()) return reply(h, -16);
             const auto required = AsyncHwSubmitCapability | SyncCapability | GpuReservationCapability | UINT32_C(0x80000000);
             if ((driver.capabilities().flags & required) != required) return reply(h, -95);
             const auto profile = driver.beginOpenGl(version);
-            if (version == 1 ? !validOpenGlProfile(profile) : version == 2 ? !validOpenGlFenceProfile(profile) : version == 3 ? !validOpenGlCompositorProfile(profile) : !validOpenGlCompositorRenderProfile(profile)) return reply(h, -95);
+            if (version == 1 ? !validOpenGlProfile(profile) : version == 2 ? !validOpenGlFenceProfile(profile) : version == 3 ? !validOpenGlCompositorProfile(profile) : version == 4 ? !validOpenGlCompositorRenderProfile(profile) : !validOpenGlDesktopProfile(profile)) return reply(h, -95);
             openglNegotiated = true;
             openglFenceNegotiated = version >= 2;
             openglCompositorNegotiated = version >= 3;
-            openglRenderNegotiated = version == 4;
+            openglRenderNegotiated = version >= 4;
+            openglDesktopNegotiated = version == 5;
             if (version >= 2) wireObjectLimit = profile.objectLimit;
             auto out = reply(h, 0); out.resize(sizeof h + sizeof profile);
             std::memcpy(out.data() + sizeof h, &profile, sizeof profile); return out;
@@ -948,7 +951,7 @@ public:
                 }
             }
             if (commandOwners != 1) return reply(h, -9);
-            if (submissionAttempts >= (streamingNegotiated ? GuestStreamProfile.totalCommands :
+            if (!lifetimeBudgetAvailable(submissionAttempts,streamingNegotiated ? GuestStreamProfile.totalCommands :
                                       openglNegotiated ? openGlCommandLimit() : MaxHwSubmissions)) return reply(h, -24);
             ++submissionAttempts;
             const std::vector<std::uint8_t> data(packet.begin() + sizeof h + sizeof desc, packet.end());
@@ -1244,7 +1247,7 @@ public:
                 nativeQueues.push_back(queue->second.nativeHandle);
             }
             if (streamingNegotiated ? hwQueueSignalAttempts + contextSignalAttempts >= GuestStreamProfile.totalSignals :
-                                      hwQueueSignalAttempts >= hwQueueSignalLimit()) return reply(h,-24);
+                                      !lifetimeBudgetAvailable(hwQueueSignalAttempts,hwQueueSignalLimit())) return reply(h,-24);
             ++hwQueueSignalAttempts;
             const auto result = driver.queueHwQueueSignal(sync->second.nativeHandle,nativeQueues,desc);
             if (!validHwSubmitReply(result,desc.fence,AsyncHwSubmitCapability)) return reply(h,-5);
@@ -1266,7 +1269,7 @@ public:
                 !packetSignalSyncFlags(sync->second.syncFlags) || sync->second.parent != context->second.parent) return reply(h, -9);
             if (desc.fence <= sync->second.submittedFence) return reply(h, -22);
             if (streamingNegotiated ? contextSignalAttempts + hwQueueSignalAttempts >= GuestStreamProfile.totalSignals :
-                                      contextSignalAttempts >= MaxContextSignals) return reply(h, -24);
+                                      !lifetimeBudgetAvailable(contextSignalAttempts,openglDesktopNegotiated ? 0 : MaxContextSignals)) return reply(h, -24);
             ++contextSignalAttempts;
             const auto result = asynchronous ? driver.queueContextSync(context->second.nativeHandle, sync->second.nativeHandle, desc) :
                                                driver.signalContextSync(context->second.nativeHandle, sync->second.nativeHandle, desc);

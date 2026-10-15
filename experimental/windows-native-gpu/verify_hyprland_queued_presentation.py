@@ -8,8 +8,17 @@ from verify_hyprland_lifecycle_capture import require, validate as lifecycle
 from verify_hyprland_compositor_capture import fnv
 
 
-def validate(report,guest,records,frames,expected_rgb):
-    life=lifecycle(report,guest)
+def validate(report,guest,records,frames,expected_rgb,*,profile=4,expected_frames=12,background_regions=None):
+    require(type(expected_frames) is int and 2<=expected_frames<=1800,'Invalid expected frame count')
+    total=expected_frames
+    life=lifecycle(report,guest,profile=profile)
+    regions=background_regions if background_regions is not None else ((0,640,128,160),(0,640,280,360))
+    require(type(regions) is tuple and len(regions)>0,'Missing independent background regions')
+    for index,region in enumerate(regions):
+        require(type(region) is tuple and len(region)==4 and all(type(value) is int for value in region), 'Invalid reference region')
+        left,right,low,high=region
+        require(0<=left<right<=640 and 0<=low<high<=360,'Reference region outside image')
+        require(all(right<=a or b<=left or high<=c or d<=low for a,b,c,d in regions[:index]),'Overlapping reference regions')
     require(type(expected_rgb) is tuple and len(expected_rgb)==3 and
             all(type(value) is int and 0<=value<=255 for value in expected_rgb),'Invalid independent background')
     require('HYPRLAND_HOST_QUEUE_FAILURE' not in guest,'Guest queue failed')
@@ -17,9 +26,9 @@ def validate(report,guest,records,frames,expected_rgb):
     # stdout and the shim's stderr share one guest serial port. Preserve an
     # interleaved prefix on the final summary, while requiring every per-frame
     # reply as a complete line and exactly one exact successful end receipt.
-    require(len(replies)==guest.count('HYPRLAND_HOST_QUEUE_RESULT ')==12 and
+    require(len(replies)==guest.count('HYPRLAND_HOST_QUEUE_RESULT ')==total and
             guest.count('HYPRLAND_HOST_QUEUE_END ')==1 and
-            guest.count('HYPRLAND_HOST_QUEUE_END frames=12 target=12 failed=0\n')==1,'Incomplete queued workload')
+            guest.count(f'HYPRLAND_HOST_QUEUE_END frames={total} target={total} failed=0\n')==1,'Incomplete queued workload')
     def one(key):
         found=[row for row in records if key in row]
         require(len(found)==1 and found[0][key] is True,'Missing/failed/duplicate '+key)
@@ -33,13 +42,13 @@ def validate(report,guest,records,frames,expected_rgb):
     inputs=[row for row in records if 'nativeCompositorRingInput' in row]
     presents=[row for row in records if 'nativeCompositorWindowSubmitted' in row]
     outputs=[row for row in records if 'nativeCompositorRingFrame' in row]
-    require(len(inputs)==len(presents)==len(outputs)==12,'Missing/duplicate native frame')
+    require(len(inputs)==len(presents)==len(outputs)==total,'Missing/duplicate native frame')
     require(all(row.get(key) is True for key,rows in
             (('nativeCompositorRingInput',inputs),('nativeCompositorWindowSubmitted',presents),('nativeCompositorRingFrame',outputs))
             for row in rows),'Failed native frame receipt')
     identities=set(); sequence=[]
     for index,(source,present,output,reply) in enumerate(zip(inputs,presents,outputs,replies),1):
-        audit=index in (1,12)
+        audit=index in (1,total)
         require(int(reply[0])==index and int(reply[1])==int(audit),'Guest frame/audit order mismatch')
         require(source.get('frame')==present.get('frame')==output.get('frame')==index,'Native frame order mismatch')
         require(type(source.get('slot')) is int and 0<=source['slot']<3 and output.get('slot')==source['slot'],'Invalid staging slot')
@@ -60,7 +69,7 @@ def validate(report,guest,records,frames,expected_rgb):
     require(len(identities)==1 and all(a<b for a,b in zip(sequence,sequence[1:])),'Mixed/nonadvancing presentation sequence')
     slots=[row for row in records if 'nativeCompositorFrameSlotReady' in row]
     pid,chain,_=next(iter(identities))
-    require(len(slots)==12 and all(row.get('nativeCompositorFrameSlotReady') is True and row.get('frame')==index and
+    require(len(slots)==total and all(row.get('nativeCompositorFrameSlotReady') is True and row.get('frame')==index and
             row.get('maximumFrameLatency')==1 and row.get('presentProcessId')==pid and row.get('presentSwapChain')==chain
             for index,row in enumerate(slots,1)),'Missing/foreign/unbounded frame-slot wait')
     audits=[row for row in records if 'nativeCompositorRingAudited' in row]
@@ -69,7 +78,7 @@ def validate(report,guest,records,frames,expected_rgb):
     require(all(row.get(key) is True for key,rows in (('nativeCompositorRingAudited',audits),('nativeCompositorBinaryCapture',binary))
             for row in rows),'Failed audit receipt')
     checked=[]
-    for round_,(audit,file,frame) in enumerate(zip(audits,binary,(1,12)),1):
+    for round_,(audit,file,frame) in enumerate(zip(audits,binary,(1,total)),1):
         name=f'compositor-copy-{round_}.raw'; pixels=frames[name]
         require(audit.get('frame')==frame and audit.get('auditRound')==file.get('frame')==round_ and file.get('file')==name,
                 'Audit frame order mismatch')
@@ -83,9 +92,9 @@ def validate(report,guest,records,frames,expected_rgb):
         # Late startup warning banners extend beyond the earlier two-capture
         # test's top 32 rows. These conservative regions exclude the dynamic
         # first 128 rows and cursor. Full-scene correctness remains false.
-        for low,high in ((128,160),(280,360)):
+        for left,right,low,high in regions:
             for y in range(low,high):
-                for x in range(640):
+                for x in range(left,right):
                     offset=(y*640+x)*4
                     require((pixels[offset+2],pixels[offset+1],pixels[offset])==expected_rgb,'Independent background mismatch')
                     known+=1
@@ -94,19 +103,19 @@ def validate(report,guest,records,frames,expected_rgb):
     require(all(released.get(key) is True for key in ('gpuWorkRetired','windowDestroyed','classUnregistered','frameLatencyHandleClosed')),
             'Native window resources not released')
     stopped=one('nativeCompositorRingStopped')
-    require(stopped.get('submitted')==stopped.get('presented')==12 and stopped.get('completedAudits')==2 and
+    require(stopped.get('submitted')==stopped.get('presented')==total and stopped.get('completedAudits')==2 and
             all(type(stopped.get(key)) is int and 1<=stopped[key]<=3 for key in ('peakQueued','peakSources')) and
             all(stopped.get(key) is True for key in ('workHandleClosed','inputEventClosed','uiThreadJoined')) and
             stopped.get('liveGpuResources')==0,'Ring did not retire and close')
     clean=report['disconnectCleanup']
-    require(clean.get('completedCompositorFrames')==12 and clean.get('failedCompositorFrames')==0 and
+    require(clean.get('completedCompositorFrames')==total and clean.get('failedCompositorFrames')==0 and
             clean.get('compositorCaptureAttempts')==0,'Mixed/failed compositor path')
     observation=one('nativeCompositorRingDisplayObservation')
-    last_display=(observation.get('statisticsHresult')==0 and observation.get('statisticsPresentCount')==12 and
+    last_display=(observation.get('statisticsHresult')==0 and observation.get('statisticsPresentCount')==total and
                   observation.get('presentProcessId')==pid and observation.get('presentSwapChain')==chain and
                   type(observation.get('syncQpc')) is int and observation['syncQpc']>=sequence[-1] and
                   observation.get('windowVisible') is True)
-    return dict(schema=1,actualCompositorQueuedSubmissionVerified=True,framesSubmitted=12,ordinaryFramesWithoutCpuReadback=10,
+    return dict(schema=1,actualCompositorQueuedSubmissionVerified=True,framesSubmitted=total,ordinaryFramesWithoutCpuReadback=total-2,
         auditCopies=2,sourceCopyRetiredBeforeAcknowledgement=True,lastFrameDeferredDisplayVerified=last_display,
         allFramesDisplayedVerified=False,normalLauncherIntegrationVerified=False,sustainedRenderingVerified=False,
         fullScenePixelCorrectnessVerified=False,desktopVerified=False,compositor4kVerified=False,nearNativePerformanceVerified=False,

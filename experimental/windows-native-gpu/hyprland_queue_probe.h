@@ -2,7 +2,12 @@
 // Bounded actual-compositor test: GPU-only ordinary frames, two audit copies.
 #pragma once
 #include <time.h>
+#ifndef HYPRLAND_QUEUE_FRAMES
 #define HYPRLAND_QUEUE_FRAMES 12u
+#endif
+#if HYPRLAND_QUEUE_FRAMES < 2 || HYPRLAND_QUEUE_FRAMES > 1800
+#error Queued compositor diagnostic must select 2..1800 frames
+#endif
 static _Atomic unsigned queued_frames;
 static _Atomic int queue_failed;
 static int queue_output(int bufferFd,uint32_t width,uint32_t height,uint32_t format,uint32_t stride) {

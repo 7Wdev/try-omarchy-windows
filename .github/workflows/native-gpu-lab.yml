@@ -88,6 +88,8 @@ jobs:
           cc -std=c11 -O2 -Wall -Wextra -Werror -shared -fPIC experimental/windows-native-gpu/hyprland_startup_probe.c -ldl -pthread -o /tmp/hyprland-startup-probe.so
           cc -std=c11 -O2 -Wall -Wextra -Werror -DWDDM_BRIDGE_COMPOSITOR_HOST_CAPTURE=1 -shared -fPIC experimental/windows-native-gpu/hyprland_startup_probe.c -ldl -pthread -o /tmp/hyprland-capture-probe.so
           cc -std=c11 -O2 -Wall -Wextra -Werror -DWDDM_BRIDGE_COMPOSITOR_HOST_PRESENT=1 -shared -fPIC experimental/windows-native-gpu/hyprland_startup_probe.c -ldl -pthread -o /tmp/hyprland-present-probe.so
+          cc -std=c11 -O2 -Wall -Wextra -Werror -DWDDM_BRIDGE_COMPOSITOR_HOST_PRESENT=1 -DWDDM_BRIDGE_COMPOSITOR_HOST_SCENE=1 -shared -fPIC experimental/windows-native-gpu/hyprland_startup_probe.c -ldl -pthread -o /tmp/hyprland-scene-probe.so
+          cc -std=c11 -O2 -Wall -Wextra -Werror -DWDDM_BRIDGE_COMPOSITOR_HOST_PRESENT=1 -DWDDM_BRIDGE_COMPOSITOR_HOST_SCENE=1 -DHYPRLAND_QUEUE_FRAMES=300 -shared -fPIC experimental/windows-native-gpu/hyprland_startup_probe.c -ldl -pthread -o /tmp/hyprland-scene-300-probe.so
           c++ -std=c++17 -O2 -Wall -Wextra -Werror -pthread experimental/windows-native-gpu/atomic_line_log_test.cpp -o /tmp/atomic-line-log-test
           /tmp/atomic-line-log-test
       - run: |
@@ -146,10 +148,12 @@ jobs:
           python3 experimental/windows-native-gpu/test_opengl_transport.py --disabled-profile --extended-profile --shim /tmp/linux-ioctl-bridge.so --probe /tmp/linux-ioctl-bridge-test
           python3 experimental/windows-native-gpu/test_opengl_transport.py --disabled-profile --compositor-profile --shim /tmp/linux-ioctl-bridge.so --probe /tmp/linux-ioctl-bridge-test
           python3 experimental/windows-native-gpu/test_opengl_transport.py --disabled-profile --compositor-render-profile --shim /tmp/linux-ioctl-bridge.so --probe /tmp/linux-ioctl-bridge-test
+          python3 experimental/windows-native-gpu/test_opengl_transport.py --disabled-profile --desktop-profile --shim /tmp/linux-ioctl-bridge.so --probe /tmp/linux-ioctl-bridge-test
           python3 experimental/windows-native-gpu/test_opengl_transport.py --shim /tmp/linux-ioctl-bridge-4k.so --probe /tmp/linux-ioctl-bridge-test
           python3 experimental/windows-native-gpu/test_opengl_transport.py --extended-profile --shim /tmp/linux-ioctl-bridge-4k.so --probe /tmp/linux-ioctl-bridge-test
           python3 experimental/windows-native-gpu/test_opengl_transport.py --compositor-profile --shim /tmp/linux-ioctl-bridge-4k.so --probe /tmp/linux-ioctl-bridge-test
           python3 experimental/windows-native-gpu/test_opengl_transport.py --compositor-render-profile --shim /tmp/linux-ioctl-bridge-4k.so --probe /tmp/linux-ioctl-bridge-test
+          python3 experimental/windows-native-gpu/test_opengl_transport.py --desktop-profile --shim /tmp/linux-ioctl-bridge-4k.so --probe /tmp/linux-ioctl-bridge-test
           python3 experimental/windows-native-gpu/test_stream_transport.py --disabled-profile --shim /tmp/linux-ioctl-bridge.so --probe /tmp/linux-ioctl-bridge-test
           c++ -std=c++17 -Wall -Wextra -Werror -DWDDM_BRIDGE_4K_LAB=1 -DWDDM_BRIDGE_STREAM_LAB=1 -isystem .runtime-headers/include -isystem .runtime-headers/include/wsl/stubs -isystem .runtime-dxg/include -shared -fPIC experimental/windows-native-gpu/linux_ioctl_bridge.cpp -pthread -o /tmp/linux-ioctl-bridge-stream.so
           c++ -std=c++17 -Wall -Wextra -Werror -DWDDM_BRIDGE_4K_LAB=1 -DWDDM_BRIDGE_STREAM_LAB=1 -isystem .runtime-headers/include -isystem .runtime-headers/include/wsl/stubs -c experimental/windows-native-gpu/umd_context_probe.cpp -o /tmp/runtime-probe-stream.o

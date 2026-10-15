@@ -92,7 +92,8 @@ int main(int argc, char** argv) {
     }
     if (!std::strncmp(mode,"opengl-profile-",15)) {
         using Begin = int (*)();
-        const auto begin = reinterpret_cast<Begin>(dlsym(RTLD_DEFAULT, std::getenv("OPENGL_COMPOSITOR_RENDER_PROFILE") ?
+        const auto begin = reinterpret_cast<Begin>(dlsym(RTLD_DEFAULT, std::getenv("OPENGL_DESKTOP_PROFILE") ?
+            "wddm_bridge_begin_opengl_desktop_render" : std::getenv("OPENGL_COMPOSITOR_RENDER_PROFILE") ?
             "wddm_bridge_begin_opengl_compositor_render" : std::getenv("OPENGL_COMPOSITOR_PROFILE") ?
             "wddm_bridge_begin_opengl_compositor" : std::getenv("OPENGL_EXTENDED_PROFILE") ?
             "wddm_bridge_begin_opengl_fences" : "wddm_bridge_begin_opengl"));

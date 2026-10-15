@@ -11,6 +11,7 @@ mode = os.environ['OPENGL_FAULT']
 extended = os.environ.get('OPENGL_EXTENDED_PROFILE') == '1'
 compositor = os.environ.get('OPENGL_COMPOSITOR_PROFILE') == '1'
 render = os.environ.get('OPENGL_COMPOSITOR_RENDER_PROFILE') == '1'
+desktop = os.environ.get('OPENGL_DESKTOP_PROFILE') == '1'
 begins = 0
 def send(data):
     sys.stdout.buffer.write(struct.pack('<I',len(data)) + data); sys.stdout.buffer.flush()
@@ -27,9 +28,9 @@ while True:
         send(struct.pack('<IIiI4I',op,0,0,0,1,caps,4318,11352))
     elif op == 0x2001: send(struct.pack('<IIiIiIQ',op,1,0,0,0,0,0))
     elif op == 0x205e:
-        assert not handle and size == (20 if extended or compositor or render else 16); begins += 1
-        if extended or compositor or render: assert struct.unpack_from('<I', packet, 16) == (4 if render else 3 if compositor else 2,)
-        values = [4,2,256,32,0,4,50000,768] if render else [3,2,256,16,0,4,50000,512] if compositor else [2 if extended else 1,2,64,16,0,4,10000,384 if extended else 0]
+        assert not handle and size == (20 if extended or compositor or render or desktop else 16); begins += 1
+        if extended or compositor or render or desktop: assert struct.unpack_from('<I', packet, 16) == (5 if desktop else 4 if render else 3 if compositor else 2,)
+        values = [5,0,0,64,0,4,0,1024] if desktop else [4,2,256,32,0,4,50000,768] if render else [3,2,256,16,0,4,50000,512] if compositor else [2 if extended else 1,2,64,16,0,4,10000,384 if extended else 0]
         if 'field-' in mode: values[int(mode.rsplit('-',1)[1])] += 1
         response = struct.pack('<IIiI8I',op+1 if mode.endswith('opcode') else op,
             99 if mode.endswith('handle') else 0,1 if mode.endswith('status') else 0,
@@ -52,6 +53,7 @@ def main():
     profiles.add_argument('--extended-profile', action='store_true')
     profiles.add_argument('--compositor-profile', action='store_true')
     profiles.add_argument('--compositor-render-profile', action='store_true')
+    profiles.add_argument('--desktop-profile', action='store_true')
     args = parser.parse_args()
     modes = ['disabled'] if args.disabled_profile else ['normal', 'late', 'opcode', 'handle', 'status', 'padding',
             'unsupported', 'short', 'long'] + [f'field-{i}' for i in range(8)] + [f'missing-{i}' for i in (25,14,17,31)]
@@ -64,6 +66,7 @@ def main():
             if args.extended_profile: env['OPENGL_EXTENDED_PROFILE'] = '1'
             if args.compositor_profile: env['OPENGL_COMPOSITOR_PROFILE'] = '1'
             if args.compositor_render_profile: env['OPENGL_COMPOSITOR_RENDER_PROFILE'] = '1'
+            if args.desktop_profile: env['OPENGL_DESKTOP_PROFILE'] = '1'
             result = subprocess.run([str(args.probe.resolve()),mode],env=env,capture_output=True,text=True,timeout=20)
             if result.returncode or 'workerReaped=true exit=0' not in result.stderr or 'realDxgForwarding=true' in result.stderr:
                 raise RuntimeError(f'{mode}: {result.returncode}: {result.stderr}')

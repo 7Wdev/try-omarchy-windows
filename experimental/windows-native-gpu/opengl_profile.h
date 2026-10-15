@@ -19,6 +19,14 @@ constexpr OpenGlProfile GuestOpenGlCompositorProfile{3, 2, 256, 16, 16ull * 1024
 // The real compositor's first draw creates additional small GPUVA reservations.
 // Preserve version 3; rendering capacity is a distinct, exact negotiation.
 constexpr OpenGlProfile GuestOpenGlCompositorRenderProfile{4, 2, 256, 32, 16ull * 1024 * 1024 * 1024, 50000, 768};
+// Version 5 replaces lifetime command/request caps with bounded live work.
+// Zero is an exact, negotiated rolling budget, never a legacy-profile wildcard.
+// Memory-byte, pending-work and aperture limits remain independently enforced.
+constexpr OpenGlProfile GuestOpenGlDesktopProfile{5, 0, 0, 64, 16ull * 1024 * 1024 * 1024, 0, 1024};
+constexpr std::uint32_t OpenGlDesktopVendorAllocations = 512;
+inline bool lifetimeBudgetAvailable(std::uint64_t used,std::uint32_t limit) {
+    return used<UINT64_MAX && (!limit || used<limit);
+}
 constexpr std::uint32_t OpenGlCompositorSyncObjects = 192;
 constexpr std::uint32_t OpenGlCompositorVendorAllocations = 256;
 constexpr std::uint32_t OpenGlCompositorHwSignals = GuestOpenGlCompositorProfile.commandLimit;
@@ -42,5 +50,9 @@ inline bool validOpenGlCompositorProfile(OpenGlProfile p) {
 inline bool validOpenGlCompositorRenderProfile(OpenGlProfile p) {
     return p.version == 4 && p.frames == 2 && p.commandLimit == 256 && p.reservationLimit == 32 &&
            p.reservedBytes == 16ull * 1024 * 1024 * 1024 && p.requestLimit == 50000 && p.objectLimit == 768;
+}
+inline bool validOpenGlDesktopProfile(OpenGlProfile p) {
+    return p.version==5 && !p.frames && !p.commandLimit && p.reservationLimit==64 &&
+           p.reservedBytes==16ull*1024*1024*1024 && !p.requestLimit && p.objectLimit==1024;
 }
 }
