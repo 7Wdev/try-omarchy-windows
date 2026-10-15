@@ -4,8 +4,8 @@ app/testdata/SHA256SUMS.* text eol=lf
 runtime-build/patches/**/*.patch text eol=lf whitespace=-blank-at-eol,-blank-at-eof
 experimental/windows-native-gpu/mesa/*.patch text eol=lf whitespace=-blank-at-eol,-blank-at-eof
 experimental/windows-native-gpu/aquamarine-*.patch text eol=lf whitespace=-blank-at-eol,-blank-at-eof
-# Preserve the recorded Windows line endings without changing capture bytes.
-docs/evidence/HYPRLAND-LOGGING-LIFETIME-DEVELOPMENT-2026-10-15.json -text whitespace=cr-at-eol
+# Keep the published evidence JSON byte-identical across platform checkouts.
+docs/evidence/HYPRLAND-LOGGING-LIFETIME-DEVELOPMENT-2026-10-15.json text eol=lf
 
 # Unified-diff context lines and format-patch trailers carry intentional spaces.
 guest-build/*.patch text eol=lf whitespace=-blank-at-eol,-blank-at-eof

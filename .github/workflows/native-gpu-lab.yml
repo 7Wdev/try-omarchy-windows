@@ -161,9 +161,25 @@ jobs:
           c++ -std=c++17 -O2 -Wall -Wextra -Werror $(pkg-config --cflags gbm libdrm egl) -c experimental/windows-native-gpu/gbm_native_probe.cpp -o /tmp/gbm-native-probe.o
           cc -std=c11 -O2 -Wall -Wextra -Werror -DWDDM_BRIDGE_GBM_TEST=1 -c experimental/windows-native-gpu/egl_gl_probe.c -o /tmp/egl-gl-gbm-probe.o
           c++ /tmp/egl-gl-gbm-probe.o /tmp/gbm-native-probe.o $(pkg-config --libs gbm libdrm egl) -ldl -o /tmp/egl-gl-gbm-probe
-      - name: Verify the pinned experimental Mesa patch and compile its fence-FD probe
+      - name: Restore the exact pinned Mesa source archive
+        id: mesa-source-cache
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25
+        with:
+          path: /tmp/mesa-26.0.8.tar.xz
+          key: linux-mesa-source-26.0.8-caf1c0061a68e88dfa74967a7e780c0e85d65b6c4e334cd69095a5dc54ad78bc
+      - name: Download and verify Mesa source on cache miss
+        if: steps.mesa-source-cache.outputs.cache-hit != 'true'
         run: |
           curl --fail --location --retry 3 --retry-all-errors --retry-delay 2 --retry-max-time 180 --connect-timeout 15 --max-time 60 https://archive.mesa3d.org/mesa-26.0.8.tar.xz -o /tmp/mesa-26.0.8.tar.xz
+          echo 'caf1c0061a68e88dfa74967a7e780c0e85d65b6c4e334cd69095a5dc54ad78bc  /tmp/mesa-26.0.8.tar.xz' | sha256sum --check
+      - name: Save only the verified Mesa source archive
+        if: steps.mesa-source-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25
+        with:
+          path: /tmp/mesa-26.0.8.tar.xz
+          key: linux-mesa-source-26.0.8-caf1c0061a68e88dfa74967a7e780c0e85d65b6c4e334cd69095a5dc54ad78bc
+      - name: Verify the pinned experimental Mesa patch and compile its fence-FD probe
+        run: |
           echo 'caf1c0061a68e88dfa74967a7e780c0e85d65b6c4e334cd69095a5dc54ad78bc  /tmp/mesa-26.0.8.tar.xz' | sha256sum --check
           tar -xJf /tmp/mesa-26.0.8.tar.xz -C /tmp
           python3 experimental/windows-native-gpu/mesa/apply_mesa_fence_fd.py /tmp/mesa-26.0.8

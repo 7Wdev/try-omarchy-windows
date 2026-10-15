@@ -80,6 +80,13 @@ Ten audit regressions include both retained failures, all three clean runs,
 truncation, duplicate commits, missing unmaps, deferred reclaim, GPU failures,
 live native objects and forced VM termination.
 
+All 221 local milestone tests pass. Hosted launcher CI and the native Windows
+and guest-kernel builds pass on 6ba21c3; the PR portable job again fails only
+while connecting to the official Mesa archive. The follow-up workflow caches
+only the digest-pinned source tarball after verification and verifies that same
+digest again before extraction on every hit. Partial/failed downloads are not
+saved. A cold cache still requires a successful official archive download.
+
 ```sh
 python3 experimental/windows-native-gpu/verify_hyprland_lifecycle_capture.py \
   --report CAPTURE/driver.json --output CAPTURE/lifecycle.json
