@@ -27,6 +27,8 @@
 #include "qemu_runtime_host.h"
 #include "shared_texture_worker.h"
 #include "compositor_readback.h"
+#include "compositor_presenter.h"
+#include "atomic_line_log.h"
 using Microsoft::WRL::ComPtr;
 using namespace driver_bridge;
 class KmtDriver : public Driver {
@@ -57,6 +59,8 @@ class KmtDriver : public Driver {
     bool openglRenderEnabled = false;
     unsigned compositorCaptureAttempts = 0, completedCompositorCaptures = 0, failedCompositorCaptures = 0;
     std::unique_ptr<driver_shared::CompositorReadback> compositorPresenter;
+    std::unique_ptr<driver_shared::CompositorPresenter> compositorOutput;
+    std::uint64_t completedCompositorFrames = 0, failedCompositorFrames = 0, compositorBackpressure = 0;
     std::size_t reservationLimit() const { return openglRenderEnabled ? GuestOpenGlCompositorRenderProfile.reservationLimit : openglEnabled ? GuestOpenGlProfile.reservationLimit : MaxGpuReservations; }
     std::size_t syncObjectLimit() const { return openglCompositorEnabled ? OpenGlCompositorSyncObjects : MaxSyncObjects; }
     std::size_t vendorObjectLimit() const { return openglCompositorEnabled ? OpenGlCompositorVendorAllocations : openglFencesEnabled ? OpenGlFenceVendorAllocations : vendorAllocationObjectLimit(capabilities().flags); }
@@ -1277,7 +1281,7 @@ public:
     Result captureCompositorResource(std::uint32_t resource, std::uint32_t sync, CompositorCaptureDesc desc) override {
         const auto source = sharedResourceHandles.find(resource);
         const auto fence = sharedSyncHandles.find(sync);
-        if (!consumeSharedEnabled || !openglRenderEnabled || !runtime || runtime->hasStopped() ||
+        if (compositorOutput || !consumeSharedEnabled || !openglRenderEnabled || !runtime || runtime->hasStopped() ||
             !validNativeInteropCaps(nativeInteropCaps()) || !validCompositorCapture(desc) || desc.syncTicket != sync ||
             source == sharedResourceHandles.end() || fence == sharedSyncHandles.end() || compositorCaptureAttempts >= 2)
             return {Invalid,0,0};
@@ -1297,6 +1301,28 @@ public:
         }
         ++completedCompositorCaptures;
         return {0,0,hash};
+    }
+    Result queueCompositorFrame(std::uint32_t resource,std::uint32_t sync,CompositorCaptureDesc desc) override {
+        const auto source=sharedResourceHandles.find(resource);
+        const auto fence=sharedSyncHandles.find(sync);
+        if (compositorCaptureAttempts || !consumeSharedEnabled || !presentSharedEnabled || !openglRenderEnabled ||
+            !runtime || runtime->hasStopped() || !validNativeInteropCaps(nativeInteropCaps()) ||
+            !validCompositorFrame(desc) || desc.syncTicket!=sync || source==sharedResourceHandles.end() || fence==sharedSyncHandles.end())
+            return {Invalid,0,0};
+        HRESULT hr=S_OK; std::uint64_t frame=0;
+        if (!compositorOutput) {
+            compositorOutput=std::make_unique<driver_shared::CompositorPresenter>();
+            hr=compositorOutput->initialize(luid,desc);
+        }
+        if (SUCCEEDED(hr)) hr=compositorOutput->submit(resource,source->second.handle.get(),fence->second.get(),desc,frame);
+        if (FAILED(hr)) {
+            const bool retry=hr==HRESULT_FROM_WIN32(ERROR_RETRY);
+            if (retry) ++compositorBackpressure; else ++failedCompositorFrames;
+            std::cerr<<"{\"nativeCompositorQueueRejected\":true,\"hresult\":"<<hr<<",\"retryable\":"<<(retry?"true":"false")<<"}\n";
+            return {static_cast<std::int32_t>(retry?0xc000022du:0xc0000001u),0,0};
+        }
+        ++completedCompositorFrames;
+        return {0,0,frame};
     }
     Result consumeSharedTexture(std::uint32_t resource, std::uint32_t sync, SharedTextureConsumeDesc desc) override {
         if (streamingEnabled) return {Invalid,0,0};
@@ -1897,6 +1923,7 @@ public:
         } else if (kind == Kind::SharedResource) {
             const auto shared = sharedResourceHandles.find(handle);
             if (shared == sharedResourceHandles.end()) return {Invalid, 0, 0};
+            if (compositorOutput) compositorOutput->releaseSource(handle);
             if (!shared->second.handle.close()) return {static_cast<std::int32_t>(0xc0000001u), 0, 0};
             sharedResourceHandles.erase(shared); ++closedResourceHandles; status = 0;
             std::cerr << "{\"nativeResourceHandleClosed\":true}\n";
@@ -1950,6 +1977,7 @@ public:
         return {status, 0, 0};
     }
     void releaseGuestMemory() {
+        if (compositorOutput) { if (!compositorOutput->stop()) ++cleanupFailures; compositorOutput.reset(); }
         compositorPresenter.reset();
         if (!allocations.empty() || !vendorAllocations.empty()) return;
         copyQueue.Reset(); copyFence.Reset(); copyHeap.Reset(); copyDevice.Reset();
@@ -1970,7 +1998,7 @@ public:
         return !asyncRetirementFailed && pendingSubmissions.empty() && pendingHwSignals.empty() && pendingHwWaits.empty() && pendingContextSignals.empty() && !activeAdapters && !activeDevices && !activeContexts && pagingFences.empty() && allocations.empty() && vendorAllocations.empty() &&
                !vendorMappedPages && !vendorResidencyAttempts && !vendorCpuBytes && deviceAdapters.empty() && translatedAllocations.empty() &&
                sharedResourceIds.empty() && resourceGuestRuntime.empty() && sharedResourceHandles.empty() && textureConsumers.empty() && contextOwners.empty() && hwQueues.empty() && syncObjects.empty() && sharedSyncHandles.empty() && gpuReservations.empty() && !gpuReservedBytes && gpuStates.empty() && ownedAdapters.empty() &&
-               !compositorPresenter && !guestMemory && !guestSection && !copyDevice && !copyHeap && !copyQueue && !copyFence && !copyEvent && !cleanupFailures &&
+               !compositorOutput && !compositorPresenter && !guestMemory && !guestSection && !copyDevice && !copyHeap && !copyQueue && !copyFence && !copyEvent && !cleanupFailures &&
                nativeWorkers.started==nativeWorkers.exited && !nativeWorkers.failed && !nativeWorkers.forced;
     }
     void reportCleanup() const {
@@ -1991,6 +2019,7 @@ public:
                   << ",\"releasedTextureConsumers\":" << releasedTextureConsumers
                   << ",\"completedSharedTextureConsumes\":" << completedSharedConsumes
                   << ",\"failedSharedTextureConsumes\":" << failedSharedConsumes
+                  << ",\"completedCompositorFrames\":" << completedCompositorFrames << ",\"failedCompositorFrames\":" << failedCompositorFrames << ",\"compositorBackpressure\":" << compositorBackpressure
                   << ",\"compositorCaptureAttempts\":" << compositorCaptureAttempts
                   << ",\"completedCompositorCaptures\":" << completedCompositorCaptures
                   << ",\"failedCompositorCaptures\":" << failedCompositorCaptures
@@ -2180,6 +2209,7 @@ static void serve(Stream& stream, const std::string& sectionName = {}, std::uint
     if (failure) std::rethrow_exception(failure);
 }
 int main(int argc, char** argv) {
+    AtomicLineLog receipts(std::cerr);
     try {
         if (argc==4 && std::string(argv[1])=="--native-texture-worker") return driver_worker::run(argv[2],argv[3]);
         // Explicit experimental opt-in; keep the existing allocation endpoint

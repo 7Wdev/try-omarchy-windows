@@ -17,7 +17,8 @@ class TexturePresenter {
     UINT outputWidth = 0, outputHeight = 0;
     const wchar_t* registeredClass = nullptr;
     UINT index = 0;
-    unsigned preparedFrames = 0;
+    std::uint64_t preparedFrames = 0;
+    std::uint64_t queuedPresentationFence = 0;
     static constexpr const wchar_t* ClassName = L"7WdevGuestShaderPresentationLab";
     static constexpr const wchar_t* CompositorClassName = L"7WdevHyprlandPresentationLab";
     static LRESULT CALLBACK procedure(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
@@ -65,6 +66,42 @@ class TexturePresenter {
         }
     }
 public:
+    bool serviceMessages() { pump(); return !closeRequested; }
+    HRESULT presentQueued(ID3D12CommandQueue* queue, std::uint64_t frame) {
+        if (!opened || !compositorOutput || !frame || frame == UINT64_MAX) return E_INVALIDARG;
+        pump(); if (closeRequested) return HRESULT_FROM_WIN32(ERROR_CANCELLED);
+        LARGE_INTEGER before{}, after{}, frequency{};
+        if (!QueryPerformanceFrequency(&frequency) || !QueryPerformanceCounter(&before)) return E_FAIL;
+        const auto presented = swapchain->Present(1, 0);
+        if (!QueryPerformanceCounter(&after)) ExitProcess(3);
+        const auto signaled = queue->Signal(retirement.Get(), frame);
+        if (FAILED(signaled)) ExitProcess(3);
+        queuedPresentationFence = frame;
+        UINT count = 0; const auto counted = swapchain->GetLastPresentCount(&count);
+        std::cerr << "{\"nativeCompositorWindowSubmitted\":true,\"frame\":" << frame << ",\"presentHresult\":" << presented
+            << ",\"countHresult\":" << counted << ",\"lastPresentCount\":" << count
+            << ",\"presentProcessId\":" << GetCurrentProcessId()
+            << ",\"presentSwapChain\":" << reinterpret_cast<std::uintptr_t>(swapchain.Get())
+            << ",\"presentCallQpcBefore\":" << before.QuadPart << ",\"presentCallQpcAfter\":" << after.QuadPart
+            << ",\"qpcFrequency\":" << frequency.QuadPart << ",\"cpuUpload\":false,\"displayVerified\":false}\n";
+        return presented == S_OK && counted == S_OK && count == static_cast<UINT>(frame) ? S_OK : E_FAIL;
+    }
+    void drainQueued(std::uint64_t frame = 0) {
+        if (!frame) frame = queuedPresentationFence;
+        if (!frame) return;
+        const auto deadline = GetTickCount64() + 5000;
+        UINT64 observed = 0;
+        while ((observed = retirement->GetCompletedValue()) < frame && GetTickCount64() < deadline) { pump(); Sleep(1); }
+        if (observed == UINT64_MAX || observed < frame) ExitProcess(3);
+    }
+    void reportQueuedDisplay() {
+        DXGI_FRAME_STATISTICS stats{}; const auto status = swapchain->GetFrameStatistics(&stats);
+        std::cerr << "{\"nativeCompositorRingDisplayObservation\":true,\"statisticsHresult\":" << status
+            << ",\"statisticsPresentCount\":" << stats.PresentCount << ",\"syncQpc\":" << stats.SyncQPCTime.QuadPart
+            << ",\"presentProcessId\":" << GetCurrentProcessId()
+            << ",\"presentSwapChain\":" << reinterpret_cast<std::uintptr_t>(swapchain.Get())
+            << ",\"windowVisible\":" << (!closeRequested && IsWindowVisible(window) && !IsIconic(window) ? "true" : "false") << "}\n";
+    }
     ~TexturePresenter() {
         // Only this bounded capture diagnostic holds its last output at EOF.
         // There is no per-frame hold in the compositor handoff.

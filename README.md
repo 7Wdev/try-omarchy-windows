@@ -14,10 +14,11 @@ through QEMU/WHPX. Full acceleration of the Omarchy/Hyprland desktop through thi
 **4/8 verification stages demonstrated; 0/4 desktop acceptance gates complete.** These are checklist counts, not percentages of engineering work completed.
 Guest graphics integration is in progress. The largest integration work remains. [See the roadmap and evidence](docs/GPU-BACKEND-PROGRESS.md).
 
-**Distance to the full desktop:** real Hyprland now renders into native GPU buffers, and the Windows GPU captures actual 640×360 output.
+**Distance to the full desktop:** real Hyprland now renders actual 640×360 output into an experimental Windows GPU window.
+Two fresh guests each submit twelve frames, with no CPU readback on ten ordinary frames. Final-frame display is verified in one repeat and remains unverified in the other.
 The next major milestone is the **first correctly displayed Hyprland frame in the Windows app**. A full Omarchy scene also needs
 normal fonts/themes/configuration and real apps, plus enough resource and queue capacity to start and sustain them.
-The bare diagnostic compositor already peaks at 252 of 256 guest allocations; its finite 256-command / 50,000-request profile cannot sustain a desktop.
+The repeated-frame diagnostic compositor already peaks at 253 of 256 guest allocations; its finite 256-command / 50,000-request profile cannot sustain a desktop.
 Interactive use, long-run stability and the ≥93% native-performance target then need their own acceptance tests.
 There is no reliable completion date yet; the remaining work includes substantial driver and compositor integration.
 
@@ -30,7 +31,12 @@ There is no reliable completion date yet; the remaining work includes substantia
 
 Vulkan, CUDA, video acceleration, NVIDIA-specific features and concurrent Windows/guest GPU use need separate real-application acceptance tests as part of the wider goal.
 
-Latest integration work: [paced Hyprland handoff with deferred display evidence](docs/LIVE-HYPRLAND-FRAME-PACING.md)
+Latest integration work: [repeated Hyprland GPU presentation](docs/LIVE-HYPRLAND-QUEUED-PRESENTATION.md)
+passes twelve submissions and explicit cleanup in each of two fresh guests. A three-slot GPU ring moves presentation to its own UI thread;
+only the first and twelfth frames use diagnostic readback. The actual later frame, missing-font placeholders and failed controls are retained.
+Normal launcher integration, real Omarchy apps/assets, sustained rendering and 4K desktop performance remain open. Counts stay 4/8 and 0/4.
+
+Earlier [paced Hyprland handoff with deferred display evidence](docs/LIVE-HYPRLAND-FRAME-PACING.md)
 passes both exact display counts/timings in two fresh guests. The compositor path no longer polls display statistics
 or holds each frame for three seconds. An independent trace confirms that a prior second frame displayed while its DXGI statistics stayed stale.
 Capture, submission and display remain separate checks. Normal launcher integration, sustained rendering and 4K desktop performance remain open.

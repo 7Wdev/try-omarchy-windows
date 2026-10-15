@@ -52,6 +52,7 @@ int ntErrno(std::int32_t status) {
         case 0xc0000034: return ENOENT;
         case 0xc00000bb: return ENOSYS;
         case 0xc00000b5: return EAGAIN;
+        case 0xc000022d: return EAGAIN;
         default: return EIO;
     }
 }
@@ -231,6 +232,8 @@ class Bridge {
     guest_kernel::Objects kernelObjects;
     bool sharedFencesNegotiated = false;
     std::set<std::uint32_t> exportedSyncTickets, importedShareableSyncs;
+    std::uint64_t queuedCompositorFrames = 0;
+    bool compositorQueueUsed = false;
     std::map<std::uint32_t,std::uint32_t> exportedSyncSources;
     bool sharedResourcesNegotiated = false;
     std::set<std::uint32_t> exportedResourceTickets;
@@ -1669,6 +1672,7 @@ public:
     }
     std::uint64_t captureCompositorBuffer(int bufferFd, int syncFileFd, std::uint32_t width, std::uint32_t height,
                                         std::uint32_t format, std::uint32_t stride) {
+        if (compositorQueueUsed) throw Error(EBUSY);
         if (!openglRenderNegotiated || !(caps.flags & SharedTextureConsumeCapability)) throw Error(ENOSYS);
         std::uint64_t bytes = 0, target = 0;
         if (nativeBufferInfo(bufferFd, bytes)) throw Error(errno);
@@ -1688,6 +1692,31 @@ public:
         std::fprintf(stderr,"LINUX_BRIDGE compositorHostCapture=true width=%u height=%u format=%u fence=%llu windowsPresentation=false\n",
             width,height,format,static_cast<unsigned long long>(target));
         return result.result.value;
+    }
+    std::uint64_t queueCompositorBuffer(int bufferFd,int syncFileFd,std::uint32_t width,std::uint32_t height,
+                                       std::uint32_t format,std::uint32_t stride,std::uint32_t flags) {
+        if (!openglRenderNegotiated || !(caps.flags&SharedTextureConsumeCapability) || queuedCompositorFrames==UINT64_MAX-1) throw Error(ENOSYS);
+        std::uint64_t bytes=0,target=0;
+        if (nativeBufferInfo(bufferFd,bytes)) throw Error(errno);
+        if (bytes!=std::uint64_t(stride)*height) throw Error(EINVAL);
+        std::uint32_t resource=0,sync=0;
+        if (!kernelObjects.resolve(bufferFd,resource,WDDM_OBJECT_RESOURCE)) throw Error(errno);
+        guest_broker::Fd nativeSync(kernelObjects.resolveSyncFile(syncFileFd,target));
+        if (nativeSync.get()<0 || !kernelObjects.resolve(nativeSync.get(),sync)) throw Error(errno);
+        if (!exportedResourceTickets.count(resource) || !exportedSyncTickets.count(sync)) throw Error(EBADF);
+        const CompositorCaptureDesc desc{sync,width,height,format,stride,flags,target};
+        if (!validCompositorFrame(desc)) throw Error(EINVAL);
+        compositorQueueUsed=true;
+        const auto result=call(request(Op::QueueCompositorFrame,resource,desc),0,true);
+        if (result.header.handle!=resource || result.result.ntstatus>0 ||
+            (result.result.ntstatus<0 ? result.result.value!=0 : result.result.value!=queuedCompositorFrames+1)) {
+            transport.fail(); throw Error(EPROTO);
+        }
+        checkNt(result.result.ntstatus);
+        ++queuedCompositorFrames;
+        std::fprintf(stderr,"LINUX_BRIDGE compositorQueued=true frame=%llu sourceCopyRetired=true cpuUpload=false\n",
+            static_cast<unsigned long long>(queuedCompositorFrames));
+        return queuedCompositorFrames;
     }
     std::uint64_t consumeSharedTexture(std::uint64_t target, bool streaming = false) {
         if (streaming != streamingNegotiated || (streaming && (target != consumedStreamFrames + 1 || target > GuestStreamProfile.frames))) throw Error(EINVAL);
@@ -1843,6 +1872,19 @@ extern "C" int wddm_bridge_capture_compositor_buffer(int bufferFd,int syncFileFd
     auto& state=bridge(); std::lock_guard<std::mutex> lock(state.guard);
     if (bridgeStopped) { errno=ESHUTDOWN; return -1; }
     try { *hash=state.captureCompositorBuffer(bufferFd,syncFileFd,width,height,format,stride); return 0; }
+    catch(const Error& error) { errno=error.number; }
+    catch(const std::system_error& error) { errno=error.code().value(); }
+    catch(...) { errno=EIO; }
+    return -1;
+}
+extern "C" int wddm_bridge_queue_compositor_buffer(int bufferFd,int syncFileFd,std::uint32_t width,std::uint32_t height,
+    std::uint32_t format,std::uint32_t stride,std::uint32_t flags,std::uint64_t* frame) {
+    if (bufferFd<0 || syncFileFd<0 || !frame) { errno=EINVAL; return -1; }
+    *frame=0;
+    if (bridgeStopped) { errno=ESHUTDOWN; return -1; }
+    auto& state=bridge(); std::lock_guard<std::mutex> lock(state.guard);
+    if (bridgeStopped) { errno=ESHUTDOWN; return -1; }
+    try { *frame=state.queueCompositorBuffer(bufferFd,syncFileFd,width,height,format,stride,flags); return 0; }
     catch(const Error& error) { errno=error.number; }
     catch(const std::system_error& error) { errno=error.code().value(); }
     catch(...) { errno=EIO; }

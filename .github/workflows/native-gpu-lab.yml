@@ -87,6 +87,9 @@ jobs:
           python3 experimental/windows-native-gpu/apply_aquamarine_native_render_patch.py .aquamarine-native-check --patch logging-lifetime
           cc -std=c11 -O2 -Wall -Wextra -Werror -shared -fPIC experimental/windows-native-gpu/hyprland_startup_probe.c -ldl -pthread -o /tmp/hyprland-startup-probe.so
           cc -std=c11 -O2 -Wall -Wextra -Werror -DWDDM_BRIDGE_COMPOSITOR_HOST_CAPTURE=1 -shared -fPIC experimental/windows-native-gpu/hyprland_startup_probe.c -ldl -pthread -o /tmp/hyprland-capture-probe.so
+          cc -std=c11 -O2 -Wall -Wextra -Werror -DWDDM_BRIDGE_COMPOSITOR_HOST_PRESENT=1 -shared -fPIC experimental/windows-native-gpu/hyprland_startup_probe.c -ldl -pthread -o /tmp/hyprland-present-probe.so
+          c++ -std=c++17 -O2 -Wall -Wextra -Werror -pthread experimental/windows-native-gpu/atomic_line_log_test.cpp -o /tmp/atomic-line-log-test
+          /tmp/atomic-line-log-test
       - run: |
           c++ -std=c++17 -Wall -Wextra -Werror experimental/windows-native-gpu/wire_test.cpp -o /tmp/native-wire-test
           /tmp/native-wire-test

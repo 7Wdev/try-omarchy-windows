@@ -395,7 +395,7 @@ enum class Op : std::uint32_t {
     ReserveGpuAddress = 0x2080, FreeGpuReservation, MapGpuState,
     BeginResourceSharing = 0x2090, ExportResource, CloseSharedResource, QuerySharedResourceInfo, ImportResource,
     QueryMemoryBudget = 0x20a0, EvictVendorAllocations,
-    CreateNativeInteropResource, QueryNativeInteropCaps, CaptureCompositorResource
+    CreateNativeInteropResource, QueryNativeInteropCaps, CaptureCompositorResource, QueueCompositorFrame
 };
 enum class Kind { Adapter, Device, PagingQueue, Allocation, Context, PagingSync, VendorAllocation, HwQueue, HwQueueSync, Sync, GpuReservation, VendorResource, SharedSync, SharedResource };
 struct ContextDesc {
@@ -452,6 +452,9 @@ public:
     virtual native_gpu::Capabilities capabilities() const = 0;
     virtual StreamProfile beginStreaming() { return {}; }
     virtual OpenGlProfile beginOpenGl(std::uint32_t = 1) { return {}; }
+    virtual Result queueCompositorFrame(std::uint32_t, std::uint32_t, CompositorCaptureDesc) {
+        return {static_cast<std::int32_t>(0xc00000bbu),0,0};
+    }
     virtual NativeInteropCaps nativeInteropCaps() const { return {}; }
     virtual Result captureCompositorResource(std::uint32_t, std::uint32_t, CompositorCaptureDesc) {
         return {static_cast<std::int32_t>(0xc00000bbu), 0, 0};
@@ -613,6 +616,9 @@ class Session {
     bool openglCompositorNegotiated = false;
     bool openglRenderNegotiated = false;
     unsigned compositorCaptureAttempts = 0;
+    bool compositorQueueUsed = false;
+    std::uint64_t compositorQueuedFrames = 0;
+    unsigned compositorQueueAudits = 0;
     std::size_t wireObjectLimit = MaxObjects;
     bool syncSharingNegotiated = false;
     bool resourceSharingNegotiated = false;
@@ -1399,12 +1405,35 @@ public:
             if (resource == objects.end() || resource->second.kind != Kind::SharedResource ||
                 sync == objects.end() || sync->second.kind != Kind::SharedSync || (sync->second.syncFlags & 3) != 3 ||
                 !resourceAdaptersCompatible(resource->second.parent, sync->second.parent)) return reply(h, -9);
+            if (compositorQueueUsed) return reply(h, -16);
             if (compositorCaptureAttempts >= 2) return reply(h, -24);
             ++compositorCaptureAttempts;
             auto native = desc; native.syncTicket = sync->second.nativeHandle;
             const auto result = driver.captureCompositorResource(resource->second.nativeHandle, sync->second.nativeHandle, native);
             if (result.nativeHandle || result.ntstatus > 0 || (result.ntstatus < 0 && result.value)) return reply(h, -5);
             return reply(h, 0, h.handle, &result);
+        }
+        if (op == Op::QueueCompositorFrame) {
+            if (!negotiated || !openglRenderNegotiated || !resourceSharingNegotiated || !syncSharingNegotiated) return reply(h,-71);
+            if (!(driver.capabilities().flags & SharedTextureConsumeCapability)) return reply(h,-95);
+            if (packet.size()!=sizeof h+sizeof(CompositorCaptureDesc)) return reply(h,-22);
+            CompositorCaptureDesc desc{}; std::memcpy(&desc,packet.data()+sizeof h,sizeof desc);
+            if (!validCompositorFrame(desc)) return reply(h,-22);
+            const auto resource=objects.find(h.handle),sync=objects.find(desc.syncTicket);
+            if (resource==objects.end() || resource->second.kind!=Kind::SharedResource || sync==objects.end() ||
+                sync->second.kind!=Kind::SharedSync || (sync->second.syncFlags&3)!=3 ||
+                !resourceAdaptersCompatible(resource->second.parent,sync->second.parent)) return reply(h,-9);
+            if (compositorCaptureAttempts) return reply(h,-16);
+            if (compositorQueuedFrames==UINT64_MAX-1 || ((desc.flags&CompositorFrameAudit) && compositorQueueAudits>=2)) return reply(h,-24);
+            compositorQueueUsed=true;
+            if (desc.flags&CompositorFrameAudit) ++compositorQueueAudits;
+            auto native=desc; native.syncTicket=sync->second.nativeHandle;
+            const auto result=driver.queueCompositorFrame(resource->second.nativeHandle,sync->second.nativeHandle,native);
+            if (result.nativeHandle || result.ntstatus>0 ||
+                (result.ntstatus<0 ? result.value!=0 : result.value!=compositorQueuedFrames+1)) return reply(h,-5);
+            if ((desc.flags&CompositorFrameAudit) && result.ntstatus==static_cast<std::int32_t>(0xc000022du)) --compositorQueueAudits;
+            if (!result.ntstatus) ++compositorQueuedFrames;
+            return reply(h,0,h.handle,&result);
         }
         if (op == Op::ConsumeSharedTexture || op == Op::ConsumeStreamingTexture) {
             if (!negotiated) return reply(h, -71);

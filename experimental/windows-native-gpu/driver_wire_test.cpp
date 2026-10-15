@@ -2678,10 +2678,15 @@ int main() {
         before=consumer.calls;
         require(header(session.dispatch(request(Op::ConsumeSharedTexture,resource.resource,handoff))).status == -9 && consumer.calls == before);
     }
-    for (unsigned replyMode=0;replyMode<5;++replyMode) {
+    for (unsigned scenario=0;scenario<12;++scenario) {
+        const bool queued=scenario>=5;
+        const unsigned replyMode=queued ? scenario-5 : scenario;
+        const auto operation=queued ? Op::QueueCompositorFrame : Op::CaptureCompositorResource;
         struct CaptureFake : OpenGlFake {
             std::set<std::uint32_t> sameGpu, sharedFences;
             unsigned captures = 0;
+            std::uint64_t frames = 0;
+            bool retried = false;
             unsigned mode = 0;
             bool equivalent = true;
             CaptureFake() {
@@ -2705,11 +2710,22 @@ int main() {
                 ++captures; ++calls;
                 return {mode==1?259:mode>=3?-123:0,mode==2?777u:0u,mode==3?1ull:mode==4?0ull:12345ull};
             }
+            Result queueCompositorFrame(std::uint32_t resource,std::uint32_t sync,CompositorCaptureDesc desc) override {
+                require(resourceTickets.count(resource) && sharedFences.count(sync) && desc.syncTicket==sync && validCompositorFrame(desc));
+                ++calls;
+                if (mode==6 && !retried) { retried=true; return {static_cast<std::int32_t>(0xc000022du),0,0}; }
+                if (mode==1) return {259,0,0};
+                if (mode==2) return {0,777,frames+1};
+                if (mode==3) return {-123,0,1};
+                if (mode==4) return {-123,0,0};
+                if (mode==5) return {0,0,frames+2};
+                return {0,0,++frames};
+            }
         } f;
         f.mode=replyMode;
         Session capture(f);
         const CompositorCaptureDesc initial{2,130,73,0x34324241u,520,0,1};
-        require(header(capture.dispatch(request(Op::CaptureCompositorResource,1,initial))).status==-71);
+        require(header(capture.dispatch(request(operation,1,initial))).status==-71);
         capture.dispatch(hello());
         require(!header(capture.dispatch(request(Op::BeginOpenGl,0,4u))).status);
         require(!header(capture.dispatch(request(Op::BeginResourceSharing))).status);
@@ -2740,28 +2756,60 @@ int main() {
             if(field==3) bad.width=4097;
             if(field==4) bad.stride=524;
             if(field==5) bad.format=0;
-            if(field==6) bad.flags=1;
+            if(field==6) bad.flags=queued?2u:1u;
             if(field==7) bad.fence=0;
             if(field==8) bad.fence=UINT64_MAX;
-            require(header(capture.dispatch(request(Op::CaptureCompositorResource,ticket,bad))).status==-22);
+            require(header(capture.dispatch(request(operation,ticket,bad))).status==-22);
         }
         for (const auto wrong:{resource.resource,first,UINT32_MAX})
-            require(header(capture.dispatch(request(Op::CaptureCompositorResource,wrong,valid))).status==-9);
+            require(header(capture.dispatch(request(operation,wrong,valid))).status==-9);
         for (const auto wrong:{sourceSync,ticket,foreignTicket,UINT32_MAX}) {
             auto bad=valid; bad.syncTicket=wrong;
-            require(header(capture.dispatch(request(Op::CaptureCompositorResource,ticket,bad))).status==-9);
+            require(header(capture.dispatch(request(operation,ticket,bad))).status==-9);
         }
         f.equivalent=false;
-        require(header(capture.dispatch(request(Op::CaptureCompositorResource,ticket,valid))).status==-9);
+        require(header(capture.dispatch(request(operation,ticket,valid))).status==-9);
         f.equivalent=true; f.consumeSharedEnabled=false;
-        require(header(capture.dispatch(request(Op::CaptureCompositorResource,ticket,valid))).status==-95);
+        require(header(capture.dispatch(request(operation,ticket,valid))).status==-95);
         f.consumeSharedEnabled=true;
-        packet=request(Op::CaptureCompositorResource,ticket,valid); packet.push_back(0);
+        packet=request(operation,ticket,valid); packet.push_back(0);
         require(header(capture.dispatch(packet)).status==-22 && f.calls==before && f.captures==0);
         // The scoped exported fence remains usable after its original object is destroyed.
         require(!header(capture.dispatch(request(Op::DestroySync,sourceSync))).status);
+        if (queued) {
+            auto audit=valid; audit.flags=CompositorFrameAudit;
+            if (replyMode==0 || replyMode==6) {
+                if (replyMode==6) {
+                    const auto out=capture.dispatch(request(operation,ticket,audit)); Reply result{};
+                    std::memcpy(&result,out.data()+sizeof(Header),sizeof result);
+                    require(!header(out).status && result.ntstatus==static_cast<std::int32_t>(0xc000022du) && !result.value);
+                }
+                for (unsigned frame=1;frame<=12;++frame) {
+                    const auto out=capture.dispatch(request(operation,ticket,frame==1 || frame==12 ? audit : valid)); Reply result{};
+                    std::memcpy(&result,out.data()+sizeof(Header),sizeof result);
+                    require(!header(out).status && header(out).handle==ticket && !result.ntstatus && result.value==frame);
+                }
+                require(header(capture.dispatch(request(operation,ticket,audit))).status==-24);
+                require(!header(capture.dispatch(request(operation,ticket,valid))).status && f.frames==13);
+                require(header(capture.dispatch(request(Op::CaptureCompositorResource,ticket,valid))).status==-16);
+                require(!header(capture.dispatch(request(Op::CloseSharedResource,ticket))).status);
+                const auto calls=f.calls;
+                require(header(capture.dispatch(request(operation,ticket,valid))).status==-9 && f.calls==calls);
+            } else {
+                for (unsigned attempt=0;attempt<2;++attempt) {
+                    const auto out=capture.dispatch(request(operation,ticket,audit));
+                    if (replyMode==4) {
+                        Reply result{}; std::memcpy(&result,out.data()+sizeof(Header),sizeof result);
+                        require(!header(out).status && result.ntstatus==-123 && !result.value);
+                    } else require(header(out).status==-5);
+                }
+                require(header(capture.dispatch(request(operation,ticket,audit))).status==-24);
+            }
+            std::cout<<"COMPOSITOR_QUEUE_WIRE ownedTickets=true sameGpu=true repeatedFrames=13 auditLimit=2 retryPreservesAuditBudget=true malformedRepliesRejected=true gpu=false\n";
+            continue;
+        }
         for(unsigned round=0;round<2;++round) {
-            const auto out=capture.dispatch(request(Op::CaptureCompositorResource,ticket,valid)); Reply result{};
+            const auto out=capture.dispatch(request(operation,ticket,valid)); Reply result{};
             if (replyMode>=1 && replyMode<=3) require(header(out).status==-5);
             else {
                 std::memcpy(&result,out.data()+sizeof(Header),sizeof result);
@@ -2769,7 +2817,7 @@ int main() {
                     result.ntstatus==(replyMode==4?-123:0) && result.value==(replyMode==4?0ull:12345ull));
             }
         }
-        require(header(capture.dispatch(request(Op::CaptureCompositorResource,ticket,valid))).status==-24 && f.captures==2);
+        require(header(capture.dispatch(request(operation,ticket,valid))).status==-24 && f.captures==2);
         std::cout<<"COMPOSITOR_CAPTURE_WIRE ticketOwnership=true samePhysicalGpu=true foreignGpuRejected=true retiredSourceFenceReference=true boundedAttempts=2 pixels=false\n";
     }
     Fake malformed; Session s(malformed); s.dispatch(hello());

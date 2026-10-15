@@ -4,6 +4,16 @@ Updated 2026-10-15. **4 of 8 verification stages demonstrated.** This is a
 checklist count, not 50% of engineering effort or a product-readiness estimate.
 The largest integration tasks are still ahead.
 
+[Repeated Hyprland GPU presentation](LIVE-HYPRLAND-QUEUED-PRESENTATION.md) now
+passes twelve real compositor submissions per fresh guest, twice. Ten ordinary
+frames have no CPU readback; a three-slot GPU ring and dedicated Windows UI
+thread handle presentation. The two audited backbuffers pass scoped background
+checks. Final-frame display is verified once and unverified on the other run;
+all-frame display remains unverified. Real Omarchy assets/apps, independent guest
+GPU clients, normal launcher integration and sustained capacity remain required.
+The diagnostic peaks at 253/256 allocations. Counts stay 4/8 stages and 0/4
+desktop gates, with no reliable time-to-completion estimate.
+
 [Paced compositor handoff](LIVE-HYPRLAND-FRAME-PACING.md) now passes exact deferred
 display observations for both frames in two fresh guests. A targeted ETW trace
 confirms that a prior second frame displayed while its DXGI statistics stayed

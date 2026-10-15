@@ -1,5 +1,14 @@
 # Native Windows GPU experiment
 
+The [repeated compositor presentation checkpoint](../../docs/LIVE-HYPRLAND-QUEUED-PRESENTATION.md)
+passes twelve actual Hyprland submissions per fresh guest, twice. The new
+`WDDM_BRIDGE_COMPOSITOR_HOST_PRESENT=1` startup mode uses two audit readbacks and
+ten GPU-only ordinary frames. It needs the explicit native presentation opt-in;
+it cannot be combined with the earlier capture mode. The native UI thread,
+three staging slots and imported source cache are bounded and explicitly released.
+The profile-4 command/request budgets remain finite. Display reliability,
+normal launcher integration and the full Omarchy desktop remain unverified.
+
 The [paced compositor handoff](../../docs/LIVE-HYPRLAND-FRAME-PACING.md) separates
 native submission from display telemetry. Two fresh guests pass exact deferred
 display observations for both frames; an earlier targeted ETW trace confirms
