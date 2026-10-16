@@ -58,6 +58,7 @@ class KmtDriver : public Driver {
     bool openglCompositorEnabled = false;
     bool openglRenderEnabled = false;
     bool openglDesktopEnabled = false;
+    bool openglDesktop4kEnabled = false;
     unsigned compositorCaptureAttempts = 0, completedCompositorCaptures = 0, failedCompositorCaptures = 0;
     std::unique_ptr<driver_shared::CompositorReadback> compositorPresenter;
     std::unique_ptr<driver_shared::CompositorPresenter> compositorOutput;
@@ -295,7 +296,9 @@ class KmtDriver : public Driver {
     unsigned completedVendorAllocations = 0, destroyedVendorAllocations = 0, failedVendorAllocations = 0, uninitializedSourceAllocations = 0;
     std::size_t peakVendorAllocationObjects = 0;
     std::uint64_t peakReportedGpuUsage = 0;
-    static constexpr std::uint64_t ReportedGpuUsageLimit = gpu_diagnostic::ReportedGpuBytes;
+    std::uint64_t reportedGpuUsageLimit() const {
+        return openglDesktop4kEnabled ? OpenGlDesktop4kReportedGpuBytes : gpu_diagnostic::ReportedGpuBytes;
+    }
     std::uint32_t allocatedBytes = 0;
     unsigned activeAdapters = 0, activeDevices = 0, cleanupFailures = 0;
     std::map<std::uint32_t, std::uint32_t> deviceAdapters;
@@ -345,7 +348,7 @@ class KmtDriver : public Driver {
             total += info.CurrentUsage;
         }
         peakReportedGpuUsage = (std::max)(peakReportedGpuUsage, total);
-        return total <= ReportedGpuUsageLimit;
+        return total <= reportedGpuUsageLimit();
     }
     Result copyFailure(HRESULT error) {
         lastCopyError = error; return {static_cast<std::int32_t>(0xc0000001u), 0, 0};
@@ -613,18 +616,22 @@ public:
         return GuestStreamProfile;
     }
     OpenGlProfile beginOpenGl(std::uint32_t version = 1) override {
+        if (version==6 && !(capabilities().flags & ExpandedVendorGpuCapability)) return {};
         if (!gpu_diagnostic::HighResolution || openglEnabled || streamingEnabled || !asyncSubmitEnabled || !syncEnabled || !reservationEnabled ||
             !runtime || runtime->hasStopped() || !ownedAdapters.empty() || !deviceAdapters.empty() ||
-            !pendingSubmissions.empty() || !pendingHwSignals.empty() || (version != 1 && version != 2 && version != 3 && version != 4 && version != 5)) return {};
+            !pendingSubmissions.empty() || !pendingHwSignals.empty() || (version != 1 && version != 2 && version != 3 && version != 4 && version != 5 && version != 6)) return {};
         openglEnabled = true;
         openglFencesEnabled = version >= 2;
         openglCompositorEnabled = version >= 3;
         openglRenderEnabled = version >= 4;
-        openglDesktopEnabled = version == 5;
-        const auto profile = version == 5 ? GuestOpenGlDesktopProfile : version == 4 ? GuestOpenGlCompositorRenderProfile : version == 3 ? GuestOpenGlCompositorProfile : version == 2 ? GuestOpenGlFenceProfile : GuestOpenGlProfile;
+        openglDesktopEnabled = version >= 5;
+        openglDesktop4kEnabled = version == 6;
+        const auto profile = version == 6 ? GuestOpenGlDesktop4kProfile : version == 5 ? GuestOpenGlDesktopProfile : version == 4 ? GuestOpenGlCompositorRenderProfile : version == 3 ? GuestOpenGlCompositorProfile : version == 2 ? GuestOpenGlFenceProfile : GuestOpenGlProfile;
         std::cerr << "{\"openGlProfileNegotiated\":true,\"version\":" << version << ",\"frames\":" << profile.frames << ",\"commandLimit\":" << profile.commandLimit << ",\"pendingCommands\":16,\"reservationLimit\":" << profile.reservationLimit << ",\"reservedByteLimit\":17179869184,\"requestLimit\":" << profile.requestLimit;
         if (version >= 2) std::cerr << ",\"objectLimit\":" << profile.objectLimit
             << ",\"hwQueueLimit\":" << OpenGlFenceHwQueues << ",\"vendorObjectLimit\":" << vendorObjectLimit() << ",\"syncObjectLimit\":" << syncObjectLimit();
+        if (version == 6) std::cerr << ",\"gpuMappedByteLimit\":" << OpenGlDesktop4kGpuMappedBytes
+            << ",\"reportedGpuUsageLimitBytes\":" << reportedGpuUsageLimit();
         std::cerr << "}\n";
         return profile;
     }
@@ -1385,7 +1392,7 @@ public:
         // or process identifier is forwarded across the boundary.
         const auto status=D3DKMTQueryVideoMemoryInfo(&value);
         if (status!=0) { ++failedMemoryBudgetQueries; return {{status>0?Invalid:status,0,0},{}}; }
-        const auto budget=(std::min)(value.Budget,ReportedGpuUsageLimit);
+        const auto budget=(std::min)(value.Budget,reportedGpuUsageLimit());
         const MemoryBudgetReply info{budget,value.CurrentUsage,value.CurrentReservation,
             (std::min)(value.AvailableForReservation,budget)};
         ++completedMemoryBudgetQueries;
@@ -1469,7 +1476,7 @@ public:
         if (!gpuVaEnabled || !validGpuVa(desc) || entry == vendorAllocations.end() || !pagingFences.count(queue) ||
             entry->second.device != pagingFences.at(queue).device ||
             (desc.driverProtection && !entry->second.resource) ||
-            entry->second.pages || entry->second.address || !vendorGpuBudgetFits(vendorMappedPages, desc.sizePages, capabilities().flags))
+            entry->second.pages || entry->second.address || !vendorGpuBudgetFits(vendorMappedPages, desc.sizePages, capabilities().flags,openglDesktop4kEnabled))
             return {{Invalid, 0, 0}, 0};
         if (desc.base) {
             const auto overlaps = [&](std::uint64_t address, std::uint64_t bytes) {
@@ -2101,7 +2108,7 @@ public:
                   << ",\"completedVendorGpuVaWaits\":" << completedVendorMapWaits
                   << ",\"liveVendorMappedPages\":" << vendorMappedPages
                   << ",\"peakVendorMappedPages\":" << peakVendorMappedPages
-                  << ",\"vendorGpuMappedByteLimit\":" << vendorGpuPageLimit(capabilities().flags) * 4096
+                  << ",\"vendorGpuMappedByteLimit\":" << vendorGpuPageLimit(capabilities().flags,openglDesktop4kEnabled) * 4096
                   << ",\"completedVendorResidencyRequests\":" << completedVendorResidency
                   << ",\"completedMemoryBudgetQueries\":" << completedMemoryBudgetQueries
                   << ",\"failedMemoryBudgetQueries\":" << failedMemoryBudgetQueries
@@ -2127,7 +2134,7 @@ public:
                   << ",\"completedAllocationTranslations\":" << completedTranslations << ",\"failedAllocationTranslations\":" << failedTranslations
                   << ",\"liveAllocationTranslations\":" << translatedAllocations.size()
                   << ",\"peakReportedGpuUsageBytes\":" << peakReportedGpuUsage
-                  << ",\"reportedGpuUsageLimitBytes\":" << ReportedGpuUsageLimit
+                  << ",\"reportedGpuUsageLimitBytes\":" << reportedGpuUsageLimit()
                   << ",\"hardVendorAllocationByteQuotaImplemented\":false}\n";
     }
 };

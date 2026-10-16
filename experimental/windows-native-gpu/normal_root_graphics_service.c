@@ -59,6 +59,8 @@ int main(void) {
                 if(setenv("QT_QUICK_BACKEND","software",1)) _exit(125);
                 puts("OMARCHY_DESKTOP_SHELL_RENDERER qtQuickSoftware=true compositorNvidia=true productAcceptance=false");
             }
+            if(desktop && !access("/opt/wddm-root/desktop-4k-probe",R_OK) &&
+               setenv("WDDM_BRIDGE_DESKTOP_4K_PROBE","1",1)) _exit(125);
             for(unsigned index=0;index<sizeof(variables)/sizeof(variables[0]);++index)
                 if(setenv(variables[index][0],variables[index][1],1)) _exit(125);
             if(graphics_client_drop_as(port,uid,gid)) { perror("normal graphics privilege drop");_exit(126); }

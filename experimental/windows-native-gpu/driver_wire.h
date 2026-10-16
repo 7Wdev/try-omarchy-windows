@@ -240,11 +240,12 @@ constexpr std::uint32_t MaxVendorGpuMappedBytes = 32 * 1024 * 1024;
 constexpr std::uint32_t MaxVendorMappedPages = MaxVendorGpuMappedBytes / 4096;
 constexpr std::uint32_t ExpandedVendorGpuCapability = 8388608;
 constexpr std::uint32_t ExpandedVendorGpuMappedBytes = gpu_diagnostic::ExpandedGpuBytes;
-inline std::uint32_t vendorGpuPageLimit(std::uint32_t capabilities) {
+inline std::uint32_t vendorGpuPageLimit(std::uint32_t capabilities, bool desktop4k = false) {
+    if (desktop4k && (capabilities & ExpandedVendorGpuCapability)) return OpenGlDesktop4kGpuMappedBytes / 4096;
     return ((capabilities & ExpandedVendorGpuCapability) ? ExpandedVendorGpuMappedBytes : MaxVendorGpuMappedBytes) / 4096;
 }
-inline bool vendorGpuBudgetFits(std::uint32_t usedPages, std::uint64_t pages, std::uint32_t capabilities) {
-    const auto limit = vendorGpuPageLimit(capabilities);
+inline bool vendorGpuBudgetFits(std::uint32_t usedPages, std::uint64_t pages, std::uint32_t capabilities, bool desktop4k = false) {
+    const auto limit = vendorGpuPageLimit(capabilities,desktop4k);
     return usedPages <= limit && pages <= limit - usedPages;
 }
 struct GpuVaDesc {
@@ -616,6 +617,7 @@ class Session {
     bool openglCompositorNegotiated = false;
     bool openglRenderNegotiated = false;
     bool openglDesktopNegotiated = false;
+    bool openglDesktop4kNegotiated = false;
     unsigned compositorCaptureAttempts = 0;
     bool compositorQueueUsed = false;
     std::uint64_t compositorQueuedFrames = 0;
@@ -701,6 +703,7 @@ public:
             openglCompositorNegotiated = false;
             openglRenderNegotiated = false;
             openglDesktopNegotiated = false;
+            openglDesktop4kNegotiated = false;
             if (version != Version) return reply(h, -93);
             const auto caps = driver.capabilities();
             if (caps.version != Version) return reply(h, -93);
@@ -737,18 +740,20 @@ public:
             std::uint32_t version = 1;
             if (packet.size() != sizeof h) {
                 std::memcpy(&version, packet.data() + sizeof h, sizeof version);
-                if (version != 2 && version != 3 && version != 4 && version != 5) return reply(h, -93);
+                if (version != 2 && version != 3 && version != 4 && version != 5 && version != 6) return reply(h, -93);
             }
             if (openglNegotiated || streamingNegotiated || !objects.empty()) return reply(h, -16);
-            const auto required = AsyncHwSubmitCapability | SyncCapability | GpuReservationCapability | UINT32_C(0x80000000);
+            const auto required = AsyncHwSubmitCapability | SyncCapability | GpuReservationCapability | UINT32_C(0x80000000) |
+                (version==6 ? ExpandedVendorGpuCapability : 0u);
             if ((driver.capabilities().flags & required) != required) return reply(h, -95);
             const auto profile = driver.beginOpenGl(version);
-            if (version == 1 ? !validOpenGlProfile(profile) : version == 2 ? !validOpenGlFenceProfile(profile) : version == 3 ? !validOpenGlCompositorProfile(profile) : version == 4 ? !validOpenGlCompositorRenderProfile(profile) : !validOpenGlDesktopProfile(profile)) return reply(h, -95);
+            if (version == 1 ? !validOpenGlProfile(profile) : version == 2 ? !validOpenGlFenceProfile(profile) : version == 3 ? !validOpenGlCompositorProfile(profile) : version == 4 ? !validOpenGlCompositorRenderProfile(profile) : version == 5 ? !validOpenGlDesktopProfile(profile) : !validOpenGlDesktop4kProfile(profile)) return reply(h, -95);
             openglNegotiated = true;
             openglFenceNegotiated = version >= 2;
             openglCompositorNegotiated = version >= 3;
             openglRenderNegotiated = version >= 4;
-            openglDesktopNegotiated = version == 5;
+            openglDesktopNegotiated = version >= 5;
+            openglDesktop4kNegotiated = version == 6;
             if (version >= 2) wireObjectLimit = profile.objectLimit;
             auto out = reply(h, 0); out.resize(sizeof h + sizeof profile);
             std::memcpy(out.data() + sizeof h, &profile, sizeof profile); return out;
@@ -1711,7 +1716,7 @@ public:
             auto& object = allocation->second;
             if (desc.driverProtection && !object.vendorResource) return reply(h, -22);
             if (object.gpuPages) return reply(h, -16);
-            if (!vendorGpuBudgetFits(vendorMappedPages, desc.sizePages, driver.capabilities().flags)) return reply(h, -24);
+            if (!vendorGpuBudgetFits(vendorMappedPages, desc.sizePages, driver.capabilities().flags,openglDesktop4kNegotiated)) return reply(h, -24);
             if (desc.base) for (const auto& item : objects) {
                 const auto& mapped = item.second;
                 if (mapped.kind == Kind::VendorAllocation && mapped.gpuPages &&

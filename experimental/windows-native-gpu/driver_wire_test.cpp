@@ -534,6 +534,7 @@ int main() {
         native_gpu::Capabilities capabilities() const override {
             auto caps = Fake::capabilities();
             caps.flags |= AsyncHwSubmitCapability | SyncCapability | GpuReservationCapability | UINT32_C(0x80000000);
+            if (profile.version==6) caps.flags |= ExpandedVendorGpuCapability;
             caps.flags &= ~missing; return caps;
         }
         OpenGlProfile beginOpenGl(std::uint32_t = 1) override { ++begins; return profile; }
@@ -649,7 +650,7 @@ int main() {
         require(s.objectLimit() == MaxObjects);
         require(header(s.dispatch(request(Op::BeginOpenGl, 0, std::uint32_t{2}))).status == -71);
         s.dispatch(hello());
-        for (const auto version : {0u, 1u, 6u, UINT32_MAX})
+        for (const auto version : {0u, 1u, 7u, UINT32_MAX})
             require(header(s.dispatch(request(Op::BeginOpenGl, 0, version))).status == -93 && !f.begins);
         for (unsigned field = 0; field < 8; ++field) {
             std::uint32_t words[8]{}; std::memcpy(words, &GuestOpenGlFenceProfile, sizeof words); ++words[field];
@@ -674,8 +675,8 @@ int main() {
         const auto calls = f.calls;
         require(s.objectCount() == 384 && header(s.dispatch(request(Op::OpenAdapter))).status == -24 && f.calls == calls);
     }
-    for(const auto version:{3u,4u,5u}) {
-        const auto expected=version==5 ? GuestOpenGlDesktopProfile : version==4 ? GuestOpenGlCompositorRenderProfile : GuestOpenGlCompositorProfile;
+    for(const auto version:{3u,4u,5u,6u}) {
+        const auto expected=version==6 ? GuestOpenGlDesktop4kProfile : version==5 ? GuestOpenGlDesktopProfile : version==4 ? GuestOpenGlCompositorRenderProfile : GuestOpenGlCompositorProfile;
         OpenGlFake f; f.reservationEnabled=true; Session s(f);
         const auto begin=request(Op::BeginOpenGl,0,version);
         require(header(s.dispatch(begin)).status==-71 && !f.begins);
@@ -692,7 +693,7 @@ int main() {
         const auto out=s.dispatch(begin); OpenGlProfile profile{};
         require(!header(out).status && out.size()==sizeof(Header)+sizeof profile);
         std::memcpy(&profile,out.data()+sizeof(Header),sizeof profile);
-        require((version==5 ? validOpenGlDesktopProfile(profile) : version==4 ? validOpenGlCompositorRenderProfile(profile) : validOpenGlCompositorProfile(profile)) &&
+        require((version==6 ? validOpenGlDesktop4kProfile(profile) : version==5 ? validOpenGlDesktopProfile(profile) : version==4 ? validOpenGlCompositorRenderProfile(profile) : validOpenGlCompositorProfile(profile)) &&
                 s.objectLimit()==expected.objectLimit && s.syncObjectLimit()==192 &&
                 s.requestLimit()==expected.requestLimit && s.openGlCommandLimit()==expected.commandLimit && s.reservationLimit()==expected.reservationLimit);
         const auto before=f.begins;
@@ -1601,6 +1602,16 @@ int main() {
             return c;
         }
     };
+    {
+        const auto flags=ExpandedVendorGpuCapability;
+        const auto legacy=vendorGpuPageLimit(flags),fourk=vendorGpuPageLimit(flags,true);
+        require(legacy==ExpandedVendorGpuMappedBytes/4096 && fourk==131072u);
+        require(vendorGpuPageLimit(0,true)==MaxVendorMappedPages);
+        require(!vendorGpuBudgetFits(legacy,1,flags) && vendorGpuBudgetFits(legacy,1,flags,true));
+        require(vendorGpuBudgetFits(fourk-1,1,flags,true) && !vendorGpuBudgetFits(fourk,1,flags,true));
+        require(!vendorGpuBudgetFits(fourk+1,1,flags,true) && !vendorGpuBudgetFits(UINT32_MAX,1,flags,true));
+        require(!vendorGpuBudgetFits(0,UINT64_MAX,flags,true));
+    }
     for (const bool expanded : {false,true}) {
         BudgetGpu gpuBudget; gpuBudget.vendorEnabled = gpuBudget.gpuVaEnabled = true; gpuBudget.expanded = expanded;
         const auto flags = gpuBudget.capabilities().flags;

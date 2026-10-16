@@ -237,7 +237,12 @@ static void* bounded_control(void* unused) {
 #endif
         for(unsigned tick=0;tick<HYPRLAND_QUEUE_FRAMES*2+100 && atomic_load(&queued_frames)<HYPRLAND_QUEUE_FRAMES && !atomic_load(&queue_failed);++tick) {
             char* const legacy_repaint[]={"/usr/bin/hyprctl","keyword","decoration:rounding","0",NULL};
-            char* const lua_repaint[]={"/usr/bin/hyprctl","eval","hl.config({ decoration = { rounding = 0 } })",NULL};
+            // A Lua config assignment to an unchanged value does not damage a
+            // quiet desktop. A short-lived real notification supplies bounded
+            // changing content without recreating outputs or hiding warnings.
+            char notification[128];
+            snprintf(notification,sizeof notification,"GPU composition probe %u; Quickshell GPU integration pending",tick);
+            char* const lua_repaint[]={"/usr/bin/hyprctl","notify","-1","100","rgb(4477aa)",notification,NULL};
             char* const* repaint=getenv("WDDM_BRIDGE_NORMAL_DESKTOP_PROBE") ? lua_repaint : legacy_repaint;
             if (run_ctl(repaint)) { atomic_store(&queue_failed,1); break; }
             usleep(50000);
@@ -287,8 +292,8 @@ static int startup_main(int argc,char** argv,char** environment) {
     if((mkdir(runtime,0700) && errno!=EEXIST) ||
        (mkdir(home,0700) && errno!=EEXIST)) return 122;
 #ifdef WDDM_BRIDGE_COMPOSITOR_HOST_SCENE
-    const unsigned profile=5;
-    const char* begin_name="wddm_bridge_begin_opengl_desktop_render";
+    const unsigned profile=getenv("WDDM_BRIDGE_DESKTOP_4K_PROBE") ? 6 : 5;
+    const char* begin_name=profile==6 ? "wddm_bridge_begin_opengl_desktop_4k_render" : "wddm_bridge_begin_opengl_desktop_render";
 #else
     const unsigned profile=4;
     const char* begin_name="wddm_bridge_begin_opengl_compositor_render";

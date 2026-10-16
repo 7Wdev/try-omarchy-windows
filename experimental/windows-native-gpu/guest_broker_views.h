@@ -97,7 +97,7 @@ public:
             const auto profile=at<OpenGlProfile>(response,sizeof(Header));
             require(version==1 ? validOpenGlProfile(profile) : version==2 ? validOpenGlFenceProfile(profile) :
                     version==3 ? validOpenGlCompositorProfile(profile) : version==4 ? validOpenGlCompositorRenderProfile(profile) :
-                    version==5 && validOpenGlDesktopProfile(profile),"Wrong native OpenGL profile receipt");
+                    version==5 ? validOpenGlDesktopProfile(profile) : version==6 && validOpenGlDesktop4kProfile(profile),"Wrong native OpenGL profile receipt");
             // The broker must enforce the host's exact negotiated live-object
             // budget. Its former unconditional 512 cap rejected valid v4/v5
             // allocations while the native session still had capacity.

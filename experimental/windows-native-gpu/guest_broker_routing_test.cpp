@@ -24,7 +24,7 @@ static std::vector<std::uint8_t> packet(Op op,std::uint32_t object=0,const std::
 }
 static void profileObjectBudgets() {
     for(const auto profile:{GuestOpenGlFenceProfile,GuestOpenGlCompositorProfile,
-                            GuestOpenGlCompositorRenderProfile,GuestOpenGlDesktopProfile}) {
+                            GuestOpenGlCompositorRenderProfile,GuestOpenGlDesktopProfile,GuestOpenGlDesktop4kProfile}) {
         Views views;
         const auto request=packet(Op::BeginOpenGl,0,encode(profile.version));
         auto malformed=profile; ++malformed.objectLimit;

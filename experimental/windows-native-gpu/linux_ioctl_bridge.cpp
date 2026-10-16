@@ -1653,7 +1653,8 @@ public:
     void beginOpenGl(std::uint32_t version = 1) {
         if (!gpu_diagnostic::HighResolution || openglNegotiated || streamingNegotiated || !ownedAdapters.empty() || !deviceAdapters.empty()) throw Error(EINVAL);
         negotiate();
-        const auto required = AsyncHwSubmitCapability | SyncCapability | GpuReservationCapability | UINT32_C(0x80000000);
+        const auto required = AsyncHwSubmitCapability | SyncCapability | GpuReservationCapability | UINT32_C(0x80000000) |
+            (version==6 ? ExpandedVendorGpuCapability : 0u);
         if ((caps.flags & required) != required) throw Error(ENOSYS);
         const auto packet = transport.exchange(version >= 2 ? request(Op::BeginOpenGl, 0, version) : request(Op::BeginOpenGl, 0));
         Header header{}; std::memcpy(&header, packet.data(), sizeof header);
@@ -1664,12 +1665,12 @@ public:
         if (header.status) throw Error(-header.status);
         if (packet.size() != sizeof header + sizeof(OpenGlProfile)) { transport.fail(); throw Error(EPROTO); }
         OpenGlProfile profile{}; std::memcpy(&profile, packet.data() + sizeof header, sizeof profile);
-        if (version == 1 ? !validOpenGlProfile(profile) : version == 2 ? !validOpenGlFenceProfile(profile) : version == 3 ? !validOpenGlCompositorProfile(profile) : version == 4 ? !validOpenGlCompositorRenderProfile(profile) : !validOpenGlDesktopProfile(profile)) { transport.fail(); throw Error(EPROTO); }
+        if (version == 1 ? !validOpenGlProfile(profile) : version == 2 ? !validOpenGlFenceProfile(profile) : version == 3 ? !validOpenGlCompositorProfile(profile) : version == 4 ? !validOpenGlCompositorRenderProfile(profile) : version == 5 ? !validOpenGlDesktopProfile(profile) : version != 6 || !validOpenGlDesktop4kProfile(profile)) { transport.fail(); throw Error(EPROTO); }
         openglNegotiated = true;
         openglFencesNegotiated = version >= 2;
         openglCompositorNegotiated = version >= 3;
         openglRenderNegotiated = version >= 4;
-        openglDesktopNegotiated = version == 5;
+        openglDesktopNegotiated = version >= 5;
         std::fprintf(stderr, "LINUX_BRIDGE openGlProfileNegotiated=true version=%u frames=%u commandLimit=%u reservationLimit=%u reservedByteLimit=17179869184 syncObjectLimit=%zu\n", version, profile.frames, profile.commandLimit, profile.reservationLimit, syncObjectLimit());
     }
     std::uint64_t captureCompositorBuffer(int bufferFd, int syncFileFd, std::uint32_t width, std::uint32_t height,
@@ -1988,6 +1989,15 @@ extern "C" int wddm_bridge_begin_opengl_desktop_render() {
     auto& state=bridge(); std::lock_guard<std::mutex> lock(state.guard);
     if (bridgeStopped) { errno=ESHUTDOWN; return -1; }
     try { state.beginOpenGl(5); return 0; }
+    catch (const Error& error) { errno=error.number; }
+    catch (...) { state.protocolFailed(); errno=EIO; }
+    return -1;
+}
+extern "C" int wddm_bridge_begin_opengl_desktop_4k_render() {
+    if (bridgeStopped) { errno=ESHUTDOWN; return -1; }
+    auto& state=bridge(); std::lock_guard<std::mutex> lock(state.guard);
+    if (bridgeStopped) { errno=ESHUTDOWN; return -1; }
+    try { state.beginOpenGl(6); return 0; }
     catch (const Error& error) { errno=error.number; }
     catch (...) { state.protocolFailed(); errno=EIO; }
     return -1;

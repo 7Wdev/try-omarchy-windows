@@ -8,6 +8,10 @@ from verify_hyprland_wayland_scene import validate as scene
 
 SOURCE_SHA256='3954123192111ce2d28cafb9dd108e1ca14c288bfc2429ed899b0f36aeccf942'
 NATIVE_SHA256='26aff97284df7d1d9ed6b1a6f9b985b5fa0daa452dd6f0ca7bf0a9824e106de0'
+# Independently retained MSVC builds: the original real-root worker and the
+# new worker used for a legacy-profile hardware regression. Never trust a
+# report-supplied hash as its own provenance oracle.
+KNOWN_NATIVE_SHA256=(NATIVE_SHA256,'277f720994b5287a07fb4c542eda868f67bdef38e36e4461badd27875f1904c1')
 
 
 def validate(report,guest,records,frames,source,*,expected_frames):
@@ -18,7 +22,8 @@ def validate(report,guest,records,frames,source,*,expected_frames):
             manifest.get('expectedFrames')==expected_frames and manifest.get('consoleGettyMasked') is True,
             'Wrong real-root test inputs')
     require(report.get('initramfsSha256')==manifest.get('initramfsSha256') and
-            report.get('driverBridgeSha256')==source['nativeBuildReceipt'].get('bridgeSha256')==NATIVE_SHA256 and
+            report.get('driverBridgeSha256')==source['nativeBuildReceipt'].get('bridgeSha256') and
+            report.get('driverBridgeSha256') in KNOWN_NATIVE_SHA256 and
             report.get('kernelSha256')=='fb3e75cf32214fad38a22939f8bdafffa78bd7e0e5b2aa2afa89f0ebe02849ba' and
             report.get('qemuSha256')=='9d23c23fdd29a5dbdb0a12fa5fa4672de88df17636395bb3d503b07a7fb9b77e','Wrong native/kernel/QEMU/image provenance')
     roots=[row for row in records if 'ownedQemuReadonlyRootAttached' in row]

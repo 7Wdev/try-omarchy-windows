@@ -23,6 +23,13 @@ constexpr OpenGlProfile GuestOpenGlCompositorRenderProfile{4, 2, 256, 32, 16ull 
 // Zero is an exact, negotiated rolling budget, never a legacy-profile wildcard.
 // Memory-byte, pending-work and aperture limits remain independently enforced.
 constexpr OpenGlProfile GuestOpenGlDesktopProfile{5, 0, 0, 64, 16ull * 1024 * 1024 * 1024, 0, 1024};
+// A real 3840x2160 compositor crosses the v5 256 MiB GPU-VA alias-map
+// budget while importing its output, then its reported-usage guard. Version 6
+// bounds both GPU budgets at 512 MiB;
+// CPU maps, live objects, pending work and all older profiles stay bounded.
+constexpr OpenGlProfile GuestOpenGlDesktop4kProfile{6, 0, 0, 64, 16ull * 1024 * 1024 * 1024, 0, 1024};
+constexpr std::uint32_t OpenGlDesktop4kGpuMappedBytes = 512u * 1024 * 1024;
+constexpr std::uint64_t OpenGlDesktop4kReportedGpuBytes = 512ull * 1024 * 1024;
 constexpr std::uint32_t OpenGlDesktopVendorAllocations = 512;
 inline bool lifetimeBudgetAvailable(std::uint64_t used,std::uint32_t limit) {
     return used<UINT64_MAX && (!limit || used<limit);
@@ -53,6 +60,10 @@ inline bool validOpenGlCompositorRenderProfile(OpenGlProfile p) {
 }
 inline bool validOpenGlDesktopProfile(OpenGlProfile p) {
     return p.version==5 && !p.frames && !p.commandLimit && p.reservationLimit==64 &&
+           p.reservedBytes==16ull*1024*1024*1024 && !p.requestLimit && p.objectLimit==1024;
+}
+inline bool validOpenGlDesktop4kProfile(OpenGlProfile p) {
+    return p.version==6 && !p.frames && !p.commandLimit && p.reservationLimit==64 &&
            p.reservedBytes==16ull*1024*1024*1024 && !p.requestLimit && p.objectLimit==1024;
 }
 }
