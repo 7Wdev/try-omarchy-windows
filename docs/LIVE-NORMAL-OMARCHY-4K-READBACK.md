@@ -83,8 +83,10 @@ controls, legacy transport cases and real Unix credential/FD-lifetime checks
 pass. Portable native/kernel calls remain explicit mocks; the retained readback
 and regression captures use actual NVIDIA/QEMU hardware.
 
-The next work is bounded native presentation/driver memory accounting, reliable
-normal shutdown, abort cancellation and independent GPU clients/shared-FD
+The [later explicit presentation budget](LIVE-NORMAL-OMARCHY-4K-PRESENTATION-BUDGET.md)
+passes two fresh 4K compositor runs with normal shutdown and explicit mapping
+cleanup. This earlier version-9 failure remains unchanged. The next work is
+abort cancellation and independent GPU clients/shared-FD
 lifetimes. Full Omarchy assets/apps on GPU, normal UWSM/launcher/input,
 sustained display/stability, application APIs and ≥93% matched-native
 performance remain open. Desktop acceptance stays **0/4**.

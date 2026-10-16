@@ -35,6 +35,10 @@ constexpr std::uint64_t OpenGlDesktop4kReportedGpuBytes = 512ull * 1024 * 1024;
 constexpr OpenGlProfile GuestOpenGlDesktop4kCpuProfile{7, 0, 0, 64, 16ull * 1024 * 1024 * 1024, 0, 1024};
 constexpr OpenGlProfile GuestOpenGlDesktopSparseProfile{8, 0, 0, 64, 16ull * 1024 * 1024 * 1024, 0, 1024};
 constexpr OpenGlProfile GuestOpenGlDesktopLargeMapProfile{9, 0, 0, 64, 16ull * 1024 * 1024 * 1024, 0, 1024};
+// Version 10 also carries the process-reported GPU guard, including host
+// presentation allocations. Version 9's 512 MiB guard remains fixed.
+constexpr OpenGlProfile GuestOpenGlDesktopPresentationProfile{10, 0, 0, 64, 16ull * 1024 * 1024 * 1024, 0, 1024};
+constexpr std::uint64_t OpenGlDesktopPresentationReportedBytes=1024ull*1024*1024;
 constexpr std::uint32_t OpenGlDesktopLargeMapBytes=1024u*1024*1024;
 constexpr std::uint32_t OpenGlDesktop4kCpuBytes = 192u * 1024 * 1024;
 struct OpenGlDesktop4kCapacity {
@@ -54,6 +58,27 @@ struct OpenGlDesktopLargeMapCapacity {
 };
 static_assert(sizeof(OpenGlDesktopLargeMapCapacity)==40,"Fixed explicit GPU-VA capacity receipt");
 constexpr OpenGlDesktopLargeMapCapacity GuestOpenGlDesktopLargeMapCapacity{{9,1,OpenGlDesktop4kCpuBytes,512,256,0},OpenGlDesktopLargeMapBytes};
+struct OpenGlDesktopPresentationCapacity {
+    OpenGlDesktopLargeMapCapacity mapping;
+    std::uint64_t reportedGpuByteLimit;
+};
+static_assert(sizeof(OpenGlDesktopPresentationCapacity)==48,"Fixed explicit presentation capacity receipt");
+constexpr OpenGlDesktopPresentationCapacity GuestOpenGlDesktopPresentationCapacity{{{10,1,OpenGlDesktop4kCpuBytes,512,256,0},OpenGlDesktopLargeMapBytes},OpenGlDesktopPresentationReportedBytes};
+inline bool validOpenGlDesktopPresentationCapacity(OpenGlDesktopPresentationCapacity c) {
+    auto map=c.mapping;
+    if(map.aperture.version!=10 || c.reportedGpuByteLimit!=OpenGlDesktopPresentationReportedBytes) return false;
+    map.aperture.version=9;
+    const auto a=map.aperture;
+    return a.kernelVersion==1 && a.cpuByteLimit==OpenGlDesktop4kCpuBytes && a.cpuSlots==512 &&
+        a.fenceSlots==256 && !a.reserved && map.gpuMappedByteLimit==OpenGlDesktopLargeMapBytes;
+}
+inline bool reportedGpuBudgetFits(std::uint64_t usage,std::uint64_t additional,std::uint64_t limit) {
+    return usage<=limit && additional<=limit-usage;
+}
+inline bool validOpenGlDesktopPresentationProfile(OpenGlProfile p) {
+    return p.version==10 && !p.frames && !p.commandLimit && p.reservationLimit==64 &&
+        p.reservedBytes==16ull*1024*1024*1024 && !p.requestLimit && p.objectLimit==1024;
+}
 inline bool validOpenGlDesktopLargeMapCapacity(OpenGlDesktopLargeMapCapacity c) {
     const auto a=c.aperture;
     return a.version==9 && a.kernelVersion==1 && a.cpuByteLimit==OpenGlDesktop4kCpuBytes &&

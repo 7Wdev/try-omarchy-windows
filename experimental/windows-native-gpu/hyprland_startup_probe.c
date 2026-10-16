@@ -12,6 +12,7 @@
 #include <unistd.h>
 #include <stdint.h>
 #include <stdatomic.h>
+#include <time.h>
 #if defined(WDDM_BRIDGE_COMPOSITOR_HOST_CAPTURE) && defined(WDDM_BRIDGE_COMPOSITOR_HOST_PRESENT)
 #error Select one compositor output diagnostic
 #endif
@@ -78,18 +79,23 @@ static int run_ctl(char* const arguments[]) {
     }
     const int connection=socket(AF_UNIX,SOCK_STREAM|SOCK_CLOEXEC,0);
     if (connection<0) return -1;
-    const struct timeval timeout={.tv_sec=5};
-    int result=-1;
+    // Full desktop startup can still be busy in shader/import initialization.
+    // Keep native GPU retirement bounds unchanged; bound only this IPC client.
+    const struct timeval timeout={.tv_sec=getenv("WDDM_BRIDGE_DESKTOP_PRESENTATION_PROBE") ? 15 : 5};
+    int result=-1;const char* stage="connect";size_t received=0;
+    struct timespec started={0},finished={0};clock_gettime(CLOCK_MONOTONIC,&started);
     if (setsockopt(connection,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof(timeout)) ||
         setsockopt(connection,SOL_SOCKET,SO_SNDTIMEO,&timeout,sizeof(timeout)) ||
         connect(connection,(struct sockaddr*)&address,(socklen_t)(offsetof(struct sockaddr_un,sun_path)+strlen(address.sun_path)+1))) goto done;
+    stage="send";
     for (size_t sent=0;sent<used;) {
         const ssize_t count=send(connection,request+sent,used-sent,MSG_NOSIGNAL);
         if (count<0 && errno==EINTR) continue;
         if (count<=0) goto done;
         sent+=(size_t)count;
     }
-    char reply[8192]; size_t received=0;
+    stage="receive";
+    char reply[8192];
     for (;;) {
         if (received==sizeof(reply)-1) goto done;
         const ssize_t count=recv(connection,reply+received,sizeof(reply)-1-received,0);
@@ -99,13 +105,23 @@ static int run_ctl(char* const arguments[]) {
         received+=(size_t)count;
     }
     reply[received]='\0';
+    stage="reply";
 #ifdef WDDM_BRIDGE_COMPOSITOR_HOST_SCENE
     memcpy(last_control_reply,reply,received+1);
     if(strcmp(request,"j/clients"))
 #endif
     printf("HYPRLAND_CONTROL_REPLY command=%s reply=%s\n",request,reply);
-    result=(received && (json ? reply[0]=='[' : !strcmp(reply,"ok"))) ? 0 : -1;
+    clock_gettime(CLOCK_MONOTONIC,&finished);
+    printf("HYPRLAND_CONTROL_TIMING timeoutSeconds=%ld elapsedMs=%lld\n",(long)timeout.tv_sec,
+        (long long)(finished.tv_sec-started.tv_sec)*1000+(finished.tv_nsec-started.tv_nsec)/1000000);
+    result=(received && (json ? (reply[0]=='[' || reply[0]=='{') : !strcmp(reply,"ok"))) ? 0 : -1;
+    if(result) errno=EPROTO;
 done:
+    if(result) {
+        const int failure=errno;clock_gettime(CLOCK_MONOTONIC,&finished);
+        printf("HYPRLAND_CONTROL_FAILURE command=%s stage=%s errno=%d receivedBytes=%zu elapsedMs=%lld\n",request,stage,failure,received,
+            (long long)(finished.tv_sec-started.tv_sec)*1000+(finished.tv_nsec-started.tv_nsec)/1000000);
+    }
     if (close(connection)) result=-1;
     return result;
 #else
@@ -292,8 +308,8 @@ static int startup_main(int argc,char** argv,char** environment) {
     if((mkdir(runtime,0700) && errno!=EEXIST) ||
        (mkdir(home,0700) && errno!=EEXIST)) return 122;
 #ifdef WDDM_BRIDGE_COMPOSITOR_HOST_SCENE
-    const unsigned profile=getenv("WDDM_BRIDGE_DESKTOP_LARGE_MAP_PROBE") ? 9 : getenv("WDDM_BRIDGE_DESKTOP_SPARSE_PROBE") ? 8 : getenv("WDDM_BRIDGE_DESKTOP_4K_CPU_PROBE") ? 7 : getenv("WDDM_BRIDGE_DESKTOP_4K_PROBE") ? 6 : 5;
-    const char* begin_name=profile==9 ? "wddm_bridge_begin_opengl_desktop_large_map_render" : profile==8 ? "wddm_bridge_begin_opengl_desktop_sparse_render" : profile==7 ? "wddm_bridge_begin_opengl_desktop_4k_cpu_render" : profile==6 ? "wddm_bridge_begin_opengl_desktop_4k_render" : "wddm_bridge_begin_opengl_desktop_render";
+    const unsigned profile=getenv("WDDM_BRIDGE_DESKTOP_PRESENTATION_PROBE") ? 10 : getenv("WDDM_BRIDGE_DESKTOP_LARGE_MAP_PROBE") ? 9 : getenv("WDDM_BRIDGE_DESKTOP_SPARSE_PROBE") ? 8 : getenv("WDDM_BRIDGE_DESKTOP_4K_CPU_PROBE") ? 7 : getenv("WDDM_BRIDGE_DESKTOP_4K_PROBE") ? 6 : 5;
+    const char* begin_name=profile==10 ? "wddm_bridge_begin_opengl_desktop_presentation_render" : profile==9 ? "wddm_bridge_begin_opengl_desktop_large_map_render" : profile==8 ? "wddm_bridge_begin_opengl_desktop_sparse_render" : profile==7 ? "wddm_bridge_begin_opengl_desktop_4k_cpu_render" : profile==6 ? "wddm_bridge_begin_opengl_desktop_4k_render" : "wddm_bridge_begin_opengl_desktop_render";
 #else
     const unsigned profile=4;
     const char* begin_name="wddm_bridge_begin_opengl_compositor_render";

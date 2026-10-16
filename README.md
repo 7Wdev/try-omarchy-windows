@@ -24,8 +24,10 @@ pass readback verification; the shipped Quickshell shell is still absent and nor
 Explicit 4K profiles add bounded GPU capacity and a verified 192 MiB kernel/host CPU contract while preserving older profiles.
 The separate 512-slot aperture now works on hardware, including direct mappings beyond the old ceiling. The earlier 4K attempt
 hit the GPU virtual-mapping quota and left native waits pending. A separate explicit mapping budget produces 4K compositor readbacks,
-but exceeds the reported-usage guard and needs forced shutdown. Abort cleanup and safe independent GPU clients remain open.
-[Actual 4K GPU compositor image and exact remaining work](docs/LIVE-NORMAL-OMARCHY-4K-READBACK.md).
+but that earlier version exceeds its reported-usage guard. A distinct explicit presentation budget now passes two fresh
+4K runs with native memory admission, complete backbuffer verification and normal shutdown; every GPU mapping releases before VM exit.
+Quickshell is still absent, and display statistics remain incomplete. Abort cleanup and safe independent GPU clients remain open.
+[Latest 4K GPU image, clean shutdown and exact remaining work](docs/LIVE-NORMAL-OMARCHY-4K-PRESENTATION-BUDGET.md).
 Normal UWSM/launcher/input integration, reliable scanout,
 long-run stability and ≥93% matched-native performance remain open. [Actual images, retained failures and scope](docs/LIVE-NORMAL-OMARCHY-GPU.md).
 

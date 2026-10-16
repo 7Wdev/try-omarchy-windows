@@ -9,30 +9,35 @@ from verify_hyprland_lifecycle_capture import require
 
 
 NATIVE_SHA256='a0c95013376eee6b0688485e82100e763d3ce0c5d0c0e93a23e9b94daa7e40ed'
+PRESENTATION_NATIVE_SHA256='6586c6e6583d45974048709bae24ae5c719b15cb9a107e4b22e5fe9b5eb4274e'
 QEMU_SHA256='dcd422e6a7882af4ede4d6a79915dcfa6b344253b0b008cd6cebb55e62889111'
 ROOT_SHA256='3954123192111ce2d28cafb9dd108e1ca14c288bfc2429ed899b0f36aeccf942'
 
 
 def validate(report,guest,records,frames,source):
     manifest=source['manifest'];clean=report['disconnectCleanup']
-    require(report.get('driverBridgeSha256')==source['nativeBuildReceipt'].get('bridgeSha256')==NATIVE_SHA256 and
+    version=manifest.get('kernelCpuCapacityProfile')
+    require(version in (9,10),'Unsupported exact 4K readback profile')
+    native=PRESENTATION_NATIVE_SHA256 if version==10 else NATIVE_SHA256
+    usage_limit=(1024 if version==10 else 512)*1024*1024
+    require(report.get('driverBridgeSha256')==source['nativeBuildReceipt'].get('bridgeSha256')==native and
             report.get('qemuSha256')==QEMU_SHA256 and report.get('initramfsSha256')==manifest.get('initramfsSha256'),
             'Wrong native/QEMU/private-image provenance')
     require(source.get('sourceImageSha256Before')==source.get('sourceImageSha256After')==ROOT_SHA256 and
             source.get('sourceImageUnchanged') is True and manifest.get('ordinaryUid')==1000 and
-            manifest.get('kernelCpuCapacityProfile')==9 and manifest.get('desktopGeometryProbe')==[3840,2160] and
+            manifest.get('desktopGeometryProbe')==[3840,2160] and
             manifest.get('mesaWaylandGpuProbe') is True and manifest.get('qtQuickSoftwareProbe') is False,
             'Wrong 4K hardware-only/read-only inputs')
     require(report.get('liveNvidiaLinuxUmdLoaded') is True and 'qtQuickSoftware=true' not in guest and
-            'kernelCpuCapacityVerified=true profile=9 cpuByteLimit=201326592 cpuSlots=512 fenceSlots=256\n' in guest,
+            f'kernelCpuCapacityVerified=true profile={version} cpuByteLimit=201326592 cpuSlots=512 fenceSlots=256\n' in guest,
             'Missing genuine runtime/exact capacity receipt')
     def one(key):
         found=[r for r in records if key in r]
         require(len(found)==1 and found[0][key] is True,'Missing/failed/duplicate '+key)
         return found[0]
     profile=one('openGlProfileNegotiated')
-    require(profile.get('version')==9 and profile.get('gpuMappedByteLimit')==1024*1024*1024 and
-            profile.get('reportedGpuUsageLimitBytes')==512*1024*1024 and profile.get('cpuMappedByteLimit')==192*1024*1024 and
+    require(profile.get('version')==version and profile.get('gpuMappedByteLimit')==1024*1024*1024 and
+            profile.get('reportedGpuUsageLimitBytes')==usage_limit and profile.get('cpuMappedByteLimit')==192*1024*1024 and
             profile.get('cpuApertureSlots')==512 and profile.get('kernelCapacityRequired') is True,'Wrong exact GPU budgets')
     require(clean.get('vendorGpuMappedByteLimit')==profile['gpuMappedByteLimit'] and
             clean.get('reportedGpuUsageLimitBytes')==profile['reportedGpuUsageLimitBytes'] and

@@ -61,7 +61,7 @@ class KmtDriver : public Driver {
     bool openglDesktop4kEnabled = false;
     bool openglDesktop4kCpuEnabled = false;
     bool openglDesktopSparseEnabled = false;
-    bool openglDesktopLargeMapEnabled = false;
+    bool openglDesktopLargeMapEnabled = false, openglDesktopPresentationEnabled = false;
     unsigned compositorCaptureAttempts = 0, completedCompositorCaptures = 0, failedCompositorCaptures = 0;
     std::unique_ptr<driver_shared::CompositorReadback> compositorPresenter;
     std::unique_ptr<driver_shared::CompositorPresenter> compositorOutput;
@@ -299,8 +299,9 @@ class KmtDriver : public Driver {
     unsigned completedVendorAllocations = 0, destroyedVendorAllocations = 0, failedVendorAllocations = 0, uninitializedSourceAllocations = 0;
     std::size_t peakVendorAllocationObjects = 0;
     std::uint64_t peakReportedGpuUsage = 0;
+    std::mutex reportedUsageGuard;
     std::uint64_t reportedGpuUsageLimit() const {
-        return openglDesktop4kEnabled ? OpenGlDesktop4kReportedGpuBytes : gpu_diagnostic::ReportedGpuBytes;
+        return openglDesktopPresentationEnabled ? OpenGlDesktopPresentationReportedBytes : openglDesktop4kEnabled ? OpenGlDesktop4kReportedGpuBytes : gpu_diagnostic::ReportedGpuBytes;
     }
     std::uint32_t allocatedBytes = 0;
     unsigned activeAdapters = 0, activeDevices = 0, cleanupFailures = 0;
@@ -338,7 +339,8 @@ class KmtDriver : public Driver {
     HRESULT lastCopyError = S_OK;
     static constexpr auto Invalid = static_cast<std::int32_t>(0xc000000du);
     static constexpr auto PagingTimeout = static_cast<std::int32_t>(0xc00000b5u);
-    bool reportedGpuUsageAcceptable() {
+    bool reportedGpuUsageAcceptable(std::uint64_t additionalBytes=0,const char* presentationStage=nullptr) {
+        std::lock_guard<std::mutex> lock(reportedUsageGuard);
         // This is a reported-usage guard, not an allocation-size decoder or
         // a pre-allocation hard quota. Nonresident allocations and transient
         // growth can escape CurrentUsage; the endpoint stays diagnostic-only.
@@ -351,7 +353,11 @@ class KmtDriver : public Driver {
             total += info.CurrentUsage;
         }
         peakReportedGpuUsage = (std::max)(peakReportedGpuUsage, total);
-        return total <= reportedGpuUsageLimit();
+        const bool fits=reportedGpuBudgetFits(total,additionalBytes,reportedGpuUsageLimit());
+        if(presentationStage) std::cerr<<"{\"nativePresentationMemoryGuard\":true,\"stage\":\""<<presentationStage
+            <<"\",\"usageBytes\":"<<total<<",\"additionalBytes\":"<<additionalBytes
+            <<",\"limitBytes\":"<<reportedGpuUsageLimit()<<",\"accepted\":"<<(fits?"true":"false")<<"}\n";
+        return fits;
     }
     Result copyFailure(HRESULT error) {
         lastCopyError = error; return {static_cast<std::int32_t>(0xc0000001u), 0, 0};
@@ -622,10 +628,10 @@ public:
         if (version>=6 && !(capabilities().flags & ExpandedVendorGpuCapability)) return {};
         if (version>=7 && (!(capabilities().flags & ExpandedVendorCpuCapability) || !runtime ||
             runtime->allocationSlotLimit()!=(version>=8 ? SparseVendorCpuSlots : MaxVendorCpuSlots) || runtime->fenceSlotLimit()!=256)) return {};
-        if (runtime && runtime->allocationSlotLimit()==SparseVendorCpuSlots && version!=8 && version!=9) return {};
+        if (runtime && runtime->allocationSlotLimit()==SparseVendorCpuSlots && version!=8 && version!=9 && version!=10) return {};
         if (!gpu_diagnostic::HighResolution || openglEnabled || streamingEnabled || !asyncSubmitEnabled || !syncEnabled || !reservationEnabled ||
             !runtime || runtime->hasStopped() || !ownedAdapters.empty() || !deviceAdapters.empty() ||
-            !pendingSubmissions.empty() || !pendingHwSignals.empty() || (version != 1 && version != 2 && version != 3 && version != 4 && version != 5 && version != 6 && version != 7 && version != 8 && version != 9)) return {};
+            !pendingSubmissions.empty() || !pendingHwSignals.empty() || (version != 1 && version != 2 && version != 3 && version != 4 && version != 5 && version != 6 && version != 7 && version != 8 && version != 9 && version != 10)) return {};
         openglEnabled = true;
         openglFencesEnabled = version >= 2;
         openglCompositorEnabled = version >= 3;
@@ -634,8 +640,9 @@ public:
         openglDesktop4kEnabled = version >= 6;
         openglDesktop4kCpuEnabled = version >= 7;
         openglDesktopSparseEnabled = version >= 8;
-        openglDesktopLargeMapEnabled = version == 9;
-        const auto profile = version == 9 ? GuestOpenGlDesktopLargeMapProfile : version == 8 ? GuestOpenGlDesktopSparseProfile : version == 7 ? GuestOpenGlDesktop4kCpuProfile : version == 6 ? GuestOpenGlDesktop4kProfile : version == 5 ? GuestOpenGlDesktopProfile : version == 4 ? GuestOpenGlCompositorRenderProfile : version == 3 ? GuestOpenGlCompositorProfile : version == 2 ? GuestOpenGlFenceProfile : GuestOpenGlProfile;
+        openglDesktopLargeMapEnabled = version >= 9;
+        openglDesktopPresentationEnabled = version == 10;
+        const auto profile = version == 10 ? GuestOpenGlDesktopPresentationProfile : version == 9 ? GuestOpenGlDesktopLargeMapProfile : version == 8 ? GuestOpenGlDesktopSparseProfile : version == 7 ? GuestOpenGlDesktop4kCpuProfile : version == 6 ? GuestOpenGlDesktop4kProfile : version == 5 ? GuestOpenGlDesktopProfile : version == 4 ? GuestOpenGlCompositorRenderProfile : version == 3 ? GuestOpenGlCompositorProfile : version == 2 ? GuestOpenGlFenceProfile : GuestOpenGlProfile;
         std::cerr << "{\"openGlProfileNegotiated\":true,\"version\":" << version << ",\"frames\":" << profile.frames << ",\"commandLimit\":" << profile.commandLimit << ",\"pendingCommands\":16,\"reservationLimit\":" << profile.reservationLimit << ",\"reservedByteLimit\":17179869184,\"requestLimit\":" << profile.requestLimit;
         if (version >= 2) std::cerr << ",\"objectLimit\":" << profile.objectLimit
             << ",\"hwQueueLimit\":" << OpenGlFenceHwQueues << ",\"vendorObjectLimit\":" << vendorObjectLimit() << ",\"syncObjectLimit\":" << syncObjectLimit();
@@ -1334,7 +1341,9 @@ public:
         HRESULT hr=S_OK; std::uint64_t frame=0;
         if (!compositorOutput) {
             compositorOutput=std::make_unique<driver_shared::CompositorPresenter>();
-            hr=compositorOutput->initialize(luid,desc);
+            hr=compositorOutput->initialize(luid,desc,[this](const char* stage,std::uint64_t bytes) {
+                return reportedGpuUsageAcceptable(bytes,stage);
+            });
         }
         if (SUCCEEDED(hr)) hr=compositorOutput->submit(resource,source->second.handle.get(),fence->second.get(),desc,frame);
         if (FAILED(hr)) {

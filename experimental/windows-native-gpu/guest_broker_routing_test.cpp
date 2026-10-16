@@ -75,15 +75,29 @@ static void cpuCapacityPolicy() {
         std::uint32_t words[10]{};std::memcpy(words,&capacity,sizeof words);++words[field];std::memcpy(&capacity,words,sizeof words);
         denied([&]{verifyCpuCapacityProfile(packet(Op::BeginOpenGl,0,encode(capacity)),sparse);},EPROTO);
     }
+    const auto presentationBegin=packet(Op::BeginOpenGl,0,encode(GuestOpenGlDesktopPresentationCapacity));
+    verifyCpuCapacityProfile(presentationBegin,sparse);
+    denied([&]{verifyCpuCapacityProfile(presentationBegin,kernel);},EPROTO);
+    denied([&]{verifyCpuCapacityProfile(packet(Op::BeginOpenGl,0,encode(std::uint32_t{10})),sparse);},EPROTO);
+    auto oldMap=GuestOpenGlDesktopLargeMapCapacity;oldMap.aperture.version=10;
+    denied([&]{verifyCpuCapacityProfile(packet(Op::BeginOpenGl,0,encode(oldMap)),sparse);},EPROTO);
+    for(unsigned field=0;field<12;++field) {
+        auto capacity=GuestOpenGlDesktopPresentationCapacity;
+        std::uint32_t words[12]{};std::memcpy(words,&capacity,sizeof words);++words[field];std::memcpy(&capacity,words,sizeof words);
+        const auto malformed=packet(Op::BeginOpenGl,0,encode(capacity));
+        denied([&]{verifyCpuCapacityProfile(malformed,sparse);},EPROTO);
+        Views views;denied([&]{views.observe(malformed,packet(Op::BeginOpenGl,0,encode(GuestOpenGlDesktopPresentationProfile)));},EPROTO);
+    }
+    std::cout<<"BROKER_PRESENTATION_BUDGET fixed48ByteReceipt=true exact1GiBUsage=true malformedRejected=true kernel=mock gpu=false\n";
     std::cout<<"BROKER_LARGE_MAP exact1GiB=true fixed40ByteReceipt=true malformedRejected=true oldProfilesUnchanged=true kernel=mock gpu=false\n";
     std::cout<<"BROKER_SPARSE_CAPACITY exact512Slots=true oldProfileRejected=true oldKernelRejected=true kernel=mock gpu=false\n";
     std::cout<<"BROKER_CPU_CAPACITY exact192MiB=true ownKernelQuery=true missingAndMalformedRejected=true legacyUnchanged=true kernel=mock gpu=false\n";
 }
 static void profileObjectBudgets() {
     for(const auto profile:{GuestOpenGlFenceProfile,GuestOpenGlCompositorProfile,
-                            GuestOpenGlCompositorRenderProfile,GuestOpenGlDesktopProfile,GuestOpenGlDesktop4kProfile,GuestOpenGlDesktop4kCpuProfile,GuestOpenGlDesktopSparseProfile,GuestOpenGlDesktopLargeMapProfile}) {
+                            GuestOpenGlCompositorRenderProfile,GuestOpenGlDesktopProfile,GuestOpenGlDesktop4kProfile,GuestOpenGlDesktop4kCpuProfile,GuestOpenGlDesktopSparseProfile,GuestOpenGlDesktopLargeMapProfile,GuestOpenGlDesktopPresentationProfile}) {
         Views views;
-        const auto request=packet(Op::BeginOpenGl,0,profile.version==9 ? encode(GuestOpenGlDesktopLargeMapCapacity) : profile.version==8 ? encode(GuestOpenGlDesktopSparseCapacity) : profile.version==7 ? encode(GuestOpenGlDesktop4kCapacity) : encode(profile.version));
+        const auto request=packet(Op::BeginOpenGl,0,profile.version==10 ? encode(GuestOpenGlDesktopPresentationCapacity) : profile.version==9 ? encode(GuestOpenGlDesktopLargeMapCapacity) : profile.version==8 ? encode(GuestOpenGlDesktopSparseCapacity) : profile.version==7 ? encode(GuestOpenGlDesktop4kCapacity) : encode(profile.version));
         auto malformed=profile; ++malformed.objectLimit;
         denied([&]{views.observe(request,packet(Op::BeginOpenGl,0,encode(malformed)));},EPROTO);
         views.observe(request,packet(Op::BeginOpenGl,0,encode(profile)));

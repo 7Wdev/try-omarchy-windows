@@ -746,13 +746,17 @@ public:
         }
         if (op == Op::BeginOpenGl) {
             if (!negotiated) return reply(h, -71);
-            if (h.handle || (packet.size() != sizeof h && packet.size() != sizeof h + sizeof(std::uint32_t) && packet.size() != sizeof h + sizeof(OpenGlDesktop4kCapacity) && packet.size() != sizeof h + sizeof(OpenGlDesktopLargeMapCapacity))) return reply(h, -22);
+            if (h.handle || (packet.size() != sizeof h && packet.size() != sizeof h + sizeof(std::uint32_t) && packet.size() != sizeof h + sizeof(OpenGlDesktop4kCapacity) && packet.size() != sizeof h + sizeof(OpenGlDesktopLargeMapCapacity) && packet.size() != sizeof h + sizeof(OpenGlDesktopPresentationCapacity))) return reply(h, -22);
             std::uint32_t version = 1;
             if (packet.size() != sizeof h) {
                 std::memcpy(&version, packet.data() + sizeof h, sizeof version);
-                if (version != 2 && version != 3 && version != 4 && version != 5 && version != 6 && version != 7 && version != 8 && version != 9) return reply(h, -93);
+                if (version != 2 && version != 3 && version != 4 && version != 5 && version != 6 && version != 7 && version != 8 && version != 9 && version != 10) return reply(h, -93);
             }
-            if (version==9) {
+            if (version==10) {
+                if(packet.size()!=sizeof h+sizeof(OpenGlDesktopPresentationCapacity)) return reply(h,-22);
+                OpenGlDesktopPresentationCapacity capacity{};std::memcpy(&capacity,packet.data()+sizeof h,sizeof capacity);
+                if(!validOpenGlDesktopPresentationCapacity(capacity)) return reply(h,-22);
+            } else if (version==9) {
                 if (packet.size()!=sizeof h+sizeof(OpenGlDesktopLargeMapCapacity)) return reply(h,-22);
                 OpenGlDesktopLargeMapCapacity capacity{};std::memcpy(&capacity,packet.data()+sizeof h,sizeof capacity);
                 if (!validOpenGlDesktopLargeMapCapacity(capacity)) return reply(h,-22);
@@ -766,7 +770,7 @@ public:
                 (version>=6 ? ExpandedVendorGpuCapability : 0u) | (version>=7 ? ExpandedVendorCpuCapability : 0u);
             if ((driver.capabilities().flags & required) != required) return reply(h, -95);
             const auto profile = driver.beginOpenGl(version);
-            if (version == 1 ? !validOpenGlProfile(profile) : version == 2 ? !validOpenGlFenceProfile(profile) : version == 3 ? !validOpenGlCompositorProfile(profile) : version == 4 ? !validOpenGlCompositorRenderProfile(profile) : version == 5 ? !validOpenGlDesktopProfile(profile) : version==6 ? !validOpenGlDesktop4kProfile(profile) : version==7 ? !validOpenGlDesktop4kCpuProfile(profile) : version==8 ? !validOpenGlDesktopSparseProfile(profile) : !validOpenGlDesktopLargeMapProfile(profile)) return reply(h, -95);
+            if (version == 1 ? !validOpenGlProfile(profile) : version == 2 ? !validOpenGlFenceProfile(profile) : version == 3 ? !validOpenGlCompositorProfile(profile) : version == 4 ? !validOpenGlCompositorRenderProfile(profile) : version == 5 ? !validOpenGlDesktopProfile(profile) : version==6 ? !validOpenGlDesktop4kProfile(profile) : version==7 ? !validOpenGlDesktop4kCpuProfile(profile) : version==8 ? !validOpenGlDesktopSparseProfile(profile) : version==9 ? !validOpenGlDesktopLargeMapProfile(profile) : !validOpenGlDesktopPresentationProfile(profile)) return reply(h, -95);
             openglNegotiated = true;
             openglFenceNegotiated = version >= 2;
             openglCompositorNegotiated = version >= 3;
@@ -775,7 +779,7 @@ public:
             openglDesktop4kNegotiated = version >= 6;
             openglDesktop4kCpuNegotiated = version >= 7;
             openglDesktopSparseNegotiated = version >= 8;
-            openglDesktopLargeMapNegotiated = version == 9;
+            openglDesktopLargeMapNegotiated = version >= 9;
             if (version >= 2) wireObjectLimit = profile.objectLimit;
             auto out = reply(h, 0); out.resize(sizeof h + sizeof profile);
             std::memcpy(out.data() + sizeof h, &profile, sizeof profile); return out;

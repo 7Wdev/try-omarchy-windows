@@ -24,6 +24,7 @@ class CompositorPresenter {
     struct Frame { unsigned slot, audit; std::uint64_t sequence; };
     std::array<Slot,3> slots;
     Device device;
+    GpuUsageGuard budget;
     Microsoft::WRL::ComPtr<ID3D12CommandQueue> inputQueue, outputQueue;
     Microsoft::WRL::ComPtr<ID3D12Fence> inputRetired, outputRetired;
     Resource auditReadback;
@@ -53,6 +54,7 @@ class CompositorPresenter {
         if (observed==UINT64_MAX || observed<value) ExitProcess(3);
     }
     HRESULT create() {
+        if(budget && !budget("device-before",0)) return E_OUTOFMEMORY;
         Microsoft::WRL::ComPtr<IDXGIFactory4> factory;
         Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
         auto hr=CreateDXGIFactory1(IID_PPV_ARGS(&factory));
@@ -64,12 +66,17 @@ class CompositorPresenter {
         if (SUCCEEDED(hr)) hr=device->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&inputRetired));
         if (SUCCEEDED(hr)) hr=device->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&outputRetired));
         if (FAILED(hr)) return hr;
+        if(budget && !budget("device-after",0)) return E_OUTOFMEMORY;
         D3D12_HEAP_PROPERTIES heap{}; heap.Type=D3D12_HEAP_TYPE_DEFAULT; heap.CreationNodeMask=heap.VisibleNodeMask=1;
         D3D12_RESOURCE_DESC texture{}; texture.Dimension=D3D12_RESOURCE_DIMENSION_TEXTURE2D;
         texture.Width=layout.width; texture.Height=layout.height; texture.DepthOrArraySize=texture.MipLevels=1;
         texture.Format=static_cast<DXGI_FORMAT>(driver_bridge::compositorDxgiFormat(layout.format)); texture.SampleDesc.Count=1;
+        const auto allocation=device->GetResourceAllocationInfo(0,1,&texture);
+        if(!allocation.SizeInBytes || allocation.SizeInBytes==UINT64_MAX) return E_INVALIDARG;
         for (auto& slot:slots) {
+            if(budget && !budget("staging-before",allocation.SizeInBytes)) return E_OUTOFMEMORY;
             hr=device->CreateCommittedResource(&heap,D3D12_HEAP_FLAG_NONE,&texture,D3D12_RESOURCE_STATE_COMMON,nullptr,IID_PPV_ARGS(&slot.texture));
+            if(SUCCEEDED(hr) && budget && !budget("staging-after",0)) { slot.texture.Reset(); return E_OUTOFMEMORY; }
             if (SUCCEEDED(hr)) hr=device->CreateCommandAllocator(queue.Type,IID_PPV_ARGS(&slot.inputAllocator));
             if (SUCCEEDED(hr)) hr=device->CreateCommandAllocator(queue.Type,IID_PPV_ARGS(&slot.outputAllocator));
             if (SUCCEEDED(hr)) hr=device->CreateCommandList(0,queue.Type,slot.inputAllocator.Get(),nullptr,IID_PPV_ARGS(&slot.inputCommands));
@@ -78,7 +85,9 @@ class CompositorPresenter {
             if (SUCCEEDED(hr)) hr=slot.outputCommands->Close();
             if (FAILED(hr)) return hr;
         }
-        return S_OK;
+        // Allocate the bounded audit buffer before publishing initialization.
+        // No UI-thread allocation can race the next guest allocation request.
+        return prepareAudit();
     }
     HRESULT prepareAudit() {
         if (auditReadback) return S_OK;
@@ -91,7 +100,12 @@ class CompositorPresenter {
         D3D12_RESOURCE_DESC buffer{}; buffer.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER;
         buffer.Width=auditBytes; buffer.Height=1; buffer.DepthOrArraySize=buffer.MipLevels=1;
         buffer.SampleDesc.Count=1; buffer.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-        return device->CreateCommittedResource(&heap,D3D12_HEAP_FLAG_NONE,&buffer,D3D12_RESOURCE_STATE_COPY_DEST,nullptr,IID_PPV_ARGS(&auditReadback));
+        const auto allocation=device->GetResourceAllocationInfo(0,1,&buffer);
+        if(!allocation.SizeInBytes || allocation.SizeInBytes==UINT64_MAX) return E_INVALIDARG;
+        if(budget && !budget("readback-before",allocation.SizeInBytes)) return E_OUTOFMEMORY;
+        const auto hr=device->CreateCommittedResource(&heap,D3D12_HEAP_FLAG_NONE,&buffer,D3D12_RESOURCE_STATE_COPY_DEST,nullptr,IID_PPV_ARGS(&auditReadback));
+        if(SUCCEEDED(hr) && budget && !budget("readback-after",0)) { auditReadback.Reset(); return E_OUTOFMEMORY; }
+        return hr;
     }
     HRESULT draw(TexturePresenter& window,Frame frame) {
         auto& slot=slots[frame.slot];
@@ -150,7 +164,7 @@ class CompositorPresenter {
                 Microsoft::WRL::ComPtr<IDXGIFactory4> factory;
                 status=CreateDXGIFactory1(IID_PPV_ARGS(&factory));
                 if (SUCCEEDED(status)) status=window.initialize(factory.Get(),device.Get(),outputQueue.Get(),layout.width,layout.height,
-                    static_cast<DXGI_FORMAT>(driver_bridge::compositorDxgiFormat(layout.format)),true);
+                    static_cast<DXGI_FORMAT>(driver_bridge::compositorDxgiFormat(layout.format)),true,budget);
             }
             { std::lock_guard<std::mutex> lock(guard); initialization=status; initialized=true; }
             ready.notify_one();
@@ -182,9 +196,9 @@ class CompositorPresenter {
 public:
     CompositorPresenter()=default;
     ~CompositorPresenter() { stop(); }
-    HRESULT initialize(LUID luid,driver_bridge::CompositorCaptureDesc desc) {
+    HRESULT initialize(LUID luid,driver_bridge::CompositorCaptureDesc desc,GpuUsageGuard usage = {}) {
         if (ui.joinable() || !driver_bridge::validCompositorFrame(desc)) return E_INVALIDARG;
-        selected=luid; layout=desc; layout.flags=0;
+        selected=luid; layout=desc; layout.flags=0; budget=std::move(usage);
         work=CreateEventW(nullptr,FALSE,FALSE,nullptr); if (!work) return HRESULT_FROM_WIN32(GetLastError());
         inputEvent=CreateEventW(nullptr,FALSE,FALSE,nullptr);
         if (!inputEvent) { const auto error=GetLastError(); if (!CloseHandle(work)) ExitProcess(3); work=nullptr; return HRESULT_FROM_WIN32(error); }
@@ -200,6 +214,7 @@ public:
             !driver_bridge::validCompositorFrame(desc) || desc.width!=layout.width || desc.height!=layout.height || desc.format!=layout.format ||
             !initialized || FAILED(initialization) || submitted==UINT64_MAX-1) return E_INVALIDARG;
         if (FAILED(failure.load())) return failure.load();
+        if(budget && !budget("frame-before",0)) return E_OUTOFMEMORY;
         unsigned index=0;
         { std::lock_guard<std::mutex> lock(guard);
           if (stopping) return E_FAIL;
@@ -218,7 +233,9 @@ public:
         HRESULT hr=S_OK;
         if (source==sources.end()) {
             if (sources.size()>=3) return E_OUTOFMEMORY;
+            if(budget && !budget("import-before",0)) return E_OUTOFMEMORY;
             Resource imported; hr=device->OpenSharedHandle(resource,IID_PPV_ARGS(&imported)); if (FAILED(hr)) return hr;
+            if(budget && !budget("import-after",0)) return E_OUTOFMEMORY;
             const auto actual=imported->GetDesc();
             if (actual.Dimension!=D3D12_RESOURCE_DIMENSION_TEXTURE2D || actual.Width!=layout.width || actual.Height!=layout.height ||
                 actual.Format!=static_cast<DXGI_FORMAT>(driver_bridge::compositorDxgiFormat(layout.format)) || actual.DepthOrArraySize!=1 ||
@@ -228,6 +245,9 @@ public:
         }
         Microsoft::WRL::ComPtr<ID3D12Fence> producer;
         hr=device->OpenSharedHandle(sync,IID_PPV_ARGS(&producer)); if (FAILED(hr)) return hr;
+        // The imported source is already allocated by the guest; do not charge
+        // its full size twice. Observe the process usage after opening aliases.
+        if(budget && !budget("frame-admitted",0)) return E_OUTOFMEMORY;
         hr=slot.inputAllocator->Reset(); if (SUCCEEDED(hr)) hr=slot.inputCommands->Reset(slot.inputAllocator.Get(),nullptr);
         if (FAILED(hr)) return hr;
         const auto a=transition(source->second.Get(),D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_COPY_SOURCE);

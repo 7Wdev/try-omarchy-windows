@@ -2,9 +2,13 @@
 // Bounded diagnostic presentation; not the Omarchy display integration.
 #pragma once
 #include <dwmapi.h>
+#include <functional>
 #include "diagnostic_profile.h"
 #include "stream_profile.h"
 namespace driver_shared {
+// An admission observation, not a physical allocation quota. The owner checks
+// process-reported local + nonlocal usage, including its KMT and D3D12 devices.
+using GpuUsageGuard=std::function<bool(const char*,std::uint64_t)>;
 class TexturePresenter {
     Microsoft::WRL::ComPtr<IDXGISwapChain3> swapchain;
     std::array<Microsoft::WRL::ComPtr<ID3D12Resource>, 2> buffers;
@@ -130,9 +134,18 @@ public:
     }
     HRESULT initialize(IDXGIFactory4* factory, ID3D12Device* device, ID3D12CommandQueue* queue,
                        UINT width = gpu_diagnostic::Width, UINT height = gpu_diagnostic::Height,
-                       DXGI_FORMAT format = DXGI_FORMAT_R8G8B8A8_UNORM, bool compositor = false) {
+                       DXGI_FORMAT format = DXGI_FORMAT_R8G8B8A8_UNORM, bool compositor = false,
+                       const GpuUsageGuard& budget = {}) {
         if (!factory || !device || !queue || windowClass || !width || !height || width > 4096 || height > 4096 ||
             (format != DXGI_FORMAT_R8G8B8A8_UNORM && format != DXGI_FORMAT_B8G8R8A8_UNORM)) return E_INVALIDARG;
+        if(budget) {
+            D3D12_RESOURCE_DESC texture{};texture.Dimension=D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+            texture.Width=width;texture.Height=height;texture.DepthOrArraySize=texture.MipLevels=1;
+            texture.Format=format;texture.SampleDesc.Count=1;texture.Flags=D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+            const auto allocation=device->GetResourceAllocationInfo(0,1,&texture);
+            if(!allocation.SizeInBytes || allocation.SizeInBytes>UINT64_MAX/2 ||
+                !budget("swapchain-before",allocation.SizeInBytes*2)) return E_OUTOFMEMORY;
+        }
         outputWidth = width; outputHeight = height; compositorOutput = compositor;
         registeredClass = compositor ? CompositorClassName : ClassName;
         WNDCLASSEXW type{}; type.cbSize = sizeof type; type.lpfnWndProc = procedure;
@@ -172,6 +185,7 @@ public:
         for (UINT i = 0; i < buffers.size(); ++i) {
             hr = swapchain->GetBuffer(i, IID_PPV_ARGS(&buffers[i])); if (FAILED(hr)) return hr;
         }
+        if(budget && !budget("swapchain-after",0)) return E_OUTOFMEMORY;
         hr = device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&retirement)); if (FAILED(hr)) return hr;
         UINT previous = UINT_MAX;
         hr = swapchain->GetLastPresentCount(&previous); if (hr != S_OK || previous != 0) return E_FAIL;

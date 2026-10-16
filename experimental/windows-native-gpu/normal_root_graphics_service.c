@@ -65,6 +65,8 @@ int main(void) {
                setenv("WDDM_BRIDGE_DESKTOP_4K_CPU_PROBE","1",1)) _exit(125);
             if(desktop && !access("/opt/wddm-root/desktop-sparse-probe",R_OK) &&
                setenv("WDDM_BRIDGE_DESKTOP_SPARSE_PROBE","1",1)) _exit(125);
+            if(desktop && !access("/opt/wddm-root/desktop-presentation-probe",R_OK) &&
+               setenv("WDDM_BRIDGE_DESKTOP_PRESENTATION_PROBE","1",1)) _exit(125);
             if(desktop && !access("/opt/wddm-root/desktop-large-map-probe",R_OK) &&
                setenv("WDDM_BRIDGE_DESKTOP_LARGE_MAP_PROBE","1",1)) _exit(125);
             for(unsigned index=0;index<sizeof(variables)/sizeof(variables[0]);++index)
@@ -73,7 +75,11 @@ int main(void) {
             execl("/guest-probe","/guest-probe",(char*)NULL);perror("normal graphics compositor exec");_exit(127);
         }
         if(child>0) {
-            struct sigaction action={0};action.sa_handler=timeout_handler;sigaction(SIGALRM,&action,NULL);alarm(45);
+            // Full-resolution initialization + explicit cleanup must fit a
+            // separately bounded diagnostic window. Older probes keep 45 s.
+            const unsigned deadline=access("/opt/wddm-root/desktop-presentation-probe",R_OK)==0 ? 90u : 45u;
+            printf("NORMAL_ROOT_GRAPHICS_SUPERVISION deadlineSeconds=%u\n",deadline);
+            struct sigaction action={0};action.sa_handler=timeout_handler;sigaction(SIGALRM,&action,NULL);alarm(deadline);
             int status=0;
             if(waitpid(child,&status,0)==child) {
                 result=WIFEXITED(status) ? WEXITSTATUS(status) : 128;
