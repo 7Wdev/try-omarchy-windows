@@ -1,10 +1,90 @@
 # NVIDIA backend progress
 
-Updated 2026-10-14. **4 of 8 verification stages demonstrated.** This is a
+Updated 2026-10-16. **4 of 8 verification stages demonstrated.** This is a
 checklist count, not 50% of engineering effort or a product-readiness estimate.
 The largest integration tasks are still ahead.
 
-Latest lab result: [native resource DMA-BUF ownership](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-NATIVE-BUFFER.md)
+[Normal-image boot groundwork](LIVE-NORMAL-OMARCHY-ROOT-BOOT.md) passes two fresh
+QEMU/WHPX boots of the real Omarchy 4.0.4 root image. Its normal systemd 262
+starts with a read-only base and a bounded RAM overlay, then powers off cleanly;
+full before/after image hashes match. A missing-disk control fails before the
+root switch. This proves the OS boot prerequisite only. Connecting the NVIDIA
+backend to the normal Lua/UWSM session and supporting separate Hyprland and
+Quickshell GPU clients are the next integration work. Counts stay 4/8 and 0/4.
+
+[A real Wayland scene](LIVE-HYPRLAND-WAYLAND-SCENE.md) now passes two fresh
+300-frame runs at 640×360: readable fonts, an actual Foot terminal and changing
+PTY content composed by Hyprland on NVIDIA. 298 ordinary frames per run avoid
+CPU readback; 948/951 guest GPU commands retire and all mappings release before
+VM exit. A separately negotiated rolling profile replaces the 256-command
+lifetime limit and raises the live vendor-object cap to 512; live-work and byte
+limits remain. The retained 256-object exhaustion and Foot startup failures
+explain these changes. Final DXGI counts are stale at 297/117, so display remains
+unverified. Foot uses software rendering; independent guest GPU applications,
+the normal Omarchy session/assets, launcher/input integration, long runs and
+4K desktop acceptance remain open. Counts stay 4/8 stages and 0/4 desktop gates.
+
+Earlier [repeated Hyprland GPU presentation](LIVE-HYPRLAND-QUEUED-PRESENTATION.md)
+passes twelve real compositor submissions per fresh guest, twice. Ten ordinary
+frames have no CPU readback; a three-slot GPU ring and dedicated Windows UI
+thread handle presentation. The two audited backbuffers pass scoped background
+checks. Final-frame display is verified once and unverified on the other run;
+all-frame display remains unverified. Real Omarchy assets/apps, independent guest
+GPU clients, normal launcher integration and sustained capacity remain required.
+The diagnostic peaks at 253/256 allocations. Counts stay 4/8 stages and 0/4
+desktop gates, with no reliable time-to-completion estimate.
+
+[Paced compositor handoff](LIVE-HYPRLAND-FRAME-PACING.md) now passes exact deferred
+display observations for both frames in two fresh guests. A targeted ETW trace
+confirms that a prior second frame displayed while its DXGI statistics stayed
+on frame one. The compositor handoff no longer polls display statistics or holds
+each frame for three seconds; strict immediate audits and their failures remain.
+The normal launcher, sustained rendering, full scene correctness and performance
+remain unverified. Counts stay 4/8 stages and 0/4 desktop gates.
+
+[Actual Hyprland native-window presentation](LIVE-HYPRLAND-NATIVE-WINDOW.md)
+now passes both strict DXGI display checks once, with exact backbuffer bytes.
+Its immediate repeat fails the second statistics check; that failure is retained.
+A fresh capture-only regression passes. This is an experimental native window,
+not the normal Try Omarchy launcher integration. Reliable presentation remains
+open; no stage or desktop gate is closed.
+
+[Actual Hyprland GPU framebuffer capture](LIVE-HYPRLAND-COMPOSITOR-CAPTURE.md)
+now passes two captures in each of two fresh guests. Each frame independently
+matches 133,120 background-reference pixels, including a changed-background
+control, and all mappings release before exit. The image is a real 640×360
+compositor readback with missing-font placeholders. Full scene correctness and
+Windows app presentation remain unverified. No desktop gate is closed.
+
+Earlier [actual Hyprland output buffers](LIVE-HYPRLAND-COMPOSITOR-BUFFERS.md) pass
+renderer initialization, native swapchain allocation and import into a separate
+renderer device. The [logging ownership fix](LIVE-HYPRLAND-LOGGING-LIFETIME.md)
+passes three fresh compositor runs, including two without fault tracing.
+Each records seven output-buffer commits, 29 retired GPU commands and explicit
+resource cleanup before VM exit. That checkpoint did not verify pixels or presentation.
+No normal-launcher compositor frame or desktop gate is accepted.
+
+Latest [real render-node/GBM development checkpoint](LIVE-GPU-GBM-NATIVE-RENDER.md)
+passes two fresh ordinary-user guests. The real render node selects the private
+D3D12 Gallium backend; GBM allocates two simultaneous native buffers and exports
+owned DMA-BUFs for EGL import. GPU texture sampling into a distinct buffer passes
+an independent 130×73 pixel oracle. Every run releases all 73 buffers and 165
+memory leases before VM exit. General DRM/PRIME/KMS, a Hyprland session,
+sustained work and reliable Windows presentation remain unverified.
+**This advances stage 5; the counts remain 4/8 stages and 0/4 desktop gates.**
+
+Earlier [EGL native-image development checkpoint](LIVE-GPU-EGL-NATIVE-IMAGE.md)
+passes actual owned-buffer import/export/reimport, source-release lifetime and
+shared-storage shader checks for RGBA/BGRA/RGBX/BGRX. RGBA storage is checked
+at 3840×2160; the shader viewport is 130×73. The other formats use odd-sized
+1281×719 buffers. Every enabled run releases all 73 DMA-BUF references before
+process exit; the disabled-feature control also passes. These captures retain
+their exact working-tree source hashes and the earlier failures. The later GBM
+checkpoint adds a real render node and owned imported-texture sampling; sustained
+work and reliable Windows presentation remain open. **No stage or desktop gate is
+completed by this development checkpoint.**
+
+Earlier [native resource DMA-BUF ownership](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-NATIVE-BUFFER.md)
 passes two fresh ordinary-user guests. Genuine Linux DMA-BUF files retain a
 native GPU texture through FD closure and import; both full 4K storage rounds
 pass, including after source release. Each run releases 72 buffers and all
@@ -109,17 +189,25 @@ Its results currently come from isolated diagnostic workloads.
 | 2. Windows bridge and D3D12 initialization | Demonstrated in the lab | Genuine Linux NVIDIA runtime initializes through QEMU and creates owned Windows KMT objects. |
 | 3. 4K guest shaders and shared GPU textures | Demonstrated in the lab | [Independent 4K pixel checks, GPU copies and fence retirement](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-4K.md). |
 | 4. Repeated guest rendering | Demonstrated in the bounded lab | [64-frame guest runs](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-GUEST-STREAM.md), safe allocator/texture reuse, first/last audits and complete cleanup. This does not establish long-run stability or all-frame display. |
-| 5. Guest graphics/device integration | In progress | Replace the diagnostic interposer with a usable guest device/driver path. Integrate graphics buffers, memory ownership, synchronization and the compositor's DRM/GBM/display requirements. |
+| 5. Guest graphics/device integration | In progress: native GBM buffers, EGL fences and actual Hyprland readback pass | Replace the diagnostic interposer with a supported guest device/driver path; sustain graphics buffers, memory ownership, synchronization and compositor display requirements. |
 | 6. Interactive Omarchy/Hyprland desktop | Pending | Capture the first correctly displayed Hyprland session and update PR #2, then validate real apps, cursor/keyboard input, focus, resizing, fullscreen, multiple windows and correct continuously displayed frames. |
 | 7. Required APIs and NVIDIA features | Pending | Test OpenGL, Vulkan, CUDA, video acceleration and NVIDIA-specific capabilities in real guest applications. Device identity and D3D12 shader success do not establish feature support. |
 | 8. Reliability and ≥93% native performance | Pending | Matched guest/native benchmarks across resolutions up to 4K, concurrent Windows/guest GPU workloads, long runs, stable memory use, and device/VM failure recovery. |
 
 ## How much work remains?
 
-We have working evidence for the driver bridge and a controlled graphics path.
-We do not yet have the Linux graphics/display integration that lets Hyprland use
-that path. Reaching the first real Hyprland frame is the next major integration
-milestone, followed by interactive use and sustained correctness.
+Real Hyprland now renders through the NVIDIA bridge into native GBM buffers.
+The Windows GPU captures four actual 640×360 compositor frames across two fresh
+guests, with independently checked background regions and complete cleanup.
+Full scene correctness and display in the Windows app remain unverified.
+
+The next work is reliable GPU presentation into the Windows app, normal Omarchy
+fonts/themes/configuration and a real application scene, plus resource and queue
+capacity that can start and sustain that workload. Bare compositor startup
+already peaks at 252 of 256 guest allocations. The finite 256-command /
+50,000-request diagnostic profile cannot sustain a desktop; simply capturing
+more images does not solve that capacity limit. Input, recovery, compositor 4K
+operation and performance need real-session acceptance afterward.
 
 **0 of 4 desktop acceptance gates are complete.** Guest graphics integration is
 in progress. The gates below are not equally sized, and some implementation can
@@ -128,9 +216,9 @@ an unmeasured partial percentage.
 
 | Gate | Current evidence | What closes the gate |
 | --- | --- | --- |
-| Guest graphics device, buffers and synchronization | In progress: kernel memory leases, owned EGL native-fence callbacks with GPU ordering, isolated Mesa OpenGL draws, and opt-in GL native timeline FDs. | The compositor can access the backend through a supported guest device path, import/export its buffers, and synchronize their use correctly. |
-| First Hyprland frame | Pending. No Omarchy/Hyprland session has rendered through this backend. | Boot the real guest session and independently verify a correctly displayed compositor frame in the Windows app. |
-| Usable interactive desktop | Pending. Bounded shader diagnostics do not exercise a desktop session. | Continuously display real apps and multiple windows, with working input, focus, resizing and fullscreen up to 4K. |
+| Guest graphics device, buffers and synchronization | In progress: native render node, GBM allocation/import, EGL fences, actual Hyprland output and explicit cleanup pass in a bounded prototype. | The compositor can access the backend through a supported guest device path, import/export its buffers, and synchronize sustained use correctly. |
+| First Hyprland frame | Actual compositor framebuffer readback passes; full scene correctness and Windows app presentation are pending. | Boot the real guest session and independently verify a correctly displayed compositor frame in the Windows app. |
+| Usable interactive desktop | Pending. The small compositor capture guest lacks normal Omarchy assets and real apps; finite resource/command limits cannot sustain desktop use. | Continuously display real apps and multiple windows, with working input, focus, resizing and fullscreen up to 4K. |
 | Stable and performant product | Pending. No matched near-native result or long desktop run has passed. | Sustain desktop workloads, recover from failures, keep memory bounded, and meet ≥93% of matched native performance on the agreed workloads. |
 
 The first three gates describe the route to a usable desktop. The fourth is
@@ -171,6 +259,10 @@ their own implementation and application evidence as well.
 - **Legacy capacity:** an unchanged V1 OpenGL/FD image reached the 256 aggregate
   object limit in a separate run. Its rejection is retained as a failure;
   reliable capacity/lifetime handling for that workload remains open.
+- **Compositor capacity:** bare Hyprland startup peaks at 252 of 256 guest
+  allocations. The retained guest CPU-map attempt hits that bound and aborts;
+  host GPU capture avoids the extra guest allocations without raising it.
+  The finite startup command/request limits still cannot sustain a desktop.
 - **Resource buffers:** native texture FDs pass all-pixel 4K storage checks,
   source/FD-release lifetime and a wrong-color control. They are scoped to one
   connection and are not dma-buf/DRM PRIME. The explicit 256-slot virtual layout

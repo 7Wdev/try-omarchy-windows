@@ -1,0 +1,50 @@
+name: WDDM QEMU memory experiment
+on:
+  push:
+    branches: [windows-nvgpu-lab]
+    paths:
+      - experimental/qemu/**
+      - .github/workflows/wddm-qemu-lab.yml
+permissions:
+  contents: read
+jobs:
+  windows-qemu:
+    runs-on: windows-2025
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            git bison flex diffutils
+            mingw-w64-ucrt-x86_64-SDL2
+            mingw-w64-ucrt-x86_64-dtc
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-glib2
+            mingw-w64-ucrt-x86_64-meson
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-pixman
+            mingw-w64-ucrt-x86_64-pkgconf
+            mingw-w64-ucrt-x86_64-python
+            mingw-w64-ucrt-x86_64-python-yaml
+            mingw-w64-ucrt-x86_64-zstd
+      - name: Build pinned QEMU with section backend
+        id: build
+        shell: msys2 {0}
+        run: bash experimental/qemu/build_qemu.sh qemu-lab
+      - name: Verify shared memory through real QEMU
+        shell: pwsh
+        run: python experimental/qemu/test_section.py --qemu qemu-lab/bin/qemu-system-x86_64.exe --firmware qemu-lab/share/qemu
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        with:
+          name: qemu-win32-section-lab
+          path: |
+            qemu-lab/bin
+            qemu-lab/share
+            qemu-lab/qemu-corresponding-source.tar.gz
+            qemu-lab/build-packages.txt
+            qemu-lab/dll-sources.txt
+            qemu-lab/config-host.mak
