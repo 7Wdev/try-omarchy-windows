@@ -42,8 +42,22 @@ a failed control. Neither run closes a desktop acceptance gate.
 The requested next image must be **3840×2160 with both Hyprland and Quickshell on
 the GPU**. A software Qt shell or an enlarged earlier image will not satisfy it.
 Quickshell's hardware run currently fails EGL Wayland-platform initialization;
-the passing private Mesa build has `platforms=[]`. A separate Wayland-enabled
-Mesa build is being prepared, without replacing the retained passing runtime.
+the earlier passing private Mesa build has `platforms=[]`. A separate
+Wayland-enabled Mesa build now succeeds with the original optimization flags,
+without replacing the retained passing runtime. A GCC internal compiler error
+is retained; the unchanged failed unit succeeds on retry at lower build
+concurrency. Matching Wayland 1.26 tooling and libraries are checksum-verified
+against Debian's published package metadata.
+
+The [hardware-only follow-up control](evidence/NORMAL-OMARCHY-WAYLAND-HARDWARE-CONTROL-2026-10-16.json)
+gets past platform selection: Quickshell selects D3D12, then fails to open its
+independent bridge connection and cannot initialize its graphics context.
+No software Qt override is supplied. Hyprland completes twelve 1280×720 frames,
+retires 264 GPU commands and releases every mapping before shutdown; the
+Quickshell background/bar layers are absent. This remains a **failed GPU desktop
+control**, not a 4K result. Four additional tests preserve that distinction,
+exact full capture bytes and build provenance. All **313 local milestone tests**
+pass after this follow-up.
 
 The broker also admits one authenticated rendering process per native worker.
 A real second GPU application needs coordinated native object ownership,
