@@ -652,7 +652,7 @@ int main() {
         require(s.objectLimit() == MaxObjects);
         require(header(s.dispatch(request(Op::BeginOpenGl, 0, std::uint32_t{2}))).status == -71);
         s.dispatch(hello());
-        for (const auto version : {0u, 1u, 9u, UINT32_MAX})
+        for (const auto version : {0u, 1u, 10u, UINT32_MAX})
             require(header(s.dispatch(request(Op::BeginOpenGl, 0, version))).status == -93 && !f.begins);
         for (unsigned field = 0; field < 8; ++field) {
             std::uint32_t words[8]{}; std::memcpy(words, &GuestOpenGlFenceProfile, sizeof words); ++words[field];
@@ -739,10 +739,34 @@ int main() {
         require(header(locked).status==(version==8 ? 0 : -5));
         if(version==8) require(!header(s.dispatch(request(Op::UnlockVendorAllocation,allocation,VendorCpuDesc{device,0}))).status);
     }
-    for(const auto version:{3u,4u,5u,6u,7u,8u}) {
-        const auto expected=version==8 ? GuestOpenGlDesktopSparseProfile : version==7 ? GuestOpenGlDesktop4kCpuProfile : version==6 ? GuestOpenGlDesktop4kProfile : version==5 ? GuestOpenGlDesktopProfile : version==4 ? GuestOpenGlCompositorRenderProfile : GuestOpenGlCompositorProfile;
+    {
+        const auto flags=ExpandedVendorGpuCapability;
+        require(!vendorGpuBudgetFits(130090,8160,flags,true));
+        require(vendorGpuBudgetFits(130090,8160,flags,true,true));
+        require(vendorGpuPageLimit(flags,true)==OpenGlDesktop4kGpuMappedBytes/4096);
+        require(vendorGpuPageLimit(flags,true,true)==OpenGlDesktopLargeMapBytes/4096);
+        require(vendorGpuPageLimit(flags,false,true)==vendorGpuPageLimit(flags));
+        require(vendorGpuPageLimit(0,true,true)==vendorGpuPageLimit(0));
+        require(!vendorGpuBudgetFits(OpenGlDesktopLargeMapBytes/4096,1,flags,true,true));
+        require(!vendorGpuBudgetFits(UINT32_MAX,1,flags,true,true));
+        OpenGlFake f;f.profile=GuestOpenGlDesktopLargeMapProfile;Session s(f);s.dispatch(hello());
+        require(header(s.dispatch(request(Op::BeginOpenGl,0,std::uint32_t{9}))).status==-22 && !f.begins);
+        auto old=GuestOpenGlDesktopSparseCapacity;old.version=9;
+        require(header(s.dispatch(request(Op::BeginOpenGl,0,old))).status==-22 && !f.begins);
+        for(unsigned field=0;field<10;++field) {
+            auto capacity=GuestOpenGlDesktopLargeMapCapacity;
+            std::uint32_t words[10]{};std::memcpy(words,&capacity,sizeof words);++words[field];std::memcpy(&capacity,words,sizeof words);
+            require(header(s.dispatch(request(Op::BeginOpenGl,0,capacity))).status<0 && !f.begins);
+        }
+        for(const auto missing:{ExpandedVendorGpuCapability,ExpandedVendorCpuCapability}) {
+            f.missing=missing;
+            require(header(s.dispatch(request(Op::BeginOpenGl,0,GuestOpenGlDesktopLargeMapCapacity))).status==-95 && !f.begins);
+        }
+    }
+    for(const auto version:{3u,4u,5u,6u,7u,8u,9u}) {
+        const auto expected=version==9 ? GuestOpenGlDesktopLargeMapProfile : version==8 ? GuestOpenGlDesktopSparseProfile : version==7 ? GuestOpenGlDesktop4kCpuProfile : version==6 ? GuestOpenGlDesktop4kProfile : version==5 ? GuestOpenGlDesktopProfile : version==4 ? GuestOpenGlCompositorRenderProfile : GuestOpenGlCompositorProfile;
         OpenGlFake f; f.reservationEnabled=true; Session s(f);
-        const auto begin=version==8 ? request(Op::BeginOpenGl,0,GuestOpenGlDesktopSparseCapacity) : version==7 ? request(Op::BeginOpenGl,0,GuestOpenGlDesktop4kCapacity) : request(Op::BeginOpenGl,0,version);
+        const auto begin=version==9 ? request(Op::BeginOpenGl,0,GuestOpenGlDesktopLargeMapCapacity) : version==8 ? request(Op::BeginOpenGl,0,GuestOpenGlDesktopSparseCapacity) : version==7 ? request(Op::BeginOpenGl,0,GuestOpenGlDesktop4kCapacity) : request(Op::BeginOpenGl,0,version);
         require(header(s.dispatch(begin)).status==-71 && !f.begins);
         s.dispatch(hello());
         for (unsigned field=0;field<8;++field) {
@@ -757,7 +781,7 @@ int main() {
         const auto out=s.dispatch(begin); OpenGlProfile profile{};
         require(!header(out).status && out.size()==sizeof(Header)+sizeof profile);
         std::memcpy(&profile,out.data()+sizeof(Header),sizeof profile);
-        require((version==8 ? validOpenGlDesktopSparseProfile(profile) : version==7 ? validOpenGlDesktop4kCpuProfile(profile) : version==6 ? validOpenGlDesktop4kProfile(profile) : version==5 ? validOpenGlDesktopProfile(profile) : version==4 ? validOpenGlCompositorRenderProfile(profile) : validOpenGlCompositorProfile(profile)) &&
+        require((version==9 ? validOpenGlDesktopLargeMapProfile(profile) : version==8 ? validOpenGlDesktopSparseProfile(profile) : version==7 ? validOpenGlDesktop4kCpuProfile(profile) : version==6 ? validOpenGlDesktop4kProfile(profile) : version==5 ? validOpenGlDesktopProfile(profile) : version==4 ? validOpenGlCompositorRenderProfile(profile) : validOpenGlCompositorProfile(profile)) &&
                 s.objectLimit()==expected.objectLimit && s.syncObjectLimit()==192 &&
                 s.requestLimit()==expected.requestLimit && s.openGlCommandLimit()==expected.commandLimit && s.reservationLimit()==expected.reservationLimit);
         const auto before=f.begins;

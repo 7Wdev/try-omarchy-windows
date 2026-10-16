@@ -61,6 +61,7 @@ class KmtDriver : public Driver {
     bool openglDesktop4kEnabled = false;
     bool openglDesktop4kCpuEnabled = false;
     bool openglDesktopSparseEnabled = false;
+    bool openglDesktopLargeMapEnabled = false;
     unsigned compositorCaptureAttempts = 0, completedCompositorCaptures = 0, failedCompositorCaptures = 0;
     std::unique_ptr<driver_shared::CompositorReadback> compositorPresenter;
     std::unique_ptr<driver_shared::CompositorPresenter> compositorOutput;
@@ -620,11 +621,11 @@ public:
     OpenGlProfile beginOpenGl(std::uint32_t version = 1) override {
         if (version>=6 && !(capabilities().flags & ExpandedVendorGpuCapability)) return {};
         if (version>=7 && (!(capabilities().flags & ExpandedVendorCpuCapability) || !runtime ||
-            runtime->allocationSlotLimit()!=(version==8 ? SparseVendorCpuSlots : MaxVendorCpuSlots) || runtime->fenceSlotLimit()!=256)) return {};
-        if (runtime && runtime->allocationSlotLimit()==SparseVendorCpuSlots && version!=8) return {};
+            runtime->allocationSlotLimit()!=(version>=8 ? SparseVendorCpuSlots : MaxVendorCpuSlots) || runtime->fenceSlotLimit()!=256)) return {};
+        if (runtime && runtime->allocationSlotLimit()==SparseVendorCpuSlots && version!=8 && version!=9) return {};
         if (!gpu_diagnostic::HighResolution || openglEnabled || streamingEnabled || !asyncSubmitEnabled || !syncEnabled || !reservationEnabled ||
             !runtime || runtime->hasStopped() || !ownedAdapters.empty() || !deviceAdapters.empty() ||
-            !pendingSubmissions.empty() || !pendingHwSignals.empty() || (version != 1 && version != 2 && version != 3 && version != 4 && version != 5 && version != 6 && version != 7 && version != 8)) return {};
+            !pendingSubmissions.empty() || !pendingHwSignals.empty() || (version != 1 && version != 2 && version != 3 && version != 4 && version != 5 && version != 6 && version != 7 && version != 8 && version != 9)) return {};
         openglEnabled = true;
         openglFencesEnabled = version >= 2;
         openglCompositorEnabled = version >= 3;
@@ -632,12 +633,13 @@ public:
         openglDesktopEnabled = version >= 5;
         openglDesktop4kEnabled = version >= 6;
         openglDesktop4kCpuEnabled = version >= 7;
-        openglDesktopSparseEnabled = version == 8;
-        const auto profile = version == 8 ? GuestOpenGlDesktopSparseProfile : version == 7 ? GuestOpenGlDesktop4kCpuProfile : version == 6 ? GuestOpenGlDesktop4kProfile : version == 5 ? GuestOpenGlDesktopProfile : version == 4 ? GuestOpenGlCompositorRenderProfile : version == 3 ? GuestOpenGlCompositorProfile : version == 2 ? GuestOpenGlFenceProfile : GuestOpenGlProfile;
+        openglDesktopSparseEnabled = version >= 8;
+        openglDesktopLargeMapEnabled = version == 9;
+        const auto profile = version == 9 ? GuestOpenGlDesktopLargeMapProfile : version == 8 ? GuestOpenGlDesktopSparseProfile : version == 7 ? GuestOpenGlDesktop4kCpuProfile : version == 6 ? GuestOpenGlDesktop4kProfile : version == 5 ? GuestOpenGlDesktopProfile : version == 4 ? GuestOpenGlCompositorRenderProfile : version == 3 ? GuestOpenGlCompositorProfile : version == 2 ? GuestOpenGlFenceProfile : GuestOpenGlProfile;
         std::cerr << "{\"openGlProfileNegotiated\":true,\"version\":" << version << ",\"frames\":" << profile.frames << ",\"commandLimit\":" << profile.commandLimit << ",\"pendingCommands\":16,\"reservationLimit\":" << profile.reservationLimit << ",\"reservedByteLimit\":17179869184,\"requestLimit\":" << profile.requestLimit;
         if (version >= 2) std::cerr << ",\"objectLimit\":" << profile.objectLimit
             << ",\"hwQueueLimit\":" << OpenGlFenceHwQueues << ",\"vendorObjectLimit\":" << vendorObjectLimit() << ",\"syncObjectLimit\":" << syncObjectLimit();
-        if (version >= 6) std::cerr << ",\"gpuMappedByteLimit\":" << OpenGlDesktop4kGpuMappedBytes
+        if (version >= 6) std::cerr << ",\"gpuMappedByteLimit\":" << vendorGpuPageLimit(capabilities().flags,true,openglDesktopLargeMapEnabled)*4096ull
             << ",\"reportedGpuUsageLimitBytes\":" << reportedGpuUsageLimit();
         if (version>=7) std::cerr << ",\"cpuMappedByteLimit\":" << OpenGlDesktop4kCpuBytes
             << ",\"kernelCapacityRequired\":true,\"cpuApertureSlots\":" << runtime->allocationSlotLimit();
@@ -1485,7 +1487,7 @@ public:
         if (!gpuVaEnabled || !validGpuVa(desc) || entry == vendorAllocations.end() || !pagingFences.count(queue) ||
             entry->second.device != pagingFences.at(queue).device ||
             (desc.driverProtection && !entry->second.resource) ||
-            entry->second.pages || entry->second.address || !vendorGpuBudgetFits(vendorMappedPages, desc.sizePages, capabilities().flags,openglDesktop4kEnabled))
+            entry->second.pages || entry->second.address || !vendorGpuBudgetFits(vendorMappedPages, desc.sizePages, capabilities().flags,openglDesktop4kEnabled,openglDesktopLargeMapEnabled))
             return {{Invalid, 0, 0}, 0};
         if (desc.base) {
             const auto overlaps = [&](std::uint64_t address, std::uint64_t bytes) {
@@ -2119,7 +2121,7 @@ public:
                   << ",\"completedVendorGpuVaWaits\":" << completedVendorMapWaits
                   << ",\"liveVendorMappedPages\":" << vendorMappedPages
                   << ",\"peakVendorMappedPages\":" << peakVendorMappedPages
-                  << ",\"vendorGpuMappedByteLimit\":" << vendorGpuPageLimit(capabilities().flags,openglDesktop4kEnabled) * 4096
+                  << ",\"vendorGpuMappedByteLimit\":" << vendorGpuPageLimit(capabilities().flags,openglDesktop4kEnabled,openglDesktopLargeMapEnabled) * 4096
                   << ",\"completedVendorResidencyRequests\":" << completedVendorResidency
                   << ",\"completedMemoryBudgetQueries\":" << completedMemoryBudgetQueries
                   << ",\"failedMemoryBudgetQueries\":" << failedMemoryBudgetQueries

@@ -1,5 +1,10 @@
 # Sparse aperture integration for the real Omarchy guest
 
+The [newer explicit GPU-VA profile](LIVE-NORMAL-OMARCHY-4K-READBACK.md) produces
+the first two verified full-size 4K GPU compositor readbacks. Its reported-usage,
+normal-shutdown, missing-shell and display gates still fail. The version-8
+failure below remains retained and unchanged.
+
 **The requested GPU-only 4K desktop frame is still unverified.** The new
 512-slot CPU aperture works on actual WHPX/NVIDIA hardware. The retained
 3840×2160 attempt then reaches the separate GPU virtual-mapping quota and

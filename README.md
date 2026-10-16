@@ -19,11 +19,13 @@ Two fresh real-root guests each complete **300 frames and 948 GPU commands**, re
 The shipped Lua configuration also produces the first actual Omarchy wallpaper/bar image at 1280×720, with a **software-rendered Qt shell**.
 That diagnostic later fails and does not establish stable operation or application GPU acceleration.
 The next target is **3840×2160 with both Hyprland and Quickshell verified on the GPU**. Mesa's Wayland platform now builds;
-hardware-only 4K tests expose GPU-map, reported-usage and CPU-map capacity limits, with no verified 4K backbuffer yet.
+hardware-only 4K tests exposed GPU-map, reported-usage and CPU-map limits. Two full-resolution NVIDIA compositor backbuffers now
+pass readback verification; the shipped Quickshell shell is still absent and normal-session/display/stability gates fail.
 Explicit 4K profiles add bounded GPU capacity and a verified 192 MiB kernel/host CPU contract while preserving older profiles.
-The separate 512-slot aperture now works on hardware, including direct mappings beyond the old ceiling. The next 4K attempt
-hits the GPU virtual-mapping quota and leaves native waits pending; no 4K pixels are verified. Abort cleanup and safe independent
-GPU clients remain open. [Sparse-aperture results and next work](docs/LIVE-NORMAL-OMARCHY-SPARSE-APERTURE.md).
+The separate 512-slot aperture now works on hardware, including direct mappings beyond the old ceiling. The earlier 4K attempt
+hit the GPU virtual-mapping quota and left native waits pending. A separate explicit mapping budget produces 4K compositor readbacks,
+but exceeds the reported-usage guard and needs forced shutdown. Abort cleanup and safe independent GPU clients remain open.
+[Actual 4K GPU compositor image and exact remaining work](docs/LIVE-NORMAL-OMARCHY-4K-READBACK.md).
 Normal UWSM/launcher/input integration, reliable scanout,
 long-run stability and ≥93% matched-native performance remain open. [Actual images, retained failures and scope](docs/LIVE-NORMAL-OMARCHY-GPU.md).
 

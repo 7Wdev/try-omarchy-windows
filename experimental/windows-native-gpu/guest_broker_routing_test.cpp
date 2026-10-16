@@ -65,14 +65,25 @@ static void cpuCapacityPolicy() {
         std::uint32_t words[8]{};std::memcpy(words,&contract,sizeof words);++words[field];std::memcpy(&contract,words,sizeof words);
         denied([&]{verifyCpuCapacityProfile(packet(Op::BeginOpenGl,0,encode(contract)),sparse);},EPROTO);
     }
+    const auto largeBegin=packet(Op::BeginOpenGl,0,encode(GuestOpenGlDesktopLargeMapCapacity));
+    verifyCpuCapacityProfile(largeBegin,sparse);
+    denied([&]{verifyCpuCapacityProfile(largeBegin,kernel);},EPROTO);
+    auto undersized=GuestOpenGlDesktopSparseCapacity;undersized.version=9;
+    denied([&]{verifyCpuCapacityProfile(packet(Op::BeginOpenGl,0,encode(undersized)),sparse);},EPROTO);
+    for(unsigned field=0;field<10;++field) {
+        auto capacity=GuestOpenGlDesktopLargeMapCapacity;
+        std::uint32_t words[10]{};std::memcpy(words,&capacity,sizeof words);++words[field];std::memcpy(&capacity,words,sizeof words);
+        denied([&]{verifyCpuCapacityProfile(packet(Op::BeginOpenGl,0,encode(capacity)),sparse);},EPROTO);
+    }
+    std::cout<<"BROKER_LARGE_MAP exact1GiB=true fixed40ByteReceipt=true malformedRejected=true oldProfilesUnchanged=true kernel=mock gpu=false\n";
     std::cout<<"BROKER_SPARSE_CAPACITY exact512Slots=true oldProfileRejected=true oldKernelRejected=true kernel=mock gpu=false\n";
     std::cout<<"BROKER_CPU_CAPACITY exact192MiB=true ownKernelQuery=true missingAndMalformedRejected=true legacyUnchanged=true kernel=mock gpu=false\n";
 }
 static void profileObjectBudgets() {
     for(const auto profile:{GuestOpenGlFenceProfile,GuestOpenGlCompositorProfile,
-                            GuestOpenGlCompositorRenderProfile,GuestOpenGlDesktopProfile,GuestOpenGlDesktop4kProfile,GuestOpenGlDesktop4kCpuProfile,GuestOpenGlDesktopSparseProfile}) {
+                            GuestOpenGlCompositorRenderProfile,GuestOpenGlDesktopProfile,GuestOpenGlDesktop4kProfile,GuestOpenGlDesktop4kCpuProfile,GuestOpenGlDesktopSparseProfile,GuestOpenGlDesktopLargeMapProfile}) {
         Views views;
-        const auto request=packet(Op::BeginOpenGl,0,profile.version==8 ? encode(GuestOpenGlDesktopSparseCapacity) : profile.version==7 ? encode(GuestOpenGlDesktop4kCapacity) : encode(profile.version));
+        const auto request=packet(Op::BeginOpenGl,0,profile.version==9 ? encode(GuestOpenGlDesktopLargeMapCapacity) : profile.version==8 ? encode(GuestOpenGlDesktopSparseCapacity) : profile.version==7 ? encode(GuestOpenGlDesktop4kCapacity) : encode(profile.version));
         auto malformed=profile; ++malformed.objectLimit;
         denied([&]{views.observe(request,packet(Op::BeginOpenGl,0,encode(malformed)));},EPROTO);
         views.observe(request,packet(Op::BeginOpenGl,0,encode(profile)));

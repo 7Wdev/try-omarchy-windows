@@ -1663,9 +1663,10 @@ public:
             if (!aperture.enabled()) throw Error(ENOSYS);
             const auto capacity=aperture.capacity(); const auto layout=aperture.info();
             const OpenGlDesktop4kCapacity contract{version,capacity.version,capacity.cpu_byte_limit,layout.allocation_slots,layout.fence_slots,0};
-            if (capacity.flags!=(WDDM_APERTURE_DESKTOP_CPU_ENABLED | (version==8 ? WDDM_APERTURE_SPARSE_ENABLED : 0u)) ||
-                (version==7 ? !validOpenGlDesktop4kCapacity(contract) : version!=8 || !validOpenGlDesktopSparseCapacity(contract))) throw Error(ENOSYS);
-            begin=request(Op::BeginOpenGl,0,contract);
+            const OpenGlDesktopLargeMapCapacity large{contract,OpenGlDesktopLargeMapBytes};
+            if (capacity.flags!=(WDDM_APERTURE_DESKTOP_CPU_ENABLED | (version>=8 ? WDDM_APERTURE_SPARSE_ENABLED : 0u)) ||
+                (version==7 ? !validOpenGlDesktop4kCapacity(contract) : version==8 ? !validOpenGlDesktopSparseCapacity(contract) : version!=9 || !validOpenGlDesktopLargeMapCapacity(large))) throw Error(ENOSYS);
+            begin=version==9 ? request(Op::BeginOpenGl,0,large) : request(Op::BeginOpenGl,0,contract);
             std::fprintf(stderr,"LINUX_BRIDGE kernelCpuCapacityVerified=true profile=%u cpuByteLimit=%llu cpuSlots=%u fenceSlots=256\n",version,
                 static_cast<unsigned long long>(contract.cpuByteLimit),contract.cpuSlots);
         }
@@ -1678,8 +1679,8 @@ public:
         if (header.status) throw Error(-header.status);
         if (packet.size() != sizeof header + sizeof(OpenGlProfile)) { transport.fail(); throw Error(EPROTO); }
         OpenGlProfile profile{}; std::memcpy(&profile, packet.data() + sizeof header, sizeof profile);
-        if (version == 1 ? !validOpenGlProfile(profile) : version == 2 ? !validOpenGlFenceProfile(profile) : version == 3 ? !validOpenGlCompositorProfile(profile) : version == 4 ? !validOpenGlCompositorRenderProfile(profile) : version == 5 ? !validOpenGlDesktopProfile(profile) : version==6 ? !validOpenGlDesktop4kProfile(profile) : version==7 ? !validOpenGlDesktop4kCpuProfile(profile) : version!=8 || !validOpenGlDesktopSparseProfile(profile)) { transport.fail(); throw Error(EPROTO); }
-        if (version==8) { allocationMemory.enableSparseAperture(); sparseApertureNegotiated=true; }
+        if (version == 1 ? !validOpenGlProfile(profile) : version == 2 ? !validOpenGlFenceProfile(profile) : version == 3 ? !validOpenGlCompositorProfile(profile) : version == 4 ? !validOpenGlCompositorRenderProfile(profile) : version == 5 ? !validOpenGlDesktopProfile(profile) : version==6 ? !validOpenGlDesktop4kProfile(profile) : version==7 ? !validOpenGlDesktop4kCpuProfile(profile) : version==8 ? !validOpenGlDesktopSparseProfile(profile) : version!=9 || !validOpenGlDesktopLargeMapProfile(profile)) { transport.fail(); throw Error(EPROTO); }
+        if (version>=8) { allocationMemory.enableSparseAperture(); sparseApertureNegotiated=true; }
         openglNegotiated = true;
         openglFencesNegotiated = version >= 2;
         openglCompositorNegotiated = version >= 3;
@@ -2030,6 +2031,15 @@ extern "C" int wddm_bridge_begin_opengl_desktop_sparse_render() {
     auto& state=bridge(); std::lock_guard<std::mutex> lock(state.guard);
     if (bridgeStopped) { errno=ESHUTDOWN; return -1; }
     try { state.beginOpenGl(8); return 0; }
+    catch (const Error& error) { errno=error.number; }
+    catch (...) { state.protocolFailed(); errno=EIO; }
+    return -1;
+}
+extern "C" int wddm_bridge_begin_opengl_desktop_large_map_render() {
+    if (bridgeStopped) { errno=ESHUTDOWN; return -1; }
+    auto& state=bridge(); std::lock_guard<std::mutex> lock(state.guard);
+    if (bridgeStopped) { errno=ESHUTDOWN; return -1; }
+    try { state.beginOpenGl(9); return 0; }
     catch (const Error& error) { errno=error.number; }
     catch (...) { state.protocolFailed(); errno=EIO; }
     return -1;
