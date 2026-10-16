@@ -4,7 +4,7 @@
 #define WDDM_ALLOCATION_MAP_H
 #include "wddm-fence-map.h"
 #define WDDM_ALLOCATION_HUB_DEFAULT_SLOTS 16
-#define WDDM_ALLOCATION_HUB_MAX_SLOTS 256
+#define WDDM_ALLOCATION_HUB_MAX_SLOTS 512
 #define WDDM_ALLOCATION_SLOT_BYTES (1024ULL * 1024)
 #define WDDM_ALLOCATION_SOURCE_LIMIT (1ULL << 47)
 typedef struct WddmAllocationCommand {
@@ -55,6 +55,18 @@ static inline bool wddm_allocation_command(const char *input,
     }
     result.slot = (uint32_t)slot;
     *out = result;
+    return true;
+}
+/* Always constrain commands to the realized device, including older layouts. */
+static inline bool wddm_allocation_command_for_slots(const char *input, uint32_t slots,
+                                                     WddmAllocationCommand *out)
+{
+    WddmAllocationCommand command;
+    if (!out || !wddm_allocation_slots_valid(slots) ||
+        !wddm_allocation_command(input, &command) || command.slot >= slots) {
+        return false;
+    }
+    *out = command;
     return true;
 }
 static inline bool wddm_allocation_transition(const WddmAllocationCommand *command,

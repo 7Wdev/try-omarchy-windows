@@ -143,3 +143,20 @@ validated committed CPU range, preserves native lock ownership, and removes
 guest and WHPX mappings before native unlock. It is not enabled by the launcher
 and does not supply desktop
 acceleration.
+
+## Prepared sparse 512-slot aperture
+
+The allocation hub accepts an explicit `slot-count=512`; its default remains
+16. This reserves 512 MiB of guest MMIO address space. Only individually
+authorized, locked native pages are mapped; it does not allocate 512 MiB of
+GPU memory or raise a CPU byte budget. Commands must fit the realized slot
+count, so existing 16/32/64/128/256 layouts still reject out-of-range indices.
+Generation ownership, source overlap rejection, permissions and VM-first
+failure cleanup are unchanged.
+
+This prepares the QEMU side of the observed 4K slot-capacity fix. The current
+Windows owner and guest kernel still reject 512 slots; a distinct exact
+capacity profile and matching guest integration remain required. Build and
+actual WHPX mapping/cleanup at the new capacity must pass before claiming
+hardware support. No full-desktop or performance result follows from this
+source change. See the [retained 4K failure](../../docs/LIVE-NORMAL-OMARCHY-4K-CAPACITY.md).

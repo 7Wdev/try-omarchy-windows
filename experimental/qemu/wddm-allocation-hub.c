@@ -83,7 +83,7 @@ static void hub_set_mapping(Object *object, const char *value, Error **errp)
     WddmAllocationCommand command;
     SIZE_T copied = 0;
     uint64_t observed = 0;
-    if (!DEVICE(s)->realized || !s->process || !wddm_allocation_command(value, &command) || command.slot >= s->slot_count) {
+    if (!DEVICE(s)->realized || !s->process || !wddm_allocation_command_for_slots(value, s->slot_count, &command)) {
         error_setg(errp, "Invalid host allocation mapping command or unrealized device");
         return;
     }
@@ -143,7 +143,7 @@ static void hub_realize(PCIDevice *pci, Error **errp)
     WddmAllocationHub *s = WDDM_ALLOCATION_HUB(pci);
     HMODULE whp = GetModuleHandleW(L"WinHvPlatform.dll");
     if (!wddm_allocation_slots_valid(s->slot_count)) {
-        error_setg(errp, "WDDM allocation slot-count must be 16, 32, 64, 128 or 256");
+        error_setg(errp, "WDDM allocation slot-count must be 16, 32, 64, 128, 256 or 512");
         return;
     }
     if (!whpx_enabled() || !whp || !GetProcAddress(whp, "WHvMapGpaRange2")) {
