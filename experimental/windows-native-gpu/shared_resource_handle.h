@@ -2,6 +2,7 @@
 // Owned native resource reference; no Windows HANDLE crosses the guest wire.
 #pragma once
 #include <utility>
+#include "shared_nt_reference.h"
 
 namespace driver_shared {
 class ResourceHandle {
@@ -13,6 +14,7 @@ public:
     ResourceHandle(ResourceHandle&& other) noexcept : value(std::exchange(other.value, nullptr)) {}
     ~ResourceHandle() { if (value) CloseHandle(value); }
     HANDLE get() const { return value; }
+    NTSTATUS duplicate(HANDLE source) { return duplicateNtReference(source,value); }
     NTSTATUS share(D3DKMT_HANDLE object) {
         if (value || !object) return static_cast<NTSTATUS>(0xc000000du);
         OBJECT_ATTRIBUTES attributes{}; attributes.Length = sizeof attributes;

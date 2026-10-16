@@ -4,6 +4,7 @@
 #pragma once
 #include <stdexcept>
 #include <utility>
+#include "shared_nt_reference.h"
 
 namespace driver_shared {
 class SyncHandle {
@@ -15,6 +16,7 @@ public:
     SyncHandle(SyncHandle&& other) noexcept : value(std::exchange(other.value, nullptr)) {}
     ~SyncHandle() { if (value) CloseHandle(value); }
     HANDLE get() const { return value; }
+    NTSTATUS duplicate(HANDLE source) { return duplicateNtReference(source,value); }
     NTSTATUS share(D3DKMT_HANDLE object) {
         if (value || !object) return static_cast<NTSTATUS>(0xc000000du);
         OBJECT_ATTRIBUTES attributes{}; attributes.Length = sizeof attributes;

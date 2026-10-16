@@ -438,6 +438,7 @@ struct ResidentResult { Result residency; ResidentReply output; };
 struct VendorCpuResult { Result lock; VendorCpuReply output; };
 struct VendorResourceResult { Result allocation; std::uint32_t resource; };
 struct SharedResourceOpenResult { Result allocation; SharedResourceOpenReply info; };
+struct SharedReferenceAlias { std::int32_t ntstatus; std::uint32_t ticket; };
 // The synchronization object is borrowed from the paging queue. Destruction
 // of the queue owns its lifetime; no native handle is exposed to the guest.
 struct GuestPagingResult { Result queue; std::uint32_t sync; std::uint64_t offset; };
@@ -535,6 +536,7 @@ public:
     virtual Result querySharedResourceInfo(std::uint32_t, std::uint32_t, SharedResourceInfo&, std::vector<std::uint8_t>&) { return {-95, 0, 0}; }
     virtual SharedResourceOpenResult importResource(std::uint32_t, SharedResourceOpenDesc, std::vector<std::uint8_t>&) { return {{-95, 0, 0}, {}}; }
     virtual Result exportResource(std::uint32_t) { return {static_cast<std::int32_t>(0xc00000bbu), 0, 0}; }
+    virtual Result duplicateSharedReference(Kind,std::uint32_t) { return {static_cast<std::int32_t>(0xc00000bbu),0,0}; }
     virtual Result querySharedSyncInfo(std::uint32_t, std::uint32_t) {
         return {static_cast<std::int32_t>(0xc00000bbu), 0, 0};
     }
@@ -655,6 +657,42 @@ class Session {
     }
 public:
     explicit Session(Driver& d) : driver(d) {}
+    // Trusted coordinator API, deliberately absent from guest dispatch. The
+    // caller must resolve the actual capability FD before choosing the donor.
+    // A recipient owns a fresh NT reference, never the donor's closing handle.
+    SharedReferenceAlias aliasSharedReference(const Session& donor,Kind kind,std::uint32_t ticket,std::uint32_t adapter) {
+        constexpr auto invalid=static_cast<std::int32_t>(0xc000000du);
+        constexpr auto exhausted=static_cast<std::int32_t>(0xc0000017u);
+        if(this==&donor || &driver!=&donor.driver || !negotiated || !donor.negotiated ||
+            (kind!=Kind::SharedResource && kind!=Kind::SharedSync) ||
+            (kind==Kind::SharedResource ? !resourceSharingNegotiated || !donor.resourceSharingNegotiated :
+                                        !syncSharingNegotiated || !donor.syncSharingNegotiated)) return {invalid,0};
+        const auto source=donor.objects.find(ticket);
+        const auto target=objects.find(adapter);
+        if(source==donor.objects.end() || source->second.kind!=kind || target==objects.end() || target->second.kind!=Kind::Adapter)
+            return {invalid,0};
+        const auto parent=donor.objects.find(source->second.parent);
+        if(parent==donor.objects.end() || parent->second.kind!=Kind::Adapter ||
+            !driver.samePhysicalAdapter(parent->second.nativeHandle,target->second.nativeHandle)) return {invalid,0};
+        const auto count=std::count_if(objects.begin(),objects.end(),[kind](const auto& value){return value.second.kind==kind;});
+        if(objects.size()>=objectLimit() || nextId==UINT32_MAX || static_cast<std::size_t>(count)>=
+            (kind==Kind::SharedResource ? MaxSharedResourceHandles : MaxSharedSyncHandles)) return {exhausted,0};
+        const auto native=driver.duplicateSharedReference(kind,source->second.nativeHandle);
+        const bool known=native.nativeHandle==source->second.nativeHandle || std::any_of(objects.begin(),objects.end(),
+            [&](const auto& value){return value.second.kind==kind && value.second.nativeHandle==native.nativeHandle;});
+        if(native.ntstatus>0 || native.value || (native.ntstatus<0 ? native.nativeHandle!=0 : !native.nativeHandle) ||
+            (!native.ntstatus && known)) {
+            if(native.nativeHandle && !known) driver.destroy(kind,native.nativeHandle);
+            return {static_cast<std::int32_t>(0xc0000001u),0};
+        }
+        if(native.ntstatus) return {native.ntstatus,0};
+        const auto id=nextId++;
+        try {
+            Object alias{kind,adapter,native.nativeHandle,0,0,true};alias.syncFlags=source->second.syncFlags;
+            if(!objects.emplace(id,alias).second) throw std::runtime_error("Shared alias identity collision");
+        } catch(...) { driver.destroy(kind,native.nativeHandle);throw; }
+        return {0,id};
+    }
     bool resourceAdaptersCompatible(std::uint32_t first, std::uint32_t second) const {
         if (first==second) return true;
         if (!openglRenderNegotiated) return false;

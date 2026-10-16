@@ -10,6 +10,7 @@ from verify_hyprland_lifecycle_capture import require
 
 NATIVE_SHA256='a0c95013376eee6b0688485e82100e763d3ce0c5d0c0e93a23e9b94daa7e40ed'
 PRESENTATION_NATIVE_SHA256='6586c6e6583d45974048709bae24ae5c719b15cb9a107e4b22e5fe9b5eb4274e'
+PRESENTATION_NATIVE_BUILDS=(PRESENTATION_NATIVE_SHA256,'d2db1e9260950b6185ed9c575e3cdfdd15a3540b76202515ac4f3fb63e9fd156')
 QEMU_SHA256='dcd422e6a7882af4ede4d6a79915dcfa6b344253b0b008cd6cebb55e62889111'
 ROOT_SHA256='3954123192111ce2d28cafb9dd108e1ca14c288bfc2429ed899b0f36aeccf942'
 
@@ -18,9 +19,9 @@ def validate(report,guest,records,frames,source):
     manifest=source['manifest'];clean=report['disconnectCleanup']
     version=manifest.get('kernelCpuCapacityProfile')
     require(version in (9,10),'Unsupported exact 4K readback profile')
-    native=PRESENTATION_NATIVE_SHA256 if version==10 else NATIVE_SHA256
+    natives=PRESENTATION_NATIVE_BUILDS if version==10 else (NATIVE_SHA256,)
     usage_limit=(1024 if version==10 else 512)*1024*1024
-    require(report.get('driverBridgeSha256')==source['nativeBuildReceipt'].get('bridgeSha256')==native and
+    require(report.get('driverBridgeSha256')==source['nativeBuildReceipt'].get('bridgeSha256') and report.get('driverBridgeSha256') in natives and
             report.get('qemuSha256')==QEMU_SHA256 and report.get('initramfsSha256')==manifest.get('initramfsSha256'),
             'Wrong native/QEMU/private-image provenance')
     require(source.get('sourceImageSha256Before')==source.get('sourceImageSha256After')==ROOT_SHA256 and

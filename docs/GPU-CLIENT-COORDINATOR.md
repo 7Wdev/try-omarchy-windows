@@ -4,6 +4,9 @@ The actual 4K compositor now has [clean memory admission and shutdown](LIVE-NORM
 Quickshell still cannot initialize its GPU context: the authenticated broker
 currently accepts one producer and closes its listener. Supporting another
 producer requires owned native sessions and shared capability lifetimes.
+The [recipient-owned native alias API](GPU-SHARED-REFERENCE-ALIASES.md) now
+passes Session controls and separate NVIDIA NT-reference lifetime probes;
+authenticated cross-client FD routing is still pending.
 
 `driver_actor_router.h` adds a coordinator building block around the existing
 real `driver_bridge::Session` validator. A trusted coordinator registers up to

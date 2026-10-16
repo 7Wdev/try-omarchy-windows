@@ -101,6 +101,8 @@ cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\vendor_lock_probe.cpp" /F
 if not "%errorlevel%"=="0" exit /b %errorlevel%
 cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\sync_sharing_probe.cpp" /Fe:sync-sharing-probe.exe /link d3d12.lib dxgi.lib gdi32.lib
 if not "%errorlevel%"=="0" exit /b %errorlevel%
+cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\shared_reference_alias_probe.cpp" /Fe:shared-reference-alias-probe.exe /link d3d12.lib dxgi.lib gdi32.lib
+if not "%errorlevel%"=="0" exit /b %errorlevel%
 cl /nologo /std:c++17 /EHsc /W4 /WX /O2 /DUNICODE /D_UNICODE "$PSScriptRoot\native_gpu.cpp" /Fe:native-gpu.exe /link d3d12.lib dxgi.lib user32.lib gdi32.lib
 exit /b %errorlevel%
 "@ | Set-Content -LiteralPath $batch -Encoding ascii

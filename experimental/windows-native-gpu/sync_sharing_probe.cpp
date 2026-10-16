@@ -98,12 +98,16 @@ int main() {
             !source.Info.MonitoredFence.FenceValueGPUVirtualAddress) throw std::runtime_error("SourceLayout");
         driver_shared::SyncHandle exported;
         nt(exported.share(owned.source), "ExportNt");
+        driver_shared::SyncHandle alias;
+        nt(alias.duplicate(exported.get()),"DuplicateNt");
+        if(alias.get()==exported.get() || !exported.close()) throw std::runtime_error("AliasOwnership");
+        puts("NATIVE_SYNC_ALIAS independentNtReference=true originalNtClosedBeforeImport=true inheritable=false");
         D3DKMT_OPENSYNCOBJECTFROMNTHANDLE2 imported{};
-        nt(exported.open(owned.recipientDevice, 0, 1, imported), "ImportKmt"); owned.recipient = imported.hSyncObject;
+        nt(alias.open(owned.recipientDevice, 0, 1, imported), "ImportKmt"); owned.recipient = imported.hSyncObject;
         if (!owned.recipient || owned.recipient == owned.source || !imported.MonitoredFence.FenceValueCPUVirtualAddress ||
             !imported.MonitoredFence.FenceValueGPUVirtualAddress) throw std::runtime_error("RecipientLayout");
         ComPtr<ID3D12Device> device; hr(D3D12CreateDevice(selected.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)), "D3D12Device");
-        ComPtr<ID3D12Fence> fence; hr(device->OpenSharedHandle(exported.get(), IID_PPV_ARGS(&fence)), "ImportD3D12");
+        ComPtr<ID3D12Fence> fence; hr(device->OpenSharedHandle(alias.get(), IID_PPV_ARGS(&fence)), "ImportD3D12");
         D3D12_COMMAND_QUEUE_DESC queueDesc{}; queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
         ComPtr<ID3D12CommandQueue> queue; hr(device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&queue)), "Queue");
         auto sourceCpu = static_cast<volatile UINT64*>(source.Info.MonitoredFence.FenceValueCPUVirtualAddress);
@@ -113,7 +117,7 @@ int main() {
         }
         D3DKMT_DESTROYSYNCHRONIZATIONOBJECT destroy{}; destroy.hSyncObject = owned.source;
         nt(D3DKMTDestroySynchronizationObject(&destroy), "DestroySource"); owned.source = 0; sourceCpu = nullptr;
-        if (!exported.close()) throw std::runtime_error("CloseExport");
+        if (!alias.close()) throw std::runtime_error("CloseAlias");
         puts("NATIVE_SYNC_SOURCE_RELEASED originalDestroyed=true ntHandleClosed=true aliasesLive=true");
         for (UINT64 target = 9; target <= 16; ++target) {
             hr(queue->Signal(fence.Get(), target), "QueueSignalAfterClose"); wait(nullptr, recipientCpu, fence.Get(), target);

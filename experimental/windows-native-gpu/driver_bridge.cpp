@@ -907,6 +907,34 @@ public:
                   << ",\"resourceDriverBytes\":" << output.resourceDriverBytes << ",\"allocations\":" << output.allocations << "}\n";
         return {0, 0, 0};
     }
+    Result duplicateSharedReference(Kind kind,std::uint32_t source) override {
+        if(!runtime || runtime->hasStopped()) return {Invalid,0,0};
+        if(kind==Kind::SharedResource) {
+            const auto found=sharedResourceHandles.find(source);
+            if(!resourceSharingEnabled || found==sharedResourceHandles.end() || sharedResourceHandles.size()>=MaxSharedResourceHandles ||
+                nextSharedResource==UINT32_MAX) return {Invalid,0,0};
+            SharedResource alias;alias.guestRuntime=found->second.guestRuntime;
+            const auto status=alias.handle.duplicate(found->second.handle.get());if(status) return {status,0,0};
+            const auto ticket=nextSharedResource++;
+            if(!sharedResourceHandles.emplace(ticket,std::move(alias)).second) throw std::runtime_error("Resource alias ticket collision");
+            ++exportedResourceHandles;
+            std::cerr<<"{\"nativeSharedReferenceAliased\":true,\"kind\":\"resource\",\"independentNtReference\":true,\"inheritable\":false,\"rawHandleExposed\":false}\n";
+            return {0,ticket,0};
+        }
+        if(kind==Kind::SharedSync) {
+            const auto found=sharedSyncHandles.find(source);
+            if(!syncSharingEnabled || found==sharedSyncHandles.end() || sharedSyncHandles.size()>=MaxSharedSyncHandles ||
+                nextSharedSync==UINT32_MAX) return {Invalid,0,0};
+            driver_shared::SyncHandle alias;
+            const auto status=alias.duplicate(found->second.get());if(status) return {status,0,0};
+            const auto ticket=nextSharedSync++;
+            if(!sharedSyncHandles.emplace(ticket,std::move(alias)).second) throw std::runtime_error("Sync alias ticket collision");
+            ++exportedSyncHandles;
+            std::cerr<<"{\"nativeSharedReferenceAliased\":true,\"kind\":\"sync\",\"independentNtReference\":true,\"inheritable\":false,\"rawHandleExposed\":false}\n";
+            return {0,ticket,0};
+        }
+        return {Invalid,0,0};
+    }
     SharedResourceOpenResult importResource(std::uint32_t ticket, SharedResourceOpenDesc desc, std::vector<std::uint8_t>& data) override {
         std::cerr << "{\"nativeResourceFdOpenBegin\":true,\"runtimeBytes\":" << desc.runtimeBytes << ",\"driverBytes\":" << desc.driverBytes << "}\n";
         const auto shared = sharedResourceHandles.find(ticket);

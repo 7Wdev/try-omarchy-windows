@@ -222,7 +222,35 @@ static void synchronizationOnlySignals() {
     require(fake.live.empty() && fake.borrowed.empty());
     std::cout<<"SYNC_ONLY_CONTEXT nativeSignalsAuthorized=true foreignDeviceRejected=true duplicateRejected=true commandQueueDenied=true gpu=false\n";
 }
+
+static void actorSyncAliases() {
+    struct AliasNative : Fake {
+        bool equivalent=true;unsigned duplicates=0;
+        bool samePhysicalAdapter(std::uint32_t a,std::uint32_t b) const override { return equivalent && live.count(a) && live.count(b); }
+        Result duplicateSharedReference(Kind kind,std::uint32_t source) override {
+            require(kind==Kind::SharedSync && live.at(source)==Kind::SharedSync);++duplicates;return create(kind);
+        }
+    } native;
+    Session recipient(native);negotiate(recipient);begin(recipient);
+    const auto adapter=add(recipient,Op::OpenAdapter,0),device=add(recipient,Op::CreateDevice,adapter);
+    std::uint32_t alias=0;
+    {
+        Session donor(native);negotiate(donor);begin(donor);
+        const auto a=add(donor,Op::OpenAdapter,0),d=add(donor,Op::CreateDevice,a);
+        const auto original=sync(donor,d),ticket=add(donor,Op::ExportSync,original);
+        require(recipient.aliasSharedReference(donor,Kind::SharedResource,ticket,adapter).ntstatus<0);
+        native.equivalent=false;require(recipient.aliasSharedReference(donor,Kind::SharedSync,ticket,adapter).ntstatus<0);
+        native.equivalent=true;require(!native.duplicates);
+        const auto copied=recipient.aliasSharedReference(donor,Kind::SharedSync,ticket,adapter);require(!copied.ntstatus && copied.ticket);alias=copied.ticket;
+    }
+    const auto opened=recipient.dispatch(request(Op::ImportSync,alias,SharedSyncOpenDesc{device,SharedSyncImportFlags,1,0}));
+    require(!header(opened).status && header(opened).handle);
+    require(!header(recipient.dispatch(request(Op::CloseSharedSync,alias))).status);
+    std::cout<<"ACTOR_SYNC_ALIAS physicalAdapterChecked=true independentNativeReference=true donorSessionDestroyed=true recipientImport=true native=mock gpu=false\n";
+}
+
 int main() {
+    actorSyncAliases();
     try {
         for(const auto version:{2u,3u}) {
             Fake quota;

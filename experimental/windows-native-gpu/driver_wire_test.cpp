@@ -393,7 +393,65 @@ struct Fake : Driver {
         return {fail ? -123 : 0, 0, 0};
     }
 };
+
+static void actorResourceAliases() {
+    struct AliasNative : Fake {
+        bool equivalent=true;unsigned duplicates=0;int broken=0;std::uint32_t known=0;
+        bool samePhysicalAdapter(std::uint32_t a,std::uint32_t b) const override { return equivalent && a>500 && b>500; }
+        Result duplicateSharedReference(Kind kind,std::uint32_t source) override {
+            require(kind==Kind::SharedResource && resourceTickets.count(source));++duplicates;
+            if(broken==3) return {0,0,0};
+            if(broken==4) return {0,source,0};
+            if(broken==5) return {-123,0,0};
+            if(broken==6) return {0,known,0};
+            const auto id=++next;resourceTickets.insert(id);
+            return {broken==1 ? 259 : broken==7 ? -123 : 0,id,broken==2 ? 1ull : 0ull};
+        }
+    } native;
+    native.vendorEnabled=native.resourceEnabled=native.sharedResourceEnabled=native.nativeTextureEnabled=true;
+    Session recipient(native),unnegotiated(native);recipient.dispatch(hello());
+    require(!header(recipient.dispatch(request(Op::BeginResourceSharing))).status);
+    const auto adapter=header(recipient.dispatch(request(Op::OpenAdapter))).handle;
+    const auto device=header(recipient.dispatch(request(Op::CreateDevice,adapter))).handle;
+    std::uint32_t alias=0;
+    {
+        Session donor(native);donor.dispatch(hello());require(!header(donor.dispatch(request(Op::BeginResourceSharing))).status);
+        const auto a=header(donor.dispatch(request(Op::OpenAdapter))).handle;
+        const auto d=header(donor.dispatch(request(Op::CreateDevice,a))).handle;
+        NativeSharedVendorAllocationDesc desc{{{4,0x78100000,0,4,0,0},4,0},{130,73,28,1}};
+        auto create=request(Op::CreateNativeSharedVendorResourceAllocation,d,desc);create.insert(create.end(),{37,38,39,40,5,6,7,8});
+        const auto output=donor.dispatch(create);VendorResourceReply resource{};
+        require(!header(output).status);std::memcpy(&resource,output.data()+sizeof(Header)+sizeof(Reply),sizeof resource);
+        const auto ticket=header(donor.dispatch(request(Op::ExportResource,resource.resource))).handle;require(ticket);
+        for(const auto kind:{Kind::Adapter,Kind::SharedSync,Kind::VendorResource})
+            require(recipient.aliasSharedReference(donor,kind,ticket,adapter).ntstatus<0);
+        require(donor.aliasSharedReference(donor,Kind::SharedResource,ticket,a).ntstatus<0);
+        require(unnegotiated.aliasSharedReference(donor,Kind::SharedResource,ticket,adapter).ntstatus<0);
+        require(recipient.aliasSharedReference(donor,Kind::SharedResource,ticket,device).ntstatus<0);
+        require(recipient.aliasSharedReference(donor,Kind::SharedResource,UINT32_MAX,adapter).ntstatus<0);
+        native.equivalent=false;require(recipient.aliasSharedReference(donor,Kind::SharedResource,ticket,adapter).ntstatus<0);
+        native.equivalent=true;require(!native.duplicates);
+        const auto valid=recipient.aliasSharedReference(donor,Kind::SharedResource,ticket,adapter);
+        require(!valid.ntstatus && valid.ticket);alias=valid.ticket;
+        const auto initial=native.resourceTickets.size();native.known=*native.resourceTickets.rbegin();
+        for(int mode=1;mode<=7;++mode) {
+            native.broken=mode;const auto result=recipient.aliasSharedReference(donor,Kind::SharedResource,ticket,adapter);
+            require(result.ntstatus<0 && !result.ticket && native.resourceTickets.size()==initial);
+        }
+        native.broken=0;
+        for(std::size_t n=1;n<MaxSharedResourceHandles;++n) require(!recipient.aliasSharedReference(donor,Kind::SharedResource,ticket,adapter).ntstatus);
+        const auto calls=native.duplicates;require(recipient.aliasSharedReference(donor,Kind::SharedResource,ticket,adapter).ntstatus<0 && native.duplicates==calls);
+    }
+    require(native.resourceTickets.size()==MaxSharedResourceHandles);
+    const auto info=recipient.dispatch(request(Op::QuerySharedResourceInfo,alias,SharedResourceQueryDesc{device,4}));
+    require(!header(info).status);
+    const auto imported=recipient.dispatch(request(Op::ImportResource,alias,SharedResourceOpenDesc{device,4,8,0}));
+    require(!header(imported).status && header(imported).handle);
+    std::cout<<"ACTOR_RESOURCE_ALIAS physicalAdapterChecked=true negotiatedOnly=true independentNativeReference=true donorSessionDestroyed=true recipientImport=true malformedRepliesRejected=true quotasPreserved=true native=mock gpu=false\n";
+}
+
 int main() {
+    actorResourceAliases();
     {
         static_assert(static_cast<unsigned>(Op::EvictVendorAllocations)==0x20a1);
         static_assert(static_cast<unsigned>(Op::CreateNativeInteropResource)==0x20a2);
