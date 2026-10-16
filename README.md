@@ -20,8 +20,9 @@ The shipped Lua configuration also produces the first actual Omarchy wallpaper/b
 That diagnostic later fails and does not establish stable operation or application GPU acceleration.
 The next target is **3840×2160 with both Hyprland and Quickshell verified on the GPU**. Mesa's Wayland platform now builds;
 hardware-only 4K tests expose GPU-map, reported-usage and CPU-map capacity limits, with no verified 4K backbuffer yet.
-An explicit 4K profile adds bounded GPU capacity while preserving the working 300-frame path. Matching kernel/host CPU capacity
-and safe independent GPU clients still need implementation. [4K controls and remaining work](docs/LIVE-NORMAL-OMARCHY-4K-CAPACITY.md).
+Explicit 4K profiles add bounded GPU capacity and a verified 192 MiB kernel/host CPU contract while preserving older profiles.
+The next hardware attempt hits the separate 256-slot aperture limit; no 4K pixels are verified. A larger sparse aperture and
+safe independent GPU clients remain open. [4K controls and remaining work](docs/LIVE-NORMAL-OMARCHY-4K-CAPACITY.md).
 Normal UWSM/launcher/input integration, reliable scanout,
 long-run stability and ≥93% matched-native performance remain open. [Actual images, retained failures and scope](docs/LIVE-NORMAL-OMARCHY-GPU.md).
 

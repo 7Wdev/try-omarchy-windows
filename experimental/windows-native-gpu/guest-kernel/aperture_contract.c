@@ -119,6 +119,19 @@ int main(void)
     alarm(20);
     int control=open("/dev/wddm-aperture",O_RDWR|O_CLOEXEC);
     REQUIRE(control>=0);
+    struct wddm_aperture_caps capacity={.version=1};
+    REQUIRE(!ioctl(control,WDDM_APERTURE_CAPS,&capacity) && wddm_aperture_valid_caps(capacity));
+    for(unsigned n=0;n<5;++n) {
+        struct wddm_aperture_caps bad={.version=1};
+        if(n==0) bad.version=2;
+        if(n==1) bad.flags=1;
+        if(n==2) bad.cpu_byte_limit=4096;
+        if(n==3) bad.reserved[0]=1;
+        if(n==4) bad.reserved[1]=1;
+        errno=0; REQUIRE(ioctl(control,WDDM_APERTURE_CAPS,&bad)==-1 && errno==EINVAL);
+    }
+    printf("APERTURE_CAPACITY version=1 flags=%u cpuByteLimit=%llu exact=true\n",capacity.flags,
+        (unsigned long long)capacity.cpu_byte_limit);
     struct wddm_aperture_info layout=info(control);
     REQUIRE(layout.version==1 && (layout.fence_slots==64 || layout.fence_slots==128 || layout.fence_slots==256) &&
         layout.fence_bytes==(uint64_t)layout.fence_slots*4096 &&
@@ -194,13 +207,13 @@ int main(void)
     REQUIRE(ioctl(control,WDDM_APERTURE_CREATE,&arg)==-1 && errno==ENOSPC);
     REQUIRE(info(control).active_leases==lease_limit);
     for (unsigned n=0;n<lease_limit;++n) { revoke_lease(control,leases[n].cookie); close(leases[n].fd); }
-    if (layout.allocation_bytes > WDDM_APERTURE_CPU_LIMIT) {
-        cpu=(struct wddm_aperture_create){.version=1,.kind=2,.bytes=WDDM_APERTURE_CPU_LIMIT,.host_generation=3,.flags=1};
+    if (layout.allocation_bytes > capacity.cpu_byte_limit) {
+        cpu=(struct wddm_aperture_create){.version=1,.kind=2,.bytes=capacity.cpu_byte_limit,.host_generation=3,.flags=1};
         REQUIRE(!ioctl(control,WDDM_APERTURE_CREATE,&cpu));
-        overlap=(struct wddm_aperture_create){.version=1,.kind=2,.offset=WDDM_APERTURE_CPU_LIMIT,
+        overlap=(struct wddm_aperture_create){.version=1,.kind=2,.offset=capacity.cpu_byte_limit,
             .bytes=4096,.host_generation=4,.flags=1};
         errno=0; REQUIRE(ioctl(control,WDDM_APERTURE_CREATE,&overlap)==-1 && errno==ENOSPC);
-        REQUIRE(info(control).active_cpu_bytes==WDDM_APERTURE_CPU_LIMIT);
+        REQUIRE(info(control).active_cpu_bytes==capacity.cpu_byte_limit);
         revoke_lease(control,cpu.cookie); close(cpu.fd);
     }
     object_contract(control);

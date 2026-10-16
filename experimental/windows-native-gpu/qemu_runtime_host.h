@@ -286,6 +286,7 @@ public:
     unsigned liveMappings() const { return mapped; }
     bool canMapFence() const { return !stopped && generation != UINT64_MAX && mapped < fenceSlots; }
     std::size_t allocationSlotLimit() const { return allocationSlots; }
+    std::size_t fenceSlotLimit() const { return fenceSlots; }
     bool canMapAllocation(std::uint32_t bytes) const { return allocationsEnabled && !stopped && allocationAperture.canMap(bytes); }
     AllocationLease mapAllocation(void* data, std::uint32_t bytes) {
         const auto source = reinterpret_cast<std::uintptr_t>(data);

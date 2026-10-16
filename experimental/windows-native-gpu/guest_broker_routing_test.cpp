@@ -22,11 +22,45 @@ template<class F> static void denied(F f,int code) {
 static std::vector<std::uint8_t> packet(Op op,std::uint32_t object=0,const std::vector<std::uint8_t>& body={}) {
     auto data=encode(Header{static_cast<std::uint32_t>(op),object,0,0}); data.insert(data.end(),body.begin(),body.end()); return data;
 }
+static void cpuCapacityPolicy() {
+    struct Authority {
+        wddm_aperture_caps cap{1,WDDM_APERTURE_DESKTOP_CPU_ENABLED,WDDM_APERTURE_DESKTOP_CPU_LIMIT,{0,0}};
+        wddm_aperture_info layout{1,256,256,0,256*4096,256*1048576,1048576,0,0,0,0};
+        unsigned queries=0;
+        wddm_aperture_caps capacity() { ++queries;return cap; }
+        wddm_aperture_info info() { return layout; }
+    } kernel;
+    const auto begin=packet(Op::BeginOpenGl,0,encode(GuestOpenGlDesktop4kCapacity));
+    verifyCpuCapacityProfile(begin,kernel); CHECK(kernel.queries==1);
+    denied([&]{verifyCpuCapacityProfile(packet(Op::BeginOpenGl,0,encode(std::uint32_t{7})),kernel);},EPROTO);
+    for(unsigned n=0;n<8;++n) {
+        auto broken=kernel;
+        if(n==0) broken.cap={1,0,WDDM_APERTURE_CPU_LIMIT,{0,0}};
+        if(n==1) broken.cap.cpu_byte_limit+=4096;
+        if(n==2) broken.cap.flags=3;
+        if(n==3) broken.cap.reserved[0]=1;
+        if(n==4) broken.cap.reserved[1]=1;
+        if(n==5) broken.layout.allocation_slots=128;
+        if(n==6) broken.layout.fence_slots=128;
+        if(n==7) broken.layout.version=2;
+        denied([&]{verifyCpuCapacityProfile(begin,broken);},EPROTO);
+    }
+    for(unsigned field=0;field<8;++field) {
+        auto contract=GuestOpenGlDesktop4kCapacity;
+        std::uint32_t words[8]{};std::memcpy(words,&contract,sizeof words);++words[field];
+        std::memcpy(&contract,words,sizeof words);
+        Views views;
+        denied([&]{views.observe(packet(Op::BeginOpenGl,0,encode(contract)),packet(Op::BeginOpenGl,0,encode(GuestOpenGlDesktop4kCpuProfile)));},EPROTO);
+    }
+    verifyCpuCapacityProfile(packet(Op::BeginOpenGl,0,encode(std::uint32_t{6})),kernel);
+    CHECK(kernel.queries==1); // Older profiles require no new kernel ABI.
+    std::cout<<"BROKER_CPU_CAPACITY exact192MiB=true ownKernelQuery=true missingAndMalformedRejected=true legacyUnchanged=true kernel=mock gpu=false\n";
+}
 static void profileObjectBudgets() {
     for(const auto profile:{GuestOpenGlFenceProfile,GuestOpenGlCompositorProfile,
-                            GuestOpenGlCompositorRenderProfile,GuestOpenGlDesktopProfile,GuestOpenGlDesktop4kProfile}) {
+                            GuestOpenGlCompositorRenderProfile,GuestOpenGlDesktopProfile,GuestOpenGlDesktop4kProfile,GuestOpenGlDesktop4kCpuProfile}) {
         Views views;
-        const auto request=packet(Op::BeginOpenGl,0,encode(profile.version));
+        const auto request=packet(Op::BeginOpenGl,0,profile.version==7 ? encode(GuestOpenGlDesktop4kCapacity) : encode(profile.version));
         auto malformed=profile; ++malformed.objectLimit;
         denied([&]{views.observe(request,packet(Op::BeginOpenGl,0,encode(malformed)));},EPROTO);
         views.observe(request,packet(Op::BeginOpenGl,0,encode(profile)));
@@ -143,6 +177,7 @@ struct KernelMock {
     wddm_sync_file_stats syncFileInfo() { return {1,0,0,0,0,0,0,0}; }
     unsigned created=0,released=0;
     void close() {}
+    wddm_aperture_caps capacity() { return {1,0,WDDM_APERTURE_CPU_LIMIT,{0,0}}; }
     wddm_aperture_info info() { return {1,128,256,0,128*4096,256*1048576,1048576,0,0,0,0}; }
     std::pair<Fd,std::uint64_t> acquire(ViewRequest view) {
         CHECK(view.kind==WDDM_APERTURE_FENCE && view.offset==4096 && view.bytes==4096 && !view.generation);
@@ -176,6 +211,7 @@ static void realRpc(bool attack,const char* probe=nullptr,const char* shim=nullp
             }
             Client client;
             CHECK(client.info().allocation_slots==256);
+            CHECK(client.capacity().cpu_byte_limit==WDDM_APERTURE_CPU_LIMIT);
             client.driver(packet(Op::OpenAdapter)); client.driver(packet(Op::CreateDevice,1)); client.driver(packet(Op::CreateGuestPagingQueue,2));
             auto reply=client.acquire({WDDM_APERTURE_FENCE,0,4096,4096,0});
             CHECK(reply.fds.size()==1 && (fcntl(reply.fds[0].get(),F_GETFD)&FD_CLOEXEC));
@@ -268,6 +304,7 @@ int main(int argc,char** argv) {
         if (argc!=1 && argc!=3 && (argc!=4 || std::strcmp(argv[3],"--expect-close-deadlock"))) throw std::runtime_error("Use optional PROBE SHIM [--expect-close-deadlock]");
         viewPolicy();
         profileObjectBudgets();
+        cpuCapacityPolicy();
         if (geteuid()) { std::cout<<"BROKER_RPC_CONTRACT skipped=root-required\n"; return 0; }
         alarm(25); realRpc(false); realRpc(true); replyDisconnect();
         if (argc>=3) realRpc(false,argv[1],argv[2],argc==4);

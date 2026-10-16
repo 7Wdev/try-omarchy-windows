@@ -30,6 +30,22 @@ constexpr OpenGlProfile GuestOpenGlDesktopProfile{5, 0, 0, 64, 16ull * 1024 * 10
 constexpr OpenGlProfile GuestOpenGlDesktop4kProfile{6, 0, 0, 64, 16ull * 1024 * 1024 * 1024, 0, 1024};
 constexpr std::uint32_t OpenGlDesktop4kGpuMappedBytes = 512u * 1024 * 1024;
 constexpr std::uint64_t OpenGlDesktop4kReportedGpuBytes = 512ull * 1024 * 1024;
+// Version 7 additionally requires an explicit kernel capacity receipt. A bare
+// version number cannot opt into the larger CPU budget. Versions 1-6 are fixed.
+constexpr OpenGlProfile GuestOpenGlDesktop4kCpuProfile{7, 0, 0, 64, 16ull * 1024 * 1024 * 1024, 0, 1024};
+constexpr std::uint32_t OpenGlDesktop4kCpuBytes = 192u * 1024 * 1024;
+struct OpenGlDesktop4kCapacity {
+    std::uint32_t version, kernelVersion;
+    std::uint64_t cpuByteLimit;
+    std::uint32_t cpuSlots, fenceSlots;
+    std::uint64_t reserved;
+};
+static_assert(sizeof(OpenGlDesktop4kCapacity)==32,"Fixed explicit kernel-capacity receipt");
+constexpr OpenGlDesktop4kCapacity GuestOpenGlDesktop4kCapacity{7,1,OpenGlDesktop4kCpuBytes,256,256,0};
+inline bool validOpenGlDesktop4kCapacity(OpenGlDesktop4kCapacity c) {
+    return c.version==7 && c.kernelVersion==1 && c.cpuByteLimit==OpenGlDesktop4kCpuBytes &&
+           c.cpuSlots==256 && c.fenceSlots==256 && !c.reserved;
+}
 constexpr std::uint32_t OpenGlDesktopVendorAllocations = 512;
 inline bool lifetimeBudgetAvailable(std::uint64_t used,std::uint32_t limit) {
     return used<UINT64_MAX && (!limit || used<limit);
@@ -60,6 +76,10 @@ inline bool validOpenGlCompositorRenderProfile(OpenGlProfile p) {
 }
 inline bool validOpenGlDesktopProfile(OpenGlProfile p) {
     return p.version==5 && !p.frames && !p.commandLimit && p.reservationLimit==64 &&
+           p.reservedBytes==16ull*1024*1024*1024 && !p.requestLimit && p.objectLimit==1024;
+}
+inline bool validOpenGlDesktop4kCpuProfile(OpenGlProfile p) {
+    return p.version==7 && !p.frames && !p.commandLimit && p.reservationLimit==64 &&
            p.reservedBytes==16ull*1024*1024*1024 && !p.requestLimit && p.objectLimit==1024;
 }
 inline bool validOpenGlDesktop4kProfile(OpenGlProfile p) {

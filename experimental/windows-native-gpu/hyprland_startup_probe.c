@@ -292,8 +292,8 @@ static int startup_main(int argc,char** argv,char** environment) {
     if((mkdir(runtime,0700) && errno!=EEXIST) ||
        (mkdir(home,0700) && errno!=EEXIST)) return 122;
 #ifdef WDDM_BRIDGE_COMPOSITOR_HOST_SCENE
-    const unsigned profile=getenv("WDDM_BRIDGE_DESKTOP_4K_PROBE") ? 6 : 5;
-    const char* begin_name=profile==6 ? "wddm_bridge_begin_opengl_desktop_4k_render" : "wddm_bridge_begin_opengl_desktop_render";
+    const unsigned profile=getenv("WDDM_BRIDGE_DESKTOP_4K_CPU_PROBE") ? 7 : getenv("WDDM_BRIDGE_DESKTOP_4K_PROBE") ? 6 : 5;
+    const char* begin_name=profile==7 ? "wddm_bridge_begin_opengl_desktop_4k_cpu_render" : profile==6 ? "wddm_bridge_begin_opengl_desktop_4k_render" : "wddm_bridge_begin_opengl_desktop_render";
 #else
     const unsigned profile=4;
     const char* begin_name="wddm_bridge_begin_opengl_compositor_render";

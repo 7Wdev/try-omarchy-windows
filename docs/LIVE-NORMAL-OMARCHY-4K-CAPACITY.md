@@ -39,11 +39,48 @@ explicit high-resolution lab executable. Default builds reject it. Malformed
 negotiation, duplicate negotiation, quota exhaustion and legacy profile rules
 remain checked. The normal Windows launcher does not select this experiment.
 
-The kernel independently enforces the 96 MiB CPU-map limit. The next capacity
-change needs matching kernel and host support, explicit profile selection and
-real failure/cleanup tests. Raising a host constant alone would be insufficient.
+The default kernel independently retains the 96 MiB CPU-map limit. The separate
+version-7 profile now carries a fixed 32-byte capacity receipt: kernel ABI 1,
+192 MiB CPU mappings, 256 allocation slots and 256 fence slots, with reserved
+fields zero. Its new export is `wddm_bridge_begin_opengl_desktop_4k_cpu_render`.
+The kernel needs the immutable load-time `enable_desktop_4k_cpu=1` parameter.
+Additive `WDDM_APERTURE_CAPS` discovery leaves the original INFO ABI unchanged;
+the authenticated broker independently queries its controller and rejects
+missing, malformed or mismatched capacity before forwarding the negotiation.
+The Windows owner also requires its actual 256/256-slot runtime and expanded
+GPU/CPU capabilities. Versions 1–6 retain their previous budgets and requests.
+
+The [version-7 hardware control](evidence/NORMAL-OMARCHY-4K-CPU-CAPACITY-2026-10-16.json)
+passes **1,101 aperture checks**, including the actual 192 MiB allocation boundary
+and rejection of one additional page, then initializes the genuine NVIDIA runtime
+with that capacity verified. It still produces **zero audited backbuffers**.
+The next 33,226,752-byte mapping passes the CPU-byte guard, but needs 32 adjacent
+1 MiB aperture slots. At failure, **226 of 256 slots** are occupied, leaving only
+30 total free. Native slot preflight rejects the mapping before obtaining its
+driver lock (`errno=12`, one slot-quota rejection); Hyprland aborts after 25 retired
+GPU commands. The native owner eventually cleans up after normal VM exit, but
+the deferred mappings keep this a failed control. No Qt software override is used.
+
+The next capacity work is an explicitly negotiated larger sparse aperture or
+safe packing of small views. CPU byte accounting must remain separate from
+reserved MMIO slots; moving live mappings or sharing unproven backing aliases
+would violate the current lease/lifetime contract.
 Independent GPU-client ownership, capability lifetimes and aggregate accounting
 still need implementation before Hyprland and Quickshell can both use the GPU.
+
+A [fresh regression with the capacity-aware kernel](evidence/NORMAL-OMARCHY-CPU-HANDSHAKE-REGRESSION-2026-10-16.json)
+verifies its unchanged default 96 MiB limit and the preserved version-5 profile:
+**300 frames / 948 retired GPU commands**, both native backbuffers accepted by
+the strict scene auditor, all 142 fence views, 185 allocation views and 213 slot
+maps explicitly released before normal VM exit. The entire source disk digest
+is unchanged. Its controlled Foot application remains software-rendered;
+this proves NVIDIA compositor regression scope, not an all-GPU desktop.
+Seven new evidence tests cover the handshake, real kernel boundary controls,
+slot failure, rejection of false desktop success and the passing regression.
+All **327 milestone tests**, strict default/high-resolution native builds,
+105 default CLI rejections, legacy transport controls and real Unix broker
+credential/FD-lifetime checks pass. The earlier failed build/test invocations
+remain retained alongside their corrected passing controls.
 
 The [established version-5 regression](evidence/NORMAL-OMARCHY-PROFILE5-REGRESSION-2026-10-16.json)
 still passes **300 frames / 948 retired GPU commands** inside the real OS, with

@@ -18,6 +18,21 @@ static inline __u32 wddm_aperture_lease_limit(__u32 fence_slots)
     return fence_slots == 256 ? WDDM_APERTURE_MAX_LEASES : WDDM_APERTURE_DEFAULT_LEASES;
 }
 #define WDDM_APERTURE_CPU_LIMIT (96ULL * 1024 * 1024)
+#define WDDM_APERTURE_DESKTOP_CPU_LIMIT (192ULL * 1024 * 1024)
+/* Additive discovery leaves the original INFO structure/ABI unchanged. */
+#define WDDM_APERTURE_DESKTOP_CPU_ENABLED 1U
+struct wddm_aperture_caps {
+	__u32 version, flags;
+	__u64 cpu_byte_limit, reserved[2];
+};
+static inline int wddm_aperture_valid_caps(struct wddm_aperture_caps caps)
+{
+	return caps.version == 1 && !caps.reserved[0] && !caps.reserved[1] &&
+		((!caps.flags && caps.cpu_byte_limit == WDDM_APERTURE_CPU_LIMIT) ||
+		 (caps.flags == WDDM_APERTURE_DESKTOP_CPU_ENABLED &&
+		  caps.cpu_byte_limit == WDDM_APERTURE_DESKTOP_CPU_LIMIT));
+}
+#define WDDM_APERTURE_CAPS _IOWR('W', 0x50, struct wddm_aperture_caps)
 #define WDDM_OBJECT_SYNC 1
 #define WDDM_OBJECT_RESOURCE 2
 #define WDDM_OBJECT_MAX 256

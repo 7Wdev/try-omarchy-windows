@@ -49,6 +49,16 @@ public:
         if (std::strcmp(value, "1")) throw std::runtime_error("Invalid kernel aperture opt-in");
         return true;
     }
+    wddm_aperture_caps capacity() {
+        wddm_aperture_caps value{}; value.version=1;
+        if (guest_broker::clientEnabled()) value=guest_broker::client().capacity();
+        else {
+            open();
+            if (syscall(SYS_ioctl,control,WDDM_APERTURE_CAPS,&value)) failed("capacity");
+        }
+        if (!wddm_aperture_valid_caps(value)) throw std::runtime_error("Kernel aperture capacity mismatch");
+        return value;
+    }
     wddm_aperture_info info() {
         wddm_aperture_info value{}; value.version = WDDM_APERTURE_VERSION;
         if (guest_broker::clientEnabled()) value = guest_broker::client().info();
@@ -62,7 +72,8 @@ public:
             (value.allocation_slots & (value.allocation_slots - 1)) ||
             value.cpu_slot_bytes != 1048576 || value.fence_bytes != value.fence_slots * 4096ull ||
             value.allocation_bytes != value.allocation_slots * value.cpu_slot_bytes ||
-            value.active_leases > wddm_aperture_lease_limit(value.fence_slots) || value.active_cpu_bytes > WDDM_APERTURE_CPU_LIMIT)
+            value.active_leases > wddm_aperture_lease_limit(value.fence_slots) || value.active_cpu_bytes > WDDM_APERTURE_DESKTOP_CPU_LIMIT ||
+            (value.active_cpu_bytes>WDDM_APERTURE_CPU_LIMIT && value.active_cpu_bytes>capacity().cpu_byte_limit))
             throw std::runtime_error("Kernel aperture layout mismatch");
         return value;
     }

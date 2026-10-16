@@ -102,9 +102,10 @@ static int kernel_aperture_start(void) {
     if (access("/kernel-aperture-required", F_OK)) return 0;
     const int module = open("/wddm-aperture.ko", O_RDONLY | O_CLOEXEC);
     if (module < 0) { perror("aperture module open"); return -1; }
-    char parameters[96]={0};
+    char parameters[128]={0};
     if(!access("/native-sync-files-required",F_OK)) strcat(parameters,"enable_native_sync_files=1 ");
-    if(!access("/native-buffers-required",F_OK)) strcat(parameters,"enable_native_buffers=1");
+    if(!access("/native-buffers-required",F_OK)) strcat(parameters,"enable_native_buffers=1 ");
+    if(!access("/opt/wddm-root/desktop-4k-cpu-probe",F_OK)) strcat(parameters,"enable_desktop_4k_cpu=1");
     const int result = (int)syscall(SYS_finit_module, module, parameters, 0);
     close(module);
     if (result) { perror("guest aperture finit_module"); return -1; }

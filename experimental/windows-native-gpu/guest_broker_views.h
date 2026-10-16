@@ -91,13 +91,16 @@ public:
         const auto op = static_cast<Op>(h.type);
         if(op==Op::BeginOpenGl) {
             require(!h.handle && !r.handle && !profileObserved && parents.empty() && grants.empty() && resources.empty() &&
-                    (request.size()==sizeof(Header) || request.size()==sizeof(Header)+sizeof(std::uint32_t)) &&
+                    (request.size()==sizeof(Header) || request.size()==sizeof(Header)+sizeof(std::uint32_t) || request.size()==sizeof(Header)+sizeof(OpenGlDesktop4kCapacity)) &&
                     response.size()==sizeof(Header)+sizeof(OpenGlProfile),"Invalid native OpenGL profile receipt");
             const auto version=request.size()==sizeof(Header) ? 1u : at<std::uint32_t>(request,sizeof(Header));
+            require(version==7 ? request.size()==sizeof(Header)+sizeof(OpenGlDesktop4kCapacity) &&
+                    validOpenGlDesktop4kCapacity(at<OpenGlDesktop4kCapacity>(request,sizeof(Header))) :
+                    request.size()==sizeof(Header)+(version==1 ? 0 : sizeof(std::uint32_t)),"Wrong profile request extent");
             const auto profile=at<OpenGlProfile>(response,sizeof(Header));
             require(version==1 ? validOpenGlProfile(profile) : version==2 ? validOpenGlFenceProfile(profile) :
                     version==3 ? validOpenGlCompositorProfile(profile) : version==4 ? validOpenGlCompositorRenderProfile(profile) :
-                    version==5 ? validOpenGlDesktopProfile(profile) : version==6 && validOpenGlDesktop4kProfile(profile),"Wrong native OpenGL profile receipt");
+                    version==5 ? validOpenGlDesktopProfile(profile) : version==6 ? validOpenGlDesktop4kProfile(profile) : version==7 && validOpenGlDesktop4kCpuProfile(profile),"Wrong native OpenGL profile receipt");
             // The broker must enforce the host's exact negotiated live-object
             // budget. Its former unconditional 512 cap rejected valid v4/v5
             // allocations while the native session still had capacity.

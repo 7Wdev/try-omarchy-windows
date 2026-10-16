@@ -59,6 +59,7 @@ class KmtDriver : public Driver {
     bool openglRenderEnabled = false;
     bool openglDesktopEnabled = false;
     bool openglDesktop4kEnabled = false;
+    bool openglDesktop4kCpuEnabled = false;
     unsigned compositorCaptureAttempts = 0, completedCompositorCaptures = 0, failedCompositorCaptures = 0;
     std::unique_ptr<driver_shared::CompositorReadback> compositorPresenter;
     std::unique_ptr<driver_shared::CompositorPresenter> compositorOutput;
@@ -616,22 +617,27 @@ public:
         return GuestStreamProfile;
     }
     OpenGlProfile beginOpenGl(std::uint32_t version = 1) override {
-        if (version==6 && !(capabilities().flags & ExpandedVendorGpuCapability)) return {};
+        if (version>=6 && !(capabilities().flags & ExpandedVendorGpuCapability)) return {};
+        if (version==7 && (!(capabilities().flags & ExpandedVendorCpuCapability) || !runtime ||
+            runtime->allocationSlotLimit()!=256 || runtime->fenceSlotLimit()!=256)) return {};
         if (!gpu_diagnostic::HighResolution || openglEnabled || streamingEnabled || !asyncSubmitEnabled || !syncEnabled || !reservationEnabled ||
             !runtime || runtime->hasStopped() || !ownedAdapters.empty() || !deviceAdapters.empty() ||
-            !pendingSubmissions.empty() || !pendingHwSignals.empty() || (version != 1 && version != 2 && version != 3 && version != 4 && version != 5 && version != 6)) return {};
+            !pendingSubmissions.empty() || !pendingHwSignals.empty() || (version != 1 && version != 2 && version != 3 && version != 4 && version != 5 && version != 6 && version != 7)) return {};
         openglEnabled = true;
         openglFencesEnabled = version >= 2;
         openglCompositorEnabled = version >= 3;
         openglRenderEnabled = version >= 4;
         openglDesktopEnabled = version >= 5;
-        openglDesktop4kEnabled = version == 6;
-        const auto profile = version == 6 ? GuestOpenGlDesktop4kProfile : version == 5 ? GuestOpenGlDesktopProfile : version == 4 ? GuestOpenGlCompositorRenderProfile : version == 3 ? GuestOpenGlCompositorProfile : version == 2 ? GuestOpenGlFenceProfile : GuestOpenGlProfile;
+        openglDesktop4kEnabled = version >= 6;
+        openglDesktop4kCpuEnabled = version == 7;
+        const auto profile = version == 7 ? GuestOpenGlDesktop4kCpuProfile : version == 6 ? GuestOpenGlDesktop4kProfile : version == 5 ? GuestOpenGlDesktopProfile : version == 4 ? GuestOpenGlCompositorRenderProfile : version == 3 ? GuestOpenGlCompositorProfile : version == 2 ? GuestOpenGlFenceProfile : GuestOpenGlProfile;
         std::cerr << "{\"openGlProfileNegotiated\":true,\"version\":" << version << ",\"frames\":" << profile.frames << ",\"commandLimit\":" << profile.commandLimit << ",\"pendingCommands\":16,\"reservationLimit\":" << profile.reservationLimit << ",\"reservedByteLimit\":17179869184,\"requestLimit\":" << profile.requestLimit;
         if (version >= 2) std::cerr << ",\"objectLimit\":" << profile.objectLimit
             << ",\"hwQueueLimit\":" << OpenGlFenceHwQueues << ",\"vendorObjectLimit\":" << vendorObjectLimit() << ",\"syncObjectLimit\":" << syncObjectLimit();
-        if (version == 6) std::cerr << ",\"gpuMappedByteLimit\":" << OpenGlDesktop4kGpuMappedBytes
+        if (version >= 6) std::cerr << ",\"gpuMappedByteLimit\":" << OpenGlDesktop4kGpuMappedBytes
             << ",\"reportedGpuUsageLimitBytes\":" << reportedGpuUsageLimit();
+        if (version==7) std::cerr << ",\"cpuMappedByteLimit\":" << OpenGlDesktop4kCpuBytes
+            << ",\"kernelCapacityRequired\":true";
         std::cerr << "}\n";
         return profile;
     }
@@ -1533,7 +1539,7 @@ public:
             return {{Invalid, 0, 0}, {0, 0, 0}};
         auto& owned = entry->second;
         const auto bytes = static_cast<std::uint32_t>(owned.pages * 4096);
-        if (!bytes || bytes > MaxVendorCpuMappingBytes || !vendorCpuBudgetFits(vendorCpuBytes, bytes, capabilities().flags) || !reportedGpuUsageAcceptable())
+        if (!bytes || bytes > MaxVendorCpuMappingBytes || !vendorCpuBudgetFits(vendorCpuBytes, bytes, capabilities().flags,openglDesktop4kCpuEnabled) || !reportedGpuUsageAcceptable())
             return {{static_cast<std::int32_t>(0xc0000017u), 0, 0}, {0, 0, 0}};
         // Exhaustion is a native allocation failure that the live UMD can
         // recover from, not a QMP mapping exception after obtaining a lock.
@@ -2091,7 +2097,7 @@ public:
                   << ",\"peakVendorAllocationObjects\":" << peakVendorAllocationObjects
                   << ",\"vendorAllocationObjectLimit\":" << vendorObjectLimit()
                   << ",\"vendorCpuSlotLimit\":" << (runtime ? runtime->allocationSlotLimit() : DefaultVendorCpuSlots)
-                  << ",\"vendorCpuMappedByteLimit\":" << vendorCpuByteLimit(capabilities().flags)
+                  << ",\"vendorCpuMappedByteLimit\":" << vendorCpuByteLimit(capabilities().flags,openglDesktop4kCpuEnabled)
                   << ",\"vendorCpuSlotQuotaRejections\":" << vendorCpuSlotQuotaRejections
                   << ",\"completedVendorAllocations\":" << completedVendorAllocations
                   << ",\"completedVendorResources\":" << completedVendorResources

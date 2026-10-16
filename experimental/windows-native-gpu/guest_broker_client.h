@@ -127,6 +127,14 @@ public:
         if (!reply.fds.empty()) { disconnect(); failed(EPROTO, "Layout reply carried descriptors"); }
         return decode<wddm_aperture_info>(reply.payload);
     }
+    wddm_aperture_caps capacity() {
+        auto reply=request(Operation::ApertureCaps);
+        const auto value=decode<wddm_aperture_caps>(reply.payload);
+        if (!reply.fds.empty() || !wddm_aperture_valid_caps(value)) {
+            disconnect(); failed(EPROTO,"Invalid kernel capacity receipt");
+        }
+        return value;
+    }
     Message acquire(ViewRequest view) {
         auto reply = request(Operation::AcquireView, encode(view));
         if (reply.fds.size() != 1 || !decode<ViewReply>(reply.payload).cookie) {

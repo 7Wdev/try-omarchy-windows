@@ -11,7 +11,8 @@ NATIVE_SHA256='26aff97284df7d1d9ed6b1a6f9b985b5fa0daa452dd6f0ca7bf0a9824e106de0'
 # Independently retained MSVC builds: the original real-root worker and the
 # new worker used for a legacy-profile hardware regression. Never trust a
 # report-supplied hash as its own provenance oracle.
-KNOWN_NATIVE_SHA256=(NATIVE_SHA256,'277f720994b5287a07fb4c542eda868f67bdef38e36e4461badd27875f1904c1')
+KNOWN_NATIVE_SHA256=(NATIVE_SHA256,'277f720994b5287a07fb4c542eda868f67bdef38e36e4461badd27875f1904c1',
+                     '0d8af5dc954826c32f1863faad62e9f77fd8621aae3436909b5602019374605b')
 
 
 def validate(report,guest,records,frames,source,*,expected_frames):

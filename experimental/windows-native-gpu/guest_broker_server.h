@@ -16,6 +16,13 @@ class Kernel {
     }
 public:
     void close() { control=Fd(); }
+    wddm_aperture_caps capacity() {
+        open(); wddm_aperture_caps value{}; value.version=1;
+        if (syscall(SYS_ioctl,control.get(),WDDM_APERTURE_CAPS,&value))
+            throw std::system_error(errno,std::generic_category(),"Broker kernel capacity");
+        if (!wddm_aperture_valid_caps(value)) throw std::system_error(EPROTO,std::generic_category(),"Broker kernel capacity mismatch");
+        return value;
+    }
     wddm_aperture_info info() {
         open(); wddm_aperture_info value{}; value.version=WDDM_APERTURE_VERSION;
         if (syscall(SYS_ioctl,control.get(),WDDM_APERTURE_INFO,&value))
@@ -23,7 +30,8 @@ public:
         if (value.version != WDDM_APERTURE_VERSION || !driver_bridge::validFenceSlots(value.fence_slots) ||
             !driver_bridge::validVendorCpuSlots(value.allocation_slots) || value.cpu_slot_bytes != 1048576 ||
             value.fence_bytes != value.fence_slots*4096ull || value.allocation_bytes != value.allocation_slots*1048576ull ||
-            value.active_leases > wddm_aperture_lease_limit(value.fence_slots) || value.active_cpu_bytes > WDDM_APERTURE_CPU_LIMIT)
+            value.active_leases > wddm_aperture_lease_limit(value.fence_slots) || value.active_cpu_bytes > WDDM_APERTURE_DESKTOP_CPU_LIMIT ||
+            (value.active_cpu_bytes>WDDM_APERTURE_CPU_LIMIT && value.active_cpu_bytes>capacity().cpu_byte_limit))
             throw std::system_error(EPROTO,std::generic_category(),"Broker kernel layout mismatch");
         return value;
     }
@@ -107,6 +115,23 @@ public:
         std::vector<std::uint8_t> reply(bytes); transfer(reply.data(),reply.size(),true,deadline); return reply;
     }
 };
+// A client-supplied receipt never substitutes for the controller's own query.
+template<class Authority> void verifyCpuCapacityProfile(const std::vector<std::uint8_t>& packet,Authority& kernel) {
+    using namespace driver_bridge;
+    if (packet.size()<sizeof(Header)+sizeof(std::uint32_t)) return;
+    Header h{}; std::memcpy(&h,packet.data(),sizeof h);
+    std::uint32_t version=0; std::memcpy(&version,packet.data()+sizeof h,sizeof version);
+    if (h.type!=static_cast<unsigned>(Op::BeginOpenGl) || version!=7) return;
+    if (packet.size()!=sizeof h+sizeof(OpenGlDesktop4kCapacity))
+        throw std::system_error(EPROTO,std::generic_category(),"Missing kernel capacity receipt");
+    OpenGlDesktop4kCapacity wanted{}; std::memcpy(&wanted,packet.data()+sizeof h,sizeof wanted);
+    if (!validOpenGlDesktop4kCapacity(wanted)) throw std::system_error(EPROTO,std::generic_category(),"Invalid CPU capacity contract");
+    const auto caps=kernel.capacity(); const auto layout=kernel.info();
+    if (!wddm_aperture_valid_caps(caps) || caps.flags!=WDDM_APERTURE_DESKTOP_CPU_ENABLED ||
+        caps.cpu_byte_limit!=wanted.cpuByteLimit || layout.version!=1 ||
+        layout.allocation_slots!=wanted.cpuSlots || layout.fence_slots!=wanted.fenceSlots)
+        throw std::system_error(EPROTO,std::generic_category(),"Kernel/profile CPU capacity mismatch");
+}
 template<class Native,class Authority,class ObjectAuthority> int serve(Peer& peer, Native& native, Authority& kernel, ObjectAuthority& objectKernel) {
     Views views;
     ObjectStore objects;
@@ -134,6 +159,7 @@ template<class Native,class Authority,class ObjectAuthority> int serve(Peer& pee
                     peer.send(operation,message.frame.sequence,encode(kernel.info()));
                 } else if (operation == Operation::DriverCall) {
                     views.approve(message.payload);
+                    verifyCpuCapacityProfile(message.payload,kernel);
                     objects.authorize(message.payload,message.fds,objectKernel);
                     auto reply=native.exchange(message.payload); ++calls;
                     views.observe(message.payload,reply);
@@ -187,6 +213,9 @@ template<class Native,class Authority,class ObjectAuthority> int serve(Peer& pee
                 } else if (operation == Operation::NativeBufferCaps) {
                     if(!message.payload.empty()) throw std::system_error(EPROTO,std::generic_category(),"Native buffer caps payload");
                     peer.send(operation,message.frame.sequence,encode(objectKernel.nativeBufferCaps()));
+                } else if (operation == Operation::ApertureCaps) {
+                    if (!message.payload.empty()) throw std::system_error(EPROTO,std::generic_category(),"Aperture caps payload");
+                    peer.send(operation,message.frame.sequence,encode(kernel.capacity()));
                 } else if (operation == Operation::ObjectInfo) {
                     if (!message.payload.empty()) throw std::system_error(EPROTO,std::generic_category(),"Object info payload");
                     peer.send(operation,message.frame.sequence,encode(objectKernel.info()));

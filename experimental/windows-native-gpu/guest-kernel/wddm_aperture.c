@@ -44,6 +44,23 @@ static struct aperture_hub fence_hub, cpu_hub;
 static u64 next_cookie, active_cpu_bytes;
 static u64 next_owner;
 static u32 active_leases;
+/* Read-only after load. No runtime increase while leases are live. */
+static bool enable_desktop_4k_cpu;
+module_param(enable_desktop_4k_cpu, bool, 0444);
+static u64 cpu_byte_limit(void)
+{
+	return enable_desktop_4k_cpu ? WDDM_APERTURE_DESKTOP_CPU_LIMIT : WDDM_APERTURE_CPU_LIMIT;
+}
+static long aperture_caps(void __user *pointer)
+{
+	struct wddm_aperture_caps caps;
+	if (copy_from_user(&caps, pointer, sizeof(caps))) return -EFAULT;
+	if (caps.version != 1 || caps.flags || caps.cpu_byte_limit || caps.reserved[0] || caps.reserved[1])
+		return -EINVAL;
+	caps.flags = enable_desktop_4k_cpu ? WDDM_APERTURE_DESKTOP_CPU_ENABLED : 0;
+	caps.cpu_byte_limit = cpu_byte_limit();
+	return copy_to_user(pointer, &caps, sizeof(caps)) ? -EFAULT : 0;
+}
 
 static vm_fault_t lease_fault(struct vm_fault *fault)
 {
@@ -140,7 +157,7 @@ static bool valid_create(const struct wddm_aperture_create *arg,
 	return arg->kind == WDDM_APERTURE_ALLOCATION &&
 		arg->flags == WDDM_APERTURE_WRITE && arg->host_generation &&
 		arg->host_generation != U64_MAX && IS_ALIGNED(arg->offset, CPU_STRIDE) &&
-		arg->bytes <= WDDM_APERTURE_CPU_LIMIT;
+		arg->bytes <= cpu_byte_limit();
 }
 static long create_lease(struct file *control, void __user *pointer)
 {
@@ -173,7 +190,7 @@ static long create_lease(struct file *control, void __user *pointer)
 		result = -EINVAL;
 	else if (active_leases >= wddm_aperture_lease_limit(fence_hub.slots) || next_cookie == U64_MAX ||
 		 (arg.kind == WDDM_APERTURE_ALLOCATION &&
-		  arg.bytes > WDDM_APERTURE_CPU_LIMIT - active_cpu_bytes))
+		  arg.bytes > cpu_byte_limit() - active_cpu_bytes))
 		result = -ENOSPC;
 	else if (arg.kind == WDDM_APERTURE_ALLOCATION) {
 		list_for_each_entry(other, &aperture_leases, link) {
@@ -222,6 +239,7 @@ static long control_ioctl(struct file *control, unsigned int request, unsigned l
 	struct file *file = NULL;
 	u32 counter;
 	int result = 0;
+	if (request == WDDM_APERTURE_CAPS) return aperture_caps(pointer);
 	if (request == WDDM_SYNC_FILE_CREATE) return native_sync_create(control, pointer, false);
 	if (request == WDDM_SYNC_FILE_NATIVE_CREATE) return native_sync_create(control, pointer, true);
 	if (request == WDDM_SYNC_FILE_NATIVE_RESOLVE) return native_sync_resolve(((struct aperture_owner *)control->private_data)->id, pointer);
