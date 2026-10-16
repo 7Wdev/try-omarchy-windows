@@ -8,6 +8,7 @@
 #include "driver_wire.h"
 #include "cpu_aperture.h"
 #include "qemu_fence_test.h"
+#include "readonly_rootfs_args.h"
 #include <array>
 #include <memory>
 #include <optional>
@@ -143,6 +144,8 @@ public:
 struct FenceLease { std::uint32_t slot; std::uint64_t generation, offset; };
 using AllocationLease = driver_cpu::Lease;
 class Runtime {
+    // Keep a read handle denying write sharing until QEMU and its job close.
+    Handle readonlyBase;
     Handle job;
     OwnedProcess process;
     std::unique_ptr<Qmp> qmp;
@@ -157,11 +160,22 @@ class Runtime {
     bool stopped = false, failed = false;
     std::filesystem::path logfile;
 public:
-    Runtime(unsigned short driverPort, const qemu_fence::Paths& paths, bool enableCpu = false, bool cpuStoreTest = false, bool cpuEofTest = false, bool hwQueueEofTest = false, std::size_t cpuSlots = driver_bridge::DefaultVendorCpuSlots, bool syncEofTest = false, bool reservationEofTest = false, bool gpuStateEofTest = false, bool cpuSpanEofTest = false, bool syncNoMaxEofTest = false, bool hwQueueNoBroadcastEofTest = false, bool hwQueueNoBroadcastWaitEofTest = false, std::uint32_t configuredFenceSlots = 0)
+    Runtime(unsigned short driverPort, const qemu_fence::Paths& paths, bool enableCpu = false, bool cpuStoreTest = false, bool cpuEofTest = false, bool hwQueueEofTest = false, std::size_t cpuSlots = driver_bridge::DefaultVendorCpuSlots, bool syncEofTest = false, bool reservationEofTest = false, bool gpuStateEofTest = false, bool cpuSpanEofTest = false, bool syncNoMaxEofTest = false, bool hwQueueNoBroadcastEofTest = false, bool hwQueueNoBroadcastWaitEofTest = false, std::uint32_t configuredFenceSlots = 0, const char* readonlyRoot = nullptr)
         : fenceSlots(configuredFenceSlots ? configuredFenceSlots : cpuSlots >= driver_bridge::ExpandedVendorCpuSlots ? driver_bridge::ExpandedFenceSlots : driver_bridge::DefaultFenceSlots),
           allocationSlots(cpuSlots), allocationAperture(cpuSlots), allocationsEnabled(enableCpu), logfile(std::filesystem::absolute(paths.log)) {
         if (!driver_bridge::validFenceSlots(fenceSlots) || !driver_bridge::validVendorCpuSlots(cpuSlots) || (!enableCpu && cpuSlots != driver_bridge::DefaultVendorCpuSlots))
             throw std::runtime_error("Invalid configured allocation aperture capacity");
+        std::vector<std::wstring> rootArguments;
+        if (readonlyRoot) {
+            const auto root=std::filesystem::path(readonlyRoot);
+            if (!root.is_absolute() || !std::filesystem::is_regular_file(root))
+                throw std::runtime_error("Read-only root image must name an existing absolute regular file");
+            rootArguments=readonlyRootArguments(root);
+            readonlyBase.value=CreateFileW(root.c_str(),GENERIC_READ,FILE_SHARE_READ,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
+            if (readonlyBase.value==INVALID_HANDLE_VALUE)
+                throw std::runtime_error("Cannot hold read-only root image without write sharing");
+        }
+        const unsigned memoryMiB=readonlyRoot ? 3072u : gpu_diagnostic::GuestMemoryMiB;
         const auto executable = std::filesystem::absolute(paths.qemu).wstring();
         job.value = CreateJobObjectW(nullptr, nullptr);
         JOBOBJECT_EXTENDED_LIMIT_INFORMATION limit{};
@@ -187,10 +201,11 @@ public:
         auto attributes = static_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(HeapAlloc(GetProcessHeap(), 0, size));
         bool initialized = attributes && InitializeProcThreadAttributeList(attributes, 1, 0, &size);
         bool ready = initialized && UpdateProcThreadAttribute(attributes, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, inherited, sizeof inherited, nullptr, nullptr);
-        std::vector<std::wstring> args{executable, L"-machine", L"q35,accel=whpx", L"-cpu", L"host", L"-m", std::to_wstring(gpu_diagnostic::GuestMemoryMiB), L"-smp", L"1",
+        std::vector<std::wstring> args{executable, L"-machine", L"q35,accel=whpx", L"-cpu", L"host", L"-m", std::to_wstring(memoryMiB), L"-smp", readonlyRoot ? L"2" : L"1",
             L"-display", L"none", L"-monitor", L"none", L"-serial", L"stdio", L"-nodefaults", L"-no-reboot",
             L"-L", std::filesystem::absolute(paths.firmware).wstring(), L"-kernel", std::filesystem::absolute(paths.kernel).wstring(),
             L"-initrd", std::filesystem::absolute(paths.initramfs).wstring(), L"-append",
+            readonlyRoot ? L"console=ttyS0 rdinit=/init root=overlay systemd.unit=multi-user.target systemd.show_status=no loglevel=4 panic=1" :
             hwQueueNoBroadcastWaitEofTest ? L"console=ttyS0 rdinit=/init panic=1 wddm_hwqueue_no_broadcast_wait_eof_test=1" :
             hwQueueNoBroadcastEofTest ? L"console=ttyS0 rdinit=/init panic=1 wddm_hwqueue_no_broadcast_eof_test=1" :
             cpuStoreTest ? L"console=ttyS0 rdinit=/init panic=1 wddm_cpu_store_test=1" :
@@ -207,6 +222,7 @@ public:
             L"-device", L"virtio-serial-pci,id=bridge-serial", L"-chardev",
             L"socket,id=wddm,host=127.0.0.1,port=" + std::to_wstring(driverPort), L"-device",
             L"virtserialport,bus=bridge-serial.0,chardev=wddm,name=org.7wdev.wddm"};
+        args.insert(args.end(),rootArguments.begin(),rootArguments.end());
         if (allocationsEnabled) {
             args.push_back(L"-device");
             args.push_back(L"wddm-allocation-hub,id=wddm-allocations,source-process=" +
@@ -230,7 +246,8 @@ public:
         const bool resumed = assigned && ResumeThread(child.hThread) != static_cast<DWORD>(-1);
         CloseHandle(child.hThread);
         if (!resumed) throw std::runtime_error("Cannot start QEMU within its owned job");
-        std::cout << "{\"ownedQemuPid\":" << child.dwProcessId << ",\"guestMemoryMiB\":" << gpu_diagnostic::GuestMemoryMiB << "}\n" << std::flush;
+        std::cout << "{\"ownedQemuPid\":" << child.dwProcessId << ",\"guestMemoryMiB\":" << memoryMiB << "}\n" << std::flush;
+        if (readonlyRoot) std::cout << "{\"ownedQemuReadonlyRootAttached\":true,\"fileNodeReadonly\":true,\"rawNodeReadonly\":true,\"sourceWriteSharingDenied\":true}\n" << std::flush;
         qmp = std::make_unique<Qmp>(qmpPort, process, name);
     }
     ~Runtime() { stop(); report(); }

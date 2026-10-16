@@ -2225,7 +2225,12 @@ int main(int argc, char** argv) {
         bool hwQueueNoBroadcastEofTest = false;
         bool hwQueueNoBroadcastWaitEofTest = false;
         bool asyncSubmit = false, sharedResources = false, consumeShared = false, presentShared = false, nativeMetadata = false, consumeProcess = false;
+        const char* readonlyRoot = nullptr;
         while (argc > 1) {
+            if (argc>2 && std::string(argv[argc-2])=="--driver-rootfs-readonly") {
+                if (readonlyRoot || !argv[argc-1][0]) throw std::runtime_error("Read-only root image must be specified once with a nonempty path");
+                readonlyRoot=argv[argc-1]; argc-=2; continue;
+            }
             if (argc > 2 && std::string(argv[argc - 2]) == "--driver-fence-slots") {
                 const auto value = std::string(argv[argc - 1]);
                 if (fenceSlots || (value != "64" && value != "128" && value != "256"))
@@ -2272,6 +2277,11 @@ int main(int argc, char** argv) {
             else break;
             --argc;
         }
+        if (readonlyRoot && (!gpu_diagnostic::HighResolution || argc!=7 || std::string(argv[1])!="--run-qemu"))
+            throw std::runtime_error("Read-only root image requires the diagnostic build and owned QEMU runtime");
+        if (readonlyRoot && (cpuStoreTest || cpuEofTest || cpuSpanEofTest || hwQueueEofTest || syncEofTest || syncNoMaxEofTest ||
+            reservationEofTest || gpuStateEofTest || hwQueueNoBroadcastEofTest || hwQueueNoBroadcastWaitEofTest))
+            throw std::runtime_error("Read-only root image cannot be combined with forced EOF/store controls");
         if (gpu_diagnostic::HighResolution) {
             if (!nativeMetadata || !consumeShared || !cpu || cpuSlots < ExpandedVendorCpuSlots ||
                 argc != 7 || std::string(argv[1]) != "--run-qemu")
@@ -2365,7 +2375,7 @@ int main(int argc, char** argv) {
         std::cout << "{\"port\":" << ntohs(address.sin_port) << ",\"transport\":\"tcp-loopback\"}\n" << std::flush;
         std::unique_ptr<driver_qemu::Runtime> runtime;
         if (ownedRuntime) runtime = std::make_unique<driver_qemu::Runtime>(ntohs(address.sin_port),
-            qemu_fence::Paths{argv[2], argv[3], argv[4], argv[5], argv[6]}, cpu, cpuStoreTest, cpuEofTest, hwQueueEofTest, cpuSlots, syncEofTest, reservationEofTest, gpuStateEofTest, cpuSpanEofTest, syncNoMaxEofTest, hwQueueNoBroadcastEofTest, hwQueueNoBroadcastWaitEofTest, fenceSlots);
+            qemu_fence::Paths{argv[2], argv[3], argv[4], argv[5], argv[6]}, cpu, cpuStoreTest, cpuEofTest, hwQueueEofTest, cpuSlots, syncEofTest, reservationEofTest, gpuStateEofTest, cpuSpanEofTest, syncNoMaxEofTest, hwQueueNoBroadcastEofTest, hwQueueNoBroadcastWaitEofTest, fenceSlots,readonlyRoot);
         fd_set reads; FD_ZERO(&reads); FD_SET(listener.value, &reads); timeval timeout{60, 0};
         if (select(0, &reads, nullptr, nullptr, &timeout) != 1) throw std::runtime_error("Connection timed out");
         Socket client; client.value = accept(listener.value, nullptr, nullptr);

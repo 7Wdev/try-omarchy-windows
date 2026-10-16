@@ -22,6 +22,27 @@ template<class F> static void denied(F f,int code) {
 static std::vector<std::uint8_t> packet(Op op,std::uint32_t object=0,const std::vector<std::uint8_t>& body={}) {
     auto data=encode(Header{static_cast<std::uint32_t>(op),object,0,0}); data.insert(data.end(),body.begin(),body.end()); return data;
 }
+static void profileObjectBudgets() {
+    for(const auto profile:{GuestOpenGlFenceProfile,GuestOpenGlCompositorProfile,
+                            GuestOpenGlCompositorRenderProfile,GuestOpenGlDesktopProfile}) {
+        Views views;
+        const auto request=packet(Op::BeginOpenGl,0,encode(profile.version));
+        auto malformed=profile; ++malformed.objectLimit;
+        denied([&]{views.observe(request,packet(Op::BeginOpenGl,0,encode(malformed)));},EPROTO);
+        views.observe(request,packet(Op::BeginOpenGl,0,encode(profile)));
+        denied([&]{views.observe(request,packet(Op::BeginOpenGl,0,encode(profile)));},EPROTO);
+        // The same exact quota accepted by the host applies to authenticated
+        // native creation receipts, including budgets above the old 512 cap.
+        views.observe(packet(Op::OpenAdapter),packet(Op::OpenAdapter,1,encode(Reply{})));
+        for(std::uint32_t id=2;id<=profile.objectLimit;++id)
+            views.observe(packet(Op::CreateDevice,1),packet(Op::CreateDevice,id,encode(Reply{})));
+        denied([&]{views.observe(packet(Op::CreateDevice,1),packet(Op::CreateDevice,profile.objectLimit+1,encode(Reply{})));},EPROTO);
+        denied([&]{views.observe(packet(Op::CreateDevice,1),packet(Op::CreateDevice,2,encode(Reply{})));},EPROTO);
+        views.observe(packet(Op::DestroyDevice,2),packet(Op::DestroyDevice,2,encode(Reply{})));
+        views.observe(packet(Op::CreateDevice,1),packet(Op::CreateDevice,profile.objectLimit+1,encode(Reply{})));
+        CHECK(views.active()==0);
+    }
+}
 static std::vector<std::uint8_t> receipt(Op op,std::uint32_t object,std::uint64_t value=0,
                                        const std::vector<std::uint8_t>& body={},std::int32_t status=0) {
     auto data=packet(op,object,encode(Reply{status,0,value})); data.insert(data.end(),body.begin(),body.end()); return data;
@@ -246,6 +267,7 @@ int main(int argc,char** argv) {
     try {
         if (argc!=1 && argc!=3 && (argc!=4 || std::strcmp(argv[3],"--expect-close-deadlock"))) throw std::runtime_error("Use optional PROBE SHIM [--expect-close-deadlock]");
         viewPolicy();
+        profileObjectBudgets();
         if (geteuid()) { std::cout<<"BROKER_RPC_CONTRACT skipped=root-required\n"; return 0; }
         alarm(25); realRpc(false); realRpc(true); replyDisconnect();
         if (argc>=3) realRpc(false,argv[1],argv[2],argc==4);

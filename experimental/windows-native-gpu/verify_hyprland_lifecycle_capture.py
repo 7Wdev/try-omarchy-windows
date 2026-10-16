@@ -10,8 +10,9 @@ def require(condition, message):
         raise ValueError(message)
 
 
-def validate(report, guest, *, profile=4):
+def validate(report, guest, *, profile=4,normal_root=False):
     require(type(profile) is int and profile in (4,5),'Unsupported expected compositor profile')
+    require(type(normal_root) is bool,'Invalid expected root lifecycle')
     lines = guest.splitlines()
     def once(line):
         require(lines.count(line) == 1, 'Missing or duplicate lifecycle receipt: ' + line)
@@ -22,10 +23,11 @@ def validate(report, guest, *, profile=4):
             report.get('capturedPrivateFixturesUsed') is False, 'Wrong GPU provenance')
     require(not any(text in guest for text in ('BRIDGE_RUNTIME_SIGNAL', 'HYPRLAND_STARTUP_STOP',
             'Oops:', 'BUG:', 'cleanup=false')), 'Compositor signal, forced stop or cleanup failure')
-    user = once('BROKER_RENDER_CLIENT uid=65534 gid=65534 effectiveCapabilities=0 noNewPrivs=true controllerOpen=denied nativePortOpen=denied')
+    uid=1000 if normal_root else 65534
+    user = once(f'BROKER_RENDER_CLIENT uid={uid} gid={uid} effectiveCapabilities=0 noNewPrivs=true controllerOpen=denied nativePortOpen=denied')
     start = once(f'HYPRLAND_STARTUP_BEGIN version=0.56.2 boundedProfile={profile} actualCompositor=true windowsPresentation=false')
     main = once('HYPRLAND_STARTUP_MAIN_RETURN exit=0 windowsPresentation=false')
-    exited = once('BRIDGE_RUNTIME_EXIT=0')
+    exited = once('NORMAL_ROOT_GRAPHICS_EXIT result=0 normalOmarchySession=false' if normal_root else 'BRIDGE_RUNTIME_EXIT=0')
     commits = re.findall(r'^HYPRLAND_COMPOSITOR_COMMIT index=(\d+) width=(\d+) height=(\d+) format=(\d+) stride=(\d+) modifier=(\d+) ownedNativeBuffer=true pixelsVerified=false windowsPresentation=false$', guest, re.M)
     require(len(commits) >= 2 and guest.count('HYPRLAND_COMPOSITOR_COMMIT ') == len(commits), 'Incomplete/mixed buffer commits')
     for index, values in enumerate(commits, 1):
@@ -45,7 +47,14 @@ def validate(report, guest, *, profile=4):
                 vm[kind+'MappingsCreated'] == vm[kind+'UnmapAcknowledgements'] and
                 vm[kind+'MappingsReleasedAfterVmExit'] == 0, 'Incomplete explicit mapping cleanup: ' + kind)
     require(all(value == 0 for key, value in vm.items() if key.startswith('live')), 'VM retains GPU mappings')
-    once('LINUX_BRIDGE processExitViewsRetained=true pagingFences=0 hwQueueFences=0 syncFences=0 allocationViews=0 release=kernel-process-exit')
+    zero_views='LINUX_BRIDGE processExitViewsRetained=true pagingFences=0 hwQueueFences=0 syncFences=0 allocationViews=0 release=kernel-process-exit'
+    if normal_root:
+        # Installed helpers can inherit LD_PRELOAD without opening the GPU
+        # broker. Check every shim finalizer, plus the exact routed view and
+        # native unmap totals below; no nonzero/partial receipt is ignored.
+        views=[line for line in lines if 'LINUX_BRIDGE processExitViewsRetained=' in line]
+        require(len(views)>0 and all(line==zero_views for line in views),'Real-root shim retains views or has an incomplete receipt')
+    else:once(zero_views)
     broker = re.findall(r'^BROKER_ROUTE_EXIT processExited=true retainedViews=0 nativeCalls=(\d+) viewsCreated=(\d+) viewsReleased=(\d+) rejected=0 multiClient=false$', guest, re.M)
     require(len(broker) == 1 and int(broker[0][0]) > 0 and int(broker[0][1]) > 0 and broker[0][1] == broker[0][2], 'Broker views not explicitly released')
     once('BROKER_ROUTE_REAP exit=0')

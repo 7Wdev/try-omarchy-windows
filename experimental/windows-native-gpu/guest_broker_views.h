@@ -13,6 +13,8 @@ public:
 private:
     std::map<std::uint32_t, Grant> grants;
     std::map<std::uint32_t, std::uint32_t> parents, resources;
+    std::size_t objectLimit=512;
+    bool profileObserved=false;
     static void require(bool condition, const char* message) {
         if (!condition) throw std::system_error(EPROTO, std::generic_category(), message);
     }
@@ -21,7 +23,8 @@ private:
         T value{}; std::memcpy(&value, packet.data() + offset, sizeof(value)); return value;
     }
     void parent(std::uint32_t object, std::uint32_t owner) {
-        require(object && object != owner && parents.size() < 512 && !parents.count(object), "Native object identity collision");
+        require(object && object != owner && !parents.count(object), "Native object identity collision");
+        require(parents.size() < objectLimit, "Native object quota exhausted");
         if (owner) require(parents.count(owner) != 0, "Native object parent absent");
         parents.emplace(object, owner);
     }
@@ -86,6 +89,22 @@ public:
                 "Native reply identity mismatch");
         if (r.status) { require(response.size() == sizeof(Header),"Native wire error payload"); return; }
         const auto op = static_cast<Op>(h.type);
+        if(op==Op::BeginOpenGl) {
+            require(!h.handle && !r.handle && !profileObserved && parents.empty() && grants.empty() && resources.empty() &&
+                    (request.size()==sizeof(Header) || request.size()==sizeof(Header)+sizeof(std::uint32_t)) &&
+                    response.size()==sizeof(Header)+sizeof(OpenGlProfile),"Invalid native OpenGL profile receipt");
+            const auto version=request.size()==sizeof(Header) ? 1u : at<std::uint32_t>(request,sizeof(Header));
+            const auto profile=at<OpenGlProfile>(response,sizeof(Header));
+            require(version==1 ? validOpenGlProfile(profile) : version==2 ? validOpenGlFenceProfile(profile) :
+                    version==3 ? validOpenGlCompositorProfile(profile) : version==4 ? validOpenGlCompositorRenderProfile(profile) :
+                    version==5 && validOpenGlDesktopProfile(profile),"Wrong native OpenGL profile receipt");
+            // The broker must enforce the host's exact negotiated live-object
+            // budget. Its former unconditional 512 cap rejected valid v4/v5
+            // allocations while the native session still had capacity.
+            if(version>=2) objectLimit=profile.objectLimit;
+            profileObserved=true;
+            return;
+        }
         const auto retired = retiring(request);
         const bool creating = op == Op::OpenAdapter || op == Op::CreateDevice || op == Op::CreateContext ||
             op == Op::CreateVendorAllocation || op == Op::CreateVendorResourceAllocation ||

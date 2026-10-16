@@ -13,6 +13,10 @@ def main():
         parser.error('Run on Windows with the built bridge')
     cases = [(['--driver-cpu-slots', value], 'CPU aperture slots must be specified once')
              for value in ('0', '8', '17', '33', '65', '127', '129', '255', '257', '512', '-1', '4294967296', '32x')]
+    cases += [(['--stdio','--driver-rootfs-readonly','C:/rootfs.ext4'],'Read-only root image requires')]
+    cases += [(['--stdio','--driver-rootfs-readonly',''],'Read-only root image must be specified once')]
+    cases += [(['--stdio','--driver-rootfs-readonly','C:/one.ext4','--driver-rootfs-readonly','C:/two.ext4'],
+               'Read-only root image must be specified once')]
     cases += [(['--stdio','--driver-consume-shared-process'],'Shared GPU worker requires explicit consumption opt-in')]
     cases += [(['--driver-fence-slots', value], 'Fence aperture slots must be specified once')
               for value in ('0','32','65','127','129','255','257','512','-1','4294967296','128x')]

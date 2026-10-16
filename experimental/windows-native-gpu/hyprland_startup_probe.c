@@ -55,13 +55,19 @@ int wddm_bridge_compositor_commit(int fd,uint32_t width,uint32_t height,uint32_t
 #endif
     return 0;
 }
+static int control_socket_path(char* target,size_t size) {
+    const char* instance=getenv("HYPRLAND_INSTANCE_SIGNATURE");
+    const char* runtime=getenv("XDG_RUNTIME_DIR");
+    if(!instance || !instance[0] || !runtime || runtime[0]!='/') return -1;
+    const int bytes=snprintf(target,size,"%s/hypr/%s/.socket.sock",runtime,instance);
+    return bytes<0 || (size_t)bytes>=size ? -1 : 0;
+}
 static int run_ctl(char* const arguments[]) {
 #ifdef WDDM_BRIDGE_COMPOSITOR_HOST_PRESENT
     // Hyprland owns SIGCHLD and may reap a forked hyprctl before waitpid.
     // Use its documented client protocol, without spawning another process.
-    const char* instance=getenv("HYPRLAND_INSTANCE_SIGNATURE");
     struct sockaddr_un address={.sun_family=AF_UNIX};
-    if (!instance || snprintf(address.sun_path,sizeof(address.sun_path),"/tmp/hypr-runtime/hypr/%s/.socket.sock",instance)>=(int)sizeof(address.sun_path)) return -1;
+    if(control_socket_path(address.sun_path,sizeof address.sun_path)) return -1;
     char request[1024];
     const int json=arguments[1] && !strcmp(arguments[1],"-j");
     size_t used=(size_t)snprintf(request,sizeof(request),"%s/",json?"j":"");
@@ -103,10 +109,15 @@ done:
     if (close(connection)) result=-1;
     return result;
 #else
-    char signature[512];
+    char signature[512],runtime_env[1024],home_env[1024];
     const char* instance=getenv("HYPRLAND_INSTANCE_SIGNATURE");
+    const char* runtime=getenv("XDG_RUNTIME_DIR");
+    const char* home=getenv("HOME");
     if(!instance || snprintf(signature,sizeof(signature),"HYPRLAND_INSTANCE_SIGNATURE=%s",instance)>=(int)sizeof(signature)) return -1;
-    char* const environment[]={signature,"XDG_RUNTIME_DIR=/tmp/hypr-runtime","HOME=/tmp/hypr-home",
+    if(!runtime || !home || runtime[0]!='/' || home[0]!='/' ||
+       snprintf(runtime_env,sizeof runtime_env,"XDG_RUNTIME_DIR=%s",runtime)>=(int)sizeof runtime_env ||
+       snprintf(home_env,sizeof home_env,"HOME=%s",home)>=(int)sizeof home_env) return -1;
+    char* const environment[]={signature,runtime_env,home_env,
         "LD_LIBRARY_PATH=/opt/wddm-mesa/lib:/usr/lib/x86_64-linux-gnu","PATH=/usr/bin",NULL};
     const pid_t child=fork();
     if(child<0) return -1;
@@ -121,6 +132,15 @@ done:
 #endif
 }
 #ifdef WDDM_BRIDGE_COMPOSITOR_HOST_SCENE
+static int scene_receipt(const char* line) {
+    // Keep the message and newline in one syscall. Other guest processes share
+    // the serial console; unbuffered puts can split these into separate writes.
+    const size_t bytes=strlen(line);
+    ssize_t written;
+    do { written=write(STDOUT_FILENO,line,bytes); } while(written<0 && errno==EINTR);
+    if(written!=(ssize_t)bytes) { atomic_store(&queue_failed,1);return -1; }
+    return 0;
+}
 static void scene_hex_receipt(const char* label,const char* data,size_t bytes) {
     static const char hex[]="0123456789abcdef";
     char line[17000];
@@ -146,6 +166,17 @@ static void scene_diagnostics(void) {
     }
 }
 static int prepare_scene(void) {
+    if(getenv("WDDM_BRIDGE_NORMAL_DESKTOP_PROBE")) {
+        // Inspect the shipped desktop without pretending the controlled Foot
+        // fixture proves the shell or a normal UWSM session.
+        sleep(8);
+        char* const layers[]={"/usr/bin/hyprctl","-j","layers",NULL};
+        run_ctl(layers);
+        scene_hex_receipt("OMARCHY_DESKTOP_LAYERS_HEX",last_control_reply,strlen(last_control_reply));
+        if(scene_receipt("OMARCHY_DESKTOP_PROBE_CAPTURE normalConfig=true shellVerified=false applicationGpuVerified=false\n")) return -1;
+        atomic_store(&scene_ready,1);
+        return 0;
+    }
     char* const launch[]={"/usr/bin/hyprctl","dispatch","exec",
         "[float; size 480 200; move 80 120] LC_ALL=C.UTF-8 XCOMPOSEFILE=/usr/share/X11/locale/en_US.UTF-8/Compose LD_PRELOAD= /usr/bin/foot --config=/foot.ini --app-id=wddm-scene --title='Wayland desktop scene' /bin/sh /desktop-scene.sh > /tmp/foot-scene.log 2>&1",NULL};
     if(run_ctl(launch)) return -1;
@@ -166,8 +197,8 @@ static int prepare_scene(void) {
             // Allow the terminal's PTY update to reach its first surface commit,
             // then force actual compositor repaints through the existing loop.
             usleep(200000);
+            if(scene_receipt("HYPRLAND_SCENE_READY realWaylandClient=true applicationGpuAccelerated=false compositorGpu=true\n")) return -1;
             atomic_store(&scene_ready,1);
-            puts("HYPRLAND_SCENE_READY realWaylandClient=true applicationGpuAccelerated=false compositorGpu=true");
             return 0;
         }
         usleep(100000);
@@ -177,13 +208,13 @@ static int prepare_scene(void) {
     return -1;
 }
 static int close_scene(void) {
+    if(getenv("WDDM_BRIDGE_NORMAL_DESKTOP_PROBE")) return 0;
     char* const close_window[]={"/usr/bin/hyprctl","dispatch","closewindow","class:wddm-scene",NULL};
     if(run_ctl(close_window)) return -1;
     for(unsigned tick=0;tick<50;++tick) {
         char* const clients[]={"/usr/bin/hyprctl","-j","clients",NULL};
         if(!run_ctl(clients) && !strstr(last_control_reply,"\"class\": \"wddm-scene\"") && !access("/tmp/desktop-scene-exit",F_OK)) {
-            puts("HYPRLAND_SCENE_CLOSED clientUnmapped=true childExitMarker=true");
-            return 0;
+            return scene_receipt("HYPRLAND_SCENE_CLOSED clientUnmapped=true childExitMarker=true\n");
         }
         usleep(100000);
     }
@@ -195,10 +226,8 @@ static void* bounded_control(void* unused) {
     (void)unused;
     for(unsigned n=0;n<60;++n) {
         sleep(1);
-        const char* instance=getenv("HYPRLAND_INSTANCE_SIGNATURE");
-        if(!instance || !instance[0]) continue;
         char socket[768];
-        if(snprintf(socket,sizeof(socket),"/tmp/hypr-runtime/hypr/%s/.socket.sock",instance)>=(int)sizeof(socket) || access(socket,F_OK)) continue;
+        if(control_socket_path(socket,sizeof socket) || access(socket,F_OK)) continue;
         char* const create[]={"/usr/bin/hyprctl","output","create","headless","WDDM-1",NULL};
         const int created=run_ctl(create);
         printf("HYPRLAND_STARTUP_OUTPUT createExit=%d windowsPresentation=false\n",created);
@@ -207,7 +236,9 @@ static void* bounded_control(void* unused) {
         if(created || prepare_scene()) atomic_store(&queue_failed,1);
 #endif
         for(unsigned tick=0;tick<HYPRLAND_QUEUE_FRAMES*2+100 && atomic_load(&queued_frames)<HYPRLAND_QUEUE_FRAMES && !atomic_load(&queue_failed);++tick) {
-            char* const repaint[]={"/usr/bin/hyprctl","keyword","decoration:rounding","0",NULL};
+            char* const legacy_repaint[]={"/usr/bin/hyprctl","keyword","decoration:rounding","0",NULL};
+            char* const lua_repaint[]={"/usr/bin/hyprctl","eval","hl.config({ decoration = { rounding = 0 } })",NULL};
+            char* const* repaint=getenv("WDDM_BRIDGE_NORMAL_DESKTOP_PROBE") ? lua_repaint : legacy_repaint;
             if (run_ctl(repaint)) { atomic_store(&queue_failed,1); break; }
             usleep(50000);
         }
@@ -226,7 +257,9 @@ static void* bounded_control(void* unused) {
 #endif
         char* const monitors[]={"/usr/bin/hyprctl","-j","monitors","all",NULL};
         printf("HYPRLAND_STARTUP_MONITORS exit=%d\n",run_ctl(monitors));
-        char* const stop[]={"/usr/bin/hyprctl","dispatch","exit",NULL};
+        char* const legacy_stop[]={"/usr/bin/hyprctl","dispatch","exit",NULL};
+        char* const lua_stop[]={"/usr/bin/hyprctl","eval","hl.dispatch(hl.dsp.exit())",NULL};
+        char* const* stop=getenv("WDDM_BRIDGE_NORMAL_DESKTOP_PROBE") ? lua_stop : legacy_stop;
         puts("HYPRLAND_STARTUP_EXIT_REQUEST method=hyprctl-dispatch-exit");
         run_ctl(stop);
         break;
@@ -239,16 +272,20 @@ static void* bounded_control(void* unused) {
 static int startup_main(int argc,char** argv,char** environment) {
     if(argc<1 || strcmp(argv[0],"/guest-probe")) return compositor_main(argc,argv,environment);
     setvbuf(stdout,NULL,_IONBF,0);
+    const char* runtime=getenv("WDDM_BRIDGE_HYPRLAND_RUNTIME");
+    const char* home=getenv("WDDM_BRIDGE_HYPRLAND_HOME");
+    if((runtime && !home) || (home && !runtime) || (runtime && (runtime[0]!='/' || home[0]!='/'))) return 121;
+    if(!runtime) { runtime="/tmp/hypr-runtime";home="/tmp/hypr-home"; }
     if(setenv("D3D12_EXPERIMENTAL_NATIVE_SYNC_FILE","true",1) ||
        setenv("D3D12_EXPERIMENTAL_NATIVE_BUFFERS","true",1) ||
        setenv("AQ_EXPERIMENTAL_NATIVE_RENDER","1",1) ||
        setenv("GBM_BACKENDS_PATH","/opt/wddm-mesa/lib/gbm",1) ||
-       setenv("XDG_RUNTIME_DIR","/tmp/hypr-runtime",1) ||
-       setenv("HOME","/tmp/hypr-home",1) ||
+       setenv("XDG_RUNTIME_DIR",runtime,1) ||
+       setenv("HOME",home,1) ||
        setenv("HYPRLAND_LOG_WLR","1",1) ||
        setenv("HYPRLAND_TRACE","1",1)) return 121;
-    if((mkdir("/tmp/hypr-runtime",0700) && errno!=EEXIST) ||
-       (mkdir("/tmp/hypr-home",0700) && errno!=EEXIST)) return 122;
+    if((mkdir(runtime,0700) && errno!=EEXIST) ||
+       (mkdir(home,0700) && errno!=EEXIST)) return 122;
 #ifdef WDDM_BRIDGE_COMPOSITOR_HOST_SCENE
     const unsigned profile=5;
     const char* begin_name="wddm_bridge_begin_opengl_desktop_render";
@@ -261,7 +298,9 @@ static int startup_main(int argc,char** argv,char** environment) {
     printf("HYPRLAND_STARTUP_BEGIN version=0.56.2 boundedProfile=%u actualCompositor=true windowsPresentation=false\n",profile);
     pthread_t thread;
     if(pthread_create(&thread,NULL,bounded_control,NULL) || pthread_detach(thread)) return 124;
-    char* arguments[]={"/guest-probe","--config","/hyprland.conf",NULL};
+    const char* config=getenv("WDDM_BRIDGE_NORMAL_DESKTOP_PROBE") ?
+        "/opt/wddm-root/data/normal-desktop.lua" : "/hyprland.conf";
+    char* arguments[]={"/guest-probe","--config",(char*)config,NULL};
     const int result=compositor_main(3,arguments,environment);
     printf("HYPRLAND_STARTUP_MAIN_RETURN exit=%d windowsPresentation=false\n",result);
 #ifdef WDDM_BRIDGE_COMPOSITOR_HOST_PRESENT

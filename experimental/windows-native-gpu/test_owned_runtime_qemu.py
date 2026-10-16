@@ -210,6 +210,7 @@ def main():
     parser.add_argument('--driver-consume-shared', action='store_true', help='Opt into native GPU consumption after explicit COMMON/fence handoff')
     parser.add_argument('--driver-consume-shared-process', action='store_true', help='Use an owned separate Windows GPU consumer process')
     parser.add_argument('--driver-native-metadata', action='store_true', help='Enable typed texture allocation with Windows-generated runtime metadata')
+    parser.add_argument('--driver-rootfs-readonly',type=pathlib.Path,help='Opt-in real-root boot through two read-only block nodes; private image, no persistent writes')
     parser.add_argument('--driver-present-shared', action='store_true', help='Present consumed guest frames in an owned diagnostic Windows window')
     parser.add_argument('--driver-shared-resources', action='store_true', help='Opt into bounded shareable NVIDIA resource creation and native import probing')
     parser.add_argument('--runtime-workload', choices=('init', 'copy', 'clear', 'triangle', 'shared', 'consume', 'native', 'native-stream', 'opengl'), default='init', help='Require the workload selected when packing the private guest image')
@@ -337,6 +338,8 @@ def main():
     for path in (args.qemu, args.kernel, args.initramfs, args.bridge):
         if not path.is_file():
             parser.error(f'Missing file: {path}')
+    if args.driver_rootfs_readonly and (not args.driver_rootfs_readonly.is_absolute() or not args.driver_rootfs_readonly.is_file()):
+        parser.error('Read-only root image must be an existing absolute regular file')
     log_path = args.report.with_suffix('.log')
     error_log_path = args.report.with_suffix('.errors.log')
     if args.report.exists() or log_path.exists() or error_log_path.exists() or args.report.with_suffix('.host.log').exists():
@@ -376,7 +379,8 @@ def main():
                              (['--sync-eof-test'] if args.sync_eof_test else []) +
                              (['--sync-no-max-eof-test'] if args.sync_no_max_eof_test else []) +
                              (['--reservation-eof-test'] if args.reservation_eof_test else []) +
-                             (['--gpu-state-eof-test'] if args.gpu_state_eof_test else []),
+                             (['--gpu-state-eof-test'] if args.gpu_state_eof_test else []) +
+                             (['--driver-rootfs-readonly',str(args.driver_rootfs_readonly.resolve())] if args.driver_rootfs_readonly else []),
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                              creationflags=subprocess.CREATE_NO_WINDOW)
     output, errors, observer_errors = [], [], []

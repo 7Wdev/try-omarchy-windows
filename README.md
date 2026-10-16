@@ -14,18 +14,17 @@ through QEMU/WHPX. Full acceleration of the Omarchy/Hyprland desktop through thi
 **4/8 verification stages demonstrated; 0/4 desktop acceptance gates complete.** These are checklist counts, not percentages of engineering work completed.
 Guest graphics integration is in progress. The largest integration work remains. [See the roadmap and evidence](docs/GPU-BACKEND-PROGRESS.md).
 
-**Distance to the full desktop:** real Hyprland now composes a readable Foot terminal with changing content at 640×360 into an experimental Windows GPU window.
-Two fresh guests each submit **300 frames**, with no CPU readback on 298 ordinary frames and clean teardown after 948/951 guest GPU commands.
-The new negotiated profile removes the old lifetime command/request cap while keeping live-work and memory limits; fonts and a real Wayland surface now work.
-Final display statistics remain stale in both runs, so reliable scanout is still unverified.
-The next major milestone is the **first full Omarchy scene displayed in the Windows app**. It needs the normal Omarchy session, themes/configuration and app startup,
-launcher presentation/input integration, and capacity for independent GPU applications. Foot currently supplies a software-rendered surface; Hyprland composes it on NVIDIA.
-Interactive use, long-run stability and the ≥93% native-performance target then need their own acceptance tests.
-There is no reliable completion date yet; the remaining work includes substantial driver and compositor integration.
+**Distance to the GPU-only desktop:** NVIDIA composition now works inside the actual Omarchy OS as ordinary UID 1000.
+Two fresh real-root guests each complete **300 frames and 948 GPU commands**, releasing all GPU mappings before shutdown.
+The shipped Lua configuration also produces the first actual Omarchy wallpaper/bar image at 1280×720, with a **software-rendered Qt shell**.
+That diagnostic later fails and does not establish stable operation or application GPU acceleration.
+The next target is **3840×2160 with both Hyprland and Quickshell verified on the GPU**. This needs Mesa's Wayland platform,
+safe independent GPU clients and measured aggregate resource capacity. Normal UWSM/launcher/input integration, reliable scanout,
+long-run stability and ≥93% matched-native performance remain open. [Actual images, retained failures and scope](docs/LIVE-NORMAL-OMARCHY-GPU.md).
 
 | Desktop gate | Status | Acceptance requirement |
 | --- | --- | --- |
-| Guest graphics integration | In progress: real Wayland surface, fonts and 300-frame GPU composition pass | Hyprland can access a supported guest device path and safely share buffers and synchronization for sustained work. |
+| Guest graphics integration | In progress: two 300-frame NVIDIA runs inside the real Omarchy OS; independent GPU apps pending | Hyprland can access a supported guest device path and safely share buffers and synchronization for sustained work. |
 | First Hyprland frame | Pending | Independently verify a correctly displayed compositor frame in the Windows app, capture its image and update PR #2 with the result. |
 | Interactive desktop | Pending | Continuously display real apps with input, multiple windows, resizing and fullscreen up to 4K. |
 | Stable, near-native product | Pending | Pass long runs, bounded-memory and recovery checks, plus matched benchmarks meeting ≥93% of native performance. |
@@ -41,8 +40,8 @@ full Omarchy, application GPU acceleration, normal launcher integration, long-ru
 
 [Normal-image boot groundwork](docs/LIVE-NORMAL-OMARCHY-ROOT-BOOT.md) now passes two fresh QEMU/WHPX boots of the real Omarchy 4.0.4 image.
 Its normal systemd starts with the base disk read-only and all writes in a bounded RAM overlay; the complete source-image digest stays unchanged.
-This clears an OS boot prerequisite. The NVIDIA path still needs connection to that graphical session, including separate GPU clients for Hyprland and Quickshell.
-The full Omarchy frame, launcher integration and desktop gates remain pending.
+The NVIDIA path now connects to a supervised compositor in that OS. Separate GPU clients for Hyprland and Quickshell,
+the normal UWSM/launcher session and GPU-only 4K desktop remain pending. [Real-root graphics evidence](docs/LIVE-NORMAL-OMARCHY-GPU.md).
 
 Earlier [repeated Hyprland GPU presentation](docs/LIVE-HYPRLAND-QUEUED-PRESENTATION.md)
 passes twelve submissions and explicit cleanup in each of two fresh guests. A three-slot GPU ring moves presentation to its own UI thread;

@@ -22,7 +22,8 @@
 #include "guest-kernel/wddm_render.h"
 #include <dirent.h>
 static void timeout_handler(int signal_number) { (void)signal_number; }
-static pid_t graphics_broker_start(const char* port) {
+static pid_t graphics_broker_start_as(const char* port,unsigned uid,unsigned gid) {
+    if (!uid || !gid) return -1;
     if (access("/graphics-broker-required", F_OK)) return 0;
     int ready[2];
     if ((mkdir("/run",0755) && errno != EEXIST) || mkdir("/run/wddm-broker",0755) || pipe2(ready,O_CLOEXEC)) return -1;
@@ -31,8 +32,9 @@ static pid_t graphics_broker_start(const char* port) {
         close(ready[0]);
         if (fcntl(ready[1],F_SETFD,0)) _exit(127);
         char descriptor[24]; snprintf(descriptor,sizeof descriptor,"%d",ready[1]);
+        char user[16],group[16]; snprintf(user,sizeof user,"%u",uid); snprintf(group,sizeof group,"%u",gid);
         unsetenv("LD_PRELOAD"); setenv("LD_LIBRARY_PATH","/usr/lib/x86_64-linux-gnu",1);
-        execl("/guest-graphics-broker","/guest-graphics-broker","/run/wddm-broker/graphics.sock",port,"65534","65534",descriptor,(char*)NULL);
+        execl("/guest-graphics-broker","/guest-graphics-broker","/run/wddm-broker/graphics.sock",port,user,group,descriptor,(char*)NULL);
         _exit(127);
     }
     close(ready[1]);
@@ -44,14 +46,16 @@ static pid_t graphics_broker_start(const char* port) {
     }
     return child;
 }
-static int graphics_client_drop(const char* port) {
+static pid_t graphics_broker_start(const char* port) { return graphics_broker_start_as(port,65534,65534); }
+static int graphics_client_drop_as(const char* port,unsigned uid,unsigned gid) {
+    if (!uid || !gid) return -1;
     unsetenv("WDDM_BRIDGE_PORT"); unsetenv("WDDM_BRIDGE_WINDOWS_WORKER");
     setenv("WDDM_BRIDGE_BROKER_SOCKET","/run/wddm-broker/graphics.sock",1);
-    if (setgroups(0,NULL) || setgid(65534) || setuid(65534) || prctl(PR_SET_NO_NEW_PRIVS,1,0,0,0)) return -1;
+    if (setgroups(0,NULL) || setgid(gid) || setuid(uid) || prctl(PR_SET_NO_NEW_PRIVS,1,0,0,0)) return -1;
     struct __user_cap_header_struct header={_LINUX_CAPABILITY_VERSION_3,0};
     struct __user_cap_data_struct capabilities[2]={{0}};
     if (syscall(SYS_capget,&header,capabilities) || capabilities[0].effective || capabilities[1].effective ||
-        getuid()!=65534 || geteuid()!=65534 || getgid()!=65534 || getegid()!=65534 || getgroups(0,NULL) ||
+        getuid()!=uid || geteuid()!=uid || getgid()!=gid || getegid()!=gid || getgroups(0,NULL) ||
         prctl(PR_GET_NO_NEW_PRIVS,0,0,0,0)!=1) return -1;
     const char* paths[]={"/dev/wddm-aperture",port};
     for (unsigned i=0;i<2;++i) {
@@ -59,9 +63,10 @@ static int graphics_client_drop(const char* port) {
         if (fd>=0) { close(fd); return -1; }
         if (errno!=EACCES && errno!=EPERM) return -1;
     }
-    puts("BROKER_RENDER_CLIENT uid=65534 gid=65534 effectiveCapabilities=0 noNewPrivs=true controllerOpen=denied nativePortOpen=denied");
+    printf("BROKER_RENDER_CLIENT uid=%u gid=%u effectiveCapabilities=0 noNewPrivs=true controllerOpen=denied nativePortOpen=denied\n",uid,gid);
     fflush(stdout); return 0;
 }
+static int graphics_client_drop(const char* port) { return graphics_client_drop_as(port,65534,65534); }
 static int graphics_broker_wait(pid_t child) {
     if (child<=0) return child<0 ? -1 : 0;
     for (unsigned n=0;n<500;++n) {

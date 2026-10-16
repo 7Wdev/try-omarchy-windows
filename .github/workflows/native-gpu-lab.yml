@@ -160,6 +160,13 @@ jobs:
           python3 experimental/windows-native-gpu/test_stream_transport.py --shim /tmp/linux-ioctl-bridge-stream.so --probe /tmp/linux-ioctl-bridge-test
           cc -static -std=c11 -Wall -Wextra -Werror -O2 experimental/windows-native-gpu/runtime_guest_init.c -o /tmp/runtime-init
           cc -static -std=c11 -Wall -Wextra -Werror -O2 experimental/windows-native-gpu/normal_root_guest_init.c -o /tmp/normal-root-init
+          cc -std=c11 -Wall -Wextra -Werror -O2 experimental/windows-native-gpu/normal_root_graphics_service.c -o /tmp/normal-root-graphics-service
+          cc -std=c11 -O2 -Wall -Wextra -Werror experimental/windows-native-gpu/hyprland_control_path_test.c -ldl -pthread -o /tmp/hyprland-control-path-test
+          /tmp/hyprland-control-path-test
+          cc -std=c11 -O2 -Wall -Wextra -Werror experimental/windows-native-gpu/hyprland_scene_receipt_test.c -ldl -pthread -o /tmp/hyprland-scene-receipt-test
+          /tmp/hyprland-scene-receipt-test
+          c++ -std=c++17 -O2 -Wall -Wextra -Werror experimental/windows-native-gpu/readonly_rootfs_args_test.cpp -o /tmp/readonly-rootfs-args-test
+          /tmp/readonly-rootfs-args-test
           python3 -m py_compile experimental/windows-native-gpu/make_normal_root_initramfs.py
           python3 -m py_compile experimental/windows-native-gpu/make_runtime_initramfs.py experimental/windows-native-gpu/test_runtime_qemu.py experimental/windows-native-gpu/test_owned_runtime_qemu.py
       - name: Compile the OpenGL probe without running against the CI host GPU

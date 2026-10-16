@@ -8,10 +8,10 @@ from verify_hyprland_lifecycle_capture import require, validate as lifecycle
 from verify_hyprland_compositor_capture import fnv
 
 
-def validate(report,guest,records,frames,expected_rgb,*,profile=4,expected_frames=12,background_regions=None):
+def validate(report,guest,records,frames,expected_rgb,*,profile=4,expected_frames=12,background_regions=None,normal_root=False):
     require(type(expected_frames) is int and 2<=expected_frames<=1800,'Invalid expected frame count')
     total=expected_frames
-    life=lifecycle(report,guest,profile=profile)
+    life=lifecycle(report,guest,profile=profile,normal_root=normal_root)
     regions=background_regions if background_regions is not None else ((0,640,128,160),(0,640,280,360))
     require(type(regions) is tuple and len(regions)>0,'Missing independent background regions')
     for index,region in enumerate(regions):

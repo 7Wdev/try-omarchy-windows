@@ -11,9 +11,9 @@ BACKGROUND_REGIONS=((0,32,128,160),(608,640,128,160),(0,32,280,360),(608,640,280
 PALETTE=((235,70,70),(70,200,100),(60,130,235))
 
 
-def validate(report,guest,records,frames,*,expected_frames,require_changed_content=False):
+def validate(report,guest,records,frames,*,expected_frames,require_changed_content=False,normal_root=False):
     result=queued(report,guest,records,frames,(0x11,0x44,0x77),profile=5,
-                  expected_frames=expected_frames,background_regions=BACKGROUND_REGIONS)
+                  expected_frames=expected_frames,background_regions=BACKGROUND_REGIONS,normal_root=normal_root)
     profiles=[row for row in records if 'openGlProfileNegotiated' in row]
     expected=dict(openGlProfileNegotiated=True,version=5,frames=0,commandLimit=0,pendingCommands=16,
         reservationLimit=64,reservedByteLimit=17179869184,requestLimit=0,objectLimit=1024,
