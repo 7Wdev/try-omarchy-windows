@@ -15,6 +15,7 @@ private:
     std::map<std::uint32_t, std::uint32_t> parents, resources;
     std::size_t objectLimit=512;
     bool profileObserved=false;
+    bool sparseAperture=false;
     static void require(bool condition, const char* message) {
         if (!condition) throw std::system_error(EPROTO, std::generic_category(), message);
     }
@@ -63,7 +64,7 @@ private:
             require(!view.reserved && view.bytes == 4096 && !(view.offset % 4096) && view.offset < FenceApertureBytes && !view.generation,
                     "Native fence view out of bounds");
         else require(view.kind == WDDM_APERTURE_ALLOCATION && !view.reserved &&
-                     validVendorCpuReply(view.offset, VendorCpuReply{static_cast<std::uint32_t>(view.bytes),0,view.generation}),
+                     validVendorCpuReply(view.offset, VendorCpuReply{static_cast<std::uint32_t>(view.bytes),0,view.generation},sparseAperture),
                      "Native allocation view out of bounds");
         for (const auto& other : grants) {
             const auto& b = other.second.view;
@@ -94,18 +95,18 @@ public:
                     (request.size()==sizeof(Header) || request.size()==sizeof(Header)+sizeof(std::uint32_t) || request.size()==sizeof(Header)+sizeof(OpenGlDesktop4kCapacity)) &&
                     response.size()==sizeof(Header)+sizeof(OpenGlProfile),"Invalid native OpenGL profile receipt");
             const auto version=request.size()==sizeof(Header) ? 1u : at<std::uint32_t>(request,sizeof(Header));
-            require(version==7 ? request.size()==sizeof(Header)+sizeof(OpenGlDesktop4kCapacity) &&
-                    validOpenGlDesktop4kCapacity(at<OpenGlDesktop4kCapacity>(request,sizeof(Header))) :
+            require(version>=7 ? request.size()==sizeof(Header)+sizeof(OpenGlDesktop4kCapacity) &&
+                    (version==7 ? validOpenGlDesktop4kCapacity(at<OpenGlDesktop4kCapacity>(request,sizeof(Header))) : version==8 && validOpenGlDesktopSparseCapacity(at<OpenGlDesktop4kCapacity>(request,sizeof(Header)))) :
                     request.size()==sizeof(Header)+(version==1 ? 0 : sizeof(std::uint32_t)),"Wrong profile request extent");
             const auto profile=at<OpenGlProfile>(response,sizeof(Header));
             require(version==1 ? validOpenGlProfile(profile) : version==2 ? validOpenGlFenceProfile(profile) :
                     version==3 ? validOpenGlCompositorProfile(profile) : version==4 ? validOpenGlCompositorRenderProfile(profile) :
-                    version==5 ? validOpenGlDesktopProfile(profile) : version==6 ? validOpenGlDesktop4kProfile(profile) : version==7 && validOpenGlDesktop4kCpuProfile(profile),"Wrong native OpenGL profile receipt");
+                    version==5 ? validOpenGlDesktopProfile(profile) : version==6 ? validOpenGlDesktop4kProfile(profile) : version==7 ? validOpenGlDesktop4kCpuProfile(profile) : version==8 && validOpenGlDesktopSparseProfile(profile),"Wrong native OpenGL profile receipt");
             // The broker must enforce the host's exact negotiated live-object
             // budget. Its former unconditional 512 cap rejected valid v4/v5
             // allocations while the native session still had capacity.
             if(version>=2) objectLimit=profile.objectLimit;
-            profileObserved=true;
+            profileObserved=true; sparseAperture=version==8;
             return;
         }
         const auto retired = retiring(request);
@@ -176,7 +177,7 @@ public:
         }
         if (op == Op::LockVendorAllocation) {
             const auto value = at<VendorCpuReply>(response,payload);
-            require(response.size() == payload + sizeof(value) && r.handle == h.handle && validVendorCpuReply(result.value,value),
+            require(response.size() == payload + sizeof(value) && r.handle == h.handle && validVendorCpuReply(result.value,value,sparseAperture),
                     "Native CPU lock receipt");
             grant(h.handle,{WDDM_APERTURE_ALLOCATION,0,result.value,value.bytes,value.generation});
         }

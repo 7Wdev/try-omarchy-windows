@@ -68,13 +68,15 @@ public:
         }
         if (value.version != WDDM_APERTURE_VERSION ||
             (value.fence_slots != 64 && value.fence_slots != 128 && value.fence_slots != 256) ||
-            value.allocation_slots < 16 || value.allocation_slots > 256 ||
+            value.allocation_slots < 16 || value.allocation_slots > 512 ||
             (value.allocation_slots & (value.allocation_slots - 1)) ||
             value.cpu_slot_bytes != 1048576 || value.fence_bytes != value.fence_slots * 4096ull ||
             value.allocation_bytes != value.allocation_slots * value.cpu_slot_bytes ||
             value.active_leases > wddm_aperture_lease_limit(value.fence_slots) || value.active_cpu_bytes > WDDM_APERTURE_DESKTOP_CPU_LIMIT ||
             (value.active_cpu_bytes>WDDM_APERTURE_CPU_LIMIT && value.active_cpu_bytes>capacity().cpu_byte_limit))
             throw std::runtime_error("Kernel aperture layout mismatch");
+        if (value.allocation_slots==512 && (value.fence_slots!=256 || capacity().flags!=(WDDM_APERTURE_DESKTOP_CPU_ENABLED|WDDM_APERTURE_SPARSE_ENABLED)))
+            throw std::runtime_error("Sparse kernel layout lacks exact capacity opt-in");
         return value;
     }
     void* map(std::uint32_t kind, std::uint64_t offset, std::size_t bytes, std::uint64_t generation = 0) {

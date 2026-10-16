@@ -12,7 +12,10 @@ NATIVE_SHA256='26aff97284df7d1d9ed6b1a6f9b985b5fa0daa452dd6f0ca7bf0a9824e106de0'
 # new worker used for a legacy-profile hardware regression. Never trust a
 # report-supplied hash as its own provenance oracle.
 KNOWN_NATIVE_SHA256=(NATIVE_SHA256,'277f720994b5287a07fb4c542eda868f67bdef38e36e4461badd27875f1904c1',
-                     '0d8af5dc954826c32f1863faad62e9f77fd8621aae3436909b5602019374605b')
+                     '0d8af5dc954826c32f1863faad62e9f77fd8621aae3436909b5602019374605b',
+                     '6c5a1115d90c318d9a1dddce3be1507d084423aed339c72517136a763ccc1ba4')
+KNOWN_QEMU_SHA256=('9d23c23fdd29a5dbdb0a12fa5fa4672de88df17636395bb3d503b07a7fb9b77e',
+                   'dcd422e6a7882af4ede4d6a79915dcfa6b344253b0b008cd6cebb55e62889111')
 
 
 def validate(report,guest,records,frames,source,*,expected_frames):
@@ -26,7 +29,7 @@ def validate(report,guest,records,frames,source,*,expected_frames):
             report.get('driverBridgeSha256')==source['nativeBuildReceipt'].get('bridgeSha256') and
             report.get('driverBridgeSha256') in KNOWN_NATIVE_SHA256 and
             report.get('kernelSha256')=='fb3e75cf32214fad38a22939f8bdafffa78bd7e0e5b2aa2afa89f0ebe02849ba' and
-            report.get('qemuSha256')=='9d23c23fdd29a5dbdb0a12fa5fa4672de88df17636395bb3d503b07a7fb9b77e','Wrong native/kernel/QEMU/image provenance')
+            report.get('qemuSha256') in KNOWN_QEMU_SHA256,'Wrong native/kernel/QEMU/image provenance')
     roots=[row for row in records if 'ownedQemuReadonlyRootAttached' in row]
     require(len(roots)==1 and roots[0]==dict(ownedQemuReadonlyRootAttached=True,fileNodeReadonly=True,
         rawNodeReadonly=True,sourceWriteSharingDenied=True),'Missing read-only owner policy')

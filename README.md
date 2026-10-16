@@ -21,8 +21,9 @@ That diagnostic later fails and does not establish stable operation or applicati
 The next target is **3840×2160 with both Hyprland and Quickshell verified on the GPU**. Mesa's Wayland platform now builds;
 hardware-only 4K tests expose GPU-map, reported-usage and CPU-map capacity limits, with no verified 4K backbuffer yet.
 Explicit 4K profiles add bounded GPU capacity and a verified 192 MiB kernel/host CPU contract while preserving older profiles.
-The next hardware attempt hits the separate 256-slot aperture limit; no 4K pixels are verified. A larger sparse aperture and
-safe independent GPU clients remain open. [4K controls and remaining work](docs/LIVE-NORMAL-OMARCHY-4K-CAPACITY.md).
+The separate 512-slot aperture now works on hardware, including direct mappings beyond the old ceiling. The next 4K attempt
+hits the GPU virtual-mapping quota and leaves native waits pending; no 4K pixels are verified. Abort cleanup and safe independent
+GPU clients remain open. [Sparse-aperture results and next work](docs/LIVE-NORMAL-OMARCHY-SPARSE-APERTURE.md).
 Normal UWSM/launcher/input integration, reliable scanout,
 long-run stability and ≥93% matched-native performance remain open. [Actual images, retained failures and scope](docs/LIVE-NORMAL-OMARCHY-GPU.md).
 

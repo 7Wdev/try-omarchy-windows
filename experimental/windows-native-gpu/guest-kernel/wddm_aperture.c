@@ -47,6 +47,8 @@ static u32 active_leases;
 /* Read-only after load. No runtime increase while leases are live. */
 static bool enable_desktop_4k_cpu;
 module_param(enable_desktop_4k_cpu, bool, 0444);
+static bool enable_sparse_aperture;
+module_param(enable_sparse_aperture, bool, 0444);
 static u64 cpu_byte_limit(void)
 {
 	return enable_desktop_4k_cpu ? WDDM_APERTURE_DESKTOP_CPU_LIMIT : WDDM_APERTURE_CPU_LIMIT;
@@ -57,7 +59,8 @@ static long aperture_caps(void __user *pointer)
 	if (copy_from_user(&caps, pointer, sizeof(caps))) return -EFAULT;
 	if (caps.version != 1 || caps.flags || caps.cpu_byte_limit || caps.reserved[0] || caps.reserved[1])
 		return -EINVAL;
-	caps.flags = enable_desktop_4k_cpu ? WDDM_APERTURE_DESKTOP_CPU_ENABLED : 0;
+	caps.flags = (enable_desktop_4k_cpu ? WDDM_APERTURE_DESKTOP_CPU_ENABLED : 0) |
+		(enable_sparse_aperture ? WDDM_APERTURE_SPARSE_ENABLED : 0);
 	caps.cpu_byte_limit = cpu_byte_limit();
 	return copy_to_user(pointer, &caps, sizeof(caps)) ? -EFAULT : 0;
 }
@@ -330,7 +333,7 @@ static int aperture_probe(struct pci_dev *pci, const struct pci_device_id *id)
 	bytes = fence ? (u64)slots * 4096 : (u64)slots * CPU_STRIDE;
 	if ((fence && (magic != FENCE_MAGIC || (slots != 64 && slots != 128 && slots != 256))) ||
 	    (!fence && (magic != CPU_MAGIC || stride != CPU_STRIDE || slots < 16 ||
-		       slots > 256 || !is_power_of_2(slots))) ||
+		       slots > (enable_sparse_aperture ? 512 : 256) || !is_power_of_2(slots))) ||
 	    !(pci_resource_flags(pci, 0) & IORESOURCE_MEM) ||
 	    pci_resource_len(pci, 0) != bytes || !IS_ALIGNED(pci_resource_start(pci, 0), PAGE_SIZE)) {
 		result = -ENODEV; goto disable;
@@ -375,6 +378,7 @@ static struct pci_driver aperture_driver = {
 static int __init aperture_init(void)
 {
 	int result;
+	if (enable_sparse_aperture && !enable_desktop_4k_cpu) return -EINVAL;
 	native_sync_wq = alloc_workqueue("wddm-native-sync", WQ_UNBOUND | WQ_MEM_RECLAIM, 0);
 	if (!native_sync_wq) return -ENOMEM;
 	result = pci_register_driver(&aperture_driver);

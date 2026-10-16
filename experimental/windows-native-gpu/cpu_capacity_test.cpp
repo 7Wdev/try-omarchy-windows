@@ -36,6 +36,28 @@ int main() {
     }
     require(!vendorCpuBudgetFits(ExpandedVendorCpuBytes - 4096, 8192, ExpandedVendorCpuCapability));
     require(!validVendorCpuSlots(255) && !validVendorCpuSlots(257) && !validVendorCpuSlots(512));
+    // Reproduce the measured live-4K failure: 226 occupied slots leave fewer
+    // than the 32 required by the next output-sized native allocation.
+    for(const auto slots:{256u,512u}) {
+        driver_cpu::Aperture aperture(slots);std::vector<driver_cpu::Lease> held;
+        for(unsigned n=0;n<226;++n) held.push_back(aperture.map(4096,map,stop));
+        require(aperture.chunks()==226 && aperture.canMap(imageBytes)==(slots==512));
+        if(slots==512) {
+            const auto image=aperture.map(imageBytes,map,stop);require(image.slot==226 && aperture.chunks()==258);
+            require(validVendorCpuReply(image.offset,{image.bytes,0,image.generation},true));
+            require(!validVendorCpuReply(image.offset,{image.bytes,0,image.generation}));
+            aperture.release(image,unmap,stop);
+            // Exercise the last sparse slot and deny stale lease retirement.
+            for(unsigned n=226;n<512;++n) held.push_back(aperture.map(4096,map,stop));
+            require(held.back().slot==511 && !aperture.canMap(4096));
+            const auto last=held.back();aperture.release(last,unmap,stop);held.pop_back();
+            const auto reused=aperture.map(4096,map,stop);require(reused.slot==511 && reused.generation>last.generation);
+            bool stale=false;try { aperture.release(last,unmap,stop); } catch(const std::runtime_error&) { stale=true; }
+            require(stale && aperture.groups()==512);aperture.release(reused,unmap,stop);
+        }
+        for(const auto view:held) aperture.release(view,unmap,stop);
+        require(!aperture.bytes() && !aperture.groups() && aperture.chunkMaps()==aperture.chunkUnmaps());
+    }
     require(!stops);
-    std::cout << "PASS: 256 virtual slots fit full 4K map beside small views; unchanged 96 MiB CPU budget\n";
+    std::cout << "PASS: 256 virtual slots fit full 4K map beside small views; unchanged legacy 96 MiB CPU budget; explicit512-slot boundary, reuse and stale-owner controls\n";
 }

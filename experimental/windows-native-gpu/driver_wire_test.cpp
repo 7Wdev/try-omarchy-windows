@@ -536,7 +536,7 @@ int main() {
             auto caps = Fake::capabilities();
             caps.flags |= AsyncHwSubmitCapability | SyncCapability | GpuReservationCapability | UINT32_C(0x80000000);
             if (profile.version>=6) caps.flags |= ExpandedVendorGpuCapability;
-            if (profile.version==7) caps.flags |= ExpandedVendorCpuCapability;
+            if (profile.version>=7) caps.flags |= ExpandedVendorCpuCapability;
             caps.flags &= ~missing; return caps;
         }
         OpenGlProfile beginOpenGl(std::uint32_t = 1) override { ++begins; return profile; }
@@ -652,7 +652,7 @@ int main() {
         require(s.objectLimit() == MaxObjects);
         require(header(s.dispatch(request(Op::BeginOpenGl, 0, std::uint32_t{2}))).status == -71);
         s.dispatch(hello());
-        for (const auto version : {0u, 1u, 8u, UINT32_MAX})
+        for (const auto version : {0u, 1u, 9u, UINT32_MAX})
             require(header(s.dispatch(request(Op::BeginOpenGl, 0, version))).status == -93 && !f.begins);
         for (unsigned field = 0; field < 8; ++field) {
             std::uint32_t words[8]{}; std::memcpy(words, &GuestOpenGlFenceProfile, sizeof words); ++words[field];
@@ -700,10 +700,49 @@ int main() {
         require(!vendorCpuBudgetFits(192u*1024*1024,4096,ExpandedVendorCpuCapability,true));
         require(!vendorCpuBudgetFits(UINT32_MAX,4096,ExpandedVendorCpuCapability,true));
     }
-    for(const auto version:{3u,4u,5u,6u,7u}) {
-        const auto expected=version==7 ? GuestOpenGlDesktop4kCpuProfile : version==6 ? GuestOpenGlDesktop4kProfile : version==5 ? GuestOpenGlDesktopProfile : version==4 ? GuestOpenGlCompositorRenderProfile : GuestOpenGlCompositorProfile;
+    {
+        require(!validVendorCpuSlots(512) && validVendorCpuSlots(512,true));
+        require(!validVendorCpuSlots(1024,true));
+        const auto high=511ull*VendorCpuSlotBytes;
+        require(!validVendorCpuReply(high,{4096,0,1}));
+        require(validVendorCpuReply(high,{4096,0,1},true));
+        require(!validVendorCpuReply(512ull*VendorCpuSlotBytes,{4096,0,1},true));
+        require(!validVendorCpuReply(high,{MaxVendorCpuMappingBytes,0,1},true));
+        OpenGlFake f; f.profile=GuestOpenGlDesktopSparseProfile; Session s(f);s.dispatch(hello());
+        require(header(s.dispatch(request(Op::BeginOpenGl,0,std::uint32_t{8}))).status==-22 && !f.begins);
+        for(unsigned field=0;field<8;++field) {
+            auto capacity=GuestOpenGlDesktopSparseCapacity;
+            std::uint32_t words[8]{};std::memcpy(words,&capacity,sizeof words);++words[field];std::memcpy(&capacity,words,sizeof words);
+            require(header(s.dispatch(request(Op::BeginOpenGl,0,capacity))).status<0 && !f.begins);
+        }
+        auto old=GuestOpenGlDesktopSparseCapacity;old.version=7;
+        require(header(s.dispatch(request(Op::BeginOpenGl,0,old))).status==-22 && !f.begins);
+        for(const auto missing:{ExpandedVendorGpuCapability,ExpandedVendorCpuCapability}) {
+            f.missing=missing;
+            require(header(s.dispatch(request(Op::BeginOpenGl,0,GuestOpenGlDesktopSparseCapacity))).status==-95 && !f.begins);
+        }
+    }
+    // Native CPU receipts above the published 256-slot ceiling are authorized
+    // only after the exact v8 profile. Real native calls are explicit fakes here.
+    for(const auto version:{7u,8u}) {
+        OpenGlFake f;f.profile=version==8 ? GuestOpenGlDesktopSparseProfile : GuestOpenGlDesktop4kCpuProfile;
+        f.vendorEnabled=f.gpuVaEnabled=f.cpuEnabled=true;f.badCpuReply=4;
+        Session s(f);s.dispatch(hello());
+        require(!header(s.dispatch(request(Op::BeginOpenGl,0,version==8 ? GuestOpenGlDesktopSparseCapacity : GuestOpenGlDesktop4kCapacity))).status);
+        const auto adapter=header(s.dispatch(request(Op::OpenAdapter))).handle;
+        const auto device=header(s.dispatch(request(Op::CreateDevice,adapter))).handle;
+        const auto paging=header(s.dispatch(request(Op::CreatePagingQueue,device))).handle;
+        auto create=request(Op::CreateVendorAllocation,device,VendorAllocationDesc{0,0,0,1,0,0});create.push_back(1);
+        const auto allocation=header(s.dispatch(create)).handle;require(allocation);
+        require(!header(s.dispatch(request(Op::MapVendorAllocation,allocation,GpuVaDesc{paging,0,65536,0,0,0,16,1,0}))).status);
+        const auto locked=s.dispatch(request(Op::LockVendorAllocation,allocation,VendorCpuDesc{device,0}));
+        require(header(locked).status==(version==8 ? 0 : -5));
+        if(version==8) require(!header(s.dispatch(request(Op::UnlockVendorAllocation,allocation,VendorCpuDesc{device,0}))).status);
+    }
+    for(const auto version:{3u,4u,5u,6u,7u,8u}) {
+        const auto expected=version==8 ? GuestOpenGlDesktopSparseProfile : version==7 ? GuestOpenGlDesktop4kCpuProfile : version==6 ? GuestOpenGlDesktop4kProfile : version==5 ? GuestOpenGlDesktopProfile : version==4 ? GuestOpenGlCompositorRenderProfile : GuestOpenGlCompositorProfile;
         OpenGlFake f; f.reservationEnabled=true; Session s(f);
-        const auto begin=version==7 ? request(Op::BeginOpenGl,0,GuestOpenGlDesktop4kCapacity) : request(Op::BeginOpenGl,0,version);
+        const auto begin=version==8 ? request(Op::BeginOpenGl,0,GuestOpenGlDesktopSparseCapacity) : version==7 ? request(Op::BeginOpenGl,0,GuestOpenGlDesktop4kCapacity) : request(Op::BeginOpenGl,0,version);
         require(header(s.dispatch(begin)).status==-71 && !f.begins);
         s.dispatch(hello());
         for (unsigned field=0;field<8;++field) {
@@ -718,7 +757,7 @@ int main() {
         const auto out=s.dispatch(begin); OpenGlProfile profile{};
         require(!header(out).status && out.size()==sizeof(Header)+sizeof profile);
         std::memcpy(&profile,out.data()+sizeof(Header),sizeof profile);
-        require((version==7 ? validOpenGlDesktop4kCpuProfile(profile) : version==6 ? validOpenGlDesktop4kProfile(profile) : version==5 ? validOpenGlDesktopProfile(profile) : version==4 ? validOpenGlCompositorRenderProfile(profile) : validOpenGlCompositorProfile(profile)) &&
+        require((version==8 ? validOpenGlDesktopSparseProfile(profile) : version==7 ? validOpenGlDesktop4kCpuProfile(profile) : version==6 ? validOpenGlDesktop4kProfile(profile) : version==5 ? validOpenGlDesktopProfile(profile) : version==4 ? validOpenGlCompositorRenderProfile(profile) : validOpenGlCompositorProfile(profile)) &&
                 s.objectLimit()==expected.objectLimit && s.syncObjectLimit()==192 &&
                 s.requestLimit()==expected.requestLimit && s.openGlCommandLimit()==expected.commandLimit && s.reservationLimit()==expected.reservationLimit);
         const auto before=f.begins;

@@ -31,6 +31,7 @@ class Memory {
     File config, resource;
     mutable guest_kernel::Aperture kernel;
     std::size_t slotCount = 0;
+    bool sparseAperture = false;
     struct Mapping { void* data; std::uint32_t bytes, references; std::uint64_t offset, generation; };
     std::map<std::uint32_t, Mapping> mappings;
     unsigned created = 0, unmapped = 0;
@@ -56,6 +57,7 @@ class Memory {
     void discover() {
         if (kernel.enabled()) {
             slotCount = kernel.info().allocation_slots;
+            if (!driver_bridge::validVendorCpuSlots(slotCount,sparseAperture)) throw std::runtime_error("Unnegotiated allocation layout");
             std::fprintf(stderr, "LINUX_BRIDGE allocationCpuLayout=true slots=%zu stride=%llu kernel=true\n", slotCount,
                          static_cast<unsigned long long>(driver_bridge::VendorCpuSlotBytes));
             return;
@@ -80,7 +82,7 @@ class Memory {
         if (found.empty()) throw std::runtime_error("Allocation hub absent");
         config.open(found + "/config", O_RDONLY | O_CLOEXEC);
         slotCount = word(0x44);
-        if (word(0) != Identity || word(0x40) != Magic || !driver_bridge::validVendorCpuSlots(slotCount) || word(0x48) != driver_bridge::VendorCpuSlotBytes)
+        if (word(0) != Identity || word(0x40) != Magic || !driver_bridge::validVendorCpuSlots(slotCount,sparseAperture) || word(0x48) != driver_bridge::VendorCpuSlotBytes)
             throw std::runtime_error("Allocation hub layout mismatch");
         File enable; enable.open(found + "/enable", O_WRONLY | O_CLOEXEC);
         if (enable.fd < 0 || write(enable.fd, "1", 1) != 1) throw std::runtime_error("Cannot enable allocation hub");
@@ -91,6 +93,10 @@ class Memory {
     }
 public:
     Memory() = default;
+    void enableSparseAperture() {
+        if (sparseAperture || slotCount || !mappings.empty()) throw std::runtime_error("Sparse aperture must precede CPU mappings");
+        sparseAperture=true;
+    }
     std::size_t active() const { return mappings.size(); }
     Memory(const Memory&) = delete;
     ~Memory() { if (resource.fd >= 0) for (const auto& item : mappings) munmap(item.second.data, item.second.bytes); }
@@ -101,7 +107,7 @@ public:
         ++entry.references; return entry.data;
     }
     void* map(std::uint32_t allocation, std::uint64_t offset, driver_bridge::VendorCpuReply reply) {
-        if (!allocation || !driver_bridge::validVendorCpuReply(offset, reply) || mappings.count(allocation))
+        if (!allocation || !driver_bridge::validVendorCpuReply(offset, reply,sparseAperture) || mappings.count(allocation))
             throw std::runtime_error("Invalid allocation CPU lease");
         for (const auto& item : mappings)
             if (offset < item.second.offset + item.second.bytes && item.second.offset < offset + reply.bytes)

@@ -1,5 +1,10 @@
 # Hardware-only 4K desktop capacity work
 
+The [newer version-8 sparse-aperture integration](LIVE-NORMAL-OMARCHY-SPARSE-APERTURE.md)
+clears the CPU-slot limit described below on hardware. Its next 4K attempt
+still fails the GPU-VA quota and native abort-cleanup gates; no 4K desktop
+pixels are verified. The earlier controls below remain retained.
+
 **No verified 4K desktop frame has been captured.** The real Omarchy OS creates
 a 3840×2160 NVIDIA-backed compositor buffer, but rendering then hits resource
 limits. These are failed controls, not a GPU-only desktop success. Quickshell's

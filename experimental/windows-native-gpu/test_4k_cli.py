@@ -16,7 +16,14 @@ def main():
         if (r.returncode==0 or r.stdout or b'4K lab build requires' not in r.stderr or
                 b'nativeTextureMetadata' in r.stderr or b'ownedQemuPid' in r.stderr):
             raise SystemExit(f'FAIL: 4K startup gate {args}: {r.returncode}, {r.stderr!r}')
-    print('PASS: 4 isolated 4K startup gates reject before GPU/VM work')
+    sparse=[['--stdio','--driver-cpu-slots','512'],
+            ['--run-qemu','qemu','firmware','kernel','image','log','--driver-cpu','--driver-cpu-slots','512'],
+            ['--run-qemu','qemu','firmware','kernel','image','log','--driver-cpu','--driver-cpu-slots','512','--driver-fence-slots','128']]
+    for args in sparse:
+        r=subprocess.run([a.bridge,*args],input=b'',capture_output=True,timeout=10)
+        if r.returncode==0 or r.stdout or b'Sparse CPU aperture requires' not in r.stderr or b'ownedQemuPid' in r.stderr:
+            raise SystemExit(f'FAIL: sparse startup gate {args}: {r.returncode}, {r.stderr!r}')
+    print('PASS: 4 isolated 4K startup gates and 3 sparse-capacity gates reject before GPU/VM work')
 
 
 if __name__=='__main__':
