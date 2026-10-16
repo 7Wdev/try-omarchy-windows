@@ -99,6 +99,8 @@ jobs:
           c++ -std=c++17 -Wall -Wextra -Werror experimental/windows-native-gpu/native_resource_preparation_test.cpp -o /tmp/native-resource-preparation-test
           /tmp/native-resource-preparation-test
           /tmp/driver-wire-test
+          c++ -std=c++17 -Wall -Wextra -Werror experimental/windows-native-gpu/driver_actor_router_test.cpp -o /tmp/driver-actor-router-test
+          /tmp/driver-actor-router-test
           c++ -std=c++17 -Wall -Wextra -Werror experimental/windows-native-gpu/sync_sharing_wire_test.cpp -o /tmp/sync-sharing-wire-test
           /tmp/sync-sharing-wire-test
           c++ -std=c++17 -Wall -Wextra -Werror experimental/windows-native-gpu/native_worker_protocol_test.cpp -o /tmp/native-worker-protocol-test

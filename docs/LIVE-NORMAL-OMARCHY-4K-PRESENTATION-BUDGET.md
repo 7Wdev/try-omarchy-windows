@@ -77,6 +77,9 @@ Display statistics still report **2 of 12** in both 4K runs; complete scanout
 is unverified. Quickshell's independent GPU connection, shared-FD ownership,
 safe abort cancellation from the earlier version-8 failure, normal UWSM/app
 integration, input/resize/fullscreen, long runs and recovery remain open.
+The [actor-routing foundation](GPU-CLIENT-COORDINATOR.md) now has isolated
+Session and disconnect-retention controls; second-client runtime integration
+and shared-FD lineage remain unfinished.
 CUDA, Vulkan, video/NVIDIA features, concurrent host/guest work and **≥93% of
 matched native performance** still need real-application acceptance. Counts
 remain **4/8 verification stages and 0/4 desktop gates**.

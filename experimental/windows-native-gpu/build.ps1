@@ -40,6 +40,10 @@ cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\driver_wire_test.cpp" /Fe
 if not "%errorlevel%"=="0" exit /b %errorlevel%
 driver-wire-test.exe
 if not "%errorlevel%"=="0" exit /b %errorlevel%
+cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\driver_actor_router_test.cpp" /Fe:driver-actor-router-test.exe
+if not "%errorlevel%"=="0" exit /b %errorlevel%
+driver-actor-router-test.exe
+if not "%errorlevel%"=="0" exit /b %errorlevel%
 cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\readonly_rootfs_args_test.cpp" /Fe:readonly-rootfs-args-test.exe
 if not "%errorlevel%"=="0" exit /b %errorlevel%
 readonly-rootfs-args-test.exe
