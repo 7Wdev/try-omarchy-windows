@@ -674,11 +674,12 @@ public:
     OpenGlProfile beginOpenGl(std::uint32_t version = 1) override {
         if (version>=6 && !(capabilities().flags & ExpandedVendorGpuCapability)) return {};
         if (version>=7 && (!(capabilities().flags & ExpandedVendorCpuCapability) || !runtime ||
-            runtime->allocationSlotLimit()!=(version>=8 ? SparseVendorCpuSlots : MaxVendorCpuSlots) || runtime->fenceSlotLimit()!=(version==11 ? 512u : 256u))) return {};
+            runtime->allocationSlotLimit()!=(version==12 ? DesktopVendorCpuSlots : version>=8 ? SparseVendorCpuSlots : MaxVendorCpuSlots) || runtime->fenceSlotLimit()!=(version>=11 ? 512u : 256u))) return {};
         if (runtime && runtime->allocationSlotLimit()==SparseVendorCpuSlots && version!=8 && version!=9 && version!=10 && version!=11) return {};
+        if (runtime && runtime->allocationSlotLimit()==DesktopVendorCpuSlots && version!=12) return {};
         if (!gpu_diagnostic::HighResolution || openglEnabled || streamingEnabled || !asyncSubmitEnabled || !syncEnabled || !reservationEnabled ||
             !runtime || runtime->hasStopped() || !ownedAdapters.empty() || !deviceAdapters.empty() ||
-            !pendingSubmissions.empty() || !pendingHwSignals.empty() || (version != 1 && version != 2 && version != 3 && version != 4 && version != 5 && version != 6 && version != 7 && version != 8 && version != 9 && version != 10 && version!=11)) return {};
+            !pendingSubmissions.empty() || !pendingHwSignals.empty() || (version != 1 && version != 2 && version != 3 && version != 4 && version != 5 && version != 6 && version != 7 && version != 8 && version != 9 && version != 10 && version!=11 && version!=12)) return {};
         openglEnabled = true;
         openglFencesEnabled = version >= 2;
         openglCompositorEnabled = version >= 3;
@@ -689,7 +690,7 @@ public:
         openglDesktopSparseEnabled = version >= 8;
         openglDesktopLargeMapEnabled = version >= 9;
         openglDesktopPresentationEnabled = version >= 10;
-        const auto profile = version==11 ? GuestOpenGlDesktopFenceProfile : version == 10 ? GuestOpenGlDesktopPresentationProfile : version == 9 ? GuestOpenGlDesktopLargeMapProfile : version == 8 ? GuestOpenGlDesktopSparseProfile : version == 7 ? GuestOpenGlDesktop4kCpuProfile : version == 6 ? GuestOpenGlDesktop4kProfile : version == 5 ? GuestOpenGlDesktopProfile : version == 4 ? GuestOpenGlCompositorRenderProfile : version == 3 ? GuestOpenGlCompositorProfile : version == 2 ? GuestOpenGlFenceProfile : GuestOpenGlProfile;
+        const auto profile = version==12 ? GuestOpenGlDesktopSlotProfile : version==11 ? GuestOpenGlDesktopFenceProfile : version == 10 ? GuestOpenGlDesktopPresentationProfile : version == 9 ? GuestOpenGlDesktopLargeMapProfile : version == 8 ? GuestOpenGlDesktopSparseProfile : version == 7 ? GuestOpenGlDesktop4kCpuProfile : version == 6 ? GuestOpenGlDesktop4kProfile : version == 5 ? GuestOpenGlDesktopProfile : version == 4 ? GuestOpenGlCompositorRenderProfile : version == 3 ? GuestOpenGlCompositorProfile : version == 2 ? GuestOpenGlFenceProfile : GuestOpenGlProfile;
         std::cerr << "{\"openGlProfileNegotiated\":true,\"version\":" << version << ",\"frames\":" << profile.frames << ",\"commandLimit\":" << profile.commandLimit << ",\"pendingCommands\":16,\"reservationLimit\":" << profile.reservationLimit << ",\"reservedByteLimit\":17179869184,\"requestLimit\":" << profile.requestLimit;
         if (version >= 2) std::cerr << ",\"objectLimit\":" << profile.objectLimit
             << ",\"hwQueueLimit\":" << OpenGlFenceHwQueues << ",\"vendorObjectLimit\":" << vendorObjectLimit() << ",\"syncObjectLimit\":" << syncObjectLimit();
@@ -1644,7 +1645,7 @@ public:
         if (!cpuEnabled || !runtime || entry == vendorAllocations.end() || entry->second.device != device ||
             entry->second.locked || !entry->second.pages || entry->second.offsetPages)
             return {{Invalid, 0, 0}, {0, 0, 0}};
-        if (runtime->allocationSlotLimit()==SparseVendorCpuSlots && !openglDesktopSparseEnabled)
+        if (runtime->allocationSlotLimit()>=SparseVendorCpuSlots && !openglDesktopSparseEnabled)
             return {{Invalid,0,0},{0,0,0}};
         auto& owned = entry->second;
         const auto bytes = static_cast<std::uint32_t>(owned.pages * 4096);
@@ -2402,8 +2403,8 @@ int main(int argc, char** argv) {
             }
             if (argc > 2 && std::string(argv[argc - 2]) == "--driver-cpu-slots") {
                 const auto value = std::string(argv[argc - 1]);
-                if (cpuSlotsConfigured || (value != "16" && value != "32" && value != "64" && value != "128" && value != "256" && !(gpu_diagnostic::HighResolution && value=="512")))
-                    throw std::runtime_error("CPU aperture slots must be specified once as 16, 32, 64, 128 or 256; 512 requires the high-resolution lab");
+                if (cpuSlotsConfigured || (value != "16" && value != "32" && value != "64" && value != "128" && value != "256" && !(gpu_diagnostic::HighResolution && (value=="512" || value=="1024"))))
+                    throw std::runtime_error("CPU aperture slots must be specified once as 16, 32, 64, 128 or 256; 512/1024 require the high-resolution lab");
                 cpuSlots = static_cast<std::size_t>(std::stoul(value)); cpuSlotsConfigured = true;
                 argc -= 2; continue;
             }
@@ -2446,18 +2447,19 @@ int main(int argc, char** argv) {
         if (readonlyRoot && (cpuStoreTest || cpuEofTest || cpuSpanEofTest || hwQueueEofTest || syncEofTest || syncNoMaxEofTest ||
             reservationEofTest || gpuStateEofTest || hwQueueNoBroadcastEofTest || hwQueueNoBroadcastWaitEofTest))
             throw std::runtime_error("Read-only root image cannot be combined with forced EOF/store controls");
+        if(cpuSlots==DesktopVendorCpuSlots && (!coordinated || !cpu || fenceSlots!=512)) throw std::runtime_error("1024 CPU slots require the owned coordinator, CPU locks and 512 fence slots");
         if(fenceSlots==512 && !coordinated) throw std::runtime_error("512 fence slots require the explicit owned coordinator");
         if (cpuSlots==SparseVendorCpuSlots && (!cpu || (fenceSlots!=256 && !(coordinated && fenceSlots==512)) || argc!=7 || std::string(argv[1])!="--run-qemu"))
             throw std::runtime_error("Sparse CPU aperture requires CPU locks, explicit 256 fence slots and an owned QEMU runtime");
         if(coordinated && (!gpu_diagnostic::HighResolution || argc!=7 || std::string(argv[1])!="--run-qemu" || !readonlyRoot ||
-            cpuSlots!=SparseVendorCpuSlots || (fenceSlots!=256 && fenceSlots!=512) || !nativeMetadata || !presentShared || !consumeShared || !sharedResources ||
+            (cpuSlots!=SparseVendorCpuSlots && cpuSlots!=DesktopVendorCpuSlots) || (fenceSlots!=256 && fenceSlots!=512) || !nativeMetadata || !presentShared || !consumeShared || !sharedResources ||
             !asyncSubmit || !sync || !gpuState || !retirement || consumeProcess || cpuStoreTest || cpuEofTest || cpuSpanEofTest ||
             hwQueueEofTest || syncEofTest || syncNoMaxEofTest || reservationEofTest || gpuStateEofTest || hwQueueNoBroadcastEofTest || hwQueueNoBroadcastWaitEofTest))
             throw std::runtime_error("Coordinator requires the high-resolution owned read-only root runtime, exact sparse apertures and complete native presentation opt-ins");
         if (gpu_diagnostic::HighResolution) {
             if (!nativeMetadata || !consumeShared || !cpu || cpuSlots < ExpandedVendorCpuSlots ||
                 argc != 7 || std::string(argv[1]) != "--run-qemu")
-                throw std::runtime_error("4K lab build requires native metadata, consumption and 128, 256 or 512 CPU slots in an owned QEMU runtime");
+                throw std::runtime_error("4K lab build requires native metadata, consumption and 128, 256, 512 or coordinated 1024 CPU slots in an owned QEMU runtime");
             (void)driver_capture::directory(); // Validate capture destination before GPU work.
         }
         if (allocations && (!contexts || !queries)) throw std::runtime_error("Vendor allocations require explicit query/context opt-ins");
@@ -2517,7 +2519,7 @@ int main(int argc, char** argv) {
         const bool ownedRuntime = argc == 7 && std::string(argv[1]) == "--run-qemu";
         if (!ownedRuntime && ((argc != 3 && argc != 7) || std::string(argv[1]) != "--listen")) {
             std::cerr << "Usage: driver-bridge.exe --stdio | --listen port [--guest-section name --guest-ram-bytes count] "
-                "[--driver-contexts] [--driver-queries] [--driver-allocations] [--driver-gpuva] [--driver-residency] [--driver-cpu] [--driver-cpu-slots 16|32|64|128|256|512] [--driver-translation] [--driver-hwqueues] [--driver-syncs] [--driver-submit] [--driver-async-submit] [--driver-retirement] [--driver-reservation] [--driver-gpu-state] [--cpu-store-test | --cpu-eof-test | --cpu-span-eof-test | --hwqueue-eof-test | --hwqueue-no-broadcast-eof-test | --hwqueue-no-broadcast-wait-eof-test | --sync-eof-test | --sync-no-max-eof-test | --reservation-eof-test | --gpu-state-eof-test]\n"
+                "[--driver-contexts] [--driver-queries] [--driver-allocations] [--driver-gpuva] [--driver-residency] [--driver-cpu] [--driver-cpu-slots 16|32|64|128|256|512|1024] [--driver-translation] [--driver-hwqueues] [--driver-syncs] [--driver-submit] [--driver-async-submit] [--driver-retirement] [--driver-reservation] [--driver-gpu-state] [--cpu-store-test | --cpu-eof-test | --cpu-span-eof-test | --hwqueue-eof-test | --hwqueue-no-broadcast-eof-test | --hwqueue-no-broadcast-wait-eof-test | --sync-eof-test | --sync-no-max-eof-test | --reservation-eof-test | --gpu-state-eof-test]\n"
                 "       driver-bridge.exe --run-qemu qemu firmware kernel initramfs fresh-log --driver-contexts --driver-queries [--driver-fence-slots 64|128|256] [--driver-coordinator]\n"; return 2;
         }
         if (ownedRuntime && (!contexts || !queries)) throw std::runtime_error("Owned QEMU runtime requires explicit query/context opt-ins");

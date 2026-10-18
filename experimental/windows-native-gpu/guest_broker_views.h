@@ -16,6 +16,7 @@ private:
     std::size_t objectLimit=512;
     bool profileObserved=false;
     bool sparseAperture=false;
+    bool desktopSlots=false;
     std::uint64_t fenceApertureBytes=driver_bridge::FenceApertureBytes;
     static void require(bool condition, const char* message) {
         if (!condition) throw std::system_error(EPROTO, std::generic_category(), message);
@@ -65,7 +66,7 @@ private:
             require(!view.reserved && view.bytes == 4096 && !(view.offset % 4096) && view.offset < fenceApertureBytes && !view.generation,
                     "Native fence view out of bounds");
         else require(view.kind == WDDM_APERTURE_ALLOCATION && !view.reserved &&
-                     validVendorCpuReply(view.offset, VendorCpuReply{static_cast<std::uint32_t>(view.bytes),0,view.generation},sparseAperture),
+                     validVendorCpuReply(view.offset, VendorCpuReply{static_cast<std::uint32_t>(view.bytes),0,view.generation},sparseAperture,desktopSlots),
                      "Native allocation view out of bounds");
         for (const auto& other : grants) {
             const auto& b = other.second.view;
@@ -96,7 +97,8 @@ public:
                     (request.size()==sizeof(Header) || request.size()==sizeof(Header)+sizeof(std::uint32_t) || request.size()==sizeof(Header)+sizeof(OpenGlDesktop4kCapacity) || request.size()==sizeof(Header)+sizeof(OpenGlDesktopLargeMapCapacity) || request.size()==sizeof(Header)+sizeof(OpenGlDesktopPresentationCapacity)) &&
                     response.size()==sizeof(Header)+sizeof(OpenGlProfile),"Invalid native OpenGL profile receipt");
             const auto version=request.size()==sizeof(Header) ? 1u : at<std::uint32_t>(request,sizeof(Header));
-            require(version==11 ? request.size()==sizeof(Header)+sizeof(OpenGlDesktopPresentationCapacity) &&
+            require(version==12 ? request.size()==sizeof(Header)+sizeof(OpenGlDesktopPresentationCapacity) &&
+                    validOpenGlDesktopSlotCapacity(at<OpenGlDesktopPresentationCapacity>(request,sizeof(Header))) : version==11 ? request.size()==sizeof(Header)+sizeof(OpenGlDesktopPresentationCapacity) &&
                     validOpenGlDesktopFenceCapacity(at<OpenGlDesktopPresentationCapacity>(request,sizeof(Header))) : version==10 ? request.size()==sizeof(Header)+sizeof(OpenGlDesktopPresentationCapacity) &&
                     validOpenGlDesktopPresentationCapacity(at<OpenGlDesktopPresentationCapacity>(request,sizeof(Header))) : version==9 ? request.size()==sizeof(Header)+sizeof(OpenGlDesktopLargeMapCapacity) &&
                     validOpenGlDesktopLargeMapCapacity(at<OpenGlDesktopLargeMapCapacity>(request,sizeof(Header))) : version>=7 ? request.size()==sizeof(Header)+sizeof(OpenGlDesktop4kCapacity) &&
@@ -105,13 +107,13 @@ public:
             const auto profile=at<OpenGlProfile>(response,sizeof(Header));
             require(version==1 ? validOpenGlProfile(profile) : version==2 ? validOpenGlFenceProfile(profile) :
                     version==3 ? validOpenGlCompositorProfile(profile) : version==4 ? validOpenGlCompositorRenderProfile(profile) :
-                    version==5 ? validOpenGlDesktopProfile(profile) : version==6 ? validOpenGlDesktop4kProfile(profile) : version==7 ? validOpenGlDesktop4kCpuProfile(profile) : version==8 ? validOpenGlDesktopSparseProfile(profile) : version==9 ? validOpenGlDesktopLargeMapProfile(profile) : version==11 ? validOpenGlDesktopFenceProfile(profile) : version==10 && validOpenGlDesktopPresentationProfile(profile),"Wrong native OpenGL profile receipt");
+                    version==5 ? validOpenGlDesktopProfile(profile) : version==6 ? validOpenGlDesktop4kProfile(profile) : version==7 ? validOpenGlDesktop4kCpuProfile(profile) : version==8 ? validOpenGlDesktopSparseProfile(profile) : version==9 ? validOpenGlDesktopLargeMapProfile(profile) : version==12 ? validOpenGlDesktopSlotProfile(profile) : version==11 ? validOpenGlDesktopFenceProfile(profile) : version==10 && validOpenGlDesktopPresentationProfile(profile),"Wrong native OpenGL profile receipt");
             // The broker must enforce the host's exact negotiated live-object
             // budget. Its former unconditional 512 cap rejected valid v4/v5
             // allocations while the native session still had capacity.
             if(version>=2) objectLimit=profile.objectLimit;
-            profileObserved=true; sparseAperture=version>=8;
-            fenceApertureBytes=version==11 ? DesktopFenceApertureBytes : FenceApertureBytes;
+            profileObserved=true; sparseAperture=version>=8;desktopSlots=version==12;
+            fenceApertureBytes=version>=11 ? DesktopFenceApertureBytes : FenceApertureBytes;
             return;
         }
         const auto retired = retiring(request);
@@ -182,7 +184,7 @@ public:
         }
         if (op == Op::LockVendorAllocation) {
             const auto value = at<VendorCpuReply>(response,payload);
-            require(response.size() == payload + sizeof(value) && r.handle == h.handle && validVendorCpuReply(result.value,value,sparseAperture),
+            require(response.size() == payload + sizeof(value) && r.handle == h.handle && validVendorCpuReply(result.value,value,sparseAperture,desktopSlots),
                     "Native CPU lock receipt");
             grant(h.handle,{WDDM_APERTURE_ALLOCATION,0,result.value,value.bytes,value.generation});
         }

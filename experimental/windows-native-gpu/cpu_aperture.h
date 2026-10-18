@@ -24,7 +24,7 @@ struct Lease { std::uint32_t slot, bytes; std::uint64_t generation, offset; };
 // One CPU view may span adjacent existing 1 MiB QEMU slots. Each native
 // mapping/unmapping receives its own generation and acknowledgement.
 class Aperture {
-    std::array<std::optional<Lease>, driver_bridge::SparseVendorCpuSlots> leases;
+    std::array<std::optional<Lease>, driver_bridge::DesktopVendorCpuSlots> leases;
     std::size_t slots;
     std::uint64_t generation = 0;
     unsigned liveGroups = 0, liveChunks = 0, createdGroups = 0, removedGroups = 0;
@@ -53,8 +53,8 @@ class Aperture {
     }
     static bool bytesValid(std::uint32_t bytes) { return bytes && !(bytes % 4096) && bytes <= driver_bridge::MaxVendorCpuMappingBytes; }
 public:
-    explicit Aperture(std::size_t count) : slots(count) {
-        if (!driver_bridge::validVendorCpuSlots(count,true)) throw std::runtime_error("Invalid CPU aperture capacity");
+    explicit Aperture(std::size_t count, bool desktop=false) : slots(count) {
+        if (!driver_bridge::validVendorCpuSlots(count,true,desktop)) throw std::runtime_error("Invalid CPU aperture capacity");
     }
     bool canMap(std::uint32_t bytes) const { return freeSpan(bytes) != slots && generation <= UINT64_MAX - span(bytes); }
     template<class Map, class Stop> Lease map(std::uint32_t bytes, Map mapChunk, Stop stopOwnedVm) {
@@ -95,6 +95,14 @@ public:
     }
     unsigned groups() const { return liveGroups; }
     unsigned chunks() const { return liveChunks; }
+    std::size_t largestFreeRunSlots() const {
+        std::size_t current=0,best=0;
+        for(std::size_t n=0;n<slots;++n) {
+            current=leases[n] ? 0 : current+1;
+            best=(std::max)(best,current);
+        }
+        return best;
+    }
     std::uint32_t bytes() const { return liveBytes; }
     unsigned maps() const { return createdGroups; }
     unsigned unmaps() const { return removedGroups; }

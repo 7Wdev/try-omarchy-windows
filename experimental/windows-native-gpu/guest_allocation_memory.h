@@ -32,6 +32,7 @@ class Memory {
     mutable guest_kernel::Aperture kernel;
     std::size_t slotCount = 0;
     bool sparseAperture = false;
+    bool desktopSlots = false;
     struct Mapping { void* data; std::uint32_t bytes, references; std::uint64_t offset, generation; };
     std::map<std::uint32_t, Mapping> mappings;
     unsigned created = 0, unmapped = 0;
@@ -57,7 +58,7 @@ class Memory {
     void discover() {
         if (kernel.enabled()) {
             slotCount = kernel.info().allocation_slots;
-            if (!driver_bridge::validVendorCpuSlots(slotCount,sparseAperture)) throw std::runtime_error("Unnegotiated allocation layout");
+            if (!driver_bridge::validVendorCpuSlots(slotCount,sparseAperture,desktopSlots)) throw std::runtime_error("Unnegotiated allocation layout");
             std::fprintf(stderr, "LINUX_BRIDGE allocationCpuLayout=true slots=%zu stride=%llu kernel=true\n", slotCount,
                          static_cast<unsigned long long>(driver_bridge::VendorCpuSlotBytes));
             return;
@@ -93,9 +94,10 @@ class Memory {
     }
 public:
     Memory() = default;
-    void enableSparseAperture() {
+    void enableSparseAperture(bool desktop=false) {
         if (sparseAperture || slotCount || !mappings.empty()) throw std::runtime_error("Sparse aperture must precede CPU mappings");
         sparseAperture=true;
+        desktopSlots=desktop;
     }
     std::size_t active() const { return mappings.size(); }
     Memory(const Memory&) = delete;
@@ -107,7 +109,7 @@ public:
         ++entry.references; return entry.data;
     }
     void* map(std::uint32_t allocation, std::uint64_t offset, driver_bridge::VendorCpuReply reply) {
-        if (!allocation || !driver_bridge::validVendorCpuReply(offset, reply,sparseAperture) || mappings.count(allocation))
+        if (!allocation || !driver_bridge::validVendorCpuReply(offset, reply,sparseAperture,desktopSlots) || mappings.count(allocation))
             throw std::runtime_error("Invalid allocation CPU lease");
         for (const auto& item : mappings)
             if (offset < item.second.offset + item.second.bytes && item.second.offset < offset + reply.bytes)

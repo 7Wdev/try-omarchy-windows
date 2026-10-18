@@ -37,21 +37,24 @@ public:
         return {reply.begin()+sizeof r,reply.end()};
     }
     void initialize(const wddm_aperture_info& layout,const wddm_aperture_caps& caps,const wddm_aperture_coordinator_caps& leases,
-                    const wddm_aperture_desktop_fences& fences={}) {
+                    const wddm_aperture_desktop_fences& fences={},const wddm_aperture_desktop_slots& slots={}) {
         const bool wide=layout.fence_slots==512;
-        const driver_bridge::OpenGlDesktopPresentationCapacity wanted{{{wide ? 11u : 10u,caps.version,caps.cpu_byte_limit,layout.allocation_slots,layout.fence_slots,0},
+        const bool expanded=layout.allocation_slots==1024;
+        const driver_bridge::OpenGlDesktopPresentationCapacity wanted{{{expanded ? 12u : wide ? 11u : 10u,caps.version,caps.cpu_byte_limit,layout.allocation_slots,layout.fence_slots,0},
             driver_bridge::OpenGlDesktopLargeMapBytes},driver_bridge::OpenGlDesktopPresentationReportedBytes};
         if(!wddm_aperture_valid_coordinator_caps(leases) || !leases.enabled || leases.lease_limit!=driver_bridge::CoordinatedObjectCapacity{}.leaseLimit ||
             !wddm_aperture_valid_caps(caps) || caps.flags!=(WDDM_APERTURE_DESKTOP_CPU_ENABLED|WDDM_APERTURE_SPARSE_ENABLED) ||
             !driver_bridge::validCoordinatedPresentationCapacity(wanted) ||
-            (wide && (!wddm_aperture_valid_desktop_fences(fences) || !fences.enabled || fences.slots!=layout.fence_slots || fences.bytes!=layout.fence_bytes))) reject("Coordinator kernel capacity mismatch");
+            (wide && (!wddm_aperture_valid_desktop_fences(fences) || !fences.enabled || fences.slots!=layout.fence_slots || fences.bytes!=layout.fence_bytes)) ||
+            (expanded && (!wddm_aperture_valid_desktop_slots(slots) || !slots.enabled || slots.slots!=layout.allocation_slots || slots.bytes!=layout.allocation_bytes))) reject("Coordinator kernel capacity mismatch");
         const auto objects=wide ? driver_bridge::GuestCoordinatedDesktopObjects : driver_bridge::CoordinatedObjectCapacity{};
         if(!control(cg::Operation::Initialize,encode(cg::Initialization{wanted,objects})).empty()) reject("Coordinator initialization payload");
         agreement=decode<cg::Info>(control(cg::Operation::Info));
         if(!cg::validInfo(agreement) || std::memcmp(&wanted,&agreement.capacity,sizeof wanted)) reject("Coordinator agreement mismatch");
         std::fprintf(stderr,"BROKER_COORDINATOR_KERNEL_CAPACITY verified=true leaseLimit=%u cpuBytes=%llu flags=%u actualIoctl=true\n",
             leases.lease_limit,static_cast<unsigned long long>(caps.cpu_byte_limit),caps.flags);
-        if(wide) std::fprintf(stderr,"BROKER_COORDINATOR_FENCE_CAPACITY profile=11 slots=%u bytes=%llu actualIoctl=true\n",fences.slots,static_cast<unsigned long long>(fences.bytes));
+        if(wide) std::fprintf(stderr,"BROKER_COORDINATOR_FENCE_CAPACITY profile=%u slots=%u bytes=%llu actualIoctl=true\n",wanted.mapping.aperture.version,fences.slots,static_cast<unsigned long long>(fences.bytes));
+        if(expanded) std::fprintf(stderr,"BROKER_COORDINATOR_SLOT_CAPACITY profile=12 slots=%u bytes=%llu cpuByteLimit=%llu actualIoctl=true\n",slots.slots,static_cast<unsigned long long>(slots.bytes),static_cast<unsigned long long>(caps.cpu_byte_limit));
     }
     cg::Info info() const { return agreement; }
     std::uint64_t attach(bool primary) {

@@ -47,8 +47,9 @@ constexpr std::size_t DefaultVendorCpuSlots = 16;
 constexpr std::size_t ExpandedVendorCpuSlots = 128;
 constexpr std::size_t MaxVendorCpuSlots = 256; // Published v1-7 receipt ceiling.
 constexpr std::size_t SparseVendorCpuSlots = 512;
-inline bool validVendorCpuSlots(std::size_t slots, bool sparse=false) {
-    return slots >= DefaultVendorCpuSlots && slots <= (sparse ? SparseVendorCpuSlots : MaxVendorCpuSlots) && !(slots & (slots - 1));
+constexpr std::size_t DesktopVendorCpuSlots = 1024;
+inline bool validVendorCpuSlots(std::size_t slots, bool sparse=false, bool desktop=false) {
+    return (!desktop || sparse) && slots >= DefaultVendorCpuSlots && slots <= (desktop ? DesktopVendorCpuSlots : sparse ? SparseVendorCpuSlots : MaxVendorCpuSlots) && !(slots & (slots - 1));
 }
 constexpr std::uint32_t VendorGpuVaCapability = 512;
 constexpr std::uint32_t VendorResidencyCapability = 1024;
@@ -167,8 +168,9 @@ constexpr std::uint64_t CpuStoreFirstMarker = 0x4350554649525354ull, CpuStoreLas
 struct VendorCpuDesc { std::uint32_t device, flags; };
 struct VendorCpuReply { std::uint32_t bytes, reserved; std::uint64_t generation; };
 static_assert(sizeof(VendorCpuDesc) == 8 && sizeof(VendorCpuReply) == 16, "fixed CPU lock layouts");
-inline bool validVendorCpuReply(std::uint64_t offset, VendorCpuReply r, bool sparse=false) {
-    const auto limit=(sparse ? SparseVendorCpuSlots : MaxVendorCpuSlots)*VendorCpuSlotBytes;
+inline bool validVendorCpuReply(std::uint64_t offset, VendorCpuReply r, bool sparse=false, bool desktop=false) {
+    if(desktop && !sparse) return false;
+    const auto limit=(desktop ? DesktopVendorCpuSlots : sparse ? SparseVendorCpuSlots : MaxVendorCpuSlots)*VendorCpuSlotBytes;
     return r.bytes && r.bytes <= MaxVendorCpuMappingBytes && !(r.bytes % 4096) && !r.reserved && r.generation &&
            !(offset % VendorCpuSlotBytes) && offset < limit && r.bytes <= limit - offset;
 }
@@ -471,7 +473,7 @@ inline bool validCoordinatedObjectCapacity(CoordinatedObjectCapacity value) {
 constexpr CoordinatedObjectCapacity GuestCoordinatedDesktopObjects{4,32,384,768,64ull*1024*1024*1024,256,1024};
 inline bool validCoordinatedAgreement(OpenGlDesktopPresentationCapacity capacity,CoordinatedObjectCapacity objects) {
     return validCoordinatedPresentationCapacity(capacity) && validCoordinatedObjectCapacity(objects) &&
-        objects.version==(capacity.mapping.aperture.version==11 ? 4u : 3u);
+        objects.version==(capacity.mapping.aperture.version>=11 ? 4u : 3u);
 }
 class Driver {
 public:
@@ -684,6 +686,7 @@ class Session {
     bool openglDesktop4kNegotiated = false;
     bool openglDesktop4kCpuNegotiated = false;
     bool openglDesktopSparseNegotiated = false;
+    bool openglDesktopSlotsNegotiated = false;
     bool openglDesktopLargeMapNegotiated = false;
     unsigned compositorCaptureAttempts = 0;
     bool compositorQueueUsed = false;
@@ -831,6 +834,7 @@ public:
             openglDesktop4kNegotiated = false;
             openglDesktop4kCpuNegotiated = false;
             openglDesktopSparseNegotiated = false;
+            openglDesktopSlotsNegotiated = false;
             openglDesktopLargeMapNegotiated = false;
             fenceApertureBytes=FenceApertureBytes;
             if (version != Version) return reply(h, -93);
@@ -871,13 +875,13 @@ public:
             std::uint32_t version = 1;
             if (packet.size() != sizeof h) {
                 std::memcpy(&version, packet.data() + sizeof h, sizeof version);
-                if(version==11 && !coordinated) return reply(h,-93);
-                if (version != 2 && version != 3 && version != 4 && version != 5 && version != 6 && version != 7 && version != 8 && version != 9 && version != 10 && version!=11) return reply(h, -93);
+                if((version==11 || version==12) && !coordinated) return reply(h,-93);
+                if (version != 2 && version != 3 && version != 4 && version != 5 && version != 6 && version != 7 && version != 8 && version != 9 && version != 10 && version!=11 && version!=12) return reply(h, -93);
             }
-            if (version==10 || version==11) {
+            if (version==10 || version==11 || version==12) {
                 if(packet.size()!=sizeof h+sizeof(OpenGlDesktopPresentationCapacity)) return reply(h,-22);
                 OpenGlDesktopPresentationCapacity capacity{};std::memcpy(&capacity,packet.data()+sizeof h,sizeof capacity);
-                if(version==11 ? !coordinated || !validOpenGlDesktopFenceCapacity(capacity) : !validOpenGlDesktopPresentationCapacity(capacity)) return reply(h,-22);
+                if(version>=11 ? !coordinated || !validCoordinatedPresentationCapacity(capacity) : !validOpenGlDesktopPresentationCapacity(capacity)) return reply(h,-22);
             } else if (version==9) {
                 if (packet.size()!=sizeof h+sizeof(OpenGlDesktopLargeMapCapacity)) return reply(h,-22);
                 OpenGlDesktopLargeMapCapacity capacity{};std::memcpy(&capacity,packet.data()+sizeof h,sizeof capacity);
@@ -893,9 +897,9 @@ public:
             if ((driver.capabilities().flags & required) != required) return reply(h, -95);
             if(coordinated && version!=coordinated->gl.version) return reply(h,-95);
             const auto profile = coordinated ? coordinated->gl : driver.beginOpenGl(version);
-            if (version == 1 ? !validOpenGlProfile(profile) : version == 2 ? !validOpenGlFenceProfile(profile) : version == 3 ? !validOpenGlCompositorProfile(profile) : version == 4 ? !validOpenGlCompositorRenderProfile(profile) : version == 5 ? !validOpenGlDesktopProfile(profile) : version==6 ? !validOpenGlDesktop4kProfile(profile) : version==7 ? !validOpenGlDesktop4kCpuProfile(profile) : version==8 ? !validOpenGlDesktopSparseProfile(profile) : version==9 ? !validOpenGlDesktopLargeMapProfile(profile) : version==11 ? !validOpenGlDesktopFenceProfile(profile) : !validOpenGlDesktopPresentationProfile(profile)) return reply(h, -95);
+            if (version == 1 ? !validOpenGlProfile(profile) : version == 2 ? !validOpenGlFenceProfile(profile) : version == 3 ? !validOpenGlCompositorProfile(profile) : version == 4 ? !validOpenGlCompositorRenderProfile(profile) : version == 5 ? !validOpenGlDesktopProfile(profile) : version==6 ? !validOpenGlDesktop4kProfile(profile) : version==7 ? !validOpenGlDesktop4kCpuProfile(profile) : version==8 ? !validOpenGlDesktopSparseProfile(profile) : version==9 ? !validOpenGlDesktopLargeMapProfile(profile) : version==12 ? !validOpenGlDesktopSlotProfile(profile) : version==11 ? !validOpenGlDesktopFenceProfile(profile) : !validOpenGlDesktopPresentationProfile(profile)) return reply(h, -95);
             openglNegotiated = true;
-            fenceApertureBytes=version==11 ? DesktopFenceApertureBytes : FenceApertureBytes;
+            fenceApertureBytes=version>=11 ? DesktopFenceApertureBytes : FenceApertureBytes;
             openglFenceNegotiated = version >= 2;
             openglCompositorNegotiated = version >= 3;
             openglRenderNegotiated = version >= 4;
@@ -903,6 +907,7 @@ public:
             openglDesktop4kNegotiated = version >= 6;
             openglDesktop4kCpuNegotiated = version >= 7;
             openglDesktopSparseNegotiated = version >= 8;
+            openglDesktopSlotsNegotiated = version == 12;
             openglDesktopLargeMapNegotiated = version >= 9;
             if (version >= 2) wireObjectLimit = profile.objectLimit;
             auto out = reply(h, 0); out.resize(sizeof h + sizeof profile);
@@ -1670,7 +1675,7 @@ public:
             if (!vendorCpuBudgetFits(vendorCpuBytes, bytes, driver.capabilities().flags,openglDesktop4kCpuNegotiated)) return reply(h, -24);
             const auto native = driver.lockVendorAllocation(object.nativeHandle, device->second.nativeHandle);
             if (native.lock.nativeHandle || (native.lock.ntstatus >= 0 && (native.lock.ntstatus != 0 ||
-                !validVendorCpuReply(native.lock.value, native.output,openglDesktopSparseNegotiated) || native.output.bytes != bytes)) ||
+                !validVendorCpuReply(native.lock.value, native.output,openglDesktopSparseNegotiated,openglDesktopSlotsNegotiated) || native.output.bytes != bytes)) ||
                 (native.lock.ntstatus < 0 && (native.lock.value || native.output.bytes || native.output.reserved || native.output.generation)))
                 return reply(h, -5);
             if (native.lock.ntstatus >= 0) {

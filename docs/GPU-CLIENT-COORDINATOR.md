@@ -118,7 +118,19 @@ Alacritty window, then waits for a real PTY-output marker. These metadata gates
 are not pixel/GPU acceptance on their own. Its 240-second startup diagnostic
 budget leaves speed and performance unaccepted.
 
-The retained terminal glyph/reset failure now identifies sparse CPU-slot
-exhaustion below the mapped-byte limit. QEMU 1024-slot groundwork is separate;
-the currently wired native/guest agreement still uses 512 CPU slots. General
-application support, safe live actor reuse and recovery remain required.
+Profile 12 adds 1024 sparse virtual CPU slots while keeping profile 11's
+512-slot layout fixed. The separate `WDDM_APERTURE_DESKTOP_SLOTS` discovery
+ioctl (0x53, 32 bytes) must confirm the actual 1 GiB, 64-bit PCI address BAR;
+the mapped-data guard remains 192 MiB. The module's immutable
+`enable_desktop_slots` option requires the fence/coordinator/sparse CPU options.
+Windows CLI/runtime guards require the owned read-only-root coordinator, and
+every native/session/broker/client capacity agreement must match exactly.
+Legacy INFO/CAPS, coordinator wire sizes and profiles 1-11 remain unchanged.
+
+Actual profile-12 guests pass 1,644 aperture checks and initialize Alacritty's
+NVIDIA OpenGL renderer. Two bounded wallpaper/bar/readable-application captures
+pass. The scene script is pinned to LF; a real Bash CRLF control reproduces its
+previous readiness failure. A subsequent cleaner-child-payload run fails a
+native recipient-reference request and aborts the compositor. Reference
+admission/lifetimes, general application support, safe live actor reuse and
+recovery remain required; this is not desktop product acceptance.

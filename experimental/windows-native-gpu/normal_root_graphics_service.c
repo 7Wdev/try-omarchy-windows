@@ -96,7 +96,7 @@ int main(void) {
             if(desktop && !access("/opt/wddm-root/desktop-presentation-probe",R_OK) &&
                setenv("WDDM_BRIDGE_DESKTOP_PRESENTATION_PROBE","1",1)) _exit(125);
             if(desktop && !access("/opt/wddm-root/desktop-coordinator-probe",R_OK)) {
-                if(setenv("WDDM_BRIDGE_ACTOR_PROFILE",!access("/opt/wddm-root/desktop-fence-probe",R_OK) ? "11" : "10",1) || setenv("QSG_RHI_BACKEND","opengl",1) ||
+                if(setenv("WDDM_BRIDGE_ACTOR_PROFILE",!access("/opt/wddm-root/desktop-slot-probe",R_OK) ? "12" : !access("/opt/wddm-root/desktop-fence-probe",R_OK) ? "11" : "10",1) || setenv("QSG_RHI_BACKEND","opengl",1) ||
                    setenv("QSG_INFO","1",1)) _exit(125);
             }
             if(desktop && !access("/opt/wddm-root/desktop-content-probe",R_OK) && setenv("WDDM_BRIDGE_DESKTOP_CONTENT","1",1)) _exit(125);

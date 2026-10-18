@@ -4,12 +4,21 @@ Updated 2026-10-19. **4 of 8 verification stages demonstrated.** This is a
 checklist count, not 50% of engineering effort or a product-readiness estimate.
 The largest integration tasks are still ahead.
 
+Two fresh guests now pass [readable 4K GPU desktop captures](LIVE-OMARCHY-4K-READABLE-GPU-DESKTOP.md):
+the shipped wallpaper, Omarchy bar and a real NVIDIA Alacritty terminal appear
+together, with verified raw pixels and bounded shutdown. Actual profile-12
+CPU mappings extend beyond the old 512-slot range while mapped data remains
+below 192 MiB. A real Bash CRLF control explains the earlier readiness failure.
+A later cleaner-child-payload run fails native recipient-reference admission
+and aborts Hyprland. Fixing reference lifetimes/recovery, normal launcher/input
+and sustained work remains necessary. Counts stay 4/8 and 0/4.
+
 [4K wallpaper and a GPU application surface](LIVE-OMARCHY-4K-DESKTOP-CONTENT.md)
-now appear in the actual NVIDIA-composed framebuffer. The shipped image matches
-689 independent samples; Alacritty reports the NVIDIA D3D12 renderer. **Its glyph
-rendering and the complete desktop lifecycle still fail.** A mapped window does
-not close a desktop gate. Sparse CPU mapping slots are the next observed limit;
-actual mapped bytes remain bounded. Counts stay 4/8 and 0/4.
+previously appeared in the actual NVIDIA-composed framebuffer. The shipped image matches
+689 independent samples; Alacritty reports the NVIDIA D3D12 renderer. At that
+checkpoint, glyph rendering and the complete desktop lifecycle failed. A mapped
+window alone did not close a desktop gate. That experiment identified the sparse
+CPU mapping-slot limit addressed by profile 12; its original failure is retained.
 
 The earlier [GPU shell-bar checkpoint](LIVE-OMARCHY-4K-GPU-SHELL.md) verifies the
 bar in two fresh guests. The new wallpaper/application capture is a retained

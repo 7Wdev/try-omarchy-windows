@@ -16,6 +16,9 @@ def main():
         ['--stdio', '--driver-coordinator', '--driver-coordinator'],
         ['--run-qemu', 'missing-qemu', 'firmware', 'kernel', 'image', 'log', '--driver-fence-slots', '512'],
         ['--run-qemu', 'missing-qemu', 'firmware', 'kernel', 'image', 'log', '--driver-coordinator', '--driver-fence-slots', '512'],
+        ['--stdio', '--driver-cpu-slots', '1024'],
+        ['--run-qemu', 'missing-qemu', 'firmware', 'kernel', 'image', 'log', '--driver-cpu-slots', '1024', '--driver-cpu'],
+        ['--run-qemu', 'missing-qemu', 'firmware', 'kernel', 'image', 'log', '--driver-cpu-slots', '1024', '--driver-cpu', '--driver-coordinator', '--driver-fence-slots', '256'],
     ]
     for command in cases:
         result = subprocess.run([args.bridge, *command], input=b'', capture_output=True, timeout=10)

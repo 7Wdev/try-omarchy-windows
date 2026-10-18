@@ -10,7 +10,8 @@ static int coordinated(guest_broker::Fd& listener,const char* path,unsigned uid,
     using namespace guest_broker;
     CoordinatorPort controller(path);Kernel layout;
     const auto info=layout.info();const auto caps=layout.capacity();
-    controller.initialize(info,caps,layout.coordinatedCapacity(),info.fence_slots==512 ? layout.desktopFenceCapacity() : wddm_aperture_desktop_fences{});layout.close();
+    controller.initialize(info,caps,layout.coordinatedCapacity(),info.fence_slots==512 ? layout.desktopFenceCapacity() : wddm_aperture_desktop_fences{},
+        info.allocation_slots==1024 ? layout.desktopSlotCapacity() : wddm_aperture_desktop_slots{});layout.close();
     const char ready='R';if(write(notification.get(),&ready,1)!=1) throw std::runtime_error("Coordinator readiness failed");
     notification=Fd();
     pollfd trusted{primaryPipe.get(),POLLIN,0};

@@ -57,6 +57,19 @@ static inline int wddm_aperture_valid_desktop_fences(struct wddm_aperture_deskto
         (c.enabled ? c.slots==512 : (c.slots==64 || c.slots==128 || c.slots==256));
 }
 #define WDDM_APERTURE_DESKTOP_FENCES _IOWR('W', 0x52, struct wddm_aperture_desktop_fences)
+/* Separate sparse CPU address capacity; mapped-byte and legacy discovery
+ * contracts stay unchanged. A larger BAR does not authorize extra data. */
+struct wddm_aperture_desktop_slots {
+    __u32 version, enabled, slots, stride;
+    __u64 bytes, reserved;
+};
+static inline int wddm_aperture_valid_desktop_slots(struct wddm_aperture_desktop_slots c)
+{
+    return c.version==1 && c.enabled<=1 && !c.reserved && c.stride==1048576 &&
+        c.bytes==(__u64)c.slots*1048576 &&
+        (c.enabled ? c.slots==1024 : (c.slots>=16 && c.slots<=512 && !(c.slots&(c.slots-1))));
+}
+#define WDDM_APERTURE_DESKTOP_SLOTS _IOWR('W', 0x53, struct wddm_aperture_desktop_slots)
 #define WDDM_OBJECT_SYNC 1
 #define WDDM_OBJECT_RESOURCE 2
 #define WDDM_OBJECT_MAX 256

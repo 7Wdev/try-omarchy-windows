@@ -9,28 +9,33 @@
 The NVIDIA bridge has demonstrated [4K guest shaders and GPU texture handoffs](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-4K.md)
 through QEMU/WHPX. Full acceleration of the Omarchy/Hyprland desktop through this new backend remains under development.
 
-![NVIDIA backend: 4 of 8 stages demonstrated; partial 4K GPU desktop captured; 0 of 4 desktop gates complete](docs/images/gpu-backend-progress.svg)
+![NVIDIA backend: 4 of 8 stages demonstrated; two readable 4K GPU desktop captures verified; 0 of 4 desktop gates complete](docs/images/gpu-backend-progress.svg)
 
 **4/8 verification stages demonstrated; 0/4 desktop acceptance gates complete.** These are checklist counts, not percentages of engineering work completed.
 Guest graphics integration is in progress. The largest integration work remains. [See the roadmap and evidence](docs/GPU-BACKEND-PROGRESS.md).
 
-**Current GPU desktop content:** the shipped wallpaper, Omarchy bar and an actual
-Alacritty window now appear together in a 3840×2160 NVIDIA-composed framebuffer.
-Alacritty reports the RTX 5090 D3D12 renderer. **Terminal glyph rendering and the
-complete desktop lifecycle still fail; a full desktop frame is not accepted.**
-The [partial image, exact evidence and remaining failures](docs/LIVE-OMARCHY-4K-DESKTOP-CONTENT.md)
-include a 689-sample independent wallpaper check and the CPU mapping-slot
-exhaustion that is being addressed next. Counts remain 4/8 and 0/4.
-Normal launcher/UWSM/input, multiple applications, recovery, long-run stability
-and ≥93% matched-native performance remain open. The earlier
-[GPU shell-bar checkpoint](docs/LIVE-OMARCHY-4K-GPU-SHELL.md) retains its original scope.
+**Current GPU desktop capture:** two fresh guests now pass 3840×2160 captures
+of the shipped wallpaper, Omarchy bar and a **readable NVIDIA Alacritty window**.
+All three graphics clients use the RTX 5090 D3D12 renderer. Twelve GPU handoffs
+per run, independent wallpaper/pixel audits, application close, natural VM exit
+and native cleanup pass. [Actual image, full raw evidence and limits](docs/LIVE-OMARCHY-4K-READABLE-GPU-DESKTOP.md).
+The new 1024-slot CPU layout fixes slot exhaustion without raising the 192 MiB
+mapped-data guard; LF-pinned Bash fixes the content marker.
 
-![Actual 4K GPU wallpaper and application window; terminal glyph rendering remains incomplete](docs/images/omarchy-4k-wallpaper-gpu-window-partial-2026-10-18.png)
+**A later cleaner-child-payload run fails a native recipient-reference request
+and Hyprland aborts.** Shared-reference admission/lifetimes and recovery are next.
+Normal launcher/UWSM/input, multiple applications, long-run stability and
+≥93% matched-native performance remain open. Counts remain 4/8 and 0/4.
+The separate Windows test window is 1280×720; all-frame display is unverified.
+The [earlier partial capture and failures](docs/LIVE-OMARCHY-4K-DESKTOP-CONTENT.md)
+and [GPU shell-bar checkpoint](docs/LIVE-OMARCHY-4K-GPU-SHELL.md) retain their original scope.
+
+![Actual 4K NVIDIA wallpaper, Omarchy bar and readable GPU terminal](docs/images/omarchy-4k-readable-gpu-desktop-2026-10-19.png)
 
 | Desktop gate | Status | Acceptance requirement |
 | --- | --- | --- |
-| Guest graphics integration | In progress: 4K GPU wallpaper, bar and application surface; readable application content and safe recovery pending | Hyprland can access a supported guest device path and safely share buffers and synchronization for sustained work. |
-| First Hyprland frame | Partial: 4K GPU wallpaper, bar and application surface captured; readable application content and normal Windows app presentation pending | Independently verify a correctly displayed compositor frame in the Windows app, capture its image and update PR #2 with the result. |
+| Guest graphics integration | In progress: readable 4K GPU captures pass; shared-reference admission/lifetimes and recovery remain open | Hyprland can access a supported guest device path and safely share buffers and synchronization for sustained work. |
+| First Hyprland frame | Diagnostic capture verified twice: 4K GPU wallpaper, bar and readable application; normal Windows app presentation pending | Independently verify a correctly displayed compositor frame in the Windows app, capture its image and update PR #2 with the result. |
 | Interactive desktop | Pending | Continuously display real apps with input, multiple windows, resizing and fullscreen up to 4K. |
 | Stable, near-native product | Pending | Pass long runs, bounded-memory and recovery checks, plus matched benchmarks meeting ≥93% of native performance. |
 

@@ -9,15 +9,17 @@ from verify_hyprland_lifecycle_capture import require
 ROOT='3954123192111ce2d28cafb9dd108e1ca14c288bfc2429ed899b0f36aeccf942'
 QEMU='dcd422e6a7882af4ede4d6a79915dcfa6b344253b0b008cd6cebb55e62889111'
 DESKTOP_FENCE_QEMU='9ffb191868cdd61fee0152d379f284ef6e81705dc552c793a1dd4582bca0f6b4'
+DESKTOP_SLOT_QEMU='4691955c77cb33ba656a7ad2b3cc97c7c514f8705dc46c5d328d641f38c8ba46'
 RENDERER='OpenGL VENDOR: Microsoft Corporation RENDERER: D3D12 (NVIDIA GeForce RTX 5090 Laptop GPU) VERSION: 4.6 (Compatibility Profile) Mesa 26.0.8'
 
 
 def validate(report,guest,records,source,profile=10):
-    require(profile in (10,11),'Unsupported coordinated audit profile')
-    fence_slots=512 if profile==11 else 256
+    require(profile in (10,11,12),'Unsupported coordinated audit profile')
+    fence_slots=512 if profile>=11 else 256
+    cpu_slots=1024 if profile==12 else 512
     manifest=source['manifest']; clean=report['disconnectCleanup']; vm=report['ownedQemuControl']
     require(source['sourceImageSha256Before']==source['sourceImageSha256After']==ROOT and source['sourceImageUnchanged'] is True,'Source image changed')
-    require(report['qemuSha256']==(DESKTOP_FENCE_QEMU if profile==11 else QEMU) and report['driverBridgeSha256']==source['nativeBuildReceipt']['bridgeSha256'] and
+    require(report['qemuSha256']==(DESKTOP_SLOT_QEMU if profile==12 else DESKTOP_FENCE_QEMU if profile==11 else QEMU) and report['driverBridgeSha256']==source['nativeBuildReceipt']['bridgeSha256'] and
             report['initramfsSha256']==manifest['initramfsSha256'],'Mixed native/guest provenance')
     require(manifest['coordinatedNativeActors'] is True and manifest['ordinaryUid']==1000 and
             manifest['desktopGeometryProbe']==[3840,2160] and manifest['kernelCpuCapacityProfile']==profile and
@@ -42,11 +44,15 @@ def validate(report,guest,records,source,profile=10):
     group=one('nativeCoordinatorSummary'); cap=one('nativeCoordinatedObjectCapacity')
     require(group['nativeDriverCount']==1 and group['memoryBudgetsMultiplied'] is False and 2<=group['peakActors']<=4,'Wrong group ownership/budget')
     require((cap['version'],cap['hwQueues'],cap['syncObjects'],cap['reservedAddressBytes'],cap['reservationCount'],cap['kernelLeaseLimit'],cap['fenceSlots'],cap['cpuBytes'],cap['gpuVaBytes'],cap['reportedGpuBytes'],cap['memoryBudgetsMultiplied'])==
-            (4 if profile==11 else 3,32,384,68719476736,256,768,fence_slots,201326592,1073741824,1073741824,False),'Unexpected aggregate admission')
-    if profile==11:
-        require(cap.get('vendorAllocationObjects')==1024 and vm['fenceApertureSlots']==512 and vm['allocationApertureSlots']==512 and
+            (4 if profile>=11 else 3,32,384,68719476736,256,768,fence_slots,201326592,1073741824,1073741824,False),'Unexpected aggregate admission')
+    if profile>=11:
+        require(cap.get('vendorAllocationObjects')==1024 and vm['fenceApertureSlots']==512 and vm['allocationApertureSlots']==cpu_slots and
                 'DESKTOP_FENCE_CONTRACT enabled=1 slots=512 bytes=2097152 actualIoctl=true' in guest and
-                'BROKER_COORDINATOR_FENCE_CAPACITY profile=11 slots=512 bytes=2097152 actualIoctl=true' in guest,'Missing actual desktop aperture/object agreement')
+                f'BROKER_COORDINATOR_FENCE_CAPACITY profile={profile} slots=512 bytes=2097152 actualIoctl=true' in guest,'Missing actual desktop aperture/object agreement')
+    if profile==12:
+        require('DESKTOP_SLOT_CONTRACT enabled=1 slots=1024 bytes=1073741824 actualIoctl=true' in guest and
+                'BROKER_COORDINATOR_SLOT_CAPACITY profile=12 slots=1024 bytes=1073741824 cpuByteLimit=201326592 actualIoctl=true' in guest,
+                'Missing actual CPU-slot capacity agreement')
     waits=[r for r in records if 'nativeBorrowedQueueGpuWaitAccepted' in r]
     require(waits and all(r['nativeBorrowedQueueGpuWaitAccepted'] is True and r['cpuValueWrittenByBridge'] is False and
             r['paging']+r['hardware']>0 for r in waits),'Missing real borrowed-fence waits')

@@ -58,6 +58,33 @@ int main() {
         for(const auto view:held) aperture.release(view,unmap,stop);
         require(!aperture.bytes() && !aperture.groups() && aperture.chunkMaps()==aperture.chunkUnmaps());
     }
+    // Glyph uploads can fill virtual slots with small views without reaching
+    // the mapped-byte limit. Only the separately authorized layout admits more.
+    require(!validVendorCpuSlots(1024,true) && !validVendorCpuSlots(1024,false,true) && validVendorCpuSlots(1024,true,true));
+    bool unnegotiated=false;
+    try { driver_cpu::Aperture denied(1024); } catch(const std::runtime_error&) { unnegotiated=true; }
+    require(unnegotiated);
+    for(const auto slots:{512u,1024u}) {
+        driver_cpu::Aperture aperture(slots,slots==1024);std::vector<driver_cpu::Lease> held;
+        for(unsigned n=0;n<512;++n) held.push_back(aperture.map(4096,map,stop));
+        require(aperture.bytes()==2u*1024*1024 && aperture.canMap(imageBytes)==(slots==1024));
+        if(slots==1024) {
+            const auto image=aperture.map(imageBytes,map,stop);
+            require(image.slot==512 && validVendorCpuReply(image.offset,{image.bytes,0,image.generation},true,true));
+            require(!validVendorCpuReply(image.offset,{image.bytes,0,image.generation},true));
+            aperture.release(image,unmap,stop);
+            for(unsigned n=512;n<1024;++n) held.push_back(aperture.map(4096,map,stop));
+            const auto last=held.back();require(last.slot==1023 && !aperture.canMap(4096));
+            require(validVendorCpuReply(last.offset,{4096,0,last.generation},true,true));
+            require(!validVendorCpuReply(1024ull*VendorCpuSlotBytes,{4096,0,last.generation},true,true));
+            aperture.release(last,unmap,stop);held.pop_back();
+            const auto reused=aperture.map(4096,map,stop);require(reused.slot==1023 && reused.generation>last.generation);
+            bool stale=false;try { aperture.release(last,unmap,stop); } catch(const std::runtime_error&) { stale=true; }
+            require(stale && aperture.groups()==1024);aperture.release(reused,unmap,stop);
+        }
+        for(const auto view:held) aperture.release(view,unmap,stop);
+        require(!aperture.groups() && !aperture.bytes() && aperture.chunkMaps()==aperture.chunkUnmaps());
+    }
     require(!stops);
     std::cout << "PASS: 256 virtual slots fit full 4K map beside small views; unchanged legacy 96 MiB CPU budget; explicit512-slot boundary, reuse and stale-owner controls\n";
 }

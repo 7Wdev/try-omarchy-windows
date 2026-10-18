@@ -137,6 +137,7 @@ struct MemoryMock {
     Fd syncFile(SyncFileRequest) { throw std::runtime_error("Unexpected sync-file export"); }
     wddm_sync_file_stats syncFileInfo() { throw std::runtime_error("Unexpected sync-file stats"); }
     bool closed=false;
+    wddm_aperture_desktop_slots desktopSlotCapacity() { throw std::system_error(EOPNOTSUPP,std::generic_category(),"No desktop slot kernel in portable test"); }
     wddm_aperture_desktop_fences desktopFenceCapacity() { throw std::system_error(EOPNOTSUPP,std::generic_category(),"No desktop fence kernel in portable test"); }
     wddm_aperture_coordinator_caps coordinatedCapacity() { throw std::system_error(EOPNOTSUPP,std::generic_category(),"No coordinator kernel in portable test"); }
     wddm_aperture_caps capacity() { return {1,0,WDDM_APERTURE_CPU_LIMIT,{0,0}}; }

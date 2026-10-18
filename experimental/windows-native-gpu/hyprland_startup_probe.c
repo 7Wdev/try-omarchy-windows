@@ -249,7 +249,7 @@ static int prepare_scene(void) {
         if(getenv("WDDM_BRIDGE_DESKTOP_CONTENT")) {
             if(!visible_shell_bar(last_control_reply) || !visible_layer(last_control_reply,"\"omarchy-background\"")) return -1;
             char* const launch[]={"/usr/bin/hyprctl","eval",
-                "hl.exec_cmd([[systemd-cat -t omarchy-gpu-app -- /opt/wddm-root/bin/alacritty --config-file /opt/wddm-root/data/alacritty-desktop.toml -vv --class omarchy-gpu-terminal --title 'Omarchy terminal' --hold -e /bin/bash /opt/wddm-root/data/gpu-terminal-scene.sh]], {float=true, size={1200,800}, center=true})",NULL};
+                "hl.exec_cmd([[systemd-cat -t omarchy-gpu-app -- /opt/wddm-root/bin/alacritty --config-file /opt/wddm-root/data/alacritty-desktop.toml -vv --class omarchy-gpu-terminal --title 'Omarchy terminal' --hold -e /usr/bin/env -u LD_PRELOAD /bin/bash /opt/wddm-root/data/gpu-terminal-scene.sh]], {float=true, size={1200,800}, center=true})",NULL};
             if(run_ctl(launch)) return -1;
             char* const clients[]={"/usr/bin/hyprctl","-j","clients",NULL};
             unsigned tick=0;
@@ -397,8 +397,8 @@ static int startup_main(int argc,char** argv,char** environment) {
     if((mkdir(runtime,0700) && errno!=EEXIST) ||
        (mkdir(home,0700) && errno!=EEXIST)) return 122;
 #ifdef WDDM_BRIDGE_COMPOSITOR_HOST_SCENE
-    const unsigned profile=getenv("WDDM_BRIDGE_ACTOR_PROFILE") && !strcmp(getenv("WDDM_BRIDGE_ACTOR_PROFILE"),"11") ? 11 : getenv("WDDM_BRIDGE_DESKTOP_PRESENTATION_PROBE") ? 10 : getenv("WDDM_BRIDGE_DESKTOP_LARGE_MAP_PROBE") ? 9 : getenv("WDDM_BRIDGE_DESKTOP_SPARSE_PROBE") ? 8 : getenv("WDDM_BRIDGE_DESKTOP_4K_CPU_PROBE") ? 7 : getenv("WDDM_BRIDGE_DESKTOP_4K_PROBE") ? 6 : 5;
-    const char* begin_name=profile==11 ? "wddm_bridge_begin_opengl_desktop_fence_render" : profile==10 ? "wddm_bridge_begin_opengl_desktop_presentation_render" : profile==9 ? "wddm_bridge_begin_opengl_desktop_large_map_render" : profile==8 ? "wddm_bridge_begin_opengl_desktop_sparse_render" : profile==7 ? "wddm_bridge_begin_opengl_desktop_4k_cpu_render" : profile==6 ? "wddm_bridge_begin_opengl_desktop_4k_render" : "wddm_bridge_begin_opengl_desktop_render";
+    const unsigned profile=getenv("WDDM_BRIDGE_ACTOR_PROFILE") && !strcmp(getenv("WDDM_BRIDGE_ACTOR_PROFILE"),"12") ? 12 : getenv("WDDM_BRIDGE_ACTOR_PROFILE") && !strcmp(getenv("WDDM_BRIDGE_ACTOR_PROFILE"),"11") ? 11 : getenv("WDDM_BRIDGE_DESKTOP_PRESENTATION_PROBE") ? 10 : getenv("WDDM_BRIDGE_DESKTOP_LARGE_MAP_PROBE") ? 9 : getenv("WDDM_BRIDGE_DESKTOP_SPARSE_PROBE") ? 8 : getenv("WDDM_BRIDGE_DESKTOP_4K_CPU_PROBE") ? 7 : getenv("WDDM_BRIDGE_DESKTOP_4K_PROBE") ? 6 : 5;
+    const char* begin_name=profile==12 ? "wddm_bridge_begin_opengl_desktop_slot_render" : profile==11 ? "wddm_bridge_begin_opengl_desktop_fence_render" : profile==10 ? "wddm_bridge_begin_opengl_desktop_presentation_render" : profile==9 ? "wddm_bridge_begin_opengl_desktop_large_map_render" : profile==8 ? "wddm_bridge_begin_opengl_desktop_sparse_render" : profile==7 ? "wddm_bridge_begin_opengl_desktop_4k_cpu_render" : profile==6 ? "wddm_bridge_begin_opengl_desktop_4k_render" : "wddm_bridge_begin_opengl_desktop_render";
 #else
     const unsigned profile=4;
     const char* begin_name="wddm_bridge_begin_opengl_compositor_render";

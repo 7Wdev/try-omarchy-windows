@@ -12,7 +12,7 @@ def main():
     if sys.platform != 'win32' or not args.bridge.is_file():
         parser.error('Run on Windows with the built bridge')
     cases = [(['--driver-cpu-slots', value], 'CPU aperture slots must be specified once')
-             for value in ('0', '8', '17', '33', '65', '127', '129', '255', '257', '512', '-1', '4294967296', '32x')]
+             for value in ('0', '8', '17', '33', '65', '127', '129', '255', '257', '512', '1024', '-1', '4294967296', '32x')]
     cases += [(['--stdio','--driver-rootfs-readonly','C:/rootfs.ext4'],'Read-only root image requires')]
     cases += [(['--stdio','--driver-rootfs-readonly',''],'Read-only root image must be specified once')]
     cases += [(['--stdio','--driver-rootfs-readonly','C:/one.ext4','--driver-rootfs-readonly','C:/two.ext4'],

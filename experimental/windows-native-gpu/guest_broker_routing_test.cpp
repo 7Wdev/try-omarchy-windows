@@ -29,6 +29,8 @@ static void cpuCapacityPolicy() {
         unsigned queries=0;
         wddm_aperture_desktop_fences fences{1,1,512,4096,2097152,0};
         wddm_aperture_coordinator_caps leases{1,1,768,0};
+        wddm_aperture_desktop_slots slots{1,1,1024,1048576,1073741824,0};
+        wddm_aperture_desktop_slots desktopSlotCapacity() { return slots; }
         wddm_aperture_desktop_fences desktopFenceCapacity() { return fences; }
         wddm_aperture_coordinator_caps coordinatedCapacity() { return leases; }
         wddm_aperture_caps capacity() { ++queries;return cap; }
@@ -117,6 +119,38 @@ static void cpuCapacityPolicy() {
         denied([&]{verifyCpuCapacityProfile(packet(Op::BeginOpenGl,0,encode(capacity)),wide);},EPROTO);
     }
     std::cout<<"BROKER_DESKTOP_FENCES exact512Pages=true actualControllerReceiptRequired=true v10LayoutUnchanged=true kernel=mock gpu=false\n";
+    auto expanded=wide;expanded.layout.allocation_slots=1024;expanded.layout.allocation_bytes=1073741824;
+    const auto expandedBegin=packet(Op::BeginOpenGl,0,encode(GuestOpenGlDesktopSlotCapacity));
+    verifyCpuCapacityProfile(expandedBegin,expanded);
+    denied([&]{verifyCpuCapacityProfile(expandedBegin,wide);},EPROTO);
+    denied([&]{verifyCpuCapacityProfile(wideBegin,expanded);},EPROTO);
+    for(unsigned n=0;n<10;++n) {
+        auto bad=expanded;
+        if(n==0) bad.slots.enabled=0;
+        if(n==1) bad.slots.slots=512;
+        if(n==2) bad.slots.bytes=536870912;
+        if(n==3) bad.slots.stride=4096;
+        if(n==4) bad.slots.version=2;
+        if(n==5) bad.slots.reserved=1;
+        if(n==6) bad.layout.allocation_bytes=536870912;
+        if(n==7) bad.fences.enabled=0;
+        if(n==8) bad.leases.enabled=0;
+        if(n==9) bad.cap.cpu_byte_limit+=4096;
+        denied([&]{verifyCpuCapacityProfile(expandedBegin,bad);},EPROTO);
+    }
+    Views expandedViews;
+    expandedViews.observe(expandedBegin,packet(Op::BeginOpenGl,0,encode(GuestOpenGlDesktopSlotProfile)));
+    for(unsigned field=0;field<12;++field) {
+        auto capacity=GuestOpenGlDesktopSlotCapacity;std::uint32_t words[12]{};
+        std::memcpy(words,&capacity,sizeof words);++words[field];std::memcpy(&capacity,words,sizeof words);
+        const auto malformed=packet(Op::BeginOpenGl,0,encode(capacity));
+        denied([&]{verifyCpuCapacityProfile(malformed,expanded);},EPROTO);
+        Views views;denied([&]{views.observe(malformed,packet(Op::BeginOpenGl,0,encode(GuestOpenGlDesktopSlotProfile)));},EPROTO);
+    }
+    for(const auto profile:{GuestOpenGlDesktopPresentationProfile,GuestOpenGlDesktopFenceProfile}) {
+        Views views;denied([&]{views.observe(expandedBegin,packet(Op::BeginOpenGl,0,encode(profile)));},EPROTO);
+    }
+    std::cout<<"BROKER_DESKTOP_SLOTS exact1024Slots=true actualControllerReceiptRequired=true cpu192MiBUnchanged=true v11LayoutUnchanged=true kernel=mock gpu=false\n";
     std::cout<<"BROKER_LARGE_MAP exact1GiB=true fixed40ByteReceipt=true malformedRejected=true oldProfilesUnchanged=true kernel=mock gpu=false\n";
     std::cout<<"BROKER_SPARSE_CAPACITY exact512Slots=true oldProfileRejected=true oldKernelRejected=true kernel=mock gpu=false\n";
     std::cout<<"BROKER_CPU_CAPACITY exact192MiB=true ownKernelQuery=true missingAndMalformedRejected=true legacyUnchanged=true kernel=mock gpu=false\n";
@@ -251,6 +285,7 @@ struct KernelMock {
     wddm_sync_file_stats syncFileInfo() { return {1,0,0,0,0,0,0,0}; }
     unsigned created=0,released=0;
     void close() {}
+    wddm_aperture_desktop_slots desktopSlotCapacity() { throw std::system_error(EOPNOTSUPP,std::generic_category(),"No desktop slot kernel in portable test"); }
     wddm_aperture_desktop_fences desktopFenceCapacity() { throw std::system_error(EOPNOTSUPP,std::generic_category(),"No desktop fence kernel in portable test"); }
     wddm_aperture_coordinator_caps coordinatedCapacity() { throw std::system_error(EOPNOTSUPP,std::generic_category(),"No coordinator kernel in portable test"); }
     wddm_aperture_caps capacity() { return {1,0,WDDM_APERTURE_CPU_LIMIT,{0,0}}; }
