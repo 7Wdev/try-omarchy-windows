@@ -167,3 +167,19 @@ capacity profile and matching guest integration remain required. Build and
 actual WHPX mapping/cleanup at the new capacity must pass before claiming
 hardware support. No full-desktop or performance result follows from this
 source change. See the [retained 4K failure](../../docs/LIVE-NORMAL-OMARCHY-4K-CAPACITY.md).
+
+
+## Prepared sparse 1024-slot desktop aperture
+
+An explicit `slot-count=1024` reserves 1 GiB of sparse guest MMIO space. This
+mode uses a 64-bit PCI BAR so the address reservation can coexist with guest
+RAM and other devices. All smaller layouts retain their original 32-bit BAR,
+slot bounds and default of 16 slots. Only individually owned native CPU views
+are mapped; the option does not commit 1 GiB of RAM or increase a byte budget.
+
+The wallpaper/application experiment exhausted 512 virtual slots while its
+actual mapped data remained below 192 MiB. This is QEMU groundwork for a
+distinct exact native/guest capacity profile. The currently wired desktop
+profile still uses 512 CPU slots. Hardware validation and a complete terminal
+frame remain required; no acceleration or performance milestone follows from
+this source change.

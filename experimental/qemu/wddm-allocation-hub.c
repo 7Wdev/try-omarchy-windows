@@ -143,7 +143,7 @@ static void hub_realize(PCIDevice *pci, Error **errp)
     WddmAllocationHub *s = WDDM_ALLOCATION_HUB(pci);
     HMODULE whp = GetModuleHandleW(L"WinHvPlatform.dll");
     if (!wddm_allocation_slots_valid(s->slot_count)) {
-        error_setg(errp, "WDDM allocation slot-count must be 16, 32, 64, 128, 256 or 512");
+        error_setg(errp, "WDDM allocation slot-count must be 16, 32, 64, 128, 256, 512 or 1024");
         return;
     }
     if (!whpx_enabled() || !whp || !GetProcAddress(whp, "WHvMapGpaRange2")) {
@@ -170,7 +170,10 @@ static void hub_realize(PCIDevice *pci, Error **errp)
         memory_region_set_enabled(&slot->region, false);
         memory_region_add_subregion(&s->bar, n * WDDM_ALLOCATION_SLOT_BYTES, &slot->region);
     }
-    pci_register_bar(pci, 0, PCI_BASE_ADDRESS_SPACE_MEMORY, &s->bar);
+    /* The explicit 1 GiB aperture must fit beside RAM and legacy PCI BARs.
+     * Preserve the published 32-bit BAR layout for all smaller profiles. */
+    pci_register_bar(pci, 0, PCI_BASE_ADDRESS_SPACE_MEMORY |
+        (s->slot_count==1024 ? PCI_BASE_ADDRESS_MEM_TYPE_64 : 0), &s->bar);
     pci_set_long(pci->config + 0x40, 0x31484c41); /* ALH1 */
     pci_set_long(pci->config + 0x44, s->slot_count);
     pci_set_long(pci->config + 0x48, WDDM_ALLOCATION_SLOT_BYTES);
