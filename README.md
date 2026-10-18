@@ -9,7 +9,7 @@
 The NVIDIA bridge has demonstrated [4K guest shaders and GPU texture handoffs](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-4K.md)
 through QEMU/WHPX. Full acceleration of the Omarchy/Hyprland desktop through this new backend remains under development.
 
-![NVIDIA backend: 4 of 8 verification stages demonstrated; Omarchy desktop: 0 of 4 acceptance gates complete](docs/images/gpu-backend-progress.svg)
+![NVIDIA backend: 4 of 8 stages demonstrated; partial 4K GPU desktop captured; 0 of 4 desktop gates complete](docs/images/gpu-backend-progress.svg)
 
 **4/8 verification stages demonstrated; 0/4 desktop acceptance gates complete.** These are checklist counts, not percentages of engineering work completed.
 Guest graphics integration is in progress. The largest integration work remains. [See the roadmap and evidence](docs/GPU-BACKEND-PROGRESS.md).
@@ -30,7 +30,7 @@ and ≥93% matched-native performance remain open. The earlier
 | Desktop gate | Status | Acceptance requirement |
 | --- | --- | --- |
 | Guest graphics integration | In progress: 4K GPU wallpaper, bar and application surface; readable application content and safe recovery pending | Hyprland can access a supported guest device path and safely share buffers and synchronization for sustained work. |
-| First Hyprland frame | Pending | Independently verify a correctly displayed compositor frame in the Windows app, capture its image and update PR #2 with the result. |
+| First Hyprland frame | Partial: 4K GPU wallpaper, bar and application surface captured; readable application content and normal Windows app presentation pending | Independently verify a correctly displayed compositor frame in the Windows app, capture its image and update PR #2 with the result. |
 | Interactive desktop | Pending | Continuously display real apps with input, multiple windows, resizing and fullscreen up to 4K. |
 | Stable, near-native product | Pending | Pass long runs, bounded-memory and recovery checks, plus matched benchmarks meeting ≥93% of native performance. |
 

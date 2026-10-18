@@ -1,12 +1,12 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="800" height="208" viewBox="0 0 800 208" role="img" aria-labelledby="title desc">
-  <title id="title">NVIDIA backend: 4 of 8 verification stages demonstrated; Omarchy desktop: 0 of 4 acceptance gates complete</title>
-  <desc id="desc">Four verification stages demonstrated in the lab. No desktop acceptance gate is complete. Guest graphics integration is in progress; the first Hyprland frame, interactive desktop and stable near-native product remain pending. Checklist counts do not measure engineering effort.</desc>
-  <rect width="800" height="208" rx="10" fill="#141b24"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="256" viewBox="0 0 800 256" role="img" aria-labelledby="title desc">
+  <title id="title">NVIDIA backend: 4 of 8 verification stages demonstrated; partial 4K GPU desktop captured; 0 of 4 desktop acceptance gates complete</title>
+  <desc id="desc">Four verification stages demonstrated in the lab; guest graphics integration is in progress. A 3840 by 2160 NVIDIA-composed framebuffer contains the shipped Omarchy wallpaper, bar and an actual NVIDIA-rendered Alacritty application surface. Terminal glyph rendering and clean desktop lifetimes still fail, so no complete desktop frame or desktop acceptance gate is accepted. Next: readable GPU application content and clean desktop lifecycle. Checklist counts do not measure engineering effort. Updated October 19, 2026.</desc>
+  <rect width="800" height="256" rx="10" fill="#141b24"/>
   <text x="20" y="28" fill="#eef4fc" font-family="sans-serif" font-size="17">NVIDIA backend · verification stages 4/8 demonstrated</text>
   <g transform="translate(20 42)">
     <rect width="88" height="18" rx="4" fill="#51c38b"/><rect x="96" width="88" height="18" rx="4" fill="#51c38b"/>
     <rect x="192" width="88" height="18" rx="4" fill="#51c38b"/><rect x="288" width="88" height="18" rx="4" fill="#51c38b"/>
-    <rect x="384" width="88" height="18" rx="4" fill="#3b4657"/><rect x="480" width="88" height="18" rx="4" fill="#3b4657"/>
+    <rect x="384" width="88" height="18" rx="4" fill="#e0aa49"/><rect x="480" width="88" height="18" rx="4" fill="#3b4657"/>
     <rect x="576" width="88" height="18" rx="4" fill="#3b4657"/><rect x="672" width="88" height="18" rx="4" fill="#3b4657"/>
   </g>
   <text x="20" y="102" fill="#eef4fc" font-family="sans-serif" font-size="17">Omarchy desktop · acceptance gates 0/4 complete</text>
@@ -14,6 +14,8 @@
     <rect width="184" height="18" rx="4" fill="#e0aa49"/><rect x="192" width="184" height="18" rx="4" fill="#3b4657"/>
     <rect x="384" width="184" height="18" rx="4" fill="#3b4657"/><rect x="576" width="184" height="18" rx="4" fill="#3b4657"/>
   </g>
-  <text x="20" y="164" fill="#eef4fc" font-family="sans-serif" font-size="14">Next: readable GPU application content and clean desktop lifecycle</text>
-  <text x="20" y="188" fill="#bac7d9" font-family="sans-serif" font-size="12">Green: demonstrated · Amber: in progress · Gray: pending · Updated 2026-10-19</text>
+  <text x="20" y="164" fill="#eef4fc" font-family="sans-serif" font-size="14">Captured: 4K GPU wallpaper, Omarchy bar and NVIDIA application surface</text>
+  <text x="20" y="188" fill="#e0aa49" font-family="sans-serif" font-size="14">Partial frame: application text and clean desktop lifecycle still fail</text>
+  <text x="20" y="212" fill="#eef4fc" font-family="sans-serif" font-size="14">Next: readable GPU application content and clean desktop lifecycle</text>
+  <text x="20" y="238" fill="#bac7d9" font-family="sans-serif" font-size="12">Green: demonstrated · Amber: in progress · Gray: pending · Updated 2026-10-19</text>
 </svg>
