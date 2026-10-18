@@ -167,5 +167,6 @@ static void __exit render_exit(void)
 module_init(render_init);
 module_exit(render_exit);
 MODULE_LICENSE("GPL");
-MODULE_IMPORT_NS("DMA_BUF");
+/* Same namespace metadata on old token-style and new string-style kernels. */
+MODULE_INFO(import_ns, "DMA_BUF");
 MODULE_DESCRIPTION("Experimental guest render-node entry for the owned Windows D3D12 bridge");
