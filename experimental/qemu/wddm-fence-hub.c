@@ -127,7 +127,7 @@ static void hub_realize(PCIDevice *pci, Error **errp)
     WddmFenceHub *s = WDDM_FENCE_HUB(pci);
     HMODULE whp = GetModuleHandleW(L"WinHvPlatform.dll");
     if (!wddm_fence_slots_valid(s->slot_count)) {
-        error_setg(errp, "WDDM fence slot-count must be 64, 128 or 256");
+        error_setg(errp, "WDDM fence slot-count must be 64, 128, 256 or 512");
         return;
     }
     if (!whpx_enabled() || !whp || !GetProcAddress(whp, "WHvMapGpaRange2")) {

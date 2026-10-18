@@ -1,5 +1,12 @@
 # QEMU Windows section memory lab
 
+The fence hub now accepts an explicit `slot-count=512` layout for upcoming
+concurrent desktop-client tests. Its BAR uses the requested count; existing
+64/128/256 layouts keep their extents, bounds and generation checks. This is
+QEMU groundwork only: the Windows/guest capacity agreement still admits at
+most 256 fence pages and needs a separately negotiated extension before this
+new layout can be used. No additional rendered desktop is claimed here.
+
 This engineering runtime adds `memory-backend-win32-section` to the exact
 WINQ-EMU QEMU revision pinned by the project. The build and memory acceptance
 [passed CI](https://github.com/7Wdev/try-omarchy-windows/actions/runs/37688925268);

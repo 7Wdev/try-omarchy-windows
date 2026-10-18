@@ -6,10 +6,10 @@
 #include <stdint.h>
 #include <string.h>
 #define WDDM_FENCE_HUB_PAGES 64
-#define WDDM_FENCE_HUB_MAX_PAGES 256
+#define WDDM_FENCE_HUB_MAX_PAGES 512
 static inline bool wddm_fence_slots_valid(uint32_t slots)
 {
-    return slots == WDDM_FENCE_HUB_PAGES || slots == 128 || slots == WDDM_FENCE_HUB_MAX_PAGES;
+    return slots == WDDM_FENCE_HUB_PAGES || slots == 128 || slots == 256 || slots == WDDM_FENCE_HUB_MAX_PAGES;
 }
 typedef struct WddmFenceCommand {
     bool map;
