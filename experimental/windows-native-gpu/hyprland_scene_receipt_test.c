@@ -7,6 +7,12 @@
 #undef __libc_start_main
 
 int main(void) {
+    if(visible_shell_bar("{\"namespace\":\"omarchy-bar\",\"alpha\":0}") ||
+       visible_shell_bar("{\"alpha\":0.5,\"namespace\":\"omarchy-bar\"}") ||
+       visible_shell_bar("{\"namespace\":\"omarchy-bar\"}") ||
+       visible_shell_bar("{\"namespace\":\"omarchy-bar\",\"alpha\":\"1\"}") ||
+       !visible_shell_bar("{\"alpha\":1,\"namespace\":\"omarchy-bar\"}") ||
+       !visible_shell_bar("{\"namespace\":\"omarchy-bar\",\"alpha\":0.999}")) return 1;
     const char* receipt="HYPRLAND_SCENE_CLOSED clientUnmapped=true childExitMarker=true\n";
     const char* other="LINUX_BRIDGE competing-process-log\n";
     int channel[2];

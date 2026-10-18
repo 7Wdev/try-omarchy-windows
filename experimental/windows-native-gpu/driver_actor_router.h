@@ -53,6 +53,16 @@ public:
     bool disconnected(std::uint64_t id) const {
         const auto found=actors.find(id);return found!=actors.end() && found->second.disconnected;
     }
+    // Owner lifecycle operations do not consume the client call sequence.
+    bool disconnect(std::uint64_t id) {
+        const auto found=actors.find(id);if(found==actors.end()) return false;
+        found->second.disconnected=true;return true;
+    }
+    bool detachEmpty(std::uint64_t id) {
+        const auto found=actors.find(id);
+        if(found==actors.end() || found->second.session.get().objectCount()) return false;
+        actors.erase(found);return true;
+    }
     std::vector<std::uint8_t> dispatch(const std::vector<std::uint8_t>& packet) {
         if(poisoned) return {};
         if(packet.size()<sizeof(Envelope)) { poisoned=true;return {}; }

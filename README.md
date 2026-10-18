@@ -14,26 +14,21 @@ through QEMU/WHPX. Full acceleration of the Omarchy/Hyprland desktop through thi
 **4/8 verification stages demonstrated; 0/4 desktop acceptance gates complete.** These are checklist counts, not percentages of engineering work completed.
 Guest graphics integration is in progress. The largest integration work remains. [See the roadmap and evidence](docs/GPU-BACKEND-PROGRESS.md).
 
-**Distance to the GPU-only desktop:** NVIDIA composition now works inside the actual Omarchy OS as ordinary UID 1000.
-Two fresh real-root guests each complete **300 frames and 948 GPU commands**, releasing all GPU mappings before shutdown.
-The shipped Lua configuration also produces the first actual Omarchy wallpaper/bar image at 1280×720, with a **software-rendered Qt shell**.
-That diagnostic later fails and does not establish stable operation or application GPU acceleration.
-The next target is **3840×2160 with both Hyprland and Quickshell verified on the GPU**. Mesa's Wayland platform now builds;
-hardware-only 4K tests exposed GPU-map, reported-usage and CPU-map limits. Two full-resolution NVIDIA compositor backbuffers now
-pass readback verification; the shipped Quickshell shell is still absent and normal-session/display/stability gates fail.
-Explicit 4K profiles add bounded GPU capacity and a verified 192 MiB kernel/host CPU contract while preserving older profiles.
-The separate 512-slot aperture now works on hardware, including direct mappings beyond the old ceiling. The earlier 4K attempt
-hit the GPU virtual-mapping quota and left native waits pending. A separate explicit mapping budget produces 4K compositor readbacks,
-but that earlier version exceeds its reported-usage guard. A distinct explicit presentation budget now passes two fresh
-4K runs with native memory admission, complete backbuffer verification and normal shutdown; every GPU mapping releases before VM exit.
-Quickshell is still absent, and display statistics remain incomplete. Abort cleanup and safe independent GPU clients remain open.
-[Latest 4K GPU image, clean shutdown and exact remaining work](docs/LIVE-NORMAL-OMARCHY-4K-PRESENTATION-BUDGET.md).
-Normal UWSM/launcher/input integration, reliable scanout,
-long-run stability and ≥93% matched-native performance remain open. [Actual images, retained failures and scope](docs/LIVE-NORMAL-OMARCHY-GPU.md).
+**Current GPU desktop content:** the actual Omarchy Quickshell bar now renders on NVIDIA
+and reaches Hyprland through authenticated cross-process GPU resource imports. Two fresh
+3840x2160 runs verify the later framebuffer, with **385/417 retired GPU commands**.
+**Wallpaper and application windows are still missing; the full desktop frame remains required.**
+The first capture is incomplete, display observation is limited, and some mappings remain
+retained until VM exit. The isolated fixture disables Xwayland/portals in RAM only.
+[Actual 4K GPU shell image, evidence and remaining work](docs/LIVE-OMARCHY-4K-GPU-SHELL.md).
+Normal launcher/UWSM/input, full application support, recovery, long-run stability and
+>=93% matched-native performance remain open. Earlier
+[clean single-client 4K compositor evidence](docs/LIVE-NORMAL-OMARCHY-4K-PRESENTATION-BUDGET.md)
+and [software-shell diagnostic](docs/LIVE-NORMAL-OMARCHY-GPU.md) retain their original scope.
 
 | Desktop gate | Status | Acceptance requirement |
 | --- | --- | --- |
-| Guest graphics integration | In progress: two 300-frame NVIDIA runs inside the real Omarchy OS; independent GPU apps pending | Hyprland can access a supported guest device path and safely share buffers and synchronization for sustained work. |
+| Guest graphics integration | In progress: GPU-rendered Omarchy bar at 4K; wallpaper, application windows and safe recovery pending | Hyprland can access a supported guest device path and safely share buffers and synchronization for sustained work. |
 | First Hyprland frame | Pending | Independently verify a correctly displayed compositor frame in the Windows app, capture its image and update PR #2 with the result. |
 | Interactive desktop | Pending | Continuously display real apps with input, multiple windows, resizing and fullscreen up to 4K. |
 | Stable, near-native product | Pending | Pass long runs, bounded-memory and recovery checks, plus matched benchmarks meeting ≥93% of native performance. |

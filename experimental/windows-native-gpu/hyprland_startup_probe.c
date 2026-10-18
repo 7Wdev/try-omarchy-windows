@@ -181,6 +181,19 @@ static void scene_diagnostics(void) {
         scene_hex_receipt("HYPRLAND_SCENE_DIAGNOSTIC_HEX",data,bytes);
     }
 }
+static int visible_shell_bar(const char* text) {
+    const char* match=strstr(text,"\"omarchy-bar\"");
+    if(!match) return 0;
+    const char* begin=match;
+    while(begin>text && *begin!='{') --begin;
+    const char* end=strchr(match,'}');
+    if(*begin!='{' || !end) return 0;
+    const char* alpha=strstr(begin,"\"alpha\"");
+    if(!alpha || alpha>=end) return 0;
+    alpha=strchr(alpha,':');if(!alpha || alpha>=end) return 0;
+    char* parsed=NULL;errno=0;const double value=strtod(alpha+1,&parsed);
+    return !errno && parsed!=alpha+1 && parsed<=end && value>=0.99 && value<=1.0;
+}
 static int prepare_scene(void) {
     if(getenv("WDDM_BRIDGE_NORMAL_DESKTOP_PROBE")) {
         // Inspect the shipped desktop without pretending the controlled Foot
@@ -188,6 +201,18 @@ static int prepare_scene(void) {
         sleep(8);
         char* const layers[]={"/usr/bin/hyprctl","-j","layers",NULL};
         run_ctl(layers);
+        if(getenv("WDDM_BRIDGE_ACTOR_PROFILE")) {
+            unsigned tick=0;
+            for(;tick<40;++tick) {
+                if(visible_shell_bar(last_control_reply)) break;
+                // A headless output may otherwise go idle while a windowed
+                // EGL client awaits its first compositor frame callback.
+                char* const repaint[]={"/usr/bin/hyprctl","notify","-1","250","rgb(4477aa)","Initializing Omarchy GPU desktop",NULL};
+                if(run_ctl(repaint)) return -1;
+                sleep(1);run_ctl(layers);
+            }
+            printf("OMARCHY_DESKTOP_COORDINATOR_WAIT shellLayerObserved=%s polls=%u gpuProof=false\n",tick<40 ? "true" : "false",tick);
+        }
         scene_hex_receipt("OMARCHY_DESKTOP_LAYERS_HEX",last_control_reply,strlen(last_control_reply));
         if(scene_receipt("OMARCHY_DESKTOP_PROBE_CAPTURE normalConfig=true shellVerified=false applicationGpuVerified=false\n")) return -1;
         atomic_store(&scene_ready,1);
@@ -258,6 +283,7 @@ static void* bounded_control(void* unused) {
             // changing content without recreating outputs or hiding warnings.
             char notification[128];
             snprintf(notification,sizeof notification,"GPU composition probe %u; Quickshell GPU integration pending",tick);
+            if(getenv("WDDM_BRIDGE_ACTOR_PROFILE")) snprintf(notification,sizeof notification,"4K GPU desktop composition probe %u",tick);
             char* const lua_repaint[]={"/usr/bin/hyprctl","notify","-1","100","rgb(4477aa)",notification,NULL};
             char* const* repaint=getenv("WDDM_BRIDGE_NORMAL_DESKTOP_PROBE") ? lua_repaint : legacy_repaint;
             if (run_ctl(repaint)) { atomic_store(&queue_failed,1); break; }

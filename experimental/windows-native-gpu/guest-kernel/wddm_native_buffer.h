@@ -2,6 +2,7 @@
 /* Genuine DMA-BUF ownership of an opaque native capability. No guest PFNs,
  * CPU access, foreign-device DMA mapping or implicit synchronization yet. */
 #include <linux/dma-buf.h>
+#include "wddm_native_prime.h"
 
 static bool enable_native_buffers;
 module_param(enable_native_buffers, bool, 0444);
@@ -57,6 +58,24 @@ static const struct dma_buf_ops native_buffer_ops = {
 	.end_cpu_access = native_buffer_cpu_access, .mmap = native_buffer_mmap,
 	.vmap = native_buffer_vmap, .release = native_buffer_release,
 };
+
+int wddm_native_buffer_size(struct dma_buf *buffer, u64 *bytes)
+{
+	struct wddm_native_buffer *native;
+	struct wddm_object *object;
+	int result = 0;
+	if (!enable_native_buffers || !buffer || !bytes || buffer->ops != &native_buffer_ops)
+		return -EINVAL;
+	native = buffer->priv;
+	object = native->source->private_data;
+	mutex_lock(&object_lock);
+	if (!object->valid || object->kind != WDDM_OBJECT_RESOURCE) result = -ENODEV;
+	else if (!native->published || !native->bytes || native->bytes > WDDM_NATIVE_BUFFER_MAX_BYTES || buffer->size != native->bytes) result = -EINVAL;
+	else *bytes = native->bytes;
+	mutex_unlock(&object_lock);
+	return result;
+}
+EXPORT_SYMBOL_GPL(wddm_native_buffer_size);
 
 static struct file *object_fd_get(int fd)
 {

@@ -19,6 +19,7 @@
 #include <set>
 #include <array>
 #include "driver_wire.h"
+#include "driver_coordinator.h"
 #include "shared_resource_probe.h"
 #include "shared_sync_handle.h"
 #include "shared_resource_handle.h"
@@ -62,12 +63,19 @@ class KmtDriver : public Driver {
     bool openglDesktop4kCpuEnabled = false;
     bool openglDesktopSparseEnabled = false;
     bool openglDesktopLargeMapEnabled = false, openglDesktopPresentationEnabled = false;
+    bool coordinatedObjectsEnabled=false;
+    std::size_t peakHwQueues=0,peakSyncObjects=0;
+    std::uint64_t hwQueueQuotaRejections=0,syncQuotaRejections=0;
+    std::size_t hwQueueLimit() const { return coordinatedObjectsEnabled ? CoordinatedObjectCapacity{}.hwQueues : openglFencesEnabled ? OpenGlFenceHwQueues : MaxHwQueues; }
     unsigned compositorCaptureAttempts = 0, completedCompositorCaptures = 0, failedCompositorCaptures = 0;
     std::unique_ptr<driver_shared::CompositorReadback> compositorPresenter;
     std::unique_ptr<driver_shared::CompositorPresenter> compositorOutput;
     std::uint64_t completedCompositorFrames = 0, failedCompositorFrames = 0, compositorBackpressure = 0;
-    std::size_t reservationLimit() const { return openglDesktopEnabled ? GuestOpenGlDesktopProfile.reservationLimit : openglRenderEnabled ? GuestOpenGlCompositorRenderProfile.reservationLimit : openglEnabled ? GuestOpenGlProfile.reservationLimit : MaxGpuReservations; }
-    std::size_t syncObjectLimit() const { return openglCompositorEnabled ? OpenGlCompositorSyncObjects : MaxSyncObjects; }
+    std::size_t reservationLimit() const { return coordinatedObjectsEnabled ? CoordinatedObjectCapacity{}.reservations : openglDesktopEnabled ? GuestOpenGlDesktopProfile.reservationLimit : openglRenderEnabled ? GuestOpenGlCompositorRenderProfile.reservationLimit : openglEnabled ? GuestOpenGlProfile.reservationLimit : MaxGpuReservations; }
+    std::uint64_t reservationByteLimit() const { return coordinatedObjectsEnabled ? CoordinatedObjectCapacity{}.reservedGpuBytes : MaxGpuReservedBytes; }
+    std::uint64_t reservationQuotaRejections=0;
+    std::size_t peakReservations=0;
+    std::size_t syncObjectLimit() const { return coordinatedObjectsEnabled ? CoordinatedObjectCapacity{}.syncObjects : openglCompositorEnabled ? OpenGlCompositorSyncObjects : MaxSyncObjects; }
     std::size_t vendorObjectLimit() const { return openglDesktopEnabled ? OpenGlDesktopVendorAllocations : openglCompositorEnabled ? OpenGlCompositorVendorAllocations : openglFencesEnabled ? OpenGlFenceVendorAllocations : vendorAllocationObjectLimit(capabilities().flags); }
     std::uint32_t openGlCommandLimit() const { return openglDesktopEnabled ? 0 : openglCompositorEnabled ? GuestOpenGlCompositorProfile.commandLimit : GuestOpenGlProfile.commandLimit; }
     std::uint32_t hwSignalLimit() const { return openglDesktopEnabled ? 0 : openglCompositorEnabled ? OpenGlCompositorHwSignals : openglFencesEnabled ? OpenGlFenceHwSignals : MaxHwQueueSignals; }
@@ -96,6 +104,23 @@ class KmtDriver : public Driver {
     std::uint64_t submissionAttempts = 0, completedSubmissions = 0, failedSubmissions = 0;
     std::uint64_t submissionTimeouts = 0;
     std::uint64_t submittedCommandBytes = 0, acceptedCommandBytes = 0;
+    bool waitFence(std::uint32_t handle,std::uint32_t& device,volatile std::uint64_t*& word) const {
+        const auto sync=syncObjects.find(handle);
+        if(sync!=syncObjects.end() && sync->second.type==5 && sync->second.lease && sync->second.fence) {
+            device=sync->second.device;word=sync->second.fence;return true;
+        }
+        if(coordinatedObjectsEnabled) for(const auto& entry:pagingFences) {
+            if(entry.second.sync==handle && entry.second.lease && entry.second.fence) {
+                device=entry.second.device;word=entry.second.fence;return true;
+            }
+        }
+        if(coordinatedObjectsEnabled) for(const auto& entry:hwQueues) {
+            if(entry.second.sync==handle && entry.second.lease && entry.second.fence) {
+                device=entry.second.device;word=entry.second.fence;return true;
+            }
+        }
+        return false;
+    }
     bool collectRetiredSubmissions() {
         if (asyncRetirementFailed) return false;
         for (auto it = pendingSubmissions.begin(); it != pendingSubmissions.end();) {
@@ -155,11 +180,11 @@ class KmtDriver : public Driver {
         for (auto it = pendingHwWaits.begin(); it != pendingHwWaits.end();) {
             bool satisfied = true;
             for (std::uint32_t n = 0; n < it->count; ++n) {
-                const auto sync = syncObjects.find(it->syncs[n]);
-                if (sync == syncObjects.end() || !sync->second.fence) {
+                std::uint32_t device=0;volatile std::uint64_t* word=nullptr;
+                if (!waitFence(it->syncs[n],device,word)) {
                     asyncRetirementFailed = true; ++failedHwQueueWaits; return false;
                 }
-                MemoryBarrier(); const auto observed = *sync->second.fence;
+                MemoryBarrier(); const auto observed = *word;
                 if (observed == UINT64_MAX) { asyncRetirementFailed = true; ++failedHwQueueWaits; return false; }
                 if (observed < it->targets[n]) satisfied = false;
             }
@@ -567,8 +592,13 @@ public:
     HwQueueResult createHwQueue(std::uint32_t context, HwQueueDesc desc, std::vector<std::uint8_t>& data) override {
         const auto parent = contextOwners.find(context);
         if (!hwQueuesEnabled || !runtime || !validHwQueue(desc) || data.size() != desc.privateBytes ||
-            parent == contextOwners.end() || parent->second.flags != 16 || hwQueues.size() >= (openglFencesEnabled ? OpenGlFenceHwQueues : MaxHwQueues))
+            parent == contextOwners.end() || parent->second.flags != 16)
             return {{Invalid, 0, 0}, 0, 0, 0};
+        if(hwQueues.size()>=hwQueueLimit()) {
+            ++hwQueueQuotaRejections;
+            std::cerr<<"{\"nativeObjectAdmissionRejected\":true,\"kind\":\"hwQueue\",\"live\":"<<hwQueues.size()<<",\"limit\":"<<hwQueueLimit()<<"}\n";
+            return {{static_cast<std::int32_t>(0xc0000017u),0,0},0,0,0};
+        }
         if (!runtime->canMapFence() || !reportedGpuUsageAcceptable()) return {{static_cast<std::int32_t>(0xc0000017u), 0, 0}, 0, 0, 0};
         D3DKMT_CREATEHWQUEUE a{}; a.hHwContext = context; a.Flags.Value = desc.flags;
         D3DDDI_CREATEHWQUEUEFLAGS layout{}; layout.NoBroadcastSignal = 1;
@@ -598,6 +628,7 @@ public:
                 throw std::runtime_error("Unexpected native hardware queue output");
             owned.lease = runtime->map(owned.fence);
             ++completedHwQueues;
+            peakHwQueues=(std::max)(peakHwQueues,hwQueues.size());
             if (desc.flags & NoBroadcastSignalHwQueueFlag) ++completedNoBroadcastSignalHwQueues;
             if (desc.flags & NoBroadcastWaitHwQueueFlag) ++completedNoBroadcastWaitHwQueues;
             std::cerr << "{\"nativeHardwareQueueFlagsVerified\":true,\"flags\":" << desc.flags
@@ -615,6 +646,15 @@ public:
     Result queueHwCommand(std::uint32_t handle, HwSubmitDesc desc, const std::vector<std::uint8_t>& data) override {
         if (!asyncSubmitEnabled) return {Invalid,0,0};
         return submitNativeHwCommand(handle,desc,data,true);
+    }
+    bool beginCoordinatedObjects(CoordinatedObjectCapacity value) override {
+        if(!validCoordinatedObjectCapacity(value) || coordinatedObjectsEnabled || !openglDesktopPresentationEnabled || !runtime || runtime->hasStopped() ||
+            !ownedAdapters.empty() || !deviceAdapters.empty() || !hwQueues.empty() || !syncObjects.empty()) return false;
+        coordinatedObjectsEnabled=true;
+        std::cerr<<"{\"nativeCoordinatedObjectCapacity\":true,\"version\":3,\"hwQueues\":"<<hwQueueLimit()<<",\"syncObjects\":"<<syncObjectLimit()
+                 <<",\"reservedAddressBytes\":"<<reservationByteLimit()<<",\"reservationCount\":"<<reservationLimit()
+                 <<",\"kernelLeaseLimit\":768,\"fenceSlots\":256,\"cpuBytes\":201326592,\"gpuVaBytes\":1073741824,\"reportedGpuBytes\":1073741824,\"memoryBudgetsMultiplied\":false}\n";
+        return true;
     }
     StreamProfile beginStreaming() override {
         if (!collectRetiredSubmissions()) return {};
@@ -772,16 +812,20 @@ public:
         const auto queue = hwQueues.find(queueId);
         const auto context = contextOwners.find(queueId);
         if (!syncSharingEnabled || !asyncSubmitEnabled || !runtime || runtime->hasStopped() ||
-            (contextStream ? context == contextOwners.end() || context->second.flags != 16 : queue == hwQueues.end()) ||
+            (contextStream ? context == contextOwners.end() || !contextCanWait(context->second.flags,coordinatedObjectsEnabled) : queue == hwQueues.end()) ||
             items.empty() || items.size() > MaxHwQueueWaitObjects || acceptedHwQueueWaits==UINT64_MAX) return {Invalid, 0, 0};
         if (pendingHwWaits.size() >= MaxPendingHwQueueWaits) return {static_cast<std::int32_t>(0xc0000017u), 0, 0};
         const auto device = contextStream ? context->second.device : queue->second.device;
         PendingHwWait pending{}; pending.queue = queueId; pending.count = static_cast<std::uint32_t>(items.size()); pending.contextStream = contextStream;
+        unsigned borrowedPaging=0,borrowedHardware=0;
         for (std::size_t n = 0; n < items.size(); ++n) {
-            const auto sync = syncObjects.find(items[n].sync);
-            if (items[n].reserved || items[n].fence == UINT64_MAX || sync == syncObjects.end() || sync->second.type != 5 ||
-                sync->second.device != device || !sync->second.lease || !sync->second.fence ||
+            std::uint32_t sourceDevice=0;volatile std::uint64_t* word=nullptr;
+            if (items[n].reserved || items[n].fence == UINT64_MAX || !waitFence(items[n].sync,sourceDevice,word) || sourceDevice!=device ||
                 std::find(pending.syncs.begin(), pending.syncs.begin() + n, items[n].sync) != pending.syncs.begin() + n) return {Invalid, 0, 0};
+            if(!syncObjects.count(items[n].sync)) {
+                const bool hardware=std::any_of(hwQueues.begin(),hwQueues.end(),[&](const auto& entry){return entry.second.sync==items[n].sync;});
+                if(hardware) ++borrowedHardware;else ++borrowedPaging;
+            }
             pending.syncs[n] = items[n].sync; pending.targets[n] = items[n].fence;
         }
         D3DKMT_SUBMITWAITFORSYNCOBJECTSTOHWQUEUE wait{};
@@ -797,6 +841,8 @@ public:
         if (status < 0) { ++failedHwQueueWaits; return {status, 0, 0}; }
         if (status != 0) { ++failedHwQueueWaits; throw std::runtime_error("Unexpected native GPU queue wait status"); }
         pending.index = ++acceptedHwQueueWaits; pendingHwWaits.push_back(pending);
+        if(borrowedPaging || borrowedHardware) std::cerr<<"{\"nativeBorrowedQueueGpuWaitAccepted\":true,\"index\":"<<pending.index<<",\"paging\":"<<borrowedPaging
+            <<",\"hardware\":"<<borrowedHardware<<",\"cpuValueWrittenByBridge\":false}\n";
         std::cerr << "{\"nativeGpuQueueWaitAccepted\":true,\"index\":" << pending.index << ",\"objects\":" << pending.count
                   << ",\"contextStream\":" << (contextStream ? "true" : "false")
                   << ",\"firstTarget\":" << pending.targets[0] << ",\"nativeCallMs\":" << elapsed << ",\"cpuWait\":false}\n";
@@ -805,9 +851,13 @@ public:
         return {0, 0, 0};
     }
     Result reserveGpuAddress(std::uint32_t adapter, GpuReservationDesc desc) override {
-        if (!reservationEnabled || !runtime || !ownedAdapters.count(adapter) || !validGpuReservation(desc) ||
-            gpuReservations.size() >= reservationLimit() || nextGpuReservation == UINT32_MAX ||
-            desc.bytes > MaxGpuReservedBytes - gpuReservedBytes) return {Invalid, 0, 0};
+        if (!reservationEnabled || !runtime || !ownedAdapters.count(adapter) || !validGpuReservation(desc) || nextGpuReservation == UINT32_MAX) return {Invalid,0,0};
+        if(gpuReservations.size()>=reservationLimit() || gpuReservedBytes>reservationByteLimit() || desc.bytes>reservationByteLimit()-gpuReservedBytes) {
+            ++reservationQuotaRejections;
+            std::cerr<<"{\"nativeObjectAdmissionRejected\":true,\"kind\":\"gpuReservation\",\"live\":"<<gpuReservations.size()
+                     <<",\"limit\":"<<reservationLimit()<<",\"reservedBytes\":"<<gpuReservedBytes<<",\"requestedBytes\":"<<desc.bytes<<",\"byteLimit\":"<<reservationByteLimit()<<"}\n";
+            return {static_cast<std::int32_t>(0xc0000017u),0,0};
+        }
         D3DDDI_RESERVEGPUVIRTUALADDRESS a{}; a.hAdapter = adapter;
         a.BaseAddress = desc.base; a.MinimumAddress = desc.minimum; a.MaximumAddress = desc.maximum; a.Size = desc.bytes;
         const auto status = D3DKMTReserveGpuVirtualAddress(&a);
@@ -820,6 +870,7 @@ public:
             throw;
         }
         gpuReservedBytes += desc.bytes; peakGpuReservedBytes = (std::max)(peakGpuReservedBytes, gpuReservedBytes);
+        peakReservations=(std::max)(peakReservations,gpuReservations.size());
         if (status != 0 || !validGpuReservationOutput(desc, a.VirtualAddress) || a.Reserved0 || a.Reserved1 || a.Reserved2) {
             ++failedReservations; runtime->stop(0); destroy(Kind::GpuReservation, id);
             throw std::runtime_error("Unexpected native GPU reservation output");
@@ -1067,6 +1118,7 @@ public:
                 throw std::runtime_error("Unexpected imported native synchronization output");
             owned.lease = runtime->map(owned.fence);
             if (!syncObjects.emplace(a.hSyncObject, owned).second) throw std::runtime_error("Imported sync identity collision");
+            peakSyncObjects=(std::max)(peakSyncObjects,syncObjects.size());
         } catch (...) {
             if (owned.lease) { try { runtime->unmap(*owned.lease); } catch (...) { runtime->stop(0); } }
             D3DKMT_DESTROYSYNCHRONIZATIONOBJECT cleanup{}; cleanup.hSyncObject = a.hSyncObject;
@@ -1079,8 +1131,13 @@ public:
         return {{0, a.hSyncObject, 0}, {owned.lease->offset, owned.gpuAddress}};
     }
     SyncResult createSync(std::uint32_t device, SyncDesc desc) override {
-        if (!syncEnabled || !runtime || !validSync(desc) || !deviceAdapters.count(device) || syncObjects.size() >= syncObjectLimit())
+        if (!syncEnabled || !runtime || !validSync(desc) || !deviceAdapters.count(device))
             return {{Invalid, 0, 0}, {0, 0}};
+        if(syncObjects.size()>=syncObjectLimit()) {
+            ++syncQuotaRejections;
+            std::cerr<<"{\"nativeObjectAdmissionRejected\":true,\"kind\":\"sync\",\"live\":"<<syncObjects.size()<<",\"limit\":"<<syncObjectLimit()<<"}\n";
+            return {{static_cast<std::int32_t>(0xc0000017u),0,0},{0,0}};
+        }
         if (desc.flags == NtSharedGpuSyncFlags && !syncSharingEnabled) return {{Invalid, 0, 0}, {0, 0}};
         if (desc.type == 5 && !runtime->canMapFence())
             return {{static_cast<std::int32_t>(0xc0000017u), 0, 0}, {0, 0}};
@@ -1109,6 +1166,7 @@ public:
         try {
             if (!a.hSyncObject || !syncObjects.emplace(a.hSyncObject, owned).second)
                 throw std::runtime_error("Unexpected native synchronization identity");
+            peakSyncObjects=(std::max)(peakSyncObjects,syncObjects.size());
         } catch (...) {
             D3DKMT_DESTROYSYNCHRONIZATIONOBJECT cleanup{}; cleanup.hSyncObject = a.hSyncObject;
             if (D3DKMTDestroySynchronizationObject(&cleanup) < 0) ++cleanupFailures;
@@ -1905,6 +1963,9 @@ public:
         } else if (kind == Kind::PagingQueue) {
             const auto queue = pagingFences.find(handle);
             if (queue == pagingFences.end()) return {Invalid, 0, 0};
+            if(!collectRetiredSubmissions()) return {Invalid,0,0};
+            for(const auto& wait:pendingHwWaits)
+                if(std::find(wait.syncs.begin(),wait.syncs.begin()+wait.count,queue->second.sync)!=wait.syncs.begin()+wait.count) return {Invalid,0,0};
             if (queue->second.lease) {
                 try { runtime->unmap(*queue->second.lease); }
                 catch (...) {
@@ -1923,6 +1984,8 @@ public:
             const auto queue = hwQueues.find(handle);
             if (queue == hwQueues.end() || !runtime) return {Invalid, 0, 0};
             if (!collectRetiredSubmissions()) return {Invalid,0,0};
+            for(const auto& wait:pendingHwWaits)
+                if(std::find(wait.syncs.begin(),wait.syncs.begin()+wait.count,queue->second.sync)!=wait.syncs.begin()+wait.count) return {Invalid,0,0};
             if (std::any_of(pendingSubmissions.begin(), pendingSubmissions.end(), [handle](const PendingSubmission& p) { return p.queue == handle; }))
                 return {Invalid, 0, 0}; // Keep its fence and allocations owned.
             if (std::any_of(pendingHwSignals.begin(),pendingHwSignals.end(),[handle](const PendingHwSignal& p) {
@@ -2090,11 +2153,13 @@ public:
                   << ",\"completedContextPriorityChanges\":" << completedContextPriorities
                   << ",\"failedContextPriorityChanges\":" << failedContextPriorities
                   << ",\"liveHwQueues\":" << hwQueues.size() << ",\"completedHwQueues\":" << completedHwQueues
+                  << ",\"hwQueueLimit\":"<<hwQueueLimit()<<",\"peakHwQueues\":"<<peakHwQueues<<",\"hwQueueQuotaRejections\":"<<hwQueueQuotaRejections
                   << ",\"completedNoBroadcastSignalHwQueues\":" << completedNoBroadcastSignalHwQueues
                   << ",\"completedNoBroadcastWaitHwQueues\":" << completedNoBroadcastWaitHwQueues
                   << ",\"destroyedHwQueues\":" << destroyedHwQueues << ",\"failedHwQueues\":" << failedHwQueues
                   << ",\"hwQueuesReleasedAfterVmExit\":" << hwQueuesReleasedAfterVmExit
                   << ",\"liveSyncObjects\":" << syncObjects.size() << ",\"completedSyncObjects\":" << completedSyncs
+                  << ",\"peakSyncObjects\":"<<peakSyncObjects<<",\"syncQuotaRejections\":"<<syncQuotaRejections
                   << ",\"destroyedSyncObjects\":" << destroyedSyncs << ",\"failedSyncObjects\":" << failedSyncs
                   << ",\"completedMonitoredFences\":" << monitoredSyncs << ",\"completedSynchronizationMutexes\":" << mutexSyncs
                   << ",\"completedNoGpuAccessFences\":" << noGpuAccessSyncs << ",\"syncObjectLimit\":" << syncObjectLimit()
@@ -2107,6 +2172,8 @@ public:
                   << ",\"pendingAsyncContextSignals\":" << pendingContextSignals.size() << ",\"peakPendingAsyncContextSignals\":" << peakPendingContextSignals
                   << ",\"syncObjectsReleasedAfterVmExit\":" << syncsReleasedAfterVmExit
                   << ",\"liveGpuReservations\":" << gpuReservations.size() << ",\"liveGpuReservedBytes\":" << gpuReservedBytes
+                  << ",\"peakGpuReservations\":"<<peakReservations<<",\"gpuReservationCountLimit\":"<<reservationLimit()
+                  << ",\"gpuReservationByteLimit\":"<<reservationByteLimit()<<",\"gpuReservationQuotaRejections\":"<<reservationQuotaRejections
                   << ",\"peakGpuReservedBytes\":" << peakGpuReservedBytes << ",\"completedGpuReservations\":" << completedReservations
                   << ",\"freedGpuReservations\":" << freedReservations << ",\"failedGpuReservations\":" << failedReservations
                   << ",\"gpuReservationsReleasedAfterVmExit\":" << reservationsReleasedAfterVmExit
@@ -2227,9 +2294,39 @@ public:
     }
 };
 static void serve(Stream& stream, const std::string& sectionName = {}, std::uint32_t sectionBytes = 0,
-                  bool contexts = false, bool queries = false, driver_qemu::Runtime* runtime = nullptr, bool allocations = false, bool gpuVa = false, bool residency = false, bool cpu = false, bool cpuStoreTest = false, bool translation = false, bool hwQueues = false, bool sync = false, bool submit = false, bool retirement = false, bool reservation = false, bool gpuState = false, bool asyncSubmit = false, bool sharedResources = false, bool consumeShared = false, bool presentShared = false, bool nativeMetadata = false, bool consumeProcess = false) {
+                  bool contexts = false, bool queries = false, driver_qemu::Runtime* runtime = nullptr, bool allocations = false, bool gpuVa = false, bool residency = false, bool cpu = false, bool cpuStoreTest = false, bool translation = false, bool hwQueues = false, bool sync = false, bool submit = false, bool retirement = false, bool reservation = false, bool gpuState = false, bool asyncSubmit = false, bool sharedResources = false, bool consumeShared = false, bool presentShared = false, bool nativeMetadata = false, bool consumeProcess = false, bool coordinated = false) {
     KmtDriver driver(sectionName, sectionBytes, contexts, queries, runtime, allocations, gpuVa, residency, cpu, cpuStoreTest, translation, hwQueues, sync, submit, retirement, reservation, gpuState, asyncSubmit, sharedResources, consumeShared, presentShared, nativeMetadata,consumeProcess);
     std::exception_ptr failure;
+    if(coordinated) {
+        {
+            coordinator::Runtime owner(driver);
+            std::uint64_t count=0;std::size_t peakObjects=0,peakActors=0;
+            try {
+                const auto deadline=GetTickCount64()+120000;
+                for(;;) {
+                    if(GetTickCount64()>=deadline) throw std::runtime_error("Coordinated owned runtime diagnostic deadline exceeded");
+                    std::uint32_t size=0;if(!stream.read(&size,sizeof size,true)) break;
+                    if(size<sizeof(coordinator::Frame) || size>coordinator::MaxPacket) throw std::runtime_error("Invalid coordinated stream frame length");
+                    std::vector<std::uint8_t> packet(size);stream.read(packet.data(),packet.size());
+                    const auto reply=owner.dispatch(packet);
+                    peakObjects=(std::max)(peakObjects,owner.objectCount());peakActors=(std::max)(peakActors,owner.actorCount());++count;
+                    if(owner.failed() || reply.empty()) throw std::runtime_error("Coordinated controller protocol failure");
+                    size=static_cast<std::uint32_t>(reply.size());stream.write(&size,sizeof size);stream.write(reply.data(),reply.size());
+                }
+            } catch(...) { failure=std::current_exception(); }
+            std::cerr<<"{\"nativeCoordinatorSummary\":true,\"requestsHandled\":"<<count<<",\"peakActors\":"<<peakActors
+                     <<",\"peakLiveObjects\":"<<peakObjects<<",\"retainedActors\":"<<owner.actorCount()
+                     <<",\"liveObjectsBeforeDisconnect\":"<<owner.objectCount()<<",\"nativeDriverCount\":1,\"memoryBudgetsMultiplied\":false}\n";
+            // Live actor Sessions retain backing pages until QEMU is reaped.
+            runtime->stop(failure ? 0 : 5000);
+            const auto emptied=owner.teardownAfterVmExit(runtime->hasStopped());
+            std::cerr<<"{\"nativeCoordinatorTeardown\":true,\"vmReaped\":true,\"globalPhases\":4,\"allWireObjectsReleased\":"<<(emptied ? "true" : "false")<<"}\n";
+        }
+        driver.releaseGuestMemory();driver.reportCleanup();
+        if(!driver.clean()) throw std::runtime_error("Coordinated driver object cleanup failed");
+        if(failure) std::rethrow_exception(failure);
+        return;
+    }
     {
       Session session(driver);
       std::size_t peakWireObjects = 0;
@@ -2281,7 +2378,7 @@ int main(int argc, char** argv) {
         std::uint32_t fenceSlots = 0;
         bool hwQueueNoBroadcastEofTest = false;
         bool hwQueueNoBroadcastWaitEofTest = false;
-        bool asyncSubmit = false, sharedResources = false, consumeShared = false, presentShared = false, nativeMetadata = false, consumeProcess = false;
+        bool asyncSubmit = false, sharedResources = false, consumeShared = false, presentShared = false, nativeMetadata = false, consumeProcess = false, coordinated = false;
         const char* readonlyRoot = nullptr;
         while (argc > 1) {
             if (argc>2 && std::string(argv[argc-2])=="--driver-rootfs-readonly") {
@@ -2325,6 +2422,7 @@ int main(int argc, char** argv) {
             else if (option == "--driver-consume-shared-process" && !consumeProcess) consumeProcess = true;
             else if (option == "--driver-present-shared" && !presentShared) presentShared = true;
             else if (option == "--driver-native-metadata" && !nativeMetadata) nativeMetadata = true;
+            else if (option == "--driver-coordinator" && !coordinated) coordinated = true;
             else if (option == "--driver-shared-resources" && !sharedResources) sharedResources = true;
             else if (option == "--driver-retirement" && !retirement) retirement = true;
             else if (option == "--driver-reservation" && !reservation) reservation = true;
@@ -2341,6 +2439,11 @@ int main(int argc, char** argv) {
             throw std::runtime_error("Read-only root image cannot be combined with forced EOF/store controls");
         if (cpuSlots==SparseVendorCpuSlots && (!cpu || fenceSlots!=256 || argc!=7 || std::string(argv[1])!="--run-qemu"))
             throw std::runtime_error("Sparse CPU aperture requires CPU locks, explicit 256 fence slots and an owned QEMU runtime");
+        if(coordinated && (!gpu_diagnostic::HighResolution || argc!=7 || std::string(argv[1])!="--run-qemu" || !readonlyRoot ||
+            cpuSlots!=SparseVendorCpuSlots || fenceSlots!=256 || !nativeMetadata || !presentShared || !consumeShared || !sharedResources ||
+            !asyncSubmit || !sync || !gpuState || !retirement || consumeProcess || cpuStoreTest || cpuEofTest || cpuSpanEofTest ||
+            hwQueueEofTest || syncEofTest || syncNoMaxEofTest || reservationEofTest || gpuStateEofTest || hwQueueNoBroadcastEofTest || hwQueueNoBroadcastWaitEofTest))
+            throw std::runtime_error("Coordinator requires the high-resolution owned read-only root runtime, exact sparse apertures and complete native presentation opt-ins");
         if (gpu_diagnostic::HighResolution) {
             if (!nativeMetadata || !consumeShared || !cpu || cpuSlots < ExpandedVendorCpuSlots ||
                 argc != 7 || std::string(argv[1]) != "--run-qemu")
@@ -2405,7 +2508,7 @@ int main(int argc, char** argv) {
         if (!ownedRuntime && ((argc != 3 && argc != 7) || std::string(argv[1]) != "--listen")) {
             std::cerr << "Usage: driver-bridge.exe --stdio | --listen port [--guest-section name --guest-ram-bytes count] "
                 "[--driver-contexts] [--driver-queries] [--driver-allocations] [--driver-gpuva] [--driver-residency] [--driver-cpu] [--driver-cpu-slots 16|32|64|128|256|512] [--driver-translation] [--driver-hwqueues] [--driver-syncs] [--driver-submit] [--driver-async-submit] [--driver-retirement] [--driver-reservation] [--driver-gpu-state] [--cpu-store-test | --cpu-eof-test | --cpu-span-eof-test | --hwqueue-eof-test | --hwqueue-no-broadcast-eof-test | --hwqueue-no-broadcast-wait-eof-test | --sync-eof-test | --sync-no-max-eof-test | --reservation-eof-test | --gpu-state-eof-test]\n"
-                "       driver-bridge.exe --run-qemu qemu firmware kernel initramfs fresh-log --driver-contexts --driver-queries [--driver-fence-slots 64|128|256]\n"; return 2;
+                "       driver-bridge.exe --run-qemu qemu firmware kernel initramfs fresh-log --driver-contexts --driver-queries [--driver-fence-slots 64|128|256] [--driver-coordinator]\n"; return 2;
         }
         if (ownedRuntime && (!contexts || !queries)) throw std::runtime_error("Owned QEMU runtime requires explicit query/context opt-ins");
         std::size_t end{}; const auto port = ownedRuntime ? 0ul : std::stoul(argv[2], &end);
@@ -2443,7 +2546,7 @@ int main(int argc, char** argv) {
         if (setsockopt(client.value, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&milliseconds), sizeof milliseconds) ||
             setsockopt(client.value, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&milliseconds), sizeof milliseconds))
             throw std::runtime_error("Cannot set socket timeouts");
-        Stream stream(client.value); serve(stream, sectionName, sectionBytes, contexts, queries, runtime.get(), allocations, gpuVa, residency, cpu, cpuStoreTest, translation, hwQueues, sync, submit, retirement, reservation, gpuState, asyncSubmit, sharedResources, consumeShared, presentShared, nativeMetadata,consumeProcess);
+        Stream stream(client.value); serve(stream, sectionName, sectionBytes, contexts, queries, runtime.get(), allocations, gpuVa, residency, cpu, cpuStoreTest, translation, hwQueues, sync, submit, retirement, reservation, gpuState, asyncSubmit, sharedResources, consumeShared, presentShared, nativeMetadata,consumeProcess,coordinated);
         if (runtime) {
             runtime->report();
             if (!runtime->cleanExit()) throw std::runtime_error("Owned QEMU runtime did not exit cleanly");

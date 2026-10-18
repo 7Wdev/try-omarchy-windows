@@ -198,8 +198,20 @@ int main(void)
     view=mmap(NULL,4096,PROT_READ|PROT_WRITE,MAP_SHARED,cpu.fd,0); REQUIRE(view!=MAP_FAILED);
     REQUIRE(!munmap(view,4096)); revoke_lease(control,cpu.cookie); close(cpu.fd);
     /* Exhaustion rejects without allocating an FD or changing accounting. */
-    struct wddm_aperture_create leases[WDDM_APERTURE_MAX_LEASES];
-    const unsigned lease_limit=wddm_aperture_lease_limit(layout.fence_slots);
+    struct wddm_aperture_coordinator_caps coordinator={.version=1};
+    REQUIRE(!ioctl(control,WDDM_APERTURE_COORDINATOR_CAPS,&coordinator) && wddm_aperture_valid_coordinator_caps(coordinator));
+    REQUIRE(!coordinator.enabled || (layout.fence_slots==256 && layout.allocation_slots==512 && capacity.flags==3));
+    for(unsigned n=0;n<4;++n) {
+        struct wddm_aperture_coordinator_caps bad={.version=1};
+        if(n==0) bad.version=2;
+        if(n==1) bad.enabled=1;
+        if(n==2) bad.lease_limit=768;
+        if(n==3) bad.reserved=1;
+        errno=0;REQUIRE(ioctl(control,WDDM_APERTURE_COORDINATOR_CAPS,&bad)==-1 && errno==EINVAL);
+    }
+    struct wddm_aperture_create leases[WDDM_APERTURE_COORDINATED_LEASES];
+    const unsigned lease_limit=coordinator.lease_limit;
+    printf("COORDINATOR_LEASE_CONTRACT enabled=%u limit=%u cpuByteLimit=%llu\n",coordinator.enabled,lease_limit,(unsigned long long)capacity.cpu_byte_limit);
     for (unsigned n=0;n<lease_limit;++n) {
         leases[n]=fence(); REQUIRE(!ioctl(control,WDDM_APERTURE_CREATE,&leases[n]));
     }

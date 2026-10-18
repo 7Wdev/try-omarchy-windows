@@ -1,0 +1,216 @@
+// SPDX-License-Identifier: MIT
+#include "driver_coordinator.h"
+#include <iostream>
+#include <set>
+#include <string>
+using namespace driver_bridge;
+namespace cg=driver_bridge::coordinator;
+#define CHECK(...) do { if(!(__VA_ARGS__)) throw std::runtime_error("coordinator control line "+std::to_string(__LINE__)); } while(0)
+struct NativeMock : Driver {
+    unsigned glCalls=0,syncCalls=0,resourceCalls=0,objectCalls=0,calls=0,destroyed=0,badStage=0;
+    std::uint32_t next=100;std::set<std::uint32_t> live,devices;
+    bool vmStopped=false,requireVmStop=false;
+    bool globalDevicePhase=false;
+    std::map<std::uint32_t,std::uint32_t> paging,hardware;
+    std::set<std::uint32_t> pagingSyncs,hardwareSyncs;
+    unsigned pagingWaits=0;
+    std::uint32_t waitedPagingSync=0;
+    native_gpu::Capabilities caps{1,AsyncHwSubmitCapability|SyncCapability|GpuReservationCapability|VendorMemoryManagementCapability|
+        ExpandedVendorGpuCapability|ExpandedVendorCpuCapability|VendorAllocationCapability|SharedVendorResourceCapability|NativeSharedTextureCapability|ContextCapability|GuestPagingCapability|HwQueueCapability,0x10de,0x1234};
+    native_gpu::Capabilities capabilities() const override { return caps; }
+    bool beginCoordinatedObjects(CoordinatedObjectCapacity value) override { CHECK(++objectCalls==1 && validCoordinatedObjectCapacity(value));return badStage!=4; }
+    OpenGlProfile beginOpenGl(std::uint32_t version) override { CHECK(++glCalls==1 && version==10);auto p=GuestOpenGlDesktopPresentationProfile;if(badStage==1) p.objectLimit=0;return p; }
+    SyncSharingProfile beginSyncSharing() override { CHECK(++syncCalls==1);auto p=GuestSyncSharingProfile;if(badStage==2) p.version=1;return p; }
+    ResourceSharingProfile beginResourceSharing() override { CHECK(++resourceCalls==1);auto p=GuestResourceSharingProfile;if(badStage==3) p.handleLimit=0;return p; }
+    Result openAdapter() override { ++calls;live.insert(++next);return {0,next,0}; }
+    Result queryVersion(std::uint32_t adapter) override { ++calls;CHECK(live.count(adapter));return {0,0,31}; }
+    Result createDevice(std::uint32_t adapter) override { CHECK(live.count(adapter));const auto result=openAdapter();devices.insert(result.nativeHandle);return result; }
+    Result queryAdapter(std::uint32_t,QueryDesc,std::vector<std::uint8_t>&) override { return {-95,0,0}; }
+    Result createContext(std::uint32_t device,ContextDesc desc,std::vector<std::uint8_t>& data) override { CHECK(devices.count(device) && validContext(desc) && data.size()==desc.privateBytes);return openAdapter(); }
+    GuestPagingResult createGuestPagingQueue(std::uint32_t device) override {
+        CHECK(devices.count(device));const auto queue=openAdapter();const auto sync=++next;pagingSyncs.insert(sync);paging.emplace(queue.nativeHandle,sync);return {queue,sync,0};
+    }
+    HwQueueResult createHwQueue(std::uint32_t context,HwQueueDesc desc,std::vector<std::uint8_t>& data) override {
+        CHECK(live.count(context) && validHwQueue(desc) && data.size()==desc.privateBytes);
+        const auto queue=openAdapter();const auto sync=++next;hardwareSyncs.insert(sync);hardware.emplace(queue.nativeHandle,sync);return {queue,sync,0,4096};
+    }
+    Result queueContextWait(std::uint32_t context,const std::vector<HwQueueWaitItem>& items) override {
+        CHECK(live.count(context) && items.size()==1 && (pagingSyncs.count(items[0].sync) || hardwareSyncs.count(items[0].sync)));++pagingWaits;waitedPagingSync=items[0].sync;return {0,0,0};
+    }
+    Result createPagingQueue(std::uint32_t) override { return {-95,0,0}; }
+    Result readPagingFence(std::uint32_t) override { return {-95,0,0}; }
+    Result createAllocation(std::uint32_t,std::uint32_t) override { return {-95,0,0}; }
+    Result createSharedAllocation(std::uint32_t,GuestRange) override { return {-95,0,0}; }
+    Result copySharedAllocation(std::uint32_t,std::uint32_t,CopyRange) override { return {-95,0,0}; }
+    Result writeAllocation(std::uint32_t,Range,const std::uint8_t*) override { return {-95,0,0}; }
+    Result readAllocation(std::uint32_t,Range,std::vector<std::uint8_t>&) override { return {-95,0,0}; }
+    Result makeResident(std::uint32_t,std::uint32_t) override { return {-95,0,0}; }
+    Result mapAllocation(std::uint32_t,std::uint32_t) override { return {-95,0,0}; }
+    Result queryResidency(std::uint32_t) override { return {-95,0,0}; }
+    Result destroy(Kind kind,std::uint32_t id) override {
+        if(kind==Kind::PagingSync || kind==Kind::HwQueueSync) return {0,0,0};
+        CHECK(!requireVmStop || vmStopped);
+        if(globalDevicePhase && kind==Kind::Adapter && !devices.empty()) return {-16,0,0};
+        if(kind==Kind::Device) CHECK(devices.erase(id)==1);
+        if(kind==Kind::PagingQueue) { CHECK(pagingSyncs.erase(paging.at(id))==1);paging.erase(id); }
+        if(kind==Kind::HwQueue) { CHECK(hardwareSyncs.erase(hardware.at(id))==1);hardware.erase(id); }
+        CHECK(live.erase(id)==1);++destroyed;return {0,0,0};
+    }
+};
+template<class T> static std::vector<std::uint8_t> encoded(const T& value) { std::vector<std::uint8_t> out(sizeof value);std::memcpy(out.data(),&value,sizeof value);return out; }
+template<class T> static T at(const std::vector<std::uint8_t>& value,std::size_t offset=0) { CHECK(value.size()>=offset+sizeof(T));T out{};std::memcpy(&out,value.data()+offset,sizeof out);return out; }
+static std::vector<std::uint8_t> inner(Op op,std::uint32_t handle=0,const std::vector<std::uint8_t>& body={}) {
+    auto out=encoded(Header{static_cast<std::uint32_t>(op),handle,0,0});out.insert(out.end(),body.begin(),body.end());return out;
+}
+struct Control {
+    cg::Runtime& owner;std::uint64_t sequence=1,callSequence=1;
+    std::vector<std::uint8_t> control(cg::Operation op,const std::vector<std::uint8_t>& body={}) {
+        cg::Frame h;h.operation=op;h.sequence=sequence++;h.bytes=static_cast<std::uint32_t>(body.size());auto out=encoded(h);out.insert(out.end(),body.begin(),body.end());return owner.dispatch(out);
+    }
+    std::vector<std::uint8_t> call(std::uint64_t actor,const std::vector<std::uint8_t>& body) {
+        actors::Envelope h;h.actor=actor;h.sequence=callSequence++;h.bytes=static_cast<std::uint32_t>(body.size());auto out=encoded(h);out.insert(out.end(),body.begin(),body.end());return owner.dispatch(out);
+    }
+    std::uint64_t reg(cg::Role role=cg::Role::Application) {
+        const auto reply=control(cg::Operation::Register,encoded(cg::Registration{role,0}));CHECK(!at<cg::Frame>(reply).status);return at<std::uint64_t>(reply,32);
+    }
+};
+int main() {
+    NativeMock native;
+    {
+        cg::Runtime owner(native);Control client{owner};
+        CHECK(at<cg::Frame>(client.control(cg::Operation::Info)).status==-71 && !native.glCalls);
+        CHECK(at<cg::Frame>(client.control(cg::Operation::Initialize,encoded(GuestOpenGlDesktopPresentationCapacity))).status==-22 && !native.glCalls);
+        auto bad=GuestOpenGlDesktopPresentationCapacity;++bad.mapping.aperture.cpuSlots;
+        CHECK(at<cg::Frame>(client.control(cg::Operation::Initialize,encoded(cg::Initialization{bad,{}}))).status==-22 && !native.glCalls);
+        for(unsigned mutation=0;mutation<7;++mutation) {
+            cg::Initialization request{GuestOpenGlDesktopPresentationCapacity,{}};
+            if(mutation==0) request.objects.version=1;
+            if(mutation==1) request.objects.hwQueues=33;
+            if(mutation==2) request.objects.syncObjects=385;
+            if(mutation==3) request.objects.leaseLimit=769;
+            if(mutation==4) request.objects.reservedGpuBytes++;
+            if(mutation==5) request.objects.reservations++;
+            if(mutation==6) request.objects.reserved=1;
+            CHECK(at<cg::Frame>(client.control(cg::Operation::Initialize,encoded(request))).status==-22 && !native.glCalls);
+        }
+        CHECK(!at<cg::Frame>(client.control(cg::Operation::Initialize,encoded(cg::Initialization{GuestOpenGlDesktopPresentationCapacity,{}}))).status);
+        const auto info=client.control(cg::Operation::Info);CHECK(!at<cg::Frame>(info).status && cg::validInfo(at<cg::Info>(info,32)));
+        CHECK(at<cg::Frame>(client.control(cg::Operation::Initialize,encoded(cg::Initialization{GuestOpenGlDesktopPresentationCapacity,{}}))).status==-16);
+        const auto a=client.reg(cg::Role::Compositor),b=client.reg();CHECK(a==1 && b==2);
+        CHECK(at<cg::Frame>(client.control(cg::Operation::Register,encoded(cg::Registration{cg::Role::Compositor,0}))).status==-24);
+        for(const auto actor:{a,b}) {
+            CHECK(!at<Header>(client.call(actor,hello()),40).status);
+            CHECK(!at<Header>(client.call(actor,inner(Op::BeginOpenGl,0,encoded(GuestOpenGlDesktopPresentationCapacity))),40).status);
+            CHECK(at<Header>(client.call(actor,inner(Op::BeginOpenGl,0,encoded(GuestOpenGlDesktopPresentationCapacity))),40).status==-16);
+            CHECK(!at<Header>(client.call(actor,inner(Op::BeginSyncSharing)),40).status);
+            CHECK(!at<Header>(client.call(actor,inner(Op::BeginResourceSharing)),40).status);
+            CHECK(at<Header>(client.call(actor,inner(Op::OpenAdapter)),40).handle==1);
+        }
+        CHECK(native.glCalls==1 && native.objectCalls==1 && native.syncCalls==1 && native.resourceCalls==1 && owner.objectCount()==2);
+        CHECK(at<Header>(client.call(b,inner(Op::QueueCompositorFrame)),40).status==-13);
+        CHECK(at<Header>(client.call(a,inner(Op::QueueCompositorFrame)),40).status!=-13);
+        CHECK(!at<cg::Frame>(client.control(cg::Operation::Disconnect,encoded(a))).status);
+        CHECK(at<actors::Envelope>(client.call(a,inner(Op::OpenAdapter))).status==-32);
+        CHECK(at<cg::Frame>(client.control(cg::Operation::Release,encoded(a))).status==-16 && owner.objectCount()==2 && !native.destroyed);
+        CHECK(!at<Header>(client.call(b,inner(Op::QueryDriverVersion,1)),40).status);
+        CHECK(at<cg::Frame>(client.control(cg::Operation::ReapReference,encoded(cg::Reference{a,Kind::Adapter,1}))).status==-22);
+        const auto c=client.reg(),d=client.reg();CHECK(c==3 && d==4);
+        CHECK(at<cg::Frame>(client.control(cg::Operation::Register,encoded(cg::Registration{}))).status==-24);
+        CHECK(!at<cg::Frame>(client.control(cg::Operation::Disconnect,encoded(c))).status);
+        CHECK(!at<cg::Frame>(client.control(cg::Operation::Release,encoded(c))).status && client.reg()==5);
+        native.requireVmStop=true;native.vmStopped=true; // Owner reaps VM before nonempty Session destruction.
+    }
+    CHECK(native.live.empty() && native.destroyed==2);
+    for(const bool grouped:{false,true}) {
+        NativeMock driver;std::unique_ptr<CoordinatedProfiles> group;
+        if(grouped) group=std::make_unique<CoordinatedProfiles>(driver,GuestOpenGlDesktopPresentationCapacity);
+        auto session=grouped ? std::make_unique<Session>(driver,*group) : std::make_unique<Session>(driver);
+        session->dispatch(hello());session->dispatch(inner(Op::BeginSyncSharing));session->dispatch(inner(Op::OpenAdapter));session->dispatch(inner(Op::CreateDevice,1));
+        auto context=encoded(ContextDesc{0,1,16,16,4,0});context.resize(context.size()+4);
+        CHECK(at<Header>(session->dispatch(inner(Op::CreateContext,2,context))).handle==3);
+        const auto result=session->dispatch(inner(Op::CreateGuestPagingQueue,2));const auto sync=at<PagingReply>(result,32).sync;
+        std::uint32_t waitContext=3;
+        auto wait=[&](std::uint32_t source) { auto payload=encoded(HwQueueWaitDesc{1,0});const auto item=encoded(HwQueueWaitItem{source,0,7});payload.insert(payload.end(),item.begin(),item.end());return session->dispatch(inner(Op::QueueContextWait,waitContext,payload)); };
+        CHECK(at<Header>(wait(sync)).status==(grouped ? 0 : -9));
+        CHECK(driver.pagingWaits==(grouped ? 1u : 0u));
+        if(grouped) CHECK(driver.pagingSyncs.count(driver.waitedPagingSync));
+        const auto foreignDevice=at<Header>(session->dispatch(inner(Op::CreateDevice,1))).handle;
+        const auto foreign=session->dispatch(inner(Op::CreateGuestPagingQueue,foreignDevice));
+        const auto before=driver.pagingWaits;
+        CHECK(at<Header>(wait(at<PagingReply>(foreign,32).sync)).status==-9 && driver.pagingWaits==before);
+        auto hardware=encoded(HwQueueDesc{0,4,0,0});hardware.resize(hardware.size()+4);
+        const auto ownQueue=session->dispatch(inner(Op::CreateHwQueue,3,hardware));
+        CHECK(!at<Header>(ownQueue).status);
+        const auto progress=at<HwQueueReply>(ownQueue,32).sync;
+        CHECK(at<Header>(wait(progress)).status==(grouped ? 0 : -9));
+        if(grouped) CHECK(driver.hardwareSyncs.count(driver.waitedPagingSync));
+        const auto foreignContext=at<Header>(session->dispatch(inner(Op::CreateContext,foreignDevice,context))).handle;
+        const auto foreignQueue=session->dispatch(inner(Op::CreateHwQueue,foreignContext,hardware));
+        const auto count=driver.pagingWaits;
+        CHECK(at<Header>(wait(at<HwQueueReply>(foreignQueue,32).sync)).status==-9 && driver.pagingWaits==count);
+        CHECK(at<Header>(wait(UINT32_MAX)).status==-9 && driver.pagingWaits==count);
+        CHECK(!at<Header>(session->dispatch(inner(Op::DestroyHwQueue,at<Header>(ownQueue).handle))).status);
+        CHECK(at<Header>(wait(progress)).status==-9 && driver.pagingWaits==count);
+        waitContext=at<Header>(session->dispatch(inner(Op::CreateContext,2,encoded(ContextDesc{0,0,8,0,0,0})))).handle;
+        CHECK(waitContext);
+        CHECK(at<Header>(wait(sync)).status==(grouped ? 0 : -9));
+        const auto after=driver.pagingWaits;
+        CHECK(at<Header>(wait(at<PagingReply>(foreign,32).sync)).status==-9 && driver.pagingWaits==after);
+        CHECK(at<Header>(session->dispatch(inner(Op::CreateHwQueue,waitContext,hardware))).status==-95);
+        auto render=encoded(ContextDesc{0,1,0,12,4,0});render.resize(render.size()+4);
+        waitContext=at<Header>(session->dispatch(inner(Op::CreateContext,2,render))).handle;
+        CHECK(at<Header>(wait(sync)).status==-9 && driver.pagingWaits==after);
+    }
+    {
+        NativeMock driver;cg::Runtime owner(driver);Control client{owner};
+        client.control(cg::Operation::Initialize,encoded(cg::Initialization{GuestOpenGlDesktopPresentationCapacity,{}}));
+        for(unsigned n=0;n<2;++n) {
+            const auto id=client.reg();client.call(id,hello());client.call(id,inner(Op::OpenAdapter));client.call(id,inner(Op::CreateDevice,1));
+        }
+        CHECK(owner.objectCount()==4 && driver.devices.size()==2);
+        driver.requireVmStop=driver.globalDevicePhase=true;
+        bool early=false;try { owner.teardownAfterVmExit(false); } catch(const std::exception&) { early=true; }
+        CHECK(early && !driver.destroyed && owner.objectCount()==4);
+        driver.vmStopped=true;
+        CHECK(owner.teardownAfterVmExit(true) && driver.live.empty() && driver.destroyed==4 && !owner.objectCount());
+    }
+    for(unsigned stage=1;stage<=3;++stage) {
+        NativeMock broken;broken.badStage=stage;cg::Runtime owner(broken);Control client{owner};bool threw=false;
+        try { (void)client.control(cg::Operation::Initialize,encoded(cg::Initialization{GuestOpenGlDesktopPresentationCapacity,{}})); } catch(const std::exception&) { threw=true; }
+        CHECK(threw && owner.failed() && owner.dispatch({}).empty() && broken.glCalls==1 && broken.syncCalls==(stage>=2 ? 1u : 0u) && broken.resourceCalls==(stage>=3 ? 1u : 0u));
+    }
+    for(unsigned mutation=0;mutation<3;++mutation) {
+        NativeMock driver;
+        if(mutation==0) driver.caps.vendor=0x8086;
+        if(mutation==1) driver.caps.version=2;
+        if(mutation==2) driver.caps.flags&=~ExpandedVendorCpuCapability;
+        bool threw=false;
+        try { CoordinatedProfiles invalid(driver,GuestOpenGlDesktopPresentationCapacity); } catch(const std::exception&) { threw=true; }
+        CHECK(threw && !driver.glCalls && !driver.syncCalls && !driver.resourceCalls);
+    }
+    {
+        NativeMock broken;broken.badStage=4;cg::Runtime owner(broken);Control client{owner};bool threw=false;
+        try { client.control(cg::Operation::Initialize,encoded(cg::Initialization{GuestOpenGlDesktopPresentationCapacity,{}})); } catch(const std::exception&) { threw=true; }
+        CHECK(threw && owner.failed() && broken.objectCalls==1 && !broken.syncCalls && !broken.resourceCalls);
+    }
+    {
+        NativeMock driver,other;CoordinatedProfiles group(driver,GuestOpenGlDesktopPresentationCapacity);bool wrong=false;
+        try { Session invalid(other,group); } catch(const std::exception&) { wrong=true; }CHECK(wrong && !other.calls);
+        Session session(driver,group);CHECK(!at<Header>(session.dispatch(hello())).status);
+        CHECK(at<Header>(session.dispatch(inner(Op::BeginStreaming))).status==-95);
+        CHECK(at<Header>(session.dispatch(inner(Op::BeginOpenGl,0,encoded(std::uint32_t{5})))).status==-95);
+        ++driver.caps.device;CHECK(at<Header>(session.dispatch(hello())).status==-95);
+    }
+    for(unsigned mutation=0;mutation<7;++mutation) {
+        NativeMock driver;cg::Runtime owner(driver);cg::Frame h;h.operation=cg::Operation::Info;h.sequence=1;
+        if(mutation==0) ++h.magic;
+        if(mutation==1) ++h.version;
+        if(mutation==2) ++h.sequence;
+        if(mutation==3) ++h.bytes;
+        if(mutation==4) h.status=-1;
+        if(mutation==5) h.reserved=1;
+        auto packet=encoded(h);if(mutation==6) packet.resize(31);(void)owner.dispatch(packet);
+        CHECK(owner.failed() && !driver.glCalls && owner.dispatch(packet).empty());
+    }
+    std::cout<<"COORDINATOR_CONTROL exactCapacity=true oneNativeNegotiation=true independentSessions=true singlePresentationOwner=true drainingCharged=true partialInitializationFatal=true native=mock gpu=false\n";
+}

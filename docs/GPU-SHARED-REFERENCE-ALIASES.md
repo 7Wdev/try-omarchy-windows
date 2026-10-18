@@ -4,7 +4,10 @@ The actor coordinator now has a trusted Session API for creating an owned
 resource or fence reference in the recipient's namespace. The Windows owner
 duplicates its own NT reference; no Windows handle comes from the guest.
 This is necessary for Hyprland and Quickshell to share GPU resources, but
-**the broker still admits one GPU producer and shared-FD routing is unfinished**.
+the [experimental coordinator](GPU-CLIENT-COORDINATOR.md) now admits independent
+producers and implements authenticated shared-FD routing. The actual Omarchy
+bar now passes [4K NVIDIA shell-buffer interoperability](LIVE-OMARCHY-4K-GPU-SHELL.md).
+Wallpaper, application windows and a complete rendered desktop remain required.
 
 The Session API requires both sharing negotiations, the same native Driver,
 the correct resource/fence type, an owned recipient adapter and a verified

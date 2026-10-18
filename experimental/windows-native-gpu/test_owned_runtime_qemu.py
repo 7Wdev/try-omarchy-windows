@@ -210,6 +210,7 @@ def main():
     parser.add_argument('--driver-consume-shared', action='store_true', help='Opt into native GPU consumption after explicit COMMON/fence handoff')
     parser.add_argument('--driver-consume-shared-process', action='store_true', help='Use an owned separate Windows GPU consumer process')
     parser.add_argument('--driver-native-metadata', action='store_true', help='Enable typed texture allocation with Windows-generated runtime metadata')
+    parser.add_argument('--driver-coordinator', action='store_true', help='Use the explicit privileged multi-client native coordinator in the owned 4K root lab')
     parser.add_argument('--driver-rootfs-readonly',type=pathlib.Path,help='Opt-in real-root boot through two read-only block nodes; private image, no persistent writes')
     parser.add_argument('--driver-present-shared', action='store_true', help='Present consumed guest frames in an owned diagnostic Windows window')
     parser.add_argument('--driver-shared-resources', action='store_true', help='Opt into bounded shareable NVIDIA resource creation and native import probing')
@@ -371,6 +372,7 @@ def main():
                              (['--driver-consume-shared-process'] if args.driver_consume_shared_process else []) +
                              (['--driver-present-shared'] if args.driver_present_shared else []) +
                              (['--driver-native-metadata'] if args.driver_native_metadata else []) +
+                             (['--driver-coordinator'] if args.driver_coordinator else []) +
                              (['--cpu-store-test'] if args.cpu_store_test else []) + (['--cpu-eof-test'] if args.cpu_eof_test else []) +
                              (['--cpu-span-eof-test'] if args.cpu_span_eof_test else []) +
                              (['--hwqueue-eof-test'] if args.hwqueue_eof_test else []) +
@@ -419,7 +421,7 @@ def main():
     reader.start(); error_reader.start()
     try:
         try:
-            owner.wait(timeout=210 if args.runtime_workload == 'native-stream' else 110)
+            owner.wait(timeout=210 if args.runtime_workload == 'native-stream' else 150 if args.driver_coordinator else 110)
         except subprocess.TimeoutExpired:
             # The retained handle cannot target a reused PID. Stop and reap
             # QEMU first, while the owner still retains the native pages.

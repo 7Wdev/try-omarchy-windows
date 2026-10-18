@@ -3,6 +3,7 @@
 #pragma once
 #include "guest_broker_peer.h"
 #include "driver_wire.h"
+#include "driver_coordinator.h"
 #include "guest-kernel/wddm_aperture.h"
 #include <cstdlib>
 #include <memory>
@@ -132,6 +133,14 @@ public:
         const auto value=decode<wddm_aperture_caps>(reply.payload);
         if (!reply.fds.empty() || !wddm_aperture_valid_caps(value)) {
             disconnect(); failed(EPROTO,"Invalid kernel capacity receipt");
+        }
+        return value;
+    }
+    driver_bridge::coordinator::Info coordinatedProfile() {
+        auto reply=request(Operation::CoordinatedProfile);
+        const auto value=decode<driver_bridge::coordinator::Info>(reply.payload);
+        if(!reply.fds.empty() || !driver_bridge::coordinator::validInfo(value)) {
+            disconnect();failed(EPROTO,"Invalid coordinated native profile");
         }
         return value;
     }

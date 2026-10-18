@@ -1,16 +1,23 @@
 # NVIDIA backend progress
 
-Updated 2026-10-16. **4 of 8 verification stages demonstrated.** This is a
+Updated 2026-10-18. **4 of 8 verification stages demonstrated.** This is a
 checklist count, not 50% of engineering effort or a product-readiness estimate.
 The largest integration tasks are still ahead.
+
+[First 4K GPU shell content](LIVE-OMARCHY-4K-GPU-SHELL.md): two fresh guests now
+show Omarchy's actual bar, rendered by Quickshell on NVIDIA and imported into
+Hyprland through real resource FDs. **Wallpaper and application windows remain
+required and missing.** The first capture is incomplete; later frames pass
+pixel audits. Some mappings release only after VM exit, so recovery and desktop
+acceptance remain open. Counts stay 4/8 stages and 0/4 desktop gates.
 
 [Normal-image boot groundwork](LIVE-NORMAL-OMARCHY-ROOT-BOOT.md) passes two fresh
 QEMU/WHPX boots of the real Omarchy 4.0.4 root image. Its normal systemd 262
 starts with a read-only base and a bounded RAM overlay, then powers off cleanly;
 full before/after image hashes match. A missing-disk control fails before the
 root switch. This proves the OS boot prerequisite only. Connecting the NVIDIA
-backend to the normal Lua/UWSM session and supporting separate Hyprland and
-Quickshell GPU clients are the next integration work. Counts stay 4/8 and 0/4.
+backend to the normal Lua/UWSM session and completing wallpaper, application windows and the lifetimes of separate Hyprland
+and Quickshell GPU clients are the next integration work. Counts stay 4/8 and 0/4.
 
 [A real Wayland scene](LIVE-HYPRLAND-WAYLAND-SCENE.md) now passes two fresh
 300-frame runs at 640×360: readable fonts, an actual Foot terminal and changing

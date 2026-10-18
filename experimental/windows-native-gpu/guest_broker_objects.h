@@ -115,6 +115,16 @@ class ObjectStore {
         return found->second;
     }
 public:
+    std::vector<std::uint8_t> coordinatedProfile() const { return {}; }
+    bool multiClient() const { return false; }
+    // Only the privileged coordinator may add an independently duplicated
+    // recipient NT reference after resolving a real kernel capability FD.
+    void retainAlias(ObjectRef ref) {
+        require(ref.ticket && ref.cookie && (ref.kind==WDDM_OBJECT_SYNC || ref.kind==WDDM_OBJECT_RESOURCE),EPROTO,"Invalid recipient alias receipt");
+        const auto count=std::count_if(entries.begin(),entries.end(),[&](const auto& item){return item.second.ref.kind==ref.kind;});
+        require(entries.size()<32 && count<16 && !entries.count(ref.ticket),EPROTO,"Recipient alias identity or budget collision");
+        entries.emplace(ref.ticket,Entry{ref,State::Bound,0});
+    }
     template<class Authority> void authorize(const std::vector<std::uint8_t>& packet,const std::vector<Fd>& fds,Authority& kernel) {
         using namespace driver_bridge;
         const auto h=at<Header>(packet,0); const auto op=static_cast<Op>(h.type);
@@ -165,6 +175,7 @@ public:
                 EPROTO,"Kernel capability does not match retained native reference");
         ++resolved; return ref;
     }
+    template<class Authority> void validate(int fd,std::uint32_t kind,Authority& kernel) { (void)resolve(fd,kind,kernel); }
     template<class Authority> ObjectRef reap(Authority& kernel) {
         const auto ref=kernel.reap();
         if (!ref.ticket) { require(!ref.kind && !ref.cookie,EPROTO,"Empty capability reap mismatch"); return {}; }

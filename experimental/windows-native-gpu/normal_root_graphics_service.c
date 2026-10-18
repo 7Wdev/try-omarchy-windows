@@ -5,6 +5,7 @@
 #include "runtime_guest_init.c"
 #undef main
 #include <pwd.h>
+#include <stdint.h>
 
 int main(void) {
     if(getpid()==1 || getuid() || geteuid() || access("/opt/wddm-root/normal-root-graphics",R_OK)) return 125;
@@ -28,6 +29,7 @@ int main(void) {
     for(unsigned tick=0;tick<200 && access(port,F_OK);++tick) usleep(50000);
     if(chmod(port,0600)) { perror("native port permissions");return 125; }
     int result=125;
+    pid_t shell_trace=-1;
     const int aperture=broker_peer_start() ? -1 : kernel_aperture_start();
     const int render=aperture>0 ? native_render_start() : -1;
     const pid_t broker=aperture>0 && render>0 ? graphics_broker_start_as(port,uid,gid) : -1;
@@ -67,17 +69,32 @@ int main(void) {
                setenv("WDDM_BRIDGE_DESKTOP_SPARSE_PROBE","1",1)) _exit(125);
             if(desktop && !access("/opt/wddm-root/desktop-presentation-probe",R_OK) &&
                setenv("WDDM_BRIDGE_DESKTOP_PRESENTATION_PROBE","1",1)) _exit(125);
+            if(desktop && !access("/opt/wddm-root/desktop-coordinator-probe",R_OK)) {
+                if(setenv("WDDM_BRIDGE_ACTOR_PROFILE","10",1) || setenv("QSG_RHI_BACKEND","opengl",1) ||
+                   setenv("QSG_INFO","1",1)) _exit(125);
+            }
             if(desktop && !access("/opt/wddm-root/desktop-large-map-probe",R_OK) &&
                setenv("WDDM_BRIDGE_DESKTOP_LARGE_MAP_PROBE","1",1)) _exit(125);
             for(unsigned index=0;index<sizeof(variables)/sizeof(variables[0]);++index)
                 if(setenv(variables[index][0],variables[index][1],1)) _exit(125);
+            if(!access("/opt/wddm-root/desktop-coordinator-probe",R_OK) && unsetenv("EGL_PLATFORM")) _exit(125);
             if(graphics_client_drop_as(port,uid,gid)) { perror("normal graphics privilege drop");_exit(126); }
             execl("/guest-probe","/guest-probe",(char*)NULL);perror("normal graphics compositor exec");_exit(127);
         }
         if(child>0) {
+            if(graphics_primary_writer>=0) {
+                const uint64_t primary=(uint64_t)child;
+                const ssize_t written=write(graphics_primary_writer,&primary,sizeof primary);
+                close(graphics_primary_writer);graphics_primary_writer=-1;
+                if(written!=sizeof primary) { kill(child,SIGKILL);waitpid(child,NULL,0);goto cleanup; }
+                shell_trace=fork();
+                if(!shell_trace) {
+                    execl("/usr/bin/journalctl","journalctl","-b","-t","omarchy-shell","--no-pager","-f","-n","100",(char*)NULL);_exit(127);
+                }
+            }
             // Full-resolution initialization + explicit cleanup must fit a
             // separately bounded diagnostic window. Older probes keep 45 s.
-            const unsigned deadline=access("/opt/wddm-root/desktop-presentation-probe",R_OK)==0 ? 90u : 45u;
+            const unsigned deadline=access("/opt/wddm-root/desktop-coordinator-probe",R_OK)==0 ? 120u : access("/opt/wddm-root/desktop-presentation-probe",R_OK)==0 ? 90u : 45u;
             printf("NORMAL_ROOT_GRAPHICS_SUPERVISION deadlineSeconds=%u\n",deadline);
             struct sigaction action={0};action.sa_handler=timeout_handler;sigaction(SIGALRM,&action,NULL);alarm(deadline);
             int status=0;
@@ -98,6 +115,15 @@ int main(void) {
         }
     }
 cleanup:
+    if(shell_trace>0) { kill(shell_trace,SIGTERM);waitpid(shell_trace,NULL,0); }
+    if(desktop && !access("/opt/wddm-root/desktop-coordinator-probe",R_OK)) {
+        const pid_t stop=fork();
+        if(!stop) { execl("/usr/bin/systemctl","systemctl","stop","user@1000.service",(char*)NULL);_exit(127); }
+        int status=0;
+        const int stopped=stop>0 && waitpid(stop,&status,0)==stop && WIFEXITED(status) && !WEXITSTATUS(status);
+        if(!stopped) result=125;
+        printf("NORMAL_ROOT_COORDINATOR_USER_STOP ordinaryUserManagerStopped=%s ownedGuestOnly=true\n",stopped ? "true" : "false");
+    }
     if(desktop) {
         const pid_t journal=fork();
         if(!journal) { execl("/usr/bin/journalctl","journalctl","-b","-t","omarchy-shell","--no-pager","-n","100",(char*)NULL);_exit(127); }

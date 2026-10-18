@@ -1,64 +1,100 @@
-# Independent GPU-client coordinator: actor routing foundation
+# Experimental GPU-client coordinator
 
-The actual 4K compositor now has [clean memory admission and shutdown](LIVE-NORMAL-OMARCHY-4K-PRESENTATION-BUDGET.md).
-Quickshell still cannot initialize its GPU context: the authenticated broker
-currently accepts one producer and closes its listener. Supporting another
-producer requires owned native sessions and shared capability lifetimes.
-The [recipient-owned native alias API](GPU-SHARED-REFERENCE-ALIASES.md) now
-passes Session controls and separate NVIDIA NT-reference lifetime probes;
-authenticated cross-client FD routing is still pending.
+The Windows owner and guest root broker now admit independent GPU clients in
+the owned, read-only Omarchy diagnostic. This requires explicit
+`--driver-coordinator` opt-in. The normal launcher keeps its existing backend.
+Counts remain **4/8 verification stages and 0/4 desktop acceptance gates**.
 
-`driver_actor_router.h` adds a coordinator building block around the existing
-real `driver_bridge::Session` validator. A trusted coordinator registers up to
-four distinct sessions and receives monotonic actor IDs that are never reused.
-The new, separate 40-byte envelope carries actor, sequence, operation and exact
-inner-packet extent. The existing 16-byte driver header remains unchanged, and
-all 4,096 inner bytes remain available. Malformed/replayed framing poisons the
-coordinator stream before native dispatch; an unknown retired actor is rejected.
+Real runs identify Hyprland, Xwayland, the desktop portal and Quickshell as
+separate authenticated clients. The [isolated two-client fixture](LIVE-OMARCHY-4K-GPU-SHELL.md)
+now renders the actual Omarchy bar at 3840x2160 through Quickshell's
+**D3D12 (NVIDIA GeForce RTX 5090 Laptop GPU), Mesa 26.0.8** OpenGL renderer.
+Wallpaper and application windows remain missing. The first capture is
+incompletely populated; later captures show verified bar glyphs. This does not
+establish the full desktop or close a desktop acceptance gate.
 
-Each actor retains its own wire handles, negotiated session state and request
-counter. A numeric handle collision resolves within the selected session;
-nested foreign parents cannot reach the native Driver. Exhausting one actor's
-request budget does not reset it through Hello or consume another's budget.
-The shared native Driver remains responsible for aggregate physical resources.
-This router does **not** establish that current GPU budgets fit two renderers.
+## Protocol and ownership
 
-Disconnect marks an actor draining and refuses further client calls. It retains
-the session and its live objects and still charges its actor slot. Empty close
-can detach it; disconnect cannot destroy GPU memory that the VM may still map.
-The router borrows sessions: its enclosing owner must retain them and the
-Driver, prove VM exit when abort cleanup requires it, and only then destroy
-nonempty sessions. The portable control checks this ordering using an explicit
-mock VM-stop state; it is not evidence of actual native abort cancellation.
+One native Driver initializes OpenGL and resource/fence sharing once. Each
+Session validates its own negotiation against that immutable agreement.
+Only the compositor can present. Repeated negotiation cannot reset global
+budgets or another client's handles.
 
-Strict GCC and MSVC controls exercise two actual Session validators against a
-mock Driver, colliding IDs, foreign parent rejection, continued use by the live
-actor after another disconnects, retained resources, bounded actor slots,
-non-reused IDs, independent 10,000-call budgets and malformed/replayed envelopes.
-These controls are wired into the native build and portable CI.
+The root supervisor supplies the compositor PID through an inherited root
+pipe. Ordinary children lose its writer before dropping privileges. The broker
+pins peers with kernel pidfds, checks packet credentials and stamps actors
+itself. Clients cannot select actor IDs or send coordinator control packets.
+Metadata-only connections allocate no native actor. Completed connection slots
+are reused; draining native actors remain charged until safe release.
 
-**Runtime integration remains disabled.** The Windows owner does not accept
-this envelope yet; the broker still admits one GPU producer. No second NVIDIA
-client, Quickshell GPU frame, shared-FD interoperability or full desktop is
-claimed by these controls. The existing 4K hardware evidence remains pinned to
-its original executable/source digests.
+The original 16-byte driver header and all 4,096 inner bytes stay unchanged.
+Actor calls have a separate 40-byte envelope. Coordinator protocol version 4
+uses a 32-byte control header, exact 80-byte initialization and 176-byte reply.
+Malformed framing poisons the transport; control and actor sequences are
+separately monotonic and serialized on the one controller connection.
 
-The next implementation must:
+Global kernel capability tickets retain producer/local-ticket/kind/cookie
+lineage. FD inspection validates without minting aliases. Resolution creates
+an independently owned recipient NT reference after actual FD, device and
+physical-GPU checks. Final kernel FD release drives reaping; EOF cannot free
+memory which another process or pending GPU command may still use.
 
-1. Register native actors from authenticated broker peers/pidfds. The broker
-   must stamp the actor itself; a client-provided actor ID grants no authority.
-2. Coordinate one exact GPU/profile agreement and aggregate native resource
-   admission. The current native `beginOpenGl` rejects a second global session;
-   forwarding another Hello/BeginOpenGl cannot reset the first actor's state.
-3. Allocate globally unique kernel capability tickets and retain their
-   actor/local-ticket/native-reference lineage. Current per-session wire IDs
-   collide, so separate ObjectStores cannot safely resolve foreign FDs alone.
-   Import must create an owned alias in the recipient's session after resolving
-   the actual capability FD, with its full kind/cookie/generation checks.
-4. Keep producer resources alive while recipient buffer/sync FDs exist, and
-   reap them only after kernel-confirmed final release. Handle abnormal producer
-   exit and pending GPU work without invented fence retirement or premature
-   backing-memory release. The earlier version-8 abort control remains open.
-5. Verify both Hyprland and Quickshell on NVIDIA at 3840×2160, then normal
-   launcher/UWSM, input/display, long-run stability, application APIs and matched
-   performance. Desktop acceptance remains **0/4**.
+## Explicit aggregate admission
+
+| Resource | Coordinator aggregate limit |
+| --- | --- |
+| Native actors, including retained actors | 4 |
+| Hardware queues / sync objects | 32 / 384 |
+| GPU address reservations | 256 ranges / 64 GiB virtual address space |
+| CPU mapping bytes / virtual slots | 192 MiB / 512 |
+| Mapped GPU aliases / reported GPU-usage guard | 1 GiB each |
+| Physical fence aperture | 256 pages; insufficient for the four-client run |
+| Kernel view leases | 768 with the separate immutable module option |
+
+Per-client OpenGL profiles 1-10 retain their contracts, including 16 queues,
+192 sync objects, 64 reservations and 16 GiB virtual address space in v10.
+Virtual reservations do not allocate that amount of VRAM. CPU and mapped or
+reported GPU byte budgets are shared, not multiplied. Reported usage remains
+a guard, not a hard physical VRAM quota.
+
+A separate kernel discovery ioctl proves the 768-view option; INFO/CAPS stay
+unchanged. The module option requires the existing CPU/sparse options and exact
+512-CPU/256-fence hubs. Defaults retain their 256/512-view limits. The root
+controller queries the actual kernel before initializing the native group.
+
+## Retained failures and current scope
+
+Hardware exposed successive limits: the old 60-second service window,
+aggregate hardware queues, the 512-view kernel count, a 3 GiB request crossing
+the 16 GiB address-space guard, and finally the 256-page fence aperture.
+The four-client workload remains failed. The isolated first-frame fixture
+disables Xwayland and portals only in its disposable RAM overlay and selects
+no software renderer; it does not establish those disabled services work.
+
+Cleanup now proves VM exit and executes each phase across every actor before
+advancing: queues, other objects, reservations, adapters. A sibling queue
+previously prevented reservation release permanently. Failed releases remain
+charged and reported. General GPU abort cancellation is still unfinished.
+
+The coordinator accepts valid, same-device borrowed paging and queue-progress
+fences for GPU waits, including synchronization-only contexts. Shim and Session
+validate ownership; the native owner submits real WDDM waits and reads real
+fence words. Pending waits protect the owning queues from destruction. Actual
+runs retire 36/33 borrowed waits without CPU-invented completion values.
+
+A separate default-off render-node option admits up to 256 live opaque GEM
+imports for the aperture exporter's authenticated native DMA-BUFs. This supplies
+Hyprland's real PRIME preflight without guest-memory/DMA attachment or CPU maps.
+The kernel holds buffer references through handle and file lifetime. Actual
+guest controls pass 980 checks before rendering. Cross-process resource aliases
+and the visible Omarchy bar now pass on physical NVIDIA hardware.
+
+Strict GCC/MSVC controls cover cached profiles, malformed capacities,
+independent namespaces, presentation ownership, draining actors, fatal partial
+initialization, phased cleanup and legacy/foreign-device paging rejection.
+Real Unix FD tests cover duplicate lifetime, producer exit, colliding tickets,
+forged cookies, caching and metadata-only inspection. Native calls in these
+controls are mocks, explicitly labeled in their output.
+
+Normal launcher/UWSM, input, reliable display, repeatability, long runs,
+CUDA/Vulkan/video support and matched-native performance remain open.

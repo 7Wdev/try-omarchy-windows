@@ -72,9 +72,14 @@ public:
             (value.allocation_slots & (value.allocation_slots - 1)) ||
             value.cpu_slot_bytes != 1048576 || value.fence_bytes != value.fence_slots * 4096ull ||
             value.allocation_bytes != value.allocation_slots * value.cpu_slot_bytes ||
-            value.active_leases > wddm_aperture_lease_limit(value.fence_slots) || value.active_cpu_bytes > WDDM_APERTURE_DESKTOP_CPU_LIMIT ||
+            value.active_cpu_bytes > WDDM_APERTURE_DESKTOP_CPU_LIMIT ||
             (value.active_cpu_bytes>WDDM_APERTURE_CPU_LIMIT && value.active_cpu_bytes>capacity().cpu_byte_limit))
             throw std::runtime_error("Kernel aperture layout mismatch");
+        if(value.active_leases>wddm_aperture_lease_limit(value.fence_slots)) {
+            if(!guest_broker::clientEnabled() || !std::getenv("WDDM_BRIDGE_ACTOR_PROFILE") ||
+               value.active_leases>guest_broker::client().coordinatedProfile().objects.leaseLimit)
+                throw std::runtime_error("Kernel coordinated lease agreement missing");
+        }
         if (value.allocation_slots==512 && (value.fence_slots!=256 || capacity().flags!=(WDDM_APERTURE_DESKTOP_CPU_ENABLED|WDDM_APERTURE_SPARSE_ENABLED)))
             throw std::runtime_error("Sparse kernel layout lacks exact capacity opt-in");
         return value;

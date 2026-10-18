@@ -16,6 +16,13 @@ class Kernel {
     }
 public:
     void close() { control=Fd(); }
+    wddm_aperture_coordinator_caps coordinatedCapacity() {
+        open();wddm_aperture_coordinator_caps value{};value.version=1;
+        if(syscall(SYS_ioctl,control.get(),WDDM_APERTURE_COORDINATOR_CAPS,&value))
+            throw std::system_error(errno,std::generic_category(),"Broker coordinated kernel capacity");
+        if(!wddm_aperture_valid_coordinator_caps(value)) throw std::system_error(EPROTO,std::generic_category(),"Broker coordinated kernel receipt");
+        return value;
+    }
     wddm_aperture_caps capacity() {
         open(); wddm_aperture_caps value{}; value.version=1;
         if (syscall(SYS_ioctl,control.get(),WDDM_APERTURE_CAPS,&value))
@@ -30,9 +37,14 @@ public:
         if (value.version != WDDM_APERTURE_VERSION || !driver_bridge::validFenceSlots(value.fence_slots) ||
             !driver_bridge::validVendorCpuSlots(value.allocation_slots,true) || value.cpu_slot_bytes != 1048576 ||
             value.fence_bytes != value.fence_slots*4096ull || value.allocation_bytes != value.allocation_slots*1048576ull ||
-            value.active_leases > wddm_aperture_lease_limit(value.fence_slots) || value.active_cpu_bytes > WDDM_APERTURE_DESKTOP_CPU_LIMIT ||
+            value.active_cpu_bytes > WDDM_APERTURE_DESKTOP_CPU_LIMIT ||
             (value.active_cpu_bytes>WDDM_APERTURE_CPU_LIMIT && value.active_cpu_bytes>capacity().cpu_byte_limit))
             throw std::system_error(EPROTO,std::generic_category(),"Broker kernel layout mismatch");
+        if(value.active_leases>wddm_aperture_lease_limit(value.fence_slots)) {
+            const auto leases=coordinatedCapacity();
+            if(!leases.enabled || value.fence_slots!=256 || value.allocation_slots!=512 || value.active_leases>leases.lease_limit)
+                throw std::system_error(EPROTO,std::generic_category(),"Broker coordinated kernel layout mismatch");
+        }
         if (value.allocation_slots==512 && (value.fence_slots!=256 || capacity().flags!=(WDDM_APERTURE_DESKTOP_CPU_ENABLED|WDDM_APERTURE_SPARSE_ENABLED)))
             throw std::system_error(EPROTO,std::generic_category(),"Sparse kernel layout lacks exact capacity opt-in");
         return value;
@@ -82,6 +94,7 @@ public:
 };
 class Port {
     const std::string path;
+    const std::size_t packetLimit;
     Fd descriptor;
     void transfer(void* pointer, std::size_t bytes, bool reading,
                   std::chrono::steady_clock::time_point deadline) {
@@ -101,8 +114,12 @@ class Port {
         }
     }
 public:
-    explicit Port(std::string value):path(std::move(value)) {}
+    explicit Port(std::string value,std::size_t limit=native_gpu::MaxPacket):path(std::move(value)),packetLimit(limit) {
+        if(limit<native_gpu::MaxPacket || limit>native_gpu::MaxPacket+40) throw std::runtime_error("Invalid native port limit");
+    }
     std::vector<std::uint8_t> exchange(const std::vector<std::uint8_t>& packet) {
+        if(packet.size()<sizeof(driver_bridge::Header) || packet.size()>packetLimit)
+            throw std::system_error(EPROTO,std::generic_category(),"Broker native request bounds");
         if (descriptor.get() < 0) {
             descriptor=Fd(static_cast<int>(syscall(SYS_openat,AT_FDCWD,path.c_str(),O_RDWR|O_CLOEXEC|O_NONBLOCK,0)));
             if (descriptor.get() < 0) throw std::system_error(errno,std::generic_category(),"Broker native port open");
@@ -112,7 +129,7 @@ public:
         transfer(&bytes,sizeof(bytes),false,deadline);
         transfer(const_cast<std::uint8_t*>(packet.data()),packet.size(),false,deadline);
         transfer(&bytes,sizeof(bytes),true,deadline);
-        if (bytes < sizeof(driver_bridge::Header) || bytes > native_gpu::MaxPacket)
+        if (bytes < sizeof(driver_bridge::Header) || bytes > packetLimit)
             throw std::system_error(EPROTO,std::generic_category(),"Broker native reply bounds");
         std::vector<std::uint8_t> reply(bytes); transfer(reply.data(),reply.size(),true,deadline); return reply;
     }
@@ -138,9 +155,8 @@ template<class Authority> void verifyCpuCapacityProfile(const std::vector<std::u
         layout.allocation_slots!=wanted.cpuSlots || layout.fence_slots!=wanted.fenceSlots)
         throw std::system_error(EPROTO,std::generic_category(),"Kernel/profile CPU capacity mismatch");
 }
-template<class Native,class Authority,class ObjectAuthority> int serve(Peer& peer, Native& native, Authority& kernel, ObjectAuthority& objectKernel) {
+template<class Native,class Authority,class ObjectAuthority,class Objects> int serveWithObjects(Peer& peer, Native& native, Authority& kernel, ObjectAuthority& objectKernel,Objects& objects) {
     Views views;
-    ObjectStore objects;
     std::uint64_t calls=0,created=0,released=0,denied=0,recoverable=0;
     bool failed=false;
     try {
@@ -198,20 +214,20 @@ template<class Native,class Authority,class ObjectAuthority> int serve(Peer& pee
                     if(message.fds.size()!=1 || !message.payload.empty()) throw std::system_error(EPROTO,std::generic_category(),"Sync-file resolution requires exactly one FD");
                     expectedObjectError=true;
                     auto result=objectKernel.resolveSyncFile(message.fds[0].get());
-                    (void)objects.resolve(result.first.get(),WDDM_OBJECT_SYNC,objectKernel);
+                    objects.validate(result.first.get(),WDDM_OBJECT_SYNC,objectKernel);
                     peer.send(operation,message.frame.sequence,encode(result.second), {result.first.get()});
                 } else if (operation == Operation::ExportNativeBuffer) {
                     if(message.fds.size()!=1) throw std::system_error(EPROTO,std::generic_category(),"Native buffer export requires one resource FD");
                     const auto bytes=decode<std::uint64_t>(message.payload); expectedObjectError=true;
                     if(!bytes || bytes>WDDM_NATIVE_BUFFER_MAX_BYTES) throw std::system_error(EINVAL,std::generic_category(),"Invalid native buffer logical extent");
-                    (void)objects.resolve(message.fds[0].get(),WDDM_OBJECT_RESOURCE,objectKernel);
+                    objects.validate(message.fds[0].get(),WDDM_OBJECT_RESOURCE,objectKernel);
                     auto fd=objectKernel.nativeBuffer(message.fds[0].get(),bytes);
                     peer.send(operation,message.frame.sequence,{}, {fd.get()});
                 } else if (operation == Operation::NativeBufferInfo) {
                     if(message.fds.size()!=1 || !message.payload.empty()) throw std::system_error(EPROTO,std::generic_category(),"Native buffer info requires exactly one FD");
                     expectedObjectError=true;
                     const auto bytes=objectKernel.nativeBufferInfo(message.fds[0].get());
-                    (void)objects.resolve(message.fds[0].get(),WDDM_OBJECT_RESOURCE,objectKernel);
+                    objects.validate(message.fds[0].get(),WDDM_OBJECT_RESOURCE,objectKernel);
                     peer.send(operation,message.frame.sequence,encode(bytes));
                 } else if (operation == Operation::NativeBufferStats) {
                     if(!message.payload.empty()) throw std::system_error(EPROTO,std::generic_category(),"Native buffer stats payload");
@@ -222,6 +238,11 @@ template<class Native,class Authority,class ObjectAuthority> int serve(Peer& pee
                 } else if (operation == Operation::ApertureCaps) {
                     if (!message.payload.empty()) throw std::system_error(EPROTO,std::generic_category(),"Aperture caps payload");
                     peer.send(operation,message.frame.sequence,encode(kernel.capacity()));
+                } else if (operation == Operation::CoordinatedProfile) {
+                    if(!message.payload.empty()) throw std::system_error(EPROTO,std::generic_category(),"Coordinated profile payload");
+                    const auto value=objects.coordinatedProfile();
+                    if(value.empty()) throw std::system_error(EOPNOTSUPP,std::generic_category(),"Coordinated profile unavailable");
+                    peer.send(operation,message.frame.sequence,value);
                 } else if (operation == Operation::ObjectInfo) {
                     if (!message.payload.empty()) throw std::system_error(EPROTO,std::generic_category(),"Object info payload");
                     peer.send(operation,message.frame.sequence,encode(objectKernel.info()));
@@ -283,10 +304,13 @@ template<class Native,class Authority,class ObjectAuthority> int serve(Peer& pee
     }
     objects.report();
     if (recoverable) std::fprintf(stderr,"BROKER_OBJECT recoverableErrors=%llu\n",static_cast<unsigned long long>(recoverable));
-    std::fprintf(stderr,"BROKER_ROUTE_EXIT processExited=true retainedViews=%zu nativeCalls=%llu viewsCreated=%llu viewsReleased=%llu rejected=%llu multiClient=false\n",
+    std::fprintf(stderr,"BROKER_ROUTE_EXIT processExited=true retainedViews=%zu nativeCalls=%llu viewsCreated=%llu viewsReleased=%llu rejected=%llu multiClient=%s\n",
                  retained,static_cast<unsigned long long>(calls),static_cast<unsigned long long>(created),
-                 static_cast<unsigned long long>(released),static_cast<unsigned long long>(denied));
+                 static_cast<unsigned long long>(released),static_cast<unsigned long long>(denied),objects.multiClient() ? "true" : "false");
     return failed ? 1 : 0;
+}
+template<class Native,class Authority,class ObjectAuthority> int serve(Peer& peer,Native& native,Authority& kernel,ObjectAuthority& objectKernel) {
+    ObjectStore objects;return serveWithObjects(peer,native,kernel,objectKernel,objects);
 }
 template<class Native,class Authority> int serve(Peer& peer, Native& native, Authority& kernel) {
     KernelObjects objectKernel;

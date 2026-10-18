@@ -113,6 +113,19 @@ static void graphics_payload(void) {
         "ExecStart=/opt/wddm-root/bin/normal-root-graphics-service\n"
         "ExecStopPost=/bin/sh -c 'echo NORMAL_ROOT_GRAPHICS_STOP serviceResult=$SERVICE_RESULT exitCode=$EXIT_CODE exitStatus=$EXIT_STATUS; /usr/bin/systemctl --no-block poweroff'\n"
         "StandardInput=null\nStandardOutput=tty\nStandardError=tty\nTTYPath=/dev/ttyS0\nTTYReset=no\nTTYVHangup=no\nRuntimeMaxSec=60\nTimeoutStopSec=10\n",0644);
+    if(!access("/newroot/opt/wddm-root/desktop-coordinator-probe",F_OK)) {
+        directory("/newroot/etc/systemd/system/omarchy-wddm-normal-graphics.service.d",0755);
+        write_new("/newroot/etc/systemd/system/omarchy-wddm-normal-graphics.service.d/coordinator.conf",
+            "[Service]\nRuntimeMaxSec=150\nTimeoutStopSec=5\n",0644);
+        directory("/newroot/etc/systemd/system/user@1000.service.d",0755);
+        write_new("/newroot/etc/systemd/system/user@1000.service.d/coordinator.conf","[Service]\nTimeoutStopSec=5\n",0644);
+    }
+    if(!access("/newroot/opt/wddm-root/desktop-shell-gpu-isolation",F_OK)) {
+        directory("/newroot/etc/systemd/user",0755);
+        if(symlink("/dev/null","/newroot/etc/systemd/user/xdg-desktop-portal.service") ||
+           symlink("/dev/null","/newroot/etc/systemd/user/xdg-desktop-portal-hyprland.service")) fail("isolate-shell-gpu-clients");
+        puts("NORMAL_ROOT_SHELL_GPU_ISOLATION xwayland=false portals=false softwareFallback=false ownedRamOverlayOnly=true");
+    }
     if(symlink("../omarchy-wddm-normal-graphics.service","/newroot/etc/systemd/system/multi-user.target.wants/omarchy-wddm-normal-graphics.service")) fail("graphics-service-link");
     printf("NORMAL_ROOT_GRAPHICS_PAYLOAD copiedBytes=%llu ordinaryUid=1000 persistentWrites=false\n",(unsigned long long)copied_bytes);
 }

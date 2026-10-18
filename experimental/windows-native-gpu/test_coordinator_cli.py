@@ -1,0 +1,26 @@
+"""Ungated coordinator invocations must fail before native GPU/VM work."""
+import argparse
+import subprocess
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--bridge', required=True)
+    args = parser.parse_args()
+    cases = [
+        ['--stdio', '--driver-coordinator'],
+        ['--listen', '0', '--driver-coordinator'],
+        ['--run-qemu', 'missing-qemu', 'firmware', 'kernel', 'image', 'log', '--driver-coordinator'],
+        ['--run-qemu', 'missing-qemu', 'firmware', 'kernel', 'image', 'log',
+         '--driver-coordinator', '--driver-native-metadata', '--driver-present-shared'],
+        ['--stdio', '--driver-coordinator', '--driver-coordinator'],
+    ]
+    for command in cases:
+        result = subprocess.run([args.bridge, *command], input=b'', capture_output=True, timeout=10)
+        if result.returncode == 0 or result.stdout or b'ownedQemuPid' in result.stderr or b'nativeTextureMetadata' in result.stderr:
+            raise SystemExit(f'FAIL: coordinator startup guard {command}: {result.returncode}, {result.stderr!r}')
+    print('PASS: 5 coordinator opt-in/duplicate guards reject before GPU/VM work')
+
+
+if __name__ == '__main__':
+    main()

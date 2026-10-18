@@ -419,6 +419,7 @@ inline bool validContext(ContextDesc d) {
 }
 inline bool validContextPriority(std::int32_t priority) { return priority == 0 || priority == 1; }
 inline bool contextCanSignal(std::uint32_t flags) { return flags==8 || flags==16; }
+inline bool contextCanWait(std::uint32_t flags,bool coordinated) { return flags==16 || (coordinated && flags==8); }
 struct Range { std::uint32_t offset; std::uint32_t size; };
 static_assert(sizeof(Range) == 8, "fixed transfer layout");
 struct GuestRange { std::uint64_t offset; std::uint32_t size; std::uint32_t reserved; };
@@ -452,8 +453,19 @@ static_assert(sizeof(PagingReply) == 16, "fixed guest paging reply");
 // this fixed payload; Header.status is a negative errno for protocol errors.
 struct Reply { std::int32_t ntstatus; std::uint32_t reserved; std::uint64_t value; };
 static_assert(sizeof(Reply) == 16, "fixed reply layout");
+struct CoordinatedObjectCapacity {
+    std::uint32_t version=3,hwQueues=32,syncObjects=384,leaseLimit=768;
+    std::uint64_t reservedGpuBytes=64ull*1024*1024*1024;
+    std::uint32_t reservations=256,reserved=0;
+};
+static_assert(sizeof(CoordinatedObjectCapacity)==32,"Fixed coordinated object/address-space capacity");
+inline bool validCoordinatedObjectCapacity(CoordinatedObjectCapacity value) {
+    return value.version==3 && value.hwQueues==32 && value.syncObjects==384 && value.leaseLimit==768 &&
+        value.reservedGpuBytes==64ull*1024*1024*1024 && value.reservations==256 && !value.reserved;
+}
 class Driver {
 public:
+    virtual bool beginCoordinatedObjects(CoordinatedObjectCapacity) { return false; }
     virtual ~Driver() = default;
     virtual native_gpu::Capabilities capabilities() const = 0;
     virtual StreamProfile beginStreaming() { return {}; }
@@ -578,6 +590,39 @@ public:
     virtual Result queryResidency(std::uint32_t allocation) = 0;
     virtual Result destroy(Kind kind, std::uint32_t handle) = 0;
 };
+// Immutable, owner-created agreement shared by all actor Sessions. It seeds
+// native state once; client negotiation only validates/reads the cached data.
+class CoordinatedProfiles {
+    friend class Session;
+    Driver* owner;
+    native_gpu::Capabilities caps{};
+    OpenGlProfile gl{};
+    SyncSharingProfile sync{};
+    ResourceSharingProfile resource{};
+public:
+    CoordinatedProfiles(Driver& driver,OpenGlDesktopPresentationCapacity capacity,CoordinatedObjectCapacity objectCapacity={}) : owner(&driver) {
+        constexpr auto required=AsyncHwSubmitCapability|SyncCapability|GpuReservationCapability|VendorMemoryManagementCapability|
+            ExpandedVendorGpuCapability|ExpandedVendorCpuCapability|VendorAllocationCapability|SharedVendorResourceCapability|NativeSharedTextureCapability;
+        caps=driver.capabilities();
+        if(!validCoordinatedObjectCapacity(objectCapacity) || !validOpenGlDesktopPresentationCapacity(capacity) || caps.version!=Version || caps.vendor!=0x10de ||
+            (caps.flags&required)!=required) throw std::runtime_error("Invalid coordinated native capacity/capabilities");
+        gl=driver.beginOpenGl(10);
+        if(!validOpenGlDesktopPresentationProfile(gl)) throw std::runtime_error("Coordinated native OpenGL agreement failed");
+        if(!driver.beginCoordinatedObjects(objectCapacity)) throw std::runtime_error("Coordinated native object agreement failed");
+        sync=driver.beginSyncSharing();
+        if(!validSyncSharingProfile(sync)) throw std::runtime_error("Coordinated native fence agreement failed");
+        resource=driver.beginResourceSharing();
+        if(!validResourceSharingProfile(resource)) throw std::runtime_error("Coordinated native resource agreement failed");
+    }
+    CoordinatedProfiles(const CoordinatedProfiles&)=delete;
+    CoordinatedProfiles& operator=(const CoordinatedProfiles&)=delete;
+    CoordinatedProfiles(CoordinatedProfiles&&)=delete;
+    CoordinatedProfiles& operator=(CoordinatedProfiles&&)=delete;
+    native_gpu::Capabilities capabilities() const { return caps; }
+    OpenGlProfile openGl() const { return gl; }
+    SyncSharingProfile syncSharing() const { return sync; }
+    ResourceSharingProfile resourceSharing() const { return resource; }
+};
 class Session {
     struct Object {
         Kind kind; std::uint32_t parent; std::uint32_t nativeHandle; std::uint32_t size;
@@ -601,6 +646,8 @@ class Session {
         std::uint32_t residentReferences = 0;
     };
     Driver& driver;
+    const CoordinatedProfiles* coordinated=nullptr;
+    bool mayPresent=true;
     std::map<std::uint32_t, Object> objects;
     struct Query {
         QueryDesc desc; std::vector<std::uint8_t> data;
@@ -657,6 +704,9 @@ class Session {
     }
 public:
     explicit Session(Driver& d) : driver(d) {}
+    Session(Driver& d,const CoordinatedProfiles& group,bool presentationOwner=false) : driver(d),coordinated(&group),mayPresent(presentationOwner) {
+        if(group.owner!=&d) throw std::runtime_error("Coordinated profile belongs to another native Driver");
+    }
     // Trusted coordinator API, deliberately absent from guest dispatch. The
     // caller must resolve the actual capability FD before choosing the donor.
     // A recipient owns a fresh NT reference, never the donor's closing handle.
@@ -711,6 +761,24 @@ public:
     unsigned requestLimit() const { return openglDesktopNegotiated ? 0 : streamingNegotiated ? GuestStreamProfile.requestLimit : openglCompositorNegotiated ? GuestOpenGlCompositorProfile.requestLimit : 10000; }
     Session(const Session&) = delete;
     Session& operator=(const Session&) = delete;
+    // Trusted owner-only cleanup after proven VM exit. The coordinator runs
+    // each phase across every Session before advancing: another actor's live
+    // hardware queue must not prevent reservation release permanently.
+    void ownerTeardownPhase(unsigned phase) {
+        if(!coordinated || phase>3) throw std::runtime_error("Invalid coordinated teardown phase");
+        if(!phase) queries.clear();
+        auto cursor=objects.end();
+        while(cursor!=objects.begin()) {
+            auto current=std::prev(cursor);const auto kind=current->second.kind;
+            const bool queue=kind==Kind::HwQueue || kind==Kind::HwQueueSync;
+            const bool selected=phase==0 ? queue : phase==1 ? !queue && kind!=Kind::GpuReservation && kind!=Kind::Adapter :
+                                phase==2 ? kind==Kind::GpuReservation : kind==Kind::Adapter;
+            if(!selected) { cursor=current;continue; }
+            const auto result=driver.destroy(kind,current->second.nativeHandle);
+            if(!result.ntstatus && !result.nativeHandle && !result.value) cursor=objects.erase(current);
+            else cursor=current; // Keep failed native ownership charged.
+        }
+    }
     // A disconnect releases child objects before their parents. The Windows
     // worker is also one process per connection, so OS teardown is a backstop.
     ~Session() {
@@ -737,6 +805,7 @@ public:
         Header h{}; std::memcpy(&h, packet.data(), sizeof h);
         if (packet.size() > native_gpu::MaxPacket || h.status || h.padding) return reply(h, -22);
         const auto op = static_cast<Op>(h.type);
+        if(coordinated && !mayPresent && (op==Op::CaptureCompositorResource || op==Op::QueueCompositorFrame)) return reply(h,-13);
         if (op == Op::Hello) {
             if (h.handle || packet.size() != sizeof h + 4) return reply(h, -22);
             if (!objects.empty()) return reply(h, -16);
@@ -755,12 +824,14 @@ public:
             if (version != Version) return reply(h, -93);
             const auto caps = driver.capabilities();
             if (caps.version != Version) return reply(h, -93);
+            if(coordinated && std::memcmp(&caps,&coordinated->caps,sizeof caps)) return reply(h,-95);
             negotiated = true;
             auto out = reply(h, 0); out.resize(sizeof h + sizeof caps);
             std::memcpy(out.data() + sizeof h, &caps, sizeof caps);
             return out;
         }
         if (op == Op::BeginStreaming) {
+            if(coordinated) return reply(h,-95);
             if (!negotiated) return reply(h, -71);
             if (h.handle || packet.size() != sizeof h) return reply(h, -22);
             if (streamingNegotiated || openglNegotiated ||
@@ -807,7 +878,8 @@ public:
             const auto required = AsyncHwSubmitCapability | SyncCapability | GpuReservationCapability | UINT32_C(0x80000000) |
                 (version>=6 ? ExpandedVendorGpuCapability : 0u) | (version>=7 ? ExpandedVendorCpuCapability : 0u);
             if ((driver.capabilities().flags & required) != required) return reply(h, -95);
-            const auto profile = driver.beginOpenGl(version);
+            if(coordinated && version!=coordinated->gl.version) return reply(h,-95);
+            const auto profile = coordinated ? coordinated->gl : driver.beginOpenGl(version);
             if (version == 1 ? !validOpenGlProfile(profile) : version == 2 ? !validOpenGlFenceProfile(profile) : version == 3 ? !validOpenGlCompositorProfile(profile) : version == 4 ? !validOpenGlCompositorRenderProfile(profile) : version == 5 ? !validOpenGlDesktopProfile(profile) : version==6 ? !validOpenGlDesktop4kProfile(profile) : version==7 ? !validOpenGlDesktop4kCpuProfile(profile) : version==8 ? !validOpenGlDesktopSparseProfile(profile) : version==9 ? !validOpenGlDesktopLargeMapProfile(profile) : !validOpenGlDesktopPresentationProfile(profile)) return reply(h, -95);
             openglNegotiated = true;
             openglFenceNegotiated = version >= 2;
@@ -1034,7 +1106,7 @@ public:
             if (!negotiated) return reply(h, -71);
             if (h.handle || packet.size() != sizeof h) return reply(h, -22);
             if (syncSharingNegotiated) return reply(h, -16);
-            const auto profile = driver.beginSyncSharing();
+            const auto profile = coordinated ? coordinated->sync : driver.beginSyncSharing();
             if (!validSyncSharingProfile(profile)) return reply(h, -95);
             auto out = reply(h, 0); const auto start = out.size(); out.resize(start + sizeof profile);
             std::memcpy(out.data() + start, &profile, sizeof profile);
@@ -1052,15 +1124,22 @@ public:
                 packet.size() != sizeof h + sizeof desc + desc.count * sizeof(HwQueueWaitItem)) return reply(h, -22);
             const auto queue = objects.find(h.handle);
             if (queue == objects.end() || queue->second.kind != (contextStream ? Kind::Context : Kind::HwQueue) ||
-                (contextStream && queue->second.contextFlags != 16)) return reply(h, -9);
+                (contextStream && !contextCanWait(queue->second.contextFlags,coordinated))) return reply(h, -9);
             const auto device = contextStream ? queue->second.parent : objects.at(queue->second.parent).parent;
             std::vector<HwQueueWaitItem> items(desc.count);
             std::memcpy(items.data(), packet.data() + sizeof h + sizeof desc, items.size() * sizeof(items[0]));
             for (std::size_t n = 0; n < items.size(); ++n) {
                 const auto sync = objects.find(items[n].sync);
                 if (items[n].reserved || items[n].fence == UINT64_MAX) return reply(h, -22);
-                if (sync == objects.end() || sync->second.kind != Kind::Sync || sync->second.syncType != 5 ||
-                    sync->second.parent != device) return reply(h, -9);
+                if(sync==objects.end()) return reply(h,-9);
+                const bool independent=sync->second.kind==Kind::Sync && sync->second.syncType==5 && sync->second.parent==device;
+                const auto paging=objects.find(sync->second.parent);
+                const bool borrowed=coordinated && sync->second.kind==Kind::PagingSync && paging!=objects.end() &&
+                    paging->second.kind==Kind::PagingQueue && paging->second.parent==device;
+                const auto progressContext=paging==objects.end() ? objects.end() : objects.find(paging->second.parent);
+                const bool hardware=coordinated && sync->second.kind==Kind::HwQueueSync && paging!=objects.end() && paging->second.kind==Kind::HwQueue &&
+                    progressContext!=objects.end() && progressContext->second.kind==Kind::Context && progressContext->second.parent==device;
+                if(!independent && !borrowed && !hardware) return reply(h,-9);
                 for (std::size_t previous = 0; previous < n; ++previous)
                     if (items[previous].sync == sync->second.nativeHandle) return reply(h, -22);
                 items[n].sync = sync->second.nativeHandle;
@@ -1076,7 +1155,7 @@ public:
             if (resourceSharingNegotiated) return reply(h, -16);
             const auto required = SharedVendorResourceCapability | NativeSharedTextureCapability;
             if ((driver.capabilities().flags & required) != required) return reply(h, -95);
-            const auto profile = driver.beginResourceSharing();
+            const auto profile = coordinated ? coordinated->resource : driver.beginResourceSharing();
             if (!validResourceSharingProfile(profile)) return reply(h, -95);
             resourceSharingNegotiated = true;
             auto out = reply(h, 0); out.resize(sizeof h + sizeof profile);

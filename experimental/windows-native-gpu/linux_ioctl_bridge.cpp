@@ -242,6 +242,7 @@ class Bridge {
     bool negotiated = false;
     bool streamingNegotiated = false;
     bool openglNegotiated = false;
+    bool coordinatedProfileNegotiated = false;
     bool openglFencesNegotiated = false;
     bool openglCompositorNegotiated = false;
     bool openglRenderNegotiated = false;
@@ -277,6 +278,23 @@ class Bridge {
     std::map<std::uint32_t, BorrowedFence> borrowedFences;
     struct Synchronization { std::uint32_t device, type, flags; std::uint64_t lastSignal = 0; };
     std::map<std::uint32_t, Synchronization> syncObjects;
+    bool resolveNativeTicket(int fd,std::uint32_t& ticket,std::uint32_t kind=WDDM_OBJECT_SYNC) {
+        if(coordinatedProfileNegotiated) {
+            if(kind==WDDM_OBJECT_SYNC) beginSharedFences();else beginSharedResources();
+        }
+        if(!kernelObjects.resolve(fd,ticket,kind)) return false;
+        auto& known=kind==WDDM_OBJECT_SYNC ? exportedSyncTickets : exportedResourceTickets;
+        if(known.count(ticket)) return true;
+        // Only this explicit root-broker profile may return a recipient alias
+        // which was not exported by the current process. Kernel FD authority
+        // and native same-GPU checks happened in the privileged coordinator.
+        if(!coordinatedProfileNegotiated || !guest_broker::clientEnabled() || !ticket || known.size()>=16) {
+            transport.fail();throw Error(EPROTO);
+        }
+        known.insert(ticket);
+        std::fprintf(stderr,"LINUX_BRIDGE recipientReferenceAdopted=true kind=%u ticket=%u authenticatedBroker=true\n",kind,ticket);
+        return true;
+    }
     void reapObjectTickets() {
         std::uint32_t ticket = 0, kind = 0;
         for (;;) {
@@ -351,6 +369,15 @@ class Bridge {
         }
         negotiated = true;
         std::fprintf(stderr, "LINUX_BRIDGE vendor=%u device=%u realDxgForwarding=false\n", caps.vendor, caps.device);
+        const auto coordinated=std::getenv("WDDM_BRIDGE_ACTOR_PROFILE");
+        if(coordinated && *coordinated) {
+            if(!gpu_diagnostic::HighResolution || std::strcmp(coordinated,"10") || !guest_broker::clientEnabled()) throw Error(EINVAL);
+            const auto group=guest_broker::client().coordinatedProfile();
+            if(std::memcmp(&group.caps,&caps,sizeof caps)) { transport.fail();throw Error(EPROTO); }
+            beginOpenGl(10);
+            coordinatedProfileNegotiated=true;
+            std::fprintf(stderr,"LINUX_BRIDGE coordinatedNativeProfile=true version=10 cpuAndGpuBudgetsShared=true\n");
+        }
     }
     std::uint32_t create(Op op, std::uint32_t parent = 0) {
         const auto out = call(request(op, parent));
@@ -529,7 +556,7 @@ public:
                 if (handle < 0 || handle > INT32_MAX) throw Error(EINVAL);
                 if (!deviceAdapters.count(a.hDevice)) throw Error(EBADF);
                 std::uint32_t ticket = 0;
-                if (kernelObjects.resolve(static_cast<int>(handle), ticket, WDDM_OBJECT_RESOURCE)) {
+                if (resolveNativeTicket(static_cast<int>(handle), ticket, WDDM_OBJECT_RESOURCE)) {
                     if (!exportedResourceTickets.count(ticket)) { transport.fail(); throw Error(EPROTO); }
                     if ((a.pPrivateRuntimeData != nullptr) != (a.PrivateRuntimeDataSize != 0) || a.PrivateRuntimeDataSize > MaxSharedResourceRuntimeBytes)
                         throw Error(EINVAL);
@@ -550,7 +577,7 @@ public:
                 if (a.pPrivateRuntimeData || a.PrivateRuntimeDataSize || a.TotalPrivateDriverDataSize || a.ResourcePrivateDriverDataSize || a.NumAllocations)
                     throw Error(EINVAL);
                 beginSharedFences();
-                if (!kernelObjects.resolve(static_cast<int>(handle), ticket)) throw Error(errno);
+                if (!resolveNativeTicket(static_cast<int>(handle), ticket)) throw Error(errno);
                 if (!exportedSyncTickets.count(ticket)) { transport.fail(); throw Error(EPROTO); }
                 const auto result = call(request(Op::QuerySharedSyncInfo, ticket, SharedSyncInfoDesc{a.hDevice, 0}), 0, true);
                 if (result.header.handle != ticket || result.result.ntstatus >= 0 || result.result.value) {
@@ -577,7 +604,7 @@ public:
                     (a.KeyedMutexPrivateRuntimeDataSize && (a.KeyedMutexPrivateRuntimeDataSize != 4 || !a.pKeyedMutexPrivateRuntimeData))) throw Error(EINVAL);
                 if (!deviceAdapters.count(a.hDevice)) throw Error(EBADF);
                 std::uint32_t ticket = 0;
-                if (!kernelObjects.resolve(static_cast<int>(handle), ticket, WDDM_OBJECT_RESOURCE)) throw Error(errno);
+                if (!resolveNativeTicket(static_cast<int>(handle), ticket, WDDM_OBJECT_RESOURCE)) throw Error(errno);
                 if (!exportedResourceTickets.count(ticket)) { transport.fail(); throw Error(EPROTO); }
                 const auto dataBytes = desc.runtimeBytes + desc.driverBytes + desc.resourceDriverBytes;
                 std::fprintf(stderr, "LINUX_BRIDGE nativeResourceImportForwarded=true boundedBytes=%u\n", dataBytes);
@@ -645,7 +672,7 @@ public:
                 if (!deviceAdapters.count(a.hDevice)) throw Error(EBADF);
                 beginSharedFences();
                 std::uint32_t ticket = 0;
-                if (!kernelObjects.resolve(static_cast<int>(handle), ticket)) throw Error(errno);
+                if (!resolveNativeTicket(static_cast<int>(handle), ticket)) throw Error(errno);
                 if (!exportedSyncTickets.count(ticket)) { transport.fail(); throw Error(EPROTO); }
                 if (syncObjects.size() >= syncObjectLimit()) throw Error(EMFILE);
                 const auto result = call(request(Op::ImportSync, ticket, desc), sizeof(SyncReply), true);
@@ -1465,15 +1492,22 @@ public:
                     throw Error(EINVAL);
                 const auto queue = hwQueueContexts.find(owner);
                 const auto context = contextOwners.find(contextStream ? owner : queue == hwQueueContexts.end() ? 0 : queue->second);
-                if (context == contextOwners.end() || context->second.flags != 16) throw Error(EBADF);
+                const auto firstBorrowed=borrowedFences.find(objects[0]);
+                if(coordinatedProfileNegotiated) std::fprintf(stderr,"LINUX_BRIDGE gpuWaitOwnership contextStream=%u owner=%u count=%u knownContext=%u knownQueue=%u firstSync=%u firstSyncKnown=%u firstSyncBorrowed=%u borrowedHardware=%u sourceDevice=%u targetDevice=%u contextFlags=%u\n",
+                    contextStream ? 1u : 0u,owner,count,context!=contextOwners.end() ? 1u : 0u,queue!=hwQueueContexts.end() ? 1u : 0u,objects[0],syncObjects.count(objects[0]) ? 1u : 0u,firstBorrowed!=borrowedFences.end() ? 1u : 0u,
+                    firstBorrowed!=borrowedFences.end() && firstBorrowed->second.hardware ? 1u : 0u,firstBorrowed==borrowedFences.end() ? 0u : firstBorrowed->second.device,context==contextOwners.end() ? 0u : context->second.device,context==contextOwners.end() ? UINT32_MAX : context->second.flags);
+                if (context == contextOwners.end() || !contextCanWait(context->second.flags,coordinatedProfileNegotiated)) throw Error(EBADF);
                 const auto device = context->second.device;
                 std::vector<HwQueueWaitItem> items; items.reserve(count);
                 for (std::uint32_t n = 0; n < count; ++n) {
                     const auto sync = syncObjects.find(objects[n]);
+                    const auto paging=borrowedFences.find(objects[n]);
                     if (values[n] == UINT64_MAX) throw Error(EINVAL);
-                    if (sync == syncObjects.end() || sync->second.type != 5 || sync->second.device != device) throw Error(EBADF);
-                    for (const auto& previous : items) if (previous.sync == sync->first) throw Error(EINVAL);
-                    items.push_back({sync->first, 0, values[n]});
+                    const bool independent=sync!=syncObjects.end() && sync->second.type==5 && sync->second.device==device;
+                    const bool borrowed=coordinatedProfileNegotiated && paging!=borrowedFences.end() && paging->second.device==device;
+                    if(!independent && !borrowed) throw Error(EBADF);
+                    for (const auto& previous : items) if (previous.sync == objects[n]) throw Error(EINVAL);
+                    items.push_back({objects[n], 0, values[n]});
                 }
                 beginSharedFences();
                 auto packet = request(contextStream ? Op::QueueContextWait : Op::QueueHwQueueWait, owner, HwQueueWaitDesc{count, 0});
@@ -1652,8 +1686,10 @@ public:
         std::fprintf(stderr, "LINUX_BRIDGE guestStreamNegotiated=true frames=64 pendingCommands=16 pendingSignals=16\n");
     }
     void beginOpenGl(std::uint32_t version = 1) {
+        if(coordinatedProfileNegotiated) { if(version==10) return;throw Error(EINVAL); }
         if (!gpu_diagnostic::HighResolution || openglNegotiated || streamingNegotiated || !ownedAdapters.empty() || !deviceAdapters.empty()) throw Error(EINVAL);
         negotiate();
+        if(coordinatedProfileNegotiated) { if(version==10) return;throw Error(EINVAL); }
         const auto required = AsyncHwSubmitCapability | SyncCapability | GpuReservationCapability | UINT32_C(0x80000000) |
             (version>=6 ? ExpandedVendorGpuCapability : 0u) | (version>=7 ? ExpandedVendorCpuCapability : 0u);
         if ((caps.flags & required) != required) throw Error(ENOSYS);

@@ -34,6 +34,16 @@ static inline int wddm_aperture_valid_caps(struct wddm_aperture_caps caps)
 		  caps.cpu_byte_limit == WDDM_APERTURE_DESKTOP_CPU_LIMIT));
 }
 #define WDDM_APERTURE_CAPS _IOWR('W', 0x50, struct wddm_aperture_caps)
+/* Separate immutable opt-in: original INFO/CAPS and byte budgets stay fixed. */
+#define WDDM_APERTURE_COORDINATED_LEASES 768U
+struct wddm_aperture_coordinator_caps { __u32 version, enabled, lease_limit, reserved; };
+static inline int wddm_aperture_valid_coordinator_caps(struct wddm_aperture_coordinator_caps caps)
+{
+	return caps.version == 1 && !caps.reserved && caps.enabled <= 1 &&
+		(caps.enabled ? caps.lease_limit == WDDM_APERTURE_COORDINATED_LEASES :
+		 caps.lease_limit == WDDM_APERTURE_DEFAULT_LEASES || caps.lease_limit == WDDM_APERTURE_MAX_LEASES);
+}
+#define WDDM_APERTURE_COORDINATOR_CAPS _IOWR('W', 0x51, struct wddm_aperture_coordinator_caps)
 #define WDDM_OBJECT_SYNC 1
 #define WDDM_OBJECT_RESOURCE 2
 #define WDDM_OBJECT_MAX 256

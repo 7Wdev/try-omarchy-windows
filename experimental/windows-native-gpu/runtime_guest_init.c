@@ -22,11 +22,15 @@
 #include "guest-kernel/wddm_render.h"
 #include <dirent.h>
 static void timeout_handler(int signal_number) { (void)signal_number; }
+static int graphics_primary_writer=-1;
 static pid_t graphics_broker_start_as(const char* port,unsigned uid,unsigned gid) {
     if (!uid || !gid) return -1;
     if (access("/graphics-broker-required", F_OK)) return 0;
     int ready[2];
     if ((mkdir("/run",0755) && errno != EEXIST) || mkdir("/run/wddm-broker",0755) || pipe2(ready,O_CLOEXEC)) return -1;
+    const int coordinated=access("/opt/wddm-root/desktop-coordinator-probe",R_OK)==0;
+    int primary[2]={-1,-1};
+    if(coordinated && pipe2(primary,O_CLOEXEC)) { close(ready[0]);close(ready[1]);return -1; }
     const pid_t child=fork();
     if (!child) {
         close(ready[0]);
@@ -34,13 +38,21 @@ static pid_t graphics_broker_start_as(const char* port,unsigned uid,unsigned gid
         char descriptor[24]; snprintf(descriptor,sizeof descriptor,"%d",ready[1]);
         char user[16],group[16]; snprintf(user,sizeof user,"%u",uid); snprintf(group,sizeof group,"%u",gid);
         unsetenv("LD_PRELOAD"); setenv("LD_LIBRARY_PATH","/usr/lib/x86_64-linux-gnu",1);
+        if(coordinated) {
+            close(primary[1]);if(fcntl(primary[0],F_SETFD,0)) _exit(127);
+            char identity[24];snprintf(identity,sizeof identity,"%d",primary[0]);
+            execl("/guest-graphics-broker","/guest-graphics-broker","/run/wddm-broker/graphics.sock",port,user,group,descriptor,"--coordinator",identity,(char*)NULL);
+            _exit(127);
+        }
         execl("/guest-graphics-broker","/guest-graphics-broker","/run/wddm-broker/graphics.sock",port,user,group,descriptor,(char*)NULL);
         _exit(127);
     }
+    if(coordinated) { close(primary[0]);graphics_primary_writer=primary[1]; }
     close(ready[1]);
     struct sigaction action={0}; action.sa_handler=timeout_handler; sigaction(SIGALRM,&action,NULL);
     alarm(10); char marker=0; const ssize_t bytes=read(ready[0],&marker,1); alarm(0); close(ready[0]);
     if (child < 0 || bytes != 1 || marker != 'R') {
+        if(graphics_primary_writer>=0) { close(graphics_primary_writer);graphics_primary_writer=-1; }
         if (child > 0) { kill(child,SIGKILL); waitpid(child,NULL,0); }
         puts("BROKER_ROUTE failed=true readiness=true"); return -1;
     }
@@ -49,6 +61,8 @@ static pid_t graphics_broker_start_as(const char* port,unsigned uid,unsigned gid
 static pid_t graphics_broker_start(const char* port) { return graphics_broker_start_as(port,65534,65534); }
 static int graphics_client_drop_as(const char* port,unsigned uid,unsigned gid) {
     if (!uid || !gid) return -1;
+    // The ordinary process must never inherit the trusted primary-PID writer.
+    if(graphics_primary_writer>=0) { close(graphics_primary_writer);graphics_primary_writer=-1; }
     unsetenv("WDDM_BRIDGE_PORT"); unsetenv("WDDM_BRIDGE_WINDOWS_WORKER");
     setenv("WDDM_BRIDGE_BROKER_SOCKET","/run/wddm-broker/graphics.sock",1);
     if (setgroups(0,NULL) || setgid(gid) || setuid(uid) || prctl(PR_SET_NO_NEW_PRIVS,1,0,0,0)) return -1;
@@ -68,6 +82,7 @@ static int graphics_client_drop_as(const char* port,unsigned uid,unsigned gid) {
 }
 static int graphics_client_drop(const char* port) { return graphics_client_drop_as(port,65534,65534); }
 static int graphics_broker_wait(pid_t child) {
+    if(graphics_primary_writer>=0) { close(graphics_primary_writer);graphics_primary_writer=-1; }
     if (child<=0) return child<0 ? -1 : 0;
     for (unsigned n=0;n<500;++n) {
         int status=0; const pid_t result=waitpid(child,&status,WNOHANG);
@@ -102,11 +117,12 @@ static int kernel_aperture_start(void) {
     if (access("/kernel-aperture-required", F_OK)) return 0;
     const int module = open("/wddm-aperture.ko", O_RDONLY | O_CLOEXEC);
     if (module < 0) { perror("aperture module open"); return -1; }
-    char parameters[128]={0};
+    char parameters[192]={0};
     if(!access("/native-sync-files-required",F_OK)) strcat(parameters,"enable_native_sync_files=1 ");
     if(!access("/native-buffers-required",F_OK)) strcat(parameters,"enable_native_buffers=1 ");
     if(!access("/opt/wddm-root/desktop-4k-cpu-probe",F_OK)) strcat(parameters,"enable_desktop_4k_cpu=1 ");
-    if(!access("/opt/wddm-root/desktop-sparse-probe",F_OK)) strcat(parameters,"enable_sparse_aperture=1");
+    if(!access("/opt/wddm-root/desktop-sparse-probe",F_OK)) strcat(parameters,"enable_sparse_aperture=1 ");
+    if(!access("/opt/wddm-root/desktop-coordinator-probe",F_OK)) strcat(parameters,"enable_coordinated_leases=1 ");
     const int result = (int)syscall(SYS_finit_module, module, parameters, 0);
     close(module);
     if (result) { perror("guest aperture finit_module"); return -1; }
@@ -132,7 +148,8 @@ static int native_render_start(void) {
         native_render_loaded = !disabled;
         close(module); puts("KERNEL_RENDER_START defaultDisabled=false"); return -1;
     }
-    const int loaded = (int)syscall(SYS_finit_module, module, "experimental=1", 0);
+    const int prime = !access("/opt/wddm-root/desktop-coordinator-probe", R_OK);
+    const int loaded = (int)syscall(SYS_finit_module, module, prime ? "experimental=1 enable_native_prime=1" : "experimental=1", 0);
     close(module);
     if (loaded) { perror("render finit_module"); return -1; }
     native_render_loaded = 1;
@@ -165,7 +182,14 @@ static int native_render_start(void) {
         }
         return -1;
     }
-    printf("KERNEL_RENDER_START node=%s defaultDisabled=true nativeRoute=true kms=false gem=false\n", native_render_path);
+    if (prime) {
+        pid_t probe=fork();
+        if (!probe) { execl("/opt/wddm-root/bin/native-prime-contract","native-prime-contract",native_render_path,(char*)NULL);_exit(127); }
+        int status=0;
+        if (probe<0 || waitpid(probe,&status,0)!=probe || !WIFEXITED(status) || WEXITSTATUS(status)) return -1;
+        printf("KERNEL_RENDER_NATIVE_PRIME verified=true opaqueOwnedImports=true gpu=false\n");
+    }
+    printf("KERNEL_RENDER_START node=%s defaultDisabled=true nativeRoute=true kms=false gem=%s\n", native_render_path,prime ? "opaque-import" : "false");
     return 1;
 }
 static int native_render_stop(void) {

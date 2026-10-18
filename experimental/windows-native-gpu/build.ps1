@@ -44,6 +44,10 @@ cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\driver_actor_router_test.
 if not "%errorlevel%"=="0" exit /b %errorlevel%
 driver-actor-router-test.exe
 if not "%errorlevel%"=="0" exit /b %errorlevel%
+cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\driver_coordinator_test.cpp" /Fe:driver-coordinator-test.exe
+if not "%errorlevel%"=="0" exit /b %errorlevel%
+driver-coordinator-test.exe
+if not "%errorlevel%"=="0" exit /b %errorlevel%
 cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\readonly_rootfs_args_test.cpp" /Fe:readonly-rootfs-args-test.exe
 if not "%errorlevel%"=="0" exit /b %errorlevel%
 readonly-rootfs-args-test.exe
