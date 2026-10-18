@@ -64,6 +64,7 @@ class KmtDriver : public Driver {
     bool openglDesktopSparseEnabled = false;
     bool openglDesktopLargeMapEnabled = false, openglDesktopPresentationEnabled = false;
     bool coordinatedObjectsEnabled=false;
+    CoordinatedObjectCapacity coordinatedObjectCapacity{};
     std::size_t peakHwQueues=0,peakSyncObjects=0;
     std::uint64_t hwQueueQuotaRejections=0,syncQuotaRejections=0;
     std::size_t hwQueueLimit() const { return coordinatedObjectsEnabled ? CoordinatedObjectCapacity{}.hwQueues : openglFencesEnabled ? OpenGlFenceHwQueues : MaxHwQueues; }
@@ -76,7 +77,12 @@ class KmtDriver : public Driver {
     std::uint64_t reservationQuotaRejections=0;
     std::size_t peakReservations=0;
     std::size_t syncObjectLimit() const { return coordinatedObjectsEnabled ? CoordinatedObjectCapacity{}.syncObjects : openglCompositorEnabled ? OpenGlCompositorSyncObjects : MaxSyncObjects; }
-    std::size_t vendorObjectLimit() const { return openglDesktopEnabled ? OpenGlDesktopVendorAllocations : openglCompositorEnabled ? OpenGlCompositorVendorAllocations : openglFencesEnabled ? OpenGlFenceVendorAllocations : vendorAllocationObjectLimit(capabilities().flags); }
+    std::size_t vendorObjectLimit() const { return coordinatedObjectsEnabled && coordinatedObjectCapacity.version==4 ? coordinatedObjectCapacity.vendorAllocations : openglDesktopEnabled ? OpenGlDesktopVendorAllocations : openglCompositorEnabled ? OpenGlCompositorVendorAllocations : openglFencesEnabled ? OpenGlFenceVendorAllocations : vendorAllocationObjectLimit(capabilities().flags); }
+    bool vendorObjectAdmission() const {
+        const bool allowed=vendorAllocations.size()<vendorObjectLimit();
+        if(!allowed) std::cerr<<"{\"nativeVendorObjectAdmissionRejected\":true,\"live\":"<<vendorAllocations.size()<<",\"limit\":"<<vendorObjectLimit()<<"}\n";
+        return allowed;
+    }
     std::uint32_t openGlCommandLimit() const { return openglDesktopEnabled ? 0 : openglCompositorEnabled ? GuestOpenGlCompositorProfile.commandLimit : GuestOpenGlProfile.commandLimit; }
     std::uint32_t hwSignalLimit() const { return openglDesktopEnabled ? 0 : openglCompositorEnabled ? OpenGlCompositorHwSignals : openglFencesEnabled ? OpenGlFenceHwSignals : MaxHwQueueSignals; }
     struct PendingSubmission { std::uint64_t index; std::uint32_t queue, bytes, privateBytes; std::uint64_t target; };
@@ -650,10 +656,11 @@ public:
     bool beginCoordinatedObjects(CoordinatedObjectCapacity value) override {
         if(!validCoordinatedObjectCapacity(value) || coordinatedObjectsEnabled || !openglDesktopPresentationEnabled || !runtime || runtime->hasStopped() ||
             !ownedAdapters.empty() || !deviceAdapters.empty() || !hwQueues.empty() || !syncObjects.empty()) return false;
-        coordinatedObjectsEnabled=true;
-        std::cerr<<"{\"nativeCoordinatedObjectCapacity\":true,\"version\":3,\"hwQueues\":"<<hwQueueLimit()<<",\"syncObjects\":"<<syncObjectLimit()
+        if(value.version!=(runtime->fenceSlotLimit()==512 ? 4u : 3u)) return false;
+        coordinatedObjectCapacity=value;coordinatedObjectsEnabled=true;
+        std::cerr<<"{\"nativeCoordinatedObjectCapacity\":true,\"version\":"<<value.version<<",\"vendorAllocationObjects\":"<<vendorObjectLimit()<<",\"hwQueues\":"<<hwQueueLimit()<<",\"syncObjects\":"<<syncObjectLimit()
                  <<",\"reservedAddressBytes\":"<<reservationByteLimit()<<",\"reservationCount\":"<<reservationLimit()
-                 <<",\"kernelLeaseLimit\":768,\"fenceSlots\":256,\"cpuBytes\":201326592,\"gpuVaBytes\":1073741824,\"reportedGpuBytes\":1073741824,\"memoryBudgetsMultiplied\":false}\n";
+                 <<",\"kernelLeaseLimit\":768,\"fenceSlots\":"<<runtime->fenceSlotLimit()<<",\"cpuBytes\":201326592,\"gpuVaBytes\":1073741824,\"reportedGpuBytes\":1073741824,\"memoryBudgetsMultiplied\":false}\n";
         return true;
     }
     StreamProfile beginStreaming() override {
@@ -667,11 +674,11 @@ public:
     OpenGlProfile beginOpenGl(std::uint32_t version = 1) override {
         if (version>=6 && !(capabilities().flags & ExpandedVendorGpuCapability)) return {};
         if (version>=7 && (!(capabilities().flags & ExpandedVendorCpuCapability) || !runtime ||
-            runtime->allocationSlotLimit()!=(version>=8 ? SparseVendorCpuSlots : MaxVendorCpuSlots) || runtime->fenceSlotLimit()!=256)) return {};
-        if (runtime && runtime->allocationSlotLimit()==SparseVendorCpuSlots && version!=8 && version!=9 && version!=10) return {};
+            runtime->allocationSlotLimit()!=(version>=8 ? SparseVendorCpuSlots : MaxVendorCpuSlots) || runtime->fenceSlotLimit()!=(version==11 ? 512u : 256u))) return {};
+        if (runtime && runtime->allocationSlotLimit()==SparseVendorCpuSlots && version!=8 && version!=9 && version!=10 && version!=11) return {};
         if (!gpu_diagnostic::HighResolution || openglEnabled || streamingEnabled || !asyncSubmitEnabled || !syncEnabled || !reservationEnabled ||
             !runtime || runtime->hasStopped() || !ownedAdapters.empty() || !deviceAdapters.empty() ||
-            !pendingSubmissions.empty() || !pendingHwSignals.empty() || (version != 1 && version != 2 && version != 3 && version != 4 && version != 5 && version != 6 && version != 7 && version != 8 && version != 9 && version != 10)) return {};
+            !pendingSubmissions.empty() || !pendingHwSignals.empty() || (version != 1 && version != 2 && version != 3 && version != 4 && version != 5 && version != 6 && version != 7 && version != 8 && version != 9 && version != 10 && version!=11)) return {};
         openglEnabled = true;
         openglFencesEnabled = version >= 2;
         openglCompositorEnabled = version >= 3;
@@ -681,8 +688,8 @@ public:
         openglDesktop4kCpuEnabled = version >= 7;
         openglDesktopSparseEnabled = version >= 8;
         openglDesktopLargeMapEnabled = version >= 9;
-        openglDesktopPresentationEnabled = version == 10;
-        const auto profile = version == 10 ? GuestOpenGlDesktopPresentationProfile : version == 9 ? GuestOpenGlDesktopLargeMapProfile : version == 8 ? GuestOpenGlDesktopSparseProfile : version == 7 ? GuestOpenGlDesktop4kCpuProfile : version == 6 ? GuestOpenGlDesktop4kProfile : version == 5 ? GuestOpenGlDesktopProfile : version == 4 ? GuestOpenGlCompositorRenderProfile : version == 3 ? GuestOpenGlCompositorProfile : version == 2 ? GuestOpenGlFenceProfile : GuestOpenGlProfile;
+        openglDesktopPresentationEnabled = version >= 10;
+        const auto profile = version==11 ? GuestOpenGlDesktopFenceProfile : version == 10 ? GuestOpenGlDesktopPresentationProfile : version == 9 ? GuestOpenGlDesktopLargeMapProfile : version == 8 ? GuestOpenGlDesktopSparseProfile : version == 7 ? GuestOpenGlDesktop4kCpuProfile : version == 6 ? GuestOpenGlDesktop4kProfile : version == 5 ? GuestOpenGlDesktopProfile : version == 4 ? GuestOpenGlCompositorRenderProfile : version == 3 ? GuestOpenGlCompositorProfile : version == 2 ? GuestOpenGlFenceProfile : GuestOpenGlProfile;
         std::cerr << "{\"openGlProfileNegotiated\":true,\"version\":" << version << ",\"frames\":" << profile.frames << ",\"commandLimit\":" << profile.commandLimit << ",\"pendingCommands\":16,\"reservationLimit\":" << profile.reservationLimit << ",\"reservedByteLimit\":17179869184,\"requestLimit\":" << profile.requestLimit;
         if (version >= 2) std::cerr << ",\"objectLimit\":" << profile.objectLimit
             << ",\"hwQueueLimit\":" << OpenGlFenceHwQueues << ",\"vendorObjectLimit\":" << vendorObjectLimit() << ",\"syncObjectLimit\":" << syncObjectLimit();
@@ -991,7 +998,7 @@ public:
         const auto shared = sharedResourceHandles.find(ticket);
         if (!resourceSharingEnabled || !runtime || runtime->hasStopped() || shared == sharedResourceHandles.end() ||
             !deviceAdapters.count(desc.device) || !validSharedResourceOpen(desc) || !reportedGpuUsageAcceptable() ||
-            vendorAllocations.size() >= vendorObjectLimit())
+            !vendorObjectAdmission())
             return {{Invalid, 0, 0}, {}};
         D3DKMT_QUERYRESOURCEINFOFROMNTHANDLE query{}; query.hDevice = desc.device; query.hNtHandle = shared->second.handle.get();
         auto status = D3DKMTQueryResourceInfoFromNtHandle(&query);
@@ -1272,7 +1279,7 @@ public:
     Result createVendorAllocationImpl(std::uint32_t device, VendorAllocationDesc desc, std::vector<std::uint8_t>& data, bool withResource, std::uint32_t runtimeBytes = 0, const NativeTextureDesc* texture = nullptr, bool interop=false) {
         if (!allocationsEnabled || !validVendorAllocation(desc) || data.size() != desc.privateBytes + runtimeBytes ||
             (runtimeBytes && (!withResource || !sharedResourcesEnabled || !validSharedVendorAllocation({desc, runtimeBytes, 0})))) return {Invalid, 0, 0};
-        if (vendorAllocations.size() >= vendorObjectLimit() || !reportedGpuUsageAcceptable())
+        if (!vendorObjectAdmission() || !reportedGpuUsageAcceptable())
             return {static_cast<std::int32_t>(0xc0000017u), 0, 0};
         D3DDDI_ALLOCATIONINFO2 info{}; info.Flags.Value = desc.flags; info.Priority = desc.priority;
         static_assert(UninitializedDisplaySource == D3DDDI_ID_UNINITIALIZED && D3DDDI_ID_NOTAPPLICABLE == 0,
@@ -2302,7 +2309,9 @@ static void serve(Stream& stream, const std::string& sectionName = {}, std::uint
             coordinator::Runtime owner(driver);
             std::uint64_t count=0;std::size_t peakObjects=0,peakActors=0;
             try {
-                const auto deadline=GetTickCount64()+120000;
+                const unsigned seconds=runtime && runtime->fenceSlotLimit()==512 ? 240u : 120u;
+                std::cerr<<"{\"nativeCoordinatorStartupBudget\":true,\"seconds\":"<<seconds<<",\"performanceAccepted\":false}\n";
+                const auto deadline=GetTickCount64()+seconds*1000ull;
                 for(;;) {
                     if(GetTickCount64()>=deadline) throw std::runtime_error("Coordinated owned runtime diagnostic deadline exceeded");
                     std::uint32_t size=0;if(!stream.read(&size,sizeof size,true)) break;
@@ -2387,8 +2396,8 @@ int main(int argc, char** argv) {
             }
             if (argc > 2 && std::string(argv[argc - 2]) == "--driver-fence-slots") {
                 const auto value = std::string(argv[argc - 1]);
-                if (fenceSlots || (value != "64" && value != "128" && value != "256"))
-                    throw std::runtime_error("Fence aperture slots must be specified once as 64, 128 or 256");
+                if (fenceSlots || (value != "64" && value != "128" && value != "256" && value != "512"))
+                    throw std::runtime_error("Fence aperture slots must be specified once as 64, 128 or 256; 512 requires the owned coordinator");
                 fenceSlots = static_cast<std::uint32_t>(std::stoul(value)); argc -= 2; continue;
             }
             if (argc > 2 && std::string(argv[argc - 2]) == "--driver-cpu-slots") {
@@ -2437,10 +2446,11 @@ int main(int argc, char** argv) {
         if (readonlyRoot && (cpuStoreTest || cpuEofTest || cpuSpanEofTest || hwQueueEofTest || syncEofTest || syncNoMaxEofTest ||
             reservationEofTest || gpuStateEofTest || hwQueueNoBroadcastEofTest || hwQueueNoBroadcastWaitEofTest))
             throw std::runtime_error("Read-only root image cannot be combined with forced EOF/store controls");
-        if (cpuSlots==SparseVendorCpuSlots && (!cpu || fenceSlots!=256 || argc!=7 || std::string(argv[1])!="--run-qemu"))
+        if(fenceSlots==512 && !coordinated) throw std::runtime_error("512 fence slots require the explicit owned coordinator");
+        if (cpuSlots==SparseVendorCpuSlots && (!cpu || (fenceSlots!=256 && !(coordinated && fenceSlots==512)) || argc!=7 || std::string(argv[1])!="--run-qemu"))
             throw std::runtime_error("Sparse CPU aperture requires CPU locks, explicit 256 fence slots and an owned QEMU runtime");
         if(coordinated && (!gpu_diagnostic::HighResolution || argc!=7 || std::string(argv[1])!="--run-qemu" || !readonlyRoot ||
-            cpuSlots!=SparseVendorCpuSlots || fenceSlots!=256 || !nativeMetadata || !presentShared || !consumeShared || !sharedResources ||
+            cpuSlots!=SparseVendorCpuSlots || (fenceSlots!=256 && fenceSlots!=512) || !nativeMetadata || !presentShared || !consumeShared || !sharedResources ||
             !asyncSubmit || !sync || !gpuState || !retirement || consumeProcess || cpuStoreTest || cpuEofTest || cpuSpanEofTest ||
             hwQueueEofTest || syncEofTest || syncNoMaxEofTest || reservationEofTest || gpuStateEofTest || hwQueueNoBroadcastEofTest || hwQueueNoBroadcastWaitEofTest))
             throw std::runtime_error("Coordinator requires the high-resolution owned read-only root runtime, exact sparse apertures and complete native presentation opt-ins");
@@ -2537,7 +2547,7 @@ int main(int argc, char** argv) {
         std::cout << "{\"port\":" << ntohs(address.sin_port) << ",\"transport\":\"tcp-loopback\"}\n" << std::flush;
         std::unique_ptr<driver_qemu::Runtime> runtime;
         if (ownedRuntime) runtime = std::make_unique<driver_qemu::Runtime>(ntohs(address.sin_port),
-            qemu_fence::Paths{argv[2], argv[3], argv[4], argv[5], argv[6]}, cpu, cpuStoreTest, cpuEofTest, hwQueueEofTest, cpuSlots, syncEofTest, reservationEofTest, gpuStateEofTest, cpuSpanEofTest, syncNoMaxEofTest, hwQueueNoBroadcastEofTest, hwQueueNoBroadcastWaitEofTest, fenceSlots,readonlyRoot);
+            qemu_fence::Paths{argv[2], argv[3], argv[4], argv[5], argv[6]}, cpu, cpuStoreTest, cpuEofTest, hwQueueEofTest, cpuSlots, syncEofTest, reservationEofTest, gpuStateEofTest, cpuSpanEofTest, syncNoMaxEofTest, hwQueueNoBroadcastEofTest, hwQueueNoBroadcastWaitEofTest, fenceSlots,readonlyRoot,coordinated && fenceSlots==512);
         fd_set reads; FD_ZERO(&reads); FD_SET(listener.value, &reads); timeval timeout{60, 0};
         if (select(0, &reads, nullptr, nullptr, &timeout) != 1) throw std::runtime_error("Connection timed out");
         Socket client; client.value = accept(listener.value, nullptr, nullptr);

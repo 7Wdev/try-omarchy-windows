@@ -14,12 +14,14 @@ def main():
         ['--run-qemu', 'missing-qemu', 'firmware', 'kernel', 'image', 'log',
          '--driver-coordinator', '--driver-native-metadata', '--driver-present-shared'],
         ['--stdio', '--driver-coordinator', '--driver-coordinator'],
+        ['--run-qemu', 'missing-qemu', 'firmware', 'kernel', 'image', 'log', '--driver-fence-slots', '512'],
+        ['--run-qemu', 'missing-qemu', 'firmware', 'kernel', 'image', 'log', '--driver-coordinator', '--driver-fence-slots', '512'],
     ]
     for command in cases:
         result = subprocess.run([args.bridge, *command], input=b'', capture_output=True, timeout=10)
         if result.returncode == 0 or result.stdout or b'ownedQemuPid' in result.stderr or b'nativeTextureMetadata' in result.stderr:
             raise SystemExit(f'FAIL: coordinator startup guard {command}: {result.returncode}, {result.stderr!r}')
-    print('PASS: 5 coordinator opt-in/duplicate guards reject before GPU/VM work')
+    print(f'PASS: {len(cases)} coordinator opt-in/duplicate guards reject before GPU/VM work')
 
 
 if __name__ == '__main__':

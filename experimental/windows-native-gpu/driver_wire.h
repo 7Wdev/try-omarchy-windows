@@ -354,8 +354,10 @@ inline bool validNativeInteropAllocation(NativeSharedVendorAllocationDesc d) {
            d.shared.allocation.privateBytes+d.shared.runtimeBytes<=native_gpu::MaxPacket-sizeof(Header)-sizeof(d);
 }
 constexpr std::uint32_t DefaultFenceSlots = 64, ExpandedFenceSlots = 128, MaxFenceSlots = 256;
-inline bool validFenceSlots(std::uint32_t slots) { return slots == DefaultFenceSlots || slots == ExpandedFenceSlots || slots == MaxFenceSlots; }
+constexpr std::uint32_t DesktopFenceSlots=512;
+inline bool validFenceSlots(std::uint32_t slots,bool desktop=false) { return slots == DefaultFenceSlots || slots == ExpandedFenceSlots || slots == MaxFenceSlots || (desktop && slots==DesktopFenceSlots); }
 constexpr std::uint64_t FenceApertureBytes = MaxFenceSlots * 4096;
+constexpr std::uint64_t DesktopFenceApertureBytes=DesktopFenceSlots*4096;
 constexpr std::uint32_t MaxQueryBytes = 65536;
 constexpr std::size_t MaxActiveQueries = 2;
 struct QueryDesc { std::uint32_t type, bytes, reserved, reserved2; };
@@ -456,12 +458,20 @@ static_assert(sizeof(Reply) == 16, "fixed reply layout");
 struct CoordinatedObjectCapacity {
     std::uint32_t version=3,hwQueues=32,syncObjects=384,leaseLimit=768;
     std::uint64_t reservedGpuBytes=64ull*1024*1024*1024;
-    std::uint32_t reservations=256,reserved=0;
+    // v3 reserves the final word as zero. v4 explicitly carries the aggregate
+    // native allocation-object quota; CPU/GPU byte budgets remain independent.
+    std::uint32_t reservations=256,vendorAllocations=0;
 };
 static_assert(sizeof(CoordinatedObjectCapacity)==32,"Fixed coordinated object/address-space capacity");
 inline bool validCoordinatedObjectCapacity(CoordinatedObjectCapacity value) {
-    return value.version==3 && value.hwQueues==32 && value.syncObjects==384 && value.leaseLimit==768 &&
-        value.reservedGpuBytes==64ull*1024*1024*1024 && value.reservations==256 && !value.reserved;
+    return ((value.version==3 && !value.vendorAllocations) || (value.version==4 && value.vendorAllocations==1024)) &&
+        value.hwQueues==32 && value.syncObjects==384 && value.leaseLimit==768 &&
+        value.reservedGpuBytes==64ull*1024*1024*1024 && value.reservations==256;
+}
+constexpr CoordinatedObjectCapacity GuestCoordinatedDesktopObjects{4,32,384,768,64ull*1024*1024*1024,256,1024};
+inline bool validCoordinatedAgreement(OpenGlDesktopPresentationCapacity capacity,CoordinatedObjectCapacity objects) {
+    return validCoordinatedPresentationCapacity(capacity) && validCoordinatedObjectCapacity(objects) &&
+        objects.version==(capacity.mapping.aperture.version==11 ? 4u : 3u);
 }
 class Driver {
 public:
@@ -604,10 +614,10 @@ public:
         constexpr auto required=AsyncHwSubmitCapability|SyncCapability|GpuReservationCapability|VendorMemoryManagementCapability|
             ExpandedVendorGpuCapability|ExpandedVendorCpuCapability|VendorAllocationCapability|SharedVendorResourceCapability|NativeSharedTextureCapability;
         caps=driver.capabilities();
-        if(!validCoordinatedObjectCapacity(objectCapacity) || !validOpenGlDesktopPresentationCapacity(capacity) || caps.version!=Version || caps.vendor!=0x10de ||
+        if(!validCoordinatedAgreement(capacity,objectCapacity) || caps.version!=Version || caps.vendor!=0x10de ||
             (caps.flags&required)!=required) throw std::runtime_error("Invalid coordinated native capacity/capabilities");
-        gl=driver.beginOpenGl(10);
-        if(!validOpenGlDesktopPresentationProfile(gl)) throw std::runtime_error("Coordinated native OpenGL agreement failed");
+        gl=driver.beginOpenGl(capacity.mapping.aperture.version);
+        if(gl.version!=capacity.mapping.aperture.version || !validCoordinatedPresentationProfile(gl)) throw std::runtime_error("Coordinated native OpenGL agreement failed");
         if(!driver.beginCoordinatedObjects(objectCapacity)) throw std::runtime_error("Coordinated native object agreement failed");
         sync=driver.beginSyncSharing();
         if(!validSyncSharingProfile(sync)) throw std::runtime_error("Coordinated native fence agreement failed");
@@ -646,6 +656,7 @@ class Session {
         std::uint32_t residentReferences = 0;
     };
     Driver& driver;
+    std::uint64_t fenceApertureBytes=FenceApertureBytes;
     const CoordinatedProfiles* coordinated=nullptr;
     bool mayPresent=true;
     std::map<std::uint32_t, Object> objects;
@@ -753,7 +764,7 @@ public:
     std::size_t objectCount() const { return objects.size(); }
     std::size_t objectLimit() const { return wireObjectLimit; }
     std::size_t hwQueueLimit() const { return openglFenceNegotiated ? OpenGlFenceHwQueues : MaxHwQueues; }
-    std::size_t reservationLimit() const { return openglDesktopNegotiated ? GuestOpenGlDesktopProfile.reservationLimit : openglRenderNegotiated ? GuestOpenGlCompositorRenderProfile.reservationLimit : openglNegotiated ? GuestOpenGlProfile.reservationLimit : MaxGpuReservations; }
+    std::size_t reservationLimit() const { return coordinated && openglDesktopNegotiated ? coordinated->gl.reservationLimit : openglDesktopNegotiated ? GuestOpenGlDesktopProfile.reservationLimit : openglRenderNegotiated ? GuestOpenGlCompositorRenderProfile.reservationLimit : openglNegotiated ? GuestOpenGlProfile.reservationLimit : MaxGpuReservations; }
     std::size_t syncObjectLimit() const { return openglCompositorNegotiated ? OpenGlCompositorSyncObjects : MaxSyncObjects; }
     std::uint32_t openGlCommandLimit() const { return openglDesktopNegotiated ? 0 : openglCompositorNegotiated ? GuestOpenGlCompositorProfile.commandLimit : GuestOpenGlProfile.commandLimit; }
     std::uint32_t hwQueueSignalLimit() const { return openglDesktopNegotiated ? 0 : openglCompositorNegotiated ? OpenGlCompositorHwSignals : openglFenceNegotiated ? OpenGlFenceHwSignals : MaxHwQueueSignals; }
@@ -821,6 +832,7 @@ public:
             openglDesktop4kCpuNegotiated = false;
             openglDesktopSparseNegotiated = false;
             openglDesktopLargeMapNegotiated = false;
+            fenceApertureBytes=FenceApertureBytes;
             if (version != Version) return reply(h, -93);
             const auto caps = driver.capabilities();
             if (caps.version != Version) return reply(h, -93);
@@ -859,12 +871,13 @@ public:
             std::uint32_t version = 1;
             if (packet.size() != sizeof h) {
                 std::memcpy(&version, packet.data() + sizeof h, sizeof version);
-                if (version != 2 && version != 3 && version != 4 && version != 5 && version != 6 && version != 7 && version != 8 && version != 9 && version != 10) return reply(h, -93);
+                if(version==11 && !coordinated) return reply(h,-93);
+                if (version != 2 && version != 3 && version != 4 && version != 5 && version != 6 && version != 7 && version != 8 && version != 9 && version != 10 && version!=11) return reply(h, -93);
             }
-            if (version==10) {
+            if (version==10 || version==11) {
                 if(packet.size()!=sizeof h+sizeof(OpenGlDesktopPresentationCapacity)) return reply(h,-22);
                 OpenGlDesktopPresentationCapacity capacity{};std::memcpy(&capacity,packet.data()+sizeof h,sizeof capacity);
-                if(!validOpenGlDesktopPresentationCapacity(capacity)) return reply(h,-22);
+                if(version==11 ? !coordinated || !validOpenGlDesktopFenceCapacity(capacity) : !validOpenGlDesktopPresentationCapacity(capacity)) return reply(h,-22);
             } else if (version==9) {
                 if (packet.size()!=sizeof h+sizeof(OpenGlDesktopLargeMapCapacity)) return reply(h,-22);
                 OpenGlDesktopLargeMapCapacity capacity{};std::memcpy(&capacity,packet.data()+sizeof h,sizeof capacity);
@@ -880,8 +893,9 @@ public:
             if ((driver.capabilities().flags & required) != required) return reply(h, -95);
             if(coordinated && version!=coordinated->gl.version) return reply(h,-95);
             const auto profile = coordinated ? coordinated->gl : driver.beginOpenGl(version);
-            if (version == 1 ? !validOpenGlProfile(profile) : version == 2 ? !validOpenGlFenceProfile(profile) : version == 3 ? !validOpenGlCompositorProfile(profile) : version == 4 ? !validOpenGlCompositorRenderProfile(profile) : version == 5 ? !validOpenGlDesktopProfile(profile) : version==6 ? !validOpenGlDesktop4kProfile(profile) : version==7 ? !validOpenGlDesktop4kCpuProfile(profile) : version==8 ? !validOpenGlDesktopSparseProfile(profile) : version==9 ? !validOpenGlDesktopLargeMapProfile(profile) : !validOpenGlDesktopPresentationProfile(profile)) return reply(h, -95);
+            if (version == 1 ? !validOpenGlProfile(profile) : version == 2 ? !validOpenGlFenceProfile(profile) : version == 3 ? !validOpenGlCompositorProfile(profile) : version == 4 ? !validOpenGlCompositorRenderProfile(profile) : version == 5 ? !validOpenGlDesktopProfile(profile) : version==6 ? !validOpenGlDesktop4kProfile(profile) : version==7 ? !validOpenGlDesktop4kCpuProfile(profile) : version==8 ? !validOpenGlDesktopSparseProfile(profile) : version==9 ? !validOpenGlDesktopLargeMapProfile(profile) : version==11 ? !validOpenGlDesktopFenceProfile(profile) : !validOpenGlDesktopPresentationProfile(profile)) return reply(h, -95);
             openglNegotiated = true;
+            fenceApertureBytes=version==11 ? DesktopFenceApertureBytes : FenceApertureBytes;
             openglFenceNegotiated = version >= 2;
             openglCompositorNegotiated = version >= 3;
             openglRenderNegotiated = version >= 4;
@@ -992,7 +1006,7 @@ public:
             const auto native = driver.createGuestPagingQueue(device->second.nativeHandle);
             if (native.queue.ntstatus < 0) return reply(h, 0, 0, &native.queue);
             if (!native.queue.nativeHandle || !native.sync || native.queue.value ||
-                native.offset % 8 || native.offset >= FenceApertureBytes) {
+                native.offset % 8 || native.offset >= fenceApertureBytes) {
                 if (native.queue.nativeHandle) driver.destroy(Kind::PagingQueue, native.queue.nativeHandle);
                 return reply(h, -5);
             }
@@ -1040,7 +1054,7 @@ public:
             const auto native = driver.createHwQueue(entry->second.nativeHandle, desc, data);
             if (data.size() != desc.privateBytes || native.queue.value ||
                 (native.queue.ntstatus >= 0 && (native.queue.ntstatus != 0 || !native.queue.nativeHandle || !native.sync ||
-                    native.sync == native.queue.nativeHandle || native.offset % 8 || native.offset >= FenceApertureBytes ||
+                    native.sync == native.queue.nativeHandle || native.offset % 8 || native.offset >= fenceApertureBytes ||
                     !native.gpuAddress || native.gpuAddress % 8 || native.gpuAddress >= MaxGpuAddress)) ||
                 (native.queue.ntstatus < 0 && (native.queue.nativeHandle || native.sync || native.offset || native.gpuAddress))) {
                 if (native.queue.nativeHandle) driver.destroy(Kind::HwQueue, native.queue.nativeHandle);
@@ -1316,7 +1330,7 @@ public:
             const SyncDesc importedDesc{5, desc.flags, desc.affinity, 0, 0};
             if (native.object.ntstatus > 0 || native.object.value ||
                 (native.object.ntstatus < 0 ? (native.object.nativeHandle || native.output.offset || native.output.gpuAddress) :
-                 (!native.object.nativeHandle || native.output.offset % 8 || native.output.offset >= FenceApertureBytes ||
+                 (!native.object.nativeHandle || native.output.offset % 8 || native.output.offset >= fenceApertureBytes ||
                   !validSyncGpuAddress(importedDesc, native.output.gpuAddress)))) {
                 if (native.object.nativeHandle) driver.destroy(Kind::Sync, native.object.nativeHandle);
                 return reply(h, -5);
@@ -1352,7 +1366,7 @@ public:
             const auto native = driver.createSync(entry->second.nativeHandle, desc);
             if (native.object.value || (native.object.ntstatus >= 0 && (native.object.ntstatus != 0 || !native.object.nativeHandle ||
                     (desc.type == 1 && (native.output.offset || native.output.gpuAddress)) ||
-                    (desc.type == 5 && (native.output.offset % 8 || native.output.offset >= FenceApertureBytes ||
+                    (desc.type == 5 && (native.output.offset % 8 || native.output.offset >= fenceApertureBytes ||
                         !validSyncGpuAddress(desc, native.output.gpuAddress))))) ||
                 (native.object.ntstatus < 0 && (native.object.nativeHandle || native.output.offset || native.output.gpuAddress))) {
                 if (native.object.nativeHandle) driver.destroy(Kind::Sync, native.object.nativeHandle);

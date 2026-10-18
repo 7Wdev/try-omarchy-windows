@@ -224,7 +224,7 @@ def main():
     parser.add_argument('--minimum-vendor-residency-requests', type=int, default=0)
     parser.add_argument('--driver-cpu', action='store_true')
     parser.add_argument('--driver-cpu-slots', type=int, choices=(16, 32, 64, 128, 256, 512), default=16)
-    parser.add_argument('--driver-fence-slots', type=int, choices=(64, 128, 256), default=None)
+    parser.add_argument('--driver-fence-slots', type=int, choices=(64, 128, 256, 512), default=None)
     parser.add_argument('--minimum-expanded-cpu-mappings', type=int, default=0)
     parser.add_argument('--expected-cpu-slot-quota-rejections', type=int)
     parser.add_argument('--minimum-vendor-cpu-locks', type=int, default=0)
@@ -421,7 +421,7 @@ def main():
     reader.start(); error_reader.start()
     try:
         try:
-            owner.wait(timeout=210 if args.runtime_workload == 'native-stream' else 150 if args.driver_coordinator else 110)
+            owner.wait(timeout=300 if args.driver_coordinator and args.driver_fence_slots==512 else 210 if args.runtime_workload == 'native-stream' else 150 if args.driver_coordinator else 110)
         except subprocess.TimeoutExpired:
             # The retained handle cannot target a reused PID. Stop and reap
             # QEMU first, while the owner still retains the native pages.

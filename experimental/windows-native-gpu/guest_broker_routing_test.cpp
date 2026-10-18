@@ -27,6 +27,10 @@ static void cpuCapacityPolicy() {
         wddm_aperture_caps cap{1,WDDM_APERTURE_DESKTOP_CPU_ENABLED,WDDM_APERTURE_DESKTOP_CPU_LIMIT,{0,0}};
         wddm_aperture_info layout{1,256,256,0,256*4096,256*1048576,1048576,0,0,0,0};
         unsigned queries=0;
+        wddm_aperture_desktop_fences fences{1,1,512,4096,2097152,0};
+        wddm_aperture_coordinator_caps leases{1,1,768,0};
+        wddm_aperture_desktop_fences desktopFenceCapacity() { return fences; }
+        wddm_aperture_coordinator_caps coordinatedCapacity() { return leases; }
         wddm_aperture_caps capacity() { ++queries;return cap; }
         wddm_aperture_info info() { return layout; }
     } kernel;
@@ -89,6 +93,30 @@ static void cpuCapacityPolicy() {
         Views views;denied([&]{views.observe(malformed,packet(Op::BeginOpenGl,0,encode(GuestOpenGlDesktopPresentationProfile)));},EPROTO);
     }
     std::cout<<"BROKER_PRESENTATION_BUDGET fixed48ByteReceipt=true exact1GiBUsage=true malformedRejected=true kernel=mock gpu=false\n";
+    auto wide=sparse;wide.layout.fence_slots=512;wide.layout.fence_bytes=2097152;
+    const auto wideBegin=packet(Op::BeginOpenGl,0,encode(GuestOpenGlDesktopFenceCapacity));
+    verifyCpuCapacityProfile(wideBegin,wide);
+    denied([&]{verifyCpuCapacityProfile(wideBegin,sparse);},EPROTO);
+    denied([&]{verifyCpuCapacityProfile(presentationBegin,wide);},EPROTO);
+    for(unsigned n=0;n<9;++n) {
+        auto bad=wide;
+        if(n==0) bad.fences.enabled=0;
+        if(n==1) bad.fences.slots=256;
+        if(n==2) bad.fences.bytes=1048576;
+        if(n==3) bad.fences.stride=8192;
+        if(n==4) bad.fences.version=2;
+        if(n==5) bad.fences.reserved=1;
+        if(n==6) bad.leases.enabled=0;
+        if(n==7) bad.leases.lease_limit=512;
+        if(n==8) bad.leases.reserved=1;
+        denied([&]{verifyCpuCapacityProfile(wideBegin,bad);},EPROTO);
+    }
+    for(unsigned field=0;field<12;++field) {
+        auto capacity=GuestOpenGlDesktopFenceCapacity;std::uint32_t words[12]{};
+        std::memcpy(words,&capacity,sizeof words);++words[field];std::memcpy(&capacity,words,sizeof words);
+        denied([&]{verifyCpuCapacityProfile(packet(Op::BeginOpenGl,0,encode(capacity)),wide);},EPROTO);
+    }
+    std::cout<<"BROKER_DESKTOP_FENCES exact512Pages=true actualControllerReceiptRequired=true v10LayoutUnchanged=true kernel=mock gpu=false\n";
     std::cout<<"BROKER_LARGE_MAP exact1GiB=true fixed40ByteReceipt=true malformedRejected=true oldProfilesUnchanged=true kernel=mock gpu=false\n";
     std::cout<<"BROKER_SPARSE_CAPACITY exact512Slots=true oldProfileRejected=true oldKernelRejected=true kernel=mock gpu=false\n";
     std::cout<<"BROKER_CPU_CAPACITY exact192MiB=true ownKernelQuery=true missingAndMalformedRejected=true legacyUnchanged=true kernel=mock gpu=false\n";
@@ -128,6 +156,15 @@ static void paging(Views& views) {
     views.observe(packet(Op::CreateGuestPagingQueue,2),receipt(Op::CreateGuestPagingQueue,3,0,encode(PagingReply{4,0,4104})));
 }
 static void viewPolicy() {
+    {
+        Views wide;
+        wide.observe(packet(Op::BeginOpenGl,0,encode(GuestOpenGlDesktopFenceCapacity)),packet(Op::BeginOpenGl,0,encode(GuestOpenGlDesktopFenceProfile)));
+        wide.observe(packet(Op::OpenAdapter),receipt(Op::OpenAdapter,1));wide.observe(packet(Op::CreateDevice,1),receipt(Op::CreateDevice,2));
+        wide.observe(packet(Op::CreateGuestPagingQueue,2),receipt(Op::CreateGuestPagingQueue,3,0,encode(PagingReply{4,0,DesktopFenceApertureBytes-8})));
+        CHECK(wide.acquire({WDDM_APERTURE_FENCE,0,511*4096ull,4096,0}).cookie==0);
+        auto old=base();denied([&]{old.observe(packet(Op::CreateGuestPagingQueue,2),receipt(Op::CreateGuestPagingQueue,3,0,encode(PagingReply{4,0,DesktopFenceApertureBytes-8})));},EPROTO);
+        auto beyond=base();denied([&]{beyond.observe(packet(Op::CreateGuestPagingQueue,2),receipt(Op::CreateGuestPagingQueue,3,0,encode(PagingReply{4,0,DesktopFenceApertureBytes})));},EPROTO);
+    }
     const ViewRequest fence{WDDM_APERTURE_FENCE,0,4096,4096,0};
     auto views=base(); denied([&]{views.acquire(fence);},EPERM); paging(views);
     views.observe(packet(Op::MapVendorAllocation,8),receipt(Op::MapVendorAllocation,8,0,{},0x103));
@@ -214,6 +251,8 @@ struct KernelMock {
     wddm_sync_file_stats syncFileInfo() { return {1,0,0,0,0,0,0,0}; }
     unsigned created=0,released=0;
     void close() {}
+    wddm_aperture_desktop_fences desktopFenceCapacity() { throw std::system_error(EOPNOTSUPP,std::generic_category(),"No desktop fence kernel in portable test"); }
+    wddm_aperture_coordinator_caps coordinatedCapacity() { throw std::system_error(EOPNOTSUPP,std::generic_category(),"No coordinator kernel in portable test"); }
     wddm_aperture_caps capacity() { return {1,0,WDDM_APERTURE_CPU_LIMIT,{0,0}}; }
     wddm_aperture_info info() { return {1,128,256,0,128*4096,256*1048576,1048576,0,0,0,0}; }
     std::pair<Fd,std::uint64_t> acquire(ViewRequest view) {

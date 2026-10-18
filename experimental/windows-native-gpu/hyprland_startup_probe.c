@@ -181,8 +181,8 @@ static void scene_diagnostics(void) {
         scene_hex_receipt("HYPRLAND_SCENE_DIAGNOSTIC_HEX",data,bytes);
     }
 }
-static int visible_shell_bar(const char* text) {
-    const char* match=strstr(text,"\"omarchy-bar\"");
+static int visible_layer(const char* text,const char* name) {
+    const char* match=strstr(text,name);
     if(!match) return 0;
     const char* begin=match;
     while(begin>text && *begin!='{') --begin;
@@ -194,6 +194,38 @@ static int visible_shell_bar(const char* text) {
     char* parsed=NULL;errno=0;const double value=strtod(alpha+1,&parsed);
     return !errno && parsed!=alpha+1 && parsed<=end && value>=0.99 && value<=1.0;
 }
+static int visible_shell_bar(const char* text) { return visible_layer(text,"\"omarchy-bar\""); }
+static int visible_gpu_terminal(const char* text) {
+    const char* match=strstr(text,"\"omarchy-gpu-terminal\"");
+    if(!match) return 0;
+    // Client records contain nested workspace objects. Track the outer object
+    // and JSON strings rather than treating the nearest '{' as the record.
+    const char* begin=NULL;const char* end=NULL;
+    unsigned depth=0;int quoted=0,escaped=0;
+    for(const char* p=text;*p;++p) {
+        if(quoted) {
+            if(escaped) escaped=0;
+            else if(*p=='\\') escaped=1;
+            else if(*p=='"') quoted=0;
+            continue;
+        }
+        if(*p=='"') { quoted=1;continue; }
+        if(*p=='{') { if(!depth) begin=p;++depth; }
+        else if(*p=='}') {
+            if(!depth) return 0;
+            --depth;
+            if(!depth && p>match) { end=p;break; }
+        }
+    }
+    if(!begin || begin>match || !end) return 0;
+    const char* mapped=strstr(begin,"\"mapped\"");
+    const char* hidden=strstr(begin,"\"hidden\"");
+    if(!mapped || mapped>=end || !hidden || hidden>=end) return 0;
+    mapped=strchr(mapped,':');hidden=strchr(hidden,':');if(!mapped || !hidden) return 0;
+    do { ++mapped; } while(*mapped==' ' || *mapped=='\t');
+    do { ++hidden; } while(*hidden==' ' || *hidden=='\t');
+    return !strncmp(mapped,"true",4) && !strncmp(hidden,"false",5);
+}
 static int prepare_scene(void) {
     if(getenv("WDDM_BRIDGE_NORMAL_DESKTOP_PROBE")) {
         // Inspect the shipped desktop without pretending the controlled Foot
@@ -204,7 +236,7 @@ static int prepare_scene(void) {
         if(getenv("WDDM_BRIDGE_ACTOR_PROFILE")) {
             unsigned tick=0;
             for(;tick<40;++tick) {
-                if(visible_shell_bar(last_control_reply)) break;
+                if(visible_shell_bar(last_control_reply) && (!getenv("WDDM_BRIDGE_DESKTOP_CONTENT") || visible_layer(last_control_reply,"\"omarchy-background\""))) break;
                 // A headless output may otherwise go idle while a windowed
                 // EGL client awaits its first compositor frame callback.
                 char* const repaint[]={"/usr/bin/hyprctl","notify","-1","250","rgb(4477aa)","Initializing Omarchy GPU desktop",NULL};
@@ -214,6 +246,27 @@ static int prepare_scene(void) {
             printf("OMARCHY_DESKTOP_COORDINATOR_WAIT shellLayerObserved=%s polls=%u gpuProof=false\n",tick<40 ? "true" : "false",tick);
         }
         scene_hex_receipt("OMARCHY_DESKTOP_LAYERS_HEX",last_control_reply,strlen(last_control_reply));
+        if(getenv("WDDM_BRIDGE_DESKTOP_CONTENT")) {
+            if(!visible_shell_bar(last_control_reply) || !visible_layer(last_control_reply,"\"omarchy-background\"")) return -1;
+            char* const launch[]={"/usr/bin/hyprctl","eval",
+                "hl.exec_cmd([[systemd-cat -t omarchy-gpu-app -- /opt/wddm-root/bin/alacritty --config-file /opt/wddm-root/data/alacritty-desktop.toml -vv --class omarchy-gpu-terminal --title 'Omarchy terminal' --hold -e /bin/bash /opt/wddm-root/data/gpu-terminal-scene.sh]], {float=true, size={1200,800}, center=true})",NULL};
+            if(run_ctl(launch)) return -1;
+            char* const clients[]={"/usr/bin/hyprctl","-j","clients",NULL};
+            unsigned tick=0;
+            for(;tick<40;++tick) { if(!run_ctl(clients) && visible_gpu_terminal(last_control_reply)) break;sleep(1); }
+            scene_hex_receipt("OMARCHY_GPU_APPLICATION_CLIENTS_HEX",last_control_reply,strlen(last_control_reply));
+            printf("OMARCHY_GPU_APPLICATION_WAIT mapped=%s polls=%u gpuProof=false\n",tick<40 ? "true" : "false",tick);
+            if(tick==40) return -1;
+            char* const place[]={"/usr/bin/hyprctl","eval","hl.dispatch(hl.dsp.window.resize({x=1200,y=800})); hl.dispatch(hl.dsp.window.center())",NULL};
+            if(run_ctl(place)) return -1;
+            unsigned content_tick=0;
+            for(;content_tick<100 && access("/tmp/omarchy-gpu-terminal-ready",R_OK);++content_tick) usleep(200000);
+            if(content_tick==100) return -1;
+            puts("OMARCHY_GPU_APPLICATION_CONTENT_READY ptyMarkerObserved=true gpuProof=false");
+            sleep(2);
+            if(run_ctl(clients) || !visible_gpu_terminal(last_control_reply)) return -1;
+            scene_hex_receipt("OMARCHY_GPU_APPLICATION_READY_CLIENTS_HEX",last_control_reply,strlen(last_control_reply));
+        }
         if(scene_receipt("OMARCHY_DESKTOP_PROBE_CAPTURE normalConfig=true shellVerified=false applicationGpuVerified=false\n")) return -1;
         atomic_store(&scene_ready,1);
         return 0;
@@ -249,6 +302,16 @@ static int prepare_scene(void) {
     return -1;
 }
 static int close_scene(void) {
+    if(getenv("WDDM_BRIDGE_DESKTOP_CONTENT")) {
+        char* const close_window[]={"/usr/bin/hyprctl","eval","hl.dispatch(hl.dsp.window.close({window='class:omarchy-gpu-terminal'}))",NULL};
+        if(run_ctl(close_window)) return -1;
+        for(unsigned tick=0;tick<50;++tick) {
+            char* const clients[]={"/usr/bin/hyprctl","-j","clients",NULL};
+            if(!run_ctl(clients) && !strstr(last_control_reply,"\"omarchy-gpu-terminal\"")) return scene_receipt("OMARCHY_GPU_APPLICATION_CLOSED clientUnmapped=true gpuProof=false\n");
+            usleep(100000);
+        }
+        return -1;
+    }
     if(getenv("WDDM_BRIDGE_NORMAL_DESKTOP_PROBE")) return 0;
     char* const close_window[]={"/usr/bin/hyprctl","dispatch","closewindow","class:wddm-scene",NULL};
     if(run_ctl(close_window)) return -1;
@@ -334,8 +397,8 @@ static int startup_main(int argc,char** argv,char** environment) {
     if((mkdir(runtime,0700) && errno!=EEXIST) ||
        (mkdir(home,0700) && errno!=EEXIST)) return 122;
 #ifdef WDDM_BRIDGE_COMPOSITOR_HOST_SCENE
-    const unsigned profile=getenv("WDDM_BRIDGE_DESKTOP_PRESENTATION_PROBE") ? 10 : getenv("WDDM_BRIDGE_DESKTOP_LARGE_MAP_PROBE") ? 9 : getenv("WDDM_BRIDGE_DESKTOP_SPARSE_PROBE") ? 8 : getenv("WDDM_BRIDGE_DESKTOP_4K_CPU_PROBE") ? 7 : getenv("WDDM_BRIDGE_DESKTOP_4K_PROBE") ? 6 : 5;
-    const char* begin_name=profile==10 ? "wddm_bridge_begin_opengl_desktop_presentation_render" : profile==9 ? "wddm_bridge_begin_opengl_desktop_large_map_render" : profile==8 ? "wddm_bridge_begin_opengl_desktop_sparse_render" : profile==7 ? "wddm_bridge_begin_opengl_desktop_4k_cpu_render" : profile==6 ? "wddm_bridge_begin_opengl_desktop_4k_render" : "wddm_bridge_begin_opengl_desktop_render";
+    const unsigned profile=getenv("WDDM_BRIDGE_ACTOR_PROFILE") && !strcmp(getenv("WDDM_BRIDGE_ACTOR_PROFILE"),"11") ? 11 : getenv("WDDM_BRIDGE_DESKTOP_PRESENTATION_PROBE") ? 10 : getenv("WDDM_BRIDGE_DESKTOP_LARGE_MAP_PROBE") ? 9 : getenv("WDDM_BRIDGE_DESKTOP_SPARSE_PROBE") ? 8 : getenv("WDDM_BRIDGE_DESKTOP_4K_CPU_PROBE") ? 7 : getenv("WDDM_BRIDGE_DESKTOP_4K_PROBE") ? 6 : 5;
+    const char* begin_name=profile==11 ? "wddm_bridge_begin_opengl_desktop_fence_render" : profile==10 ? "wddm_bridge_begin_opengl_desktop_presentation_render" : profile==9 ? "wddm_bridge_begin_opengl_desktop_large_map_render" : profile==8 ? "wddm_bridge_begin_opengl_desktop_sparse_render" : profile==7 ? "wddm_bridge_begin_opengl_desktop_4k_cpu_render" : profile==6 ? "wddm_bridge_begin_opengl_desktop_4k_render" : "wddm_bridge_begin_opengl_desktop_render";
 #else
     const unsigned profile=4;
     const char* begin_name="wddm_bridge_begin_opengl_compositor_render";

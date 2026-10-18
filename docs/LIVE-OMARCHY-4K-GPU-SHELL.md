@@ -1,5 +1,7 @@
 # First 4K Omarchy GPU shell bar
 
+Later work captures [wallpaper and an NVIDIA application surface](LIVE-OMARCHY-4K-DESKTOP-CONTENT.md), with terminal glyph rendering and full lifecycle still failing. The historical shell-only result below retains its original scope.
+
 Two fresh QEMU/WHPX guests render Quickshell's actual Omarchy bar through
 Hyprland on the NVIDIA GPU. **Wallpaper and application windows are missing;
 this is a partial shell milestone, not the requested full desktop frame.**

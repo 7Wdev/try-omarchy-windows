@@ -1,15 +1,20 @@
 # NVIDIA backend progress
 
-Updated 2026-10-18. **4 of 8 verification stages demonstrated.** This is a
+Updated 2026-10-19. **4 of 8 verification stages demonstrated.** This is a
 checklist count, not 50% of engineering effort or a product-readiness estimate.
 The largest integration tasks are still ahead.
 
-[First 4K GPU shell content](LIVE-OMARCHY-4K-GPU-SHELL.md): two fresh guests now
-show Omarchy's actual bar, rendered by Quickshell on NVIDIA and imported into
-Hyprland through real resource FDs. **Wallpaper and application windows remain
-required and missing.** The first capture is incomplete; later frames pass
-pixel audits. Some mappings release only after VM exit, so recovery and desktop
-acceptance remain open. Counts stay 4/8 stages and 0/4 desktop gates.
+[4K wallpaper and a GPU application surface](LIVE-OMARCHY-4K-DESKTOP-CONTENT.md)
+now appear in the actual NVIDIA-composed framebuffer. The shipped image matches
+689 independent samples; Alacritty reports the NVIDIA D3D12 renderer. **Its glyph
+rendering and the complete desktop lifecycle still fail.** A mapped window does
+not close a desktop gate. Sparse CPU mapping slots are the next observed limit;
+actual mapped bytes remain bounded. Counts stay 4/8 and 0/4.
+
+The earlier [GPU shell-bar checkpoint](LIVE-OMARCHY-4K-GPU-SHELL.md) verifies the
+bar in two fresh guests. The new wallpaper/application capture is a retained
+partial failure, with readable application content, clean lifetimes, normal
+launcher/input and sustained presentation still required.
 
 [Normal-image boot groundwork](LIVE-NORMAL-OMARCHY-ROOT-BOOT.md) passes two fresh
 QEMU/WHPX boots of the real Omarchy 4.0.4 root image. Its normal systemd 262

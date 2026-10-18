@@ -14,28 +14,29 @@ through QEMU/WHPX. Full acceleration of the Omarchy/Hyprland desktop through thi
 **4/8 verification stages demonstrated; 0/4 desktop acceptance gates complete.** These are checklist counts, not percentages of engineering work completed.
 Guest graphics integration is in progress. The largest integration work remains. [See the roadmap and evidence](docs/GPU-BACKEND-PROGRESS.md).
 
-**Current GPU desktop content:** the actual Omarchy Quickshell bar now renders on NVIDIA
-and reaches Hyprland through authenticated cross-process GPU resource imports. Two fresh
-3840x2160 runs verify the later framebuffer, with **385/417 retired GPU commands**.
-**Wallpaper and application windows are still missing; the full desktop frame remains required.**
-The first capture is incomplete, display observation is limited, and some mappings remain
-retained until VM exit. The isolated fixture disables Xwayland/portals in RAM only.
-[Actual 4K GPU shell image, evidence and remaining work](docs/LIVE-OMARCHY-4K-GPU-SHELL.md).
-Normal launcher/UWSM/input, full application support, recovery, long-run stability and
->=93% matched-native performance remain open. Earlier
-[clean single-client 4K compositor evidence](docs/LIVE-NORMAL-OMARCHY-4K-PRESENTATION-BUDGET.md)
-and [software-shell diagnostic](docs/LIVE-NORMAL-OMARCHY-GPU.md) retain their original scope.
+**Current GPU desktop content:** the shipped wallpaper, Omarchy bar and an actual
+Alacritty window now appear together in a 3840×2160 NVIDIA-composed framebuffer.
+Alacritty reports the RTX 5090 D3D12 renderer. **Terminal glyph rendering and the
+complete desktop lifecycle still fail; a full desktop frame is not accepted.**
+The [partial image, exact evidence and remaining failures](docs/LIVE-OMARCHY-4K-DESKTOP-CONTENT.md)
+include a 689-sample independent wallpaper check and the CPU mapping-slot
+exhaustion that is being addressed next. Counts remain 4/8 and 0/4.
+Normal launcher/UWSM/input, multiple applications, recovery, long-run stability
+and ≥93% matched-native performance remain open. The earlier
+[GPU shell-bar checkpoint](docs/LIVE-OMARCHY-4K-GPU-SHELL.md) retains its original scope.
+
+![Actual 4K GPU wallpaper and application window; terminal glyph rendering remains incomplete](docs/images/omarchy-4k-wallpaper-gpu-window-partial-2026-10-18.png)
 
 | Desktop gate | Status | Acceptance requirement |
 | --- | --- | --- |
-| Guest graphics integration | In progress: GPU-rendered Omarchy bar at 4K; wallpaper, application windows and safe recovery pending | Hyprland can access a supported guest device path and safely share buffers and synchronization for sustained work. |
+| Guest graphics integration | In progress: 4K GPU wallpaper, bar and application surface; readable application content and safe recovery pending | Hyprland can access a supported guest device path and safely share buffers and synchronization for sustained work. |
 | First Hyprland frame | Pending | Independently verify a correctly displayed compositor frame in the Windows app, capture its image and update PR #2 with the result. |
 | Interactive desktop | Pending | Continuously display real apps with input, multiple windows, resizing and fullscreen up to 4K. |
 | Stable, near-native product | Pending | Pass long runs, bounded-memory and recovery checks, plus matched benchmarks meeting ≥93% of native performance. |
 
 Vulkan, CUDA, video acceleration, NVIDIA-specific features and concurrent Windows/guest GPU use need separate real-application acceptance tests as part of the wider goal.
 
-Latest integration work: [a real Wayland scene through the NVIDIA compositor](docs/LIVE-HYPRLAND-WAYLAND-SCENE.md)
+Earlier integration work: [a real Wayland scene through the NVIDIA compositor](docs/LIVE-HYPRLAND-WAYLAND-SCENE.md)
 passes two fresh 300-frame runs and independent background/color checks on the first and last GPU backbuffers.
 The actual last frame is shown below. This is a short diagnostic with a software-rendered terminal, separate native window and stale final display telemetry;
 full Omarchy, application GPU acceleration, normal launcher integration, long-run stability and 4K desktop performance remain open. Counts stay 4/8 and 0/4.

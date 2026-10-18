@@ -38,6 +38,10 @@ constexpr OpenGlProfile GuestOpenGlDesktopLargeMapProfile{9, 0, 0, 64, 16ull * 1
 // Version 10 also carries the process-reported GPU guard, including host
 // presentation allocations. Version 9's 512 MiB guard remains fixed.
 constexpr OpenGlProfile GuestOpenGlDesktopPresentationProfile{10, 0, 0, 64, 16ull * 1024 * 1024 * 1024, 0, 1024};
+// Version 11 adds a 512-page physical fence aperture and 128 per-actor GPUVA
+// reservations. It requires the owned coordinator, whose v4 object agreement
+// admits 1024 aggregate allocations. Byte budgets and all older profiles stay fixed.
+constexpr OpenGlProfile GuestOpenGlDesktopFenceProfile{11, 0, 0, 128, 16ull * 1024 * 1024 * 1024, 0, 1024};
 constexpr std::uint64_t OpenGlDesktopPresentationReportedBytes=1024ull*1024*1024;
 constexpr std::uint32_t OpenGlDesktopLargeMapBytes=1024u*1024*1024;
 constexpr std::uint32_t OpenGlDesktop4kCpuBytes = 192u * 1024 * 1024;
@@ -64,6 +68,7 @@ struct OpenGlDesktopPresentationCapacity {
 };
 static_assert(sizeof(OpenGlDesktopPresentationCapacity)==48,"Fixed explicit presentation capacity receipt");
 constexpr OpenGlDesktopPresentationCapacity GuestOpenGlDesktopPresentationCapacity{{{10,1,OpenGlDesktop4kCpuBytes,512,256,0},OpenGlDesktopLargeMapBytes},OpenGlDesktopPresentationReportedBytes};
+constexpr OpenGlDesktopPresentationCapacity GuestOpenGlDesktopFenceCapacity{{{11,1,OpenGlDesktop4kCpuBytes,512,512,0},OpenGlDesktopLargeMapBytes},OpenGlDesktopPresentationReportedBytes};
 inline bool validOpenGlDesktopPresentationCapacity(OpenGlDesktopPresentationCapacity c) {
     auto map=c.mapping;
     if(map.aperture.version!=10 || c.reportedGpuByteLimit!=OpenGlDesktopPresentationReportedBytes) return false;
@@ -74,6 +79,25 @@ inline bool validOpenGlDesktopPresentationCapacity(OpenGlDesktopPresentationCapa
 }
 inline bool reportedGpuBudgetFits(std::uint64_t usage,std::uint64_t additional,std::uint64_t limit) {
     return usage<=limit && additional<=limit-usage;
+}
+inline bool validOpenGlDesktopFenceCapacity(OpenGlDesktopPresentationCapacity c) {
+    if(c.mapping.aperture.version!=11 || c.mapping.aperture.fenceSlots!=512) return false;
+    c.mapping.aperture.version=10;c.mapping.aperture.fenceSlots=256;
+    return validOpenGlDesktopPresentationCapacity(c);
+}
+inline bool validCoordinatedPresentationCapacity(OpenGlDesktopPresentationCapacity c) {
+    return validOpenGlDesktopPresentationCapacity(c) || validOpenGlDesktopFenceCapacity(c);
+}
+inline bool validOpenGlDesktopFenceProfile(OpenGlProfile p) {
+    if(p.version!=11) return false;
+    p.version=10;
+    return p.frames==0 && p.commandLimit==0 && p.reservationLimit==128 &&
+        p.reservedBytes==16ull*1024*1024*1024 && !p.requestLimit && p.objectLimit==1024;
+}
+inline bool validCoordinatedPresentationProfile(OpenGlProfile p) {
+    return p.version==11 ? validOpenGlDesktopFenceProfile(p) : p.version==10 &&
+        !p.frames && !p.commandLimit && p.reservationLimit==64 &&
+        p.reservedBytes==16ull*1024*1024*1024 && !p.requestLimit && p.objectLimit==1024;
 }
 inline bool validOpenGlDesktopPresentationProfile(OpenGlProfile p) {
     return p.version==10 && !p.frames && !p.commandLimit && p.reservationLimit==64 &&

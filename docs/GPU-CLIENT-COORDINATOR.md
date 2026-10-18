@@ -98,3 +98,27 @@ controls are mocks, explicitly labeled in their output.
 
 Normal launcher/UWSM, input, reliable display, repeatability, long runs,
 CUDA/Vulkan/video support and matched-native performance remain open.
+
+
+## Explicit desktop-content profile
+
+The [wallpaper/application experiment](LIVE-OMARCHY-4K-DESKTOP-CONTENT.md)
+adds exact OpenGL profile 11: 512 physical fence pages and 128 per-actor GPUVA
+reservations. Its v4 object agreement admits 1024 native allocation objects
+across the group; 32 hardware queues, 384 sync objects, 768 kernel leases and
+256 aggregate address reservations remain bounded. Mapped CPU data stays at
+192 MiB; GPU-VA mappings and reported GPU usage stay at 1 GiB. The published
+v10/v3 agreement remains unchanged. Initialization rejects mixed profiles.
+
+Actual kernel discovery must confirm the separate 512-page fence opt-in before
+the root controller initializes the group. Old INFO/CAPS and coordinator
+payload sizes remain fixed; additive fence discovery uses its own ioctl.
+The full-content fixture requires the wallpaper layer and a mapped real
+Alacritty window, then waits for a real PTY-output marker. These metadata gates
+are not pixel/GPU acceptance on their own. Its 240-second startup diagnostic
+budget leaves speed and performance unaccepted.
+
+The retained terminal glyph/reset failure now identifies sparse CPU-slot
+exhaustion below the mapped-byte limit. QEMU 1024-slot groundwork is separate;
+the currently wired native/guest agreement still uses 512 CPU slots. General
+application support, safe live actor reuse and recovery remain required.

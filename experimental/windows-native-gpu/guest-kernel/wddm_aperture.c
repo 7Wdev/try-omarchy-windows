@@ -51,6 +51,8 @@ static bool enable_sparse_aperture;
 module_param(enable_sparse_aperture, bool, 0444);
 static bool enable_coordinated_leases;
 module_param(enable_coordinated_leases, bool, 0444);
+static bool enable_desktop_fences;
+module_param(enable_desktop_fences, bool, 0444);
 static u32 lease_limit(void)
 {
 	return enable_coordinated_leases ? WDDM_APERTURE_COORDINATED_LEASES : wddm_aperture_lease_limit(fence_hub.slots);
@@ -67,6 +69,15 @@ static long coordinator_caps(void __user *pointer)
 static u64 cpu_byte_limit(void)
 {
 	return enable_desktop_4k_cpu ? WDDM_APERTURE_DESKTOP_CPU_LIMIT : WDDM_APERTURE_CPU_LIMIT;
+}
+static long desktop_fence_caps(void __user *pointer)
+{
+    struct wddm_aperture_desktop_fences caps;
+    if(copy_from_user(&caps,pointer,sizeof(caps))) return -EFAULT;
+    if(caps.version!=1 || caps.enabled || caps.slots || caps.stride || caps.bytes || caps.reserved) return -EINVAL;
+    caps.enabled=enable_desktop_fences;caps.slots=fence_hub.slots;
+    caps.stride=4096;caps.bytes=fence_hub.bytes;
+    return copy_to_user(pointer,&caps,sizeof(caps)) ? -EFAULT : 0;
 }
 static long aperture_caps(void __user *pointer)
 {
@@ -259,6 +270,7 @@ static long control_ioctl(struct file *control, unsigned int request, unsigned l
 	int result = 0;
 	if (request == WDDM_APERTURE_CAPS) return aperture_caps(pointer);
 	if (request == WDDM_APERTURE_COORDINATOR_CAPS) return coordinator_caps(pointer);
+    if (request == WDDM_APERTURE_DESKTOP_FENCES) return desktop_fence_caps(pointer);
 	if (request == WDDM_SYNC_FILE_CREATE) return native_sync_create(control, pointer, false);
 	if (request == WDDM_SYNC_FILE_NATIVE_CREATE) return native_sync_create(control, pointer, true);
 	if (request == WDDM_SYNC_FILE_NATIVE_RESOLVE) return native_sync_resolve(((struct aperture_owner *)control->private_data)->id, pointer);
@@ -347,7 +359,7 @@ static int aperture_probe(struct pci_dev *pci, const struct pci_device_id *id)
 	pci_read_config_dword(pci, 0x44, &slots);
 	if (!fence) pci_read_config_dword(pci, 0x48, &stride);
 	bytes = fence ? (u64)slots * 4096 : (u64)slots * CPU_STRIDE;
-	if ((fence && (magic != FENCE_MAGIC || (slots != 64 && slots != 128 && slots != 256))) ||
+	if ((fence && (magic != FENCE_MAGIC || (slots != 64 && slots != 128 && slots != 256 && !(enable_desktop_fences && slots==512)))) ||
 	    (!fence && (magic != CPU_MAGIC || stride != CPU_STRIDE || slots < 16 ||
 		       slots > (enable_sparse_aperture ? 512 : 256) || !is_power_of_2(slots))) ||
 	    !(pci_resource_flags(pci, 0) & IORESOURCE_MEM) ||
@@ -396,11 +408,12 @@ static int __init aperture_init(void)
 	int result;
 	if (enable_sparse_aperture && !enable_desktop_4k_cpu) return -EINVAL;
 	if (enable_coordinated_leases && (!enable_sparse_aperture || !enable_desktop_4k_cpu)) return -EINVAL;
+    if (enable_desktop_fences && !enable_coordinated_leases) return -EINVAL;
 	native_sync_wq = alloc_workqueue("wddm-native-sync", WQ_UNBOUND | WQ_MEM_RECLAIM, 0);
 	if (!native_sync_wq) return -ENOMEM;
 	result = pci_register_driver(&aperture_driver);
 	if (result) { destroy_workqueue(native_sync_wq); return result; }
-	if (enable_coordinated_leases && (fence_hub.slots != 256 || cpu_hub.slots != 512)) {
+	if (enable_coordinated_leases && (fence_hub.slots != (enable_desktop_fences ? 512 : 256) || cpu_hub.slots != 512)) {
 		pci_unregister_driver(&aperture_driver); destroy_workqueue(native_sync_wq); return -EINVAL;
 	}
 	result = misc_register(&aperture_device);

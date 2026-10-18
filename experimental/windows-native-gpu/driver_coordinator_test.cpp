@@ -9,6 +9,7 @@ namespace cg=driver_bridge::coordinator;
 struct NativeMock : Driver {
     unsigned glCalls=0,syncCalls=0,resourceCalls=0,objectCalls=0,calls=0,destroyed=0,badStage=0;
     std::uint32_t next=100;std::set<std::uint32_t> live,devices;
+    std::uint64_t fenceOffset=0;
     bool vmStopped=false,requireVmStop=false;
     bool globalDevicePhase=false;
     std::map<std::uint32_t,std::uint32_t> paging,hardware;
@@ -19,7 +20,7 @@ struct NativeMock : Driver {
         ExpandedVendorGpuCapability|ExpandedVendorCpuCapability|VendorAllocationCapability|SharedVendorResourceCapability|NativeSharedTextureCapability|ContextCapability|GuestPagingCapability|HwQueueCapability,0x10de,0x1234};
     native_gpu::Capabilities capabilities() const override { return caps; }
     bool beginCoordinatedObjects(CoordinatedObjectCapacity value) override { CHECK(++objectCalls==1 && validCoordinatedObjectCapacity(value));return badStage!=4; }
-    OpenGlProfile beginOpenGl(std::uint32_t version) override { CHECK(++glCalls==1 && version==10);auto p=GuestOpenGlDesktopPresentationProfile;if(badStage==1) p.objectLimit=0;return p; }
+    OpenGlProfile beginOpenGl(std::uint32_t version) override { CHECK(++glCalls==1 && (version==10 || version==11));auto p=version==11 ? GuestOpenGlDesktopFenceProfile : GuestOpenGlDesktopPresentationProfile;if(badStage==1) p.objectLimit=0;return p; }
     SyncSharingProfile beginSyncSharing() override { CHECK(++syncCalls==1);auto p=GuestSyncSharingProfile;if(badStage==2) p.version=1;return p; }
     ResourceSharingProfile beginResourceSharing() override { CHECK(++resourceCalls==1);auto p=GuestResourceSharingProfile;if(badStage==3) p.handleLimit=0;return p; }
     Result openAdapter() override { ++calls;live.insert(++next);return {0,next,0}; }
@@ -28,7 +29,7 @@ struct NativeMock : Driver {
     Result queryAdapter(std::uint32_t,QueryDesc,std::vector<std::uint8_t>&) override { return {-95,0,0}; }
     Result createContext(std::uint32_t device,ContextDesc desc,std::vector<std::uint8_t>& data) override { CHECK(devices.count(device) && validContext(desc) && data.size()==desc.privateBytes);return openAdapter(); }
     GuestPagingResult createGuestPagingQueue(std::uint32_t device) override {
-        CHECK(devices.count(device));const auto queue=openAdapter();const auto sync=++next;pagingSyncs.insert(sync);paging.emplace(queue.nativeHandle,sync);return {queue,sync,0};
+        CHECK(devices.count(device));const auto queue=openAdapter();const auto sync=++next;pagingSyncs.insert(sync);paging.emplace(queue.nativeHandle,sync);return {queue,sync,fenceOffset};
     }
     HwQueueResult createHwQueue(std::uint32_t context,HwQueueDesc desc,std::vector<std::uint8_t>& data) override {
         CHECK(live.count(context) && validHwQueue(desc) && data.size()==desc.privateBytes);
@@ -47,6 +48,10 @@ struct NativeMock : Driver {
     Result makeResident(std::uint32_t,std::uint32_t) override { return {-95,0,0}; }
     Result mapAllocation(std::uint32_t,std::uint32_t) override { return {-95,0,0}; }
     Result queryResidency(std::uint32_t) override { return {-95,0,0}; }
+    Result reserveGpuAddress(std::uint32_t adapter,GpuReservationDesc desc) override {
+        CHECK(live.count(adapter) && validGpuReservation(desc));const auto result=openAdapter();
+        return {0,result.nativeHandle,0x10000000ull+result.nativeHandle*65536ull};
+    }
     Result destroy(Kind kind,std::uint32_t id) override {
         if(kind==Kind::PagingSync || kind==Kind::HwQueueSync) return {0,0,0};
         CHECK(!requireVmStop || vmStopped);
@@ -75,6 +80,50 @@ struct Control {
     }
 };
 int main() {
+    for(const auto capacity:{GuestOpenGlDesktopPresentationCapacity,GuestOpenGlDesktopFenceCapacity}) {
+        NativeMock driver;cg::Runtime owner(driver);Control client{owner};
+        const auto objects=capacity.mapping.aperture.version==11 ? GuestCoordinatedDesktopObjects : CoordinatedObjectCapacity{};
+        CHECK(!at<cg::Frame>(client.control(cg::Operation::Initialize,encoded(cg::Initialization{capacity,objects}))).status);
+        auto info=at<cg::Info>(client.control(cg::Operation::Info),32);
+        CHECK(cg::validInfo(info) && info.gl.version==capacity.mapping.aperture.version);
+        info.gl.version=info.gl.version==10 ? 11 : 10;CHECK(!cg::validInfo(info));
+        const auto actor=client.reg();CHECK(!at<Header>(client.call(actor,hello()),40).status);
+        const auto other=capacity.mapping.aperture.version==10 ? GuestOpenGlDesktopFenceCapacity : GuestOpenGlDesktopPresentationCapacity;
+        CHECK(at<Header>(client.call(actor,inner(Op::BeginOpenGl,0,encoded(other))),40).status==-95);
+        CHECK(!at<Header>(client.call(actor,inner(Op::BeginOpenGl,0,encoded(capacity))),40).status);
+        CHECK(at<Header>(client.call(actor,inner(Op::OpenAdapter)),40).handle==1);
+        CHECK(at<Header>(client.call(actor,inner(Op::CreateDevice,1)),40).handle==2);
+        const unsigned reservationLimit=capacity.mapping.aperture.version==11 ? 128u : 64u;
+        for(unsigned n=0;n<reservationLimit;++n)
+            CHECK(!at<Header>(client.call(actor,inner(Op::ReserveGpuAddress,1,encoded(GpuReservationDesc{0,0,0,65536}))),40).status);
+        CHECK(at<Header>(client.call(actor,inner(Op::ReserveGpuAddress,1,encoded(GpuReservationDesc{0,0,0,65536}))),40).status==-24);
+        driver.fenceOffset=511*4096ull+4088;
+        const auto paging=client.call(actor,inner(Op::CreateGuestPagingQueue,2));
+        CHECK(at<Header>(paging,40).status==(capacity.mapping.aperture.version==11 ? 0 : -5));
+        if(capacity.mapping.aperture.version==11) CHECK(at<PagingReply>(paging,72).offset==driver.fenceOffset);
+        CHECK(owner.teardownAfterVmExit(true) && driver.live.empty());
+    }
+    for(unsigned field=0;field<12;++field) {
+        NativeMock driver;cg::Runtime owner(driver);Control client{owner};
+        auto capacity=GuestOpenGlDesktopFenceCapacity;std::uint32_t words[12]{};
+        std::memcpy(words,&capacity,sizeof words);++words[field];std::memcpy(&capacity,words,sizeof words);
+        CHECK(at<cg::Frame>(client.control(cg::Operation::Initialize,encoded(cg::Initialization{capacity,GuestCoordinatedDesktopObjects}))).status==-22 && !driver.glCalls);
+    }
+    for(unsigned field=0;field<8;++field) {
+        NativeMock driver;cg::Runtime owner(driver);Control client{owner};
+        auto objects=GuestCoordinatedDesktopObjects;std::uint32_t words[8]{};
+        std::memcpy(words,&objects,sizeof words);++words[field];std::memcpy(&objects,words,sizeof words);
+        CHECK(at<cg::Frame>(client.control(cg::Operation::Initialize,encoded(cg::Initialization{GuestOpenGlDesktopFenceCapacity,objects}))).status==-22 && !driver.glCalls);
+    }
+    CHECK(!validCoordinatedAgreement(GuestOpenGlDesktopFenceCapacity,{}));
+    CHECK(!validCoordinatedAgreement(GuestOpenGlDesktopPresentationCapacity,GuestCoordinatedDesktopObjects));
+    CHECK(validCoordinatedAgreement(GuestOpenGlDesktopFenceCapacity,GuestCoordinatedDesktopObjects));
+    CHECK(CoordinatedObjectCapacity{}.version==3 && !CoordinatedObjectCapacity{}.vendorAllocations);
+    {
+        NativeMock driver;Session legacy(driver);CHECK(!at<Header>(legacy.dispatch(hello())).status);
+        CHECK(at<Header>(legacy.dispatch(inner(Op::BeginOpenGl,0,encoded(GuestOpenGlDesktopFenceCapacity)))).status==-93 && !driver.glCalls);
+    }
+    std::cout<<"COORDINATOR_FENCE_CONTROL profile11Exact512=true legacyLastPageRejected=true profileMismatchRejected=true byteBudgetsUnchanged=true native=mock gpu=false\n";
     NativeMock native;
     {
         cg::Runtime owner(native);Control client{owner};
@@ -90,7 +139,7 @@ int main() {
             if(mutation==3) request.objects.leaseLimit=769;
             if(mutation==4) request.objects.reservedGpuBytes++;
             if(mutation==5) request.objects.reservations++;
-            if(mutation==6) request.objects.reserved=1;
+            if(mutation==6) request.objects.vendorAllocations=1;
             CHECK(at<cg::Frame>(client.control(cg::Operation::Initialize,encoded(request))).status==-22 && !native.glCalls);
         }
         CHECK(!at<cg::Frame>(client.control(cg::Operation::Initialize,encoded(cg::Initialization{GuestOpenGlDesktopPresentationCapacity,{}}))).status);

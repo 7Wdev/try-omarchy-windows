@@ -89,9 +89,9 @@ public:
     Fences(const Fences&) = delete;
     ~Fences() { if (resource.fd >= 0) for (const auto& mapping : mappings) munmap(mapping.second.page, 4096); }
     void* map(std::uint32_t queue, std::uint64_t offset, const char* category = "paging") {
-        if (!queue || offset % 8 || offset >= driver_bridge::FenceApertureBytes || mappings.count(queue))
-            throw std::runtime_error("Invalid guest fence identity or offset");
         if (!slotCount) discover();
+        if (!queue || offset % 8 || offset >= (slotCount==512 && kernel.enabled() ? driver_bridge::DesktopFenceApertureBytes : driver_bridge::FenceApertureBytes) || mappings.count(queue))
+            throw std::runtime_error("Invalid guest fence identity or offset");
         if (offset >= slotCount * 4096ull || mappings.size() >= slotCount) throw std::runtime_error("Fence mapping exceeds configured aperture");
         const auto before = word(0x48);
         auto page = kernel.enabled() ? kernel.map(WDDM_APERTURE_FENCE, offset & ~4095ull, 4096) :

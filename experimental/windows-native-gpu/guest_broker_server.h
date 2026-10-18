@@ -16,6 +16,13 @@ class Kernel {
     }
 public:
     void close() { control=Fd(); }
+    wddm_aperture_desktop_fences desktopFenceCapacity() {
+        open();wddm_aperture_desktop_fences value{};value.version=1;
+        if(syscall(SYS_ioctl,control.get(),WDDM_APERTURE_DESKTOP_FENCES,&value))
+            throw std::system_error(errno,std::generic_category(),"Broker desktop fence capacity");
+        if(!wddm_aperture_valid_desktop_fences(value)) throw std::system_error(EPROTO,std::generic_category(),"Broker desktop fence receipt");
+        return value;
+    }
     wddm_aperture_coordinator_caps coordinatedCapacity() {
         open();wddm_aperture_coordinator_caps value{};value.version=1;
         if(syscall(SYS_ioctl,control.get(),WDDM_APERTURE_COORDINATOR_CAPS,&value))
@@ -34,7 +41,7 @@ public:
         open(); wddm_aperture_info value{}; value.version=WDDM_APERTURE_VERSION;
         if (syscall(SYS_ioctl,control.get(),WDDM_APERTURE_INFO,&value))
             throw std::system_error(errno,std::generic_category(),"Broker kernel layout");
-        if (value.version != WDDM_APERTURE_VERSION || !driver_bridge::validFenceSlots(value.fence_slots) ||
+        if (value.version != WDDM_APERTURE_VERSION || !driver_bridge::validFenceSlots(value.fence_slots,true) ||
             !driver_bridge::validVendorCpuSlots(value.allocation_slots,true) || value.cpu_slot_bytes != 1048576 ||
             value.fence_bytes != value.fence_slots*4096ull || value.allocation_bytes != value.allocation_slots*1048576ull ||
             value.active_cpu_bytes > WDDM_APERTURE_DESKTOP_CPU_LIMIT ||
@@ -42,10 +49,15 @@ public:
             throw std::system_error(EPROTO,std::generic_category(),"Broker kernel layout mismatch");
         if(value.active_leases>wddm_aperture_lease_limit(value.fence_slots)) {
             const auto leases=coordinatedCapacity();
-            if(!leases.enabled || value.fence_slots!=256 || value.allocation_slots!=512 || value.active_leases>leases.lease_limit)
+            if(!leases.enabled || (value.fence_slots!=256 && value.fence_slots!=512) || value.allocation_slots!=512 || value.active_leases>leases.lease_limit)
                 throw std::system_error(EPROTO,std::generic_category(),"Broker coordinated kernel layout mismatch");
         }
-        if (value.allocation_slots==512 && (value.fence_slots!=256 || capacity().flags!=(WDDM_APERTURE_DESKTOP_CPU_ENABLED|WDDM_APERTURE_SPARSE_ENABLED)))
+        if(value.fence_slots==512) {
+            const auto fences=desktopFenceCapacity();const auto leases=coordinatedCapacity();
+            if(!fences.enabled || fences.slots!=value.fence_slots || fences.bytes!=value.fence_bytes || !leases.enabled || value.allocation_slots!=512)
+                throw std::system_error(EPROTO,std::generic_category(),"Desktop fence kernel agreement missing");
+        }
+        if (value.allocation_slots==512 && ((value.fence_slots!=256 && value.fence_slots!=512) || capacity().flags!=(WDDM_APERTURE_DESKTOP_CPU_ENABLED|WDDM_APERTURE_SPARSE_ENABLED)))
             throw std::system_error(EPROTO,std::generic_category(),"Sparse kernel layout lacks exact capacity opt-in");
         return value;
     }
@@ -141,19 +153,25 @@ template<class Authority> void verifyCpuCapacityProfile(const std::vector<std::u
     Header h{}; std::memcpy(&h,packet.data(),sizeof h);
     std::uint32_t version=0; std::memcpy(&version,packet.data()+sizeof h,sizeof version);
     if (h.type!=static_cast<unsigned>(Op::BeginOpenGl) || version<7) return;
-    if ((version!=7 && version!=8 && version!=9 && version!=10) || packet.size()!=sizeof h+(version==10 ? sizeof(OpenGlDesktopPresentationCapacity) : version==9 ? sizeof(OpenGlDesktopLargeMapCapacity) : sizeof(OpenGlDesktop4kCapacity)))
+    if ((version!=7 && version!=8 && version!=9 && version!=10 && version!=11) || packet.size()!=sizeof h+(version>=10 ? sizeof(OpenGlDesktopPresentationCapacity) : version==9 ? sizeof(OpenGlDesktopLargeMapCapacity) : sizeof(OpenGlDesktop4kCapacity)))
         throw std::system_error(EPROTO,std::generic_category(),"Missing kernel capacity receipt");
     OpenGlDesktop4kCapacity wanted{}; std::memcpy(&wanted,packet.data()+sizeof h,sizeof wanted);
     OpenGlDesktopLargeMapCapacity large{};
     if (version==9) std::memcpy(&large,packet.data()+sizeof h,sizeof large);
     OpenGlDesktopPresentationCapacity presentation{};
-    if(version==10) std::memcpy(&presentation,packet.data()+sizeof h,sizeof presentation);
-    if (version==10 ? !validOpenGlDesktopPresentationCapacity(presentation) : version==7 ? !validOpenGlDesktop4kCapacity(wanted) : version==8 ? !validOpenGlDesktopSparseCapacity(wanted) : !validOpenGlDesktopLargeMapCapacity(large)) throw std::system_error(EPROTO,std::generic_category(),"Invalid CPU capacity contract");
+    if(version>=10) std::memcpy(&presentation,packet.data()+sizeof h,sizeof presentation);
+    if (version==11 ? !validOpenGlDesktopFenceCapacity(presentation) : version==10 ? !validOpenGlDesktopPresentationCapacity(presentation) : version==7 ? !validOpenGlDesktop4kCapacity(wanted) : version==8 ? !validOpenGlDesktopSparseCapacity(wanted) : !validOpenGlDesktopLargeMapCapacity(large)) throw std::system_error(EPROTO,std::generic_category(),"Invalid CPU capacity contract");
     const auto caps=kernel.capacity(); const auto layout=kernel.info();
     if (!wddm_aperture_valid_caps(caps) || caps.flags!=(WDDM_APERTURE_DESKTOP_CPU_ENABLED | (version>=8 ? WDDM_APERTURE_SPARSE_ENABLED : 0u)) ||
         caps.cpu_byte_limit!=wanted.cpuByteLimit || layout.version!=1 ||
         layout.allocation_slots!=wanted.cpuSlots || layout.fence_slots!=wanted.fenceSlots)
         throw std::system_error(EPROTO,std::generic_category(),"Kernel/profile CPU capacity mismatch");
+    if(version==11) {
+        const auto fences=kernel.desktopFenceCapacity();const auto leases=kernel.coordinatedCapacity();
+        if(!wddm_aperture_valid_desktop_fences(fences) || !fences.enabled || fences.slots!=wanted.fenceSlots ||
+           fences.bytes!=layout.fence_bytes || !wddm_aperture_valid_coordinator_caps(leases) || !leases.enabled)
+            throw std::system_error(EPROTO,std::generic_category(),"Missing actual desktop fence receipt");
+    }
 }
 template<class Native,class Authority,class ObjectAuthority,class Objects> int serveWithObjects(Peer& peer, Native& native, Authority& kernel, ObjectAuthority& objectKernel,Objects& objects) {
     Views views;

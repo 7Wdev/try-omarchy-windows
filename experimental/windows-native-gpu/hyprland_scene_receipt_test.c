@@ -7,6 +7,11 @@
 #undef __libc_start_main
 
 int main(void) {
+    if(!visible_gpu_terminal("{\"mapped\":true,\"hidden\":false,\"class\":\"omarchy-gpu-terminal\"}") ||
+       !visible_gpu_terminal("[{\"mapped\":true,\"hidden\":false,\"workspace\":{\"id\":1},\"title\":\"{terminal} \\\"quoted\\\"\",\"class\":\"omarchy-gpu-terminal\"}]") ||
+       visible_gpu_terminal("{\"mapped\":false,\"hidden\":false,\"class\":\"omarchy-gpu-terminal\"}") ||
+       visible_gpu_terminal("{\"mapped\":true,\"hidden\":true,\"class\":\"omarchy-gpu-terminal\"}") ||
+       visible_gpu_terminal("{\"mapped\":true,\"hidden\":false,\"class\":\"another-app\"}")) return 1;
     if(visible_shell_bar("{\"namespace\":\"omarchy-bar\",\"alpha\":0}") ||
        visible_shell_bar("{\"alpha\":0.5,\"namespace\":\"omarchy-bar\"}") ||
        visible_shell_bar("{\"namespace\":\"omarchy-bar\"}") ||

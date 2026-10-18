@@ -26,6 +26,32 @@ int main(void) {
         if(manager<0 || waitpid(manager,&status,0)!=manager || !WIFEXITED(status) || WEXITSTATUS(status)) return 125;
         puts("OMARCHY_DESKTOP_PROBE_BEGIN normalConfig=true normalUserBus=true uwsmSession=false");
     }
+    if(desktop && !access("/opt/wddm-root/desktop-content-probe",R_OK)) {
+        // This install writes only the owned RAM overlay. Decode the shipped
+        // 6K wallpaper at the actual 4K output size before its GPU upload.
+        const pid_t wallpaper=fork();
+        if(!wallpaper) {
+            execl("/usr/bin/install","install","-m","0644","/opt/wddm-root/data/Background.qml",
+                "/usr/share/omarchy/shell/plugins/background/Background.qml",(char*)NULL);_exit(127);
+        }
+        int installed=0;
+        if(wallpaper<0 || waitpid(wallpaper,&installed,0)!=wallpaper || !WIFEXITED(installed) || WEXITSTATUS(installed)) return 125;
+        puts("OMARCHY_WALLPAPER_DECODE width=3840 height=2160 sourceImageUnchanged=true ownedRamOverlayOnly=true gpuProof=false");
+        const pid_t setup=fork();
+        if(!setup) {
+            if(setgroups(0,NULL) || setgid(gid) || setuid(uid) || setenv("HOME","/home/omarchy",1)) _exit(126);
+            execl("/bin/bash","bash","-eu","-c",
+                "umask 077; current=$HOME/.local/state/omarchy/current; mkdir -p \"$current\"; "
+                "test -f /usr/share/omarchy/themes/tokyo-night/backgrounds/0-winding-road.jpg; "
+                "ln -sfn /usr/share/omarchy/themes/tokyo-night \"$current/theme\"; "
+                "printf 'tokyo-night\\n' > \"$current/theme.name\"; "
+                "ln -sfn /usr/share/omarchy/themes/tokyo-night/backgrounds/0-winding-road.jpg \"$current/background\"",(char*)NULL);
+            _exit(127);
+        }
+        int status=0;
+        if(setup<0 || waitpid(setup,&status,0)!=setup || !WIFEXITED(status) || WEXITSTATUS(status)) return 125;
+        puts("OMARCHY_DESKTOP_CONTENT_SETUP ordinaryUid=1000 shippedTheme=tokyo-night shippedWallpaper=0-winding-road.jpg ownedRamOverlayOnly=true");
+    }
     for(unsigned tick=0;tick<200 && access(port,F_OK);++tick) usleep(50000);
     if(chmod(port,0600)) { perror("native port permissions");return 125; }
     int result=125;
@@ -70,9 +96,11 @@ int main(void) {
             if(desktop && !access("/opt/wddm-root/desktop-presentation-probe",R_OK) &&
                setenv("WDDM_BRIDGE_DESKTOP_PRESENTATION_PROBE","1",1)) _exit(125);
             if(desktop && !access("/opt/wddm-root/desktop-coordinator-probe",R_OK)) {
-                if(setenv("WDDM_BRIDGE_ACTOR_PROFILE","10",1) || setenv("QSG_RHI_BACKEND","opengl",1) ||
+                if(setenv("WDDM_BRIDGE_ACTOR_PROFILE",!access("/opt/wddm-root/desktop-fence-probe",R_OK) ? "11" : "10",1) || setenv("QSG_RHI_BACKEND","opengl",1) ||
                    setenv("QSG_INFO","1",1)) _exit(125);
             }
+            if(desktop && !access("/opt/wddm-root/desktop-content-probe",R_OK) && setenv("WDDM_BRIDGE_DESKTOP_CONTENT","1",1)) _exit(125);
+            if(desktop && !access("/opt/wddm-root/desktop-protocol-trace",R_OK) && setenv("WAYLAND_DEBUG","1",1)) _exit(125);
             if(desktop && !access("/opt/wddm-root/desktop-large-map-probe",R_OK) &&
                setenv("WDDM_BRIDGE_DESKTOP_LARGE_MAP_PROBE","1",1)) _exit(125);
             for(unsigned index=0;index<sizeof(variables)/sizeof(variables[0]);++index)
@@ -89,12 +117,12 @@ int main(void) {
                 if(written!=sizeof primary) { kill(child,SIGKILL);waitpid(child,NULL,0);goto cleanup; }
                 shell_trace=fork();
                 if(!shell_trace) {
-                    execl("/usr/bin/journalctl","journalctl","-b","-t","omarchy-shell","--no-pager","-f","-n","100",(char*)NULL);_exit(127);
+                    execl("/usr/bin/journalctl","journalctl","-b","-t","omarchy-shell","-t","omarchy-gpu-app","--no-pager","-f","-n","100",(char*)NULL);_exit(127);
                 }
             }
             // Full-resolution initialization + explicit cleanup must fit a
             // separately bounded diagnostic window. Older probes keep 45 s.
-            const unsigned deadline=access("/opt/wddm-root/desktop-coordinator-probe",R_OK)==0 ? 120u : access("/opt/wddm-root/desktop-presentation-probe",R_OK)==0 ? 90u : 45u;
+            const unsigned deadline=access("/opt/wddm-root/desktop-fence-probe",R_OK)==0 ? 240u : access("/opt/wddm-root/desktop-coordinator-probe",R_OK)==0 ? 120u : access("/opt/wddm-root/desktop-presentation-probe",R_OK)==0 ? 90u : 45u;
             printf("NORMAL_ROOT_GRAPHICS_SUPERVISION deadlineSeconds=%u\n",deadline);
             struct sigaction action={0};action.sa_handler=timeout_handler;sigaction(SIGALRM,&action,NULL);alarm(deadline);
             int status=0;

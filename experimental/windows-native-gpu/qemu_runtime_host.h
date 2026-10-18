@@ -149,7 +149,7 @@ class Runtime {
     Handle job;
     OwnedProcess process;
     std::unique_ptr<Qmp> qmp;
-    std::array<std::optional<FenceLease>, driver_bridge::MaxFenceSlots> leases;
+    std::array<std::optional<FenceLease>, driver_bridge::DesktopFenceSlots> leases;
     std::uint32_t fenceSlots = driver_bridge::DefaultFenceSlots;
     std::size_t allocationSlots = driver_bridge::DefaultVendorCpuSlots;
     driver_cpu::Aperture allocationAperture;
@@ -160,10 +160,10 @@ class Runtime {
     bool stopped = false, failed = false;
     std::filesystem::path logfile;
 public:
-    Runtime(unsigned short driverPort, const qemu_fence::Paths& paths, bool enableCpu = false, bool cpuStoreTest = false, bool cpuEofTest = false, bool hwQueueEofTest = false, std::size_t cpuSlots = driver_bridge::DefaultVendorCpuSlots, bool syncEofTest = false, bool reservationEofTest = false, bool gpuStateEofTest = false, bool cpuSpanEofTest = false, bool syncNoMaxEofTest = false, bool hwQueueNoBroadcastEofTest = false, bool hwQueueNoBroadcastWaitEofTest = false, std::uint32_t configuredFenceSlots = 0, const char* readonlyRoot = nullptr)
+    Runtime(unsigned short driverPort, const qemu_fence::Paths& paths, bool enableCpu = false, bool cpuStoreTest = false, bool cpuEofTest = false, bool hwQueueEofTest = false, std::size_t cpuSlots = driver_bridge::DefaultVendorCpuSlots, bool syncEofTest = false, bool reservationEofTest = false, bool gpuStateEofTest = false, bool cpuSpanEofTest = false, bool syncNoMaxEofTest = false, bool hwQueueNoBroadcastEofTest = false, bool hwQueueNoBroadcastWaitEofTest = false, std::uint32_t configuredFenceSlots = 0, const char* readonlyRoot = nullptr, bool desktopFences = false)
         : fenceSlots(configuredFenceSlots ? configuredFenceSlots : cpuSlots >= driver_bridge::ExpandedVendorCpuSlots ? driver_bridge::ExpandedFenceSlots : driver_bridge::DefaultFenceSlots),
           allocationSlots(cpuSlots), allocationAperture(cpuSlots), allocationsEnabled(enableCpu), logfile(std::filesystem::absolute(paths.log)) {
-        if (!driver_bridge::validFenceSlots(fenceSlots) || !driver_bridge::validVendorCpuSlots(cpuSlots,gpu_diagnostic::HighResolution) || (cpuSlots==driver_bridge::SparseVendorCpuSlots && fenceSlots!=256) || (!enableCpu && cpuSlots != driver_bridge::DefaultVendorCpuSlots))
+        if (!driver_bridge::validFenceSlots(fenceSlots,desktopFences) || !driver_bridge::validVendorCpuSlots(cpuSlots,gpu_diagnostic::HighResolution) || (cpuSlots==driver_bridge::SparseVendorCpuSlots && fenceSlots!=(desktopFences ? 512u : 256u)) || (!enableCpu && cpuSlots != driver_bridge::DefaultVendorCpuSlots))
             throw std::runtime_error("Invalid configured allocation aperture capacity");
         std::vector<std::wstring> rootArguments;
         if (readonlyRoot) {
@@ -284,7 +284,12 @@ public:
     bool cleanExit() const { return stopped && !failed && !process.forced && process.exit == 0; }
     bool hasStopped() const { return stopped; }
     unsigned liveMappings() const { return mapped; }
-    bool canMapFence() const { return !stopped && generation != UINT64_MAX && mapped < fenceSlots; }
+    bool canMapFence() const {
+        const bool allowed=!stopped && generation!=UINT64_MAX && mapped<fenceSlots;
+        if(!allowed) std::cerr<<"{\"nativeFenceAdmissionRejected\":true,\"live\":"<<mapped<<",\"limit\":"<<fenceSlots
+            <<",\"runtimeStopped\":"<<(stopped ? "true" : "false")<<",\"generationExhausted\":"<<(generation==UINT64_MAX ? "true" : "false")<<"}\n";
+        return allowed;
+    }
     std::size_t allocationSlotLimit() const { return allocationSlots; }
     std::size_t fenceSlotLimit() const { return fenceSlots; }
     bool canMapAllocation(std::uint32_t bytes) const { return allocationsEnabled && !stopped && allocationAperture.canMap(bytes); }

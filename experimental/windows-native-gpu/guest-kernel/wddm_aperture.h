@@ -44,6 +44,19 @@ static inline int wddm_aperture_valid_coordinator_caps(struct wddm_aperture_coor
 		 caps.lease_limit == WDDM_APERTURE_DEFAULT_LEASES || caps.lease_limit == WDDM_APERTURE_MAX_LEASES);
 }
 #define WDDM_APERTURE_COORDINATOR_CAPS _IOWR('W', 0x51, struct wddm_aperture_coordinator_caps)
+/* Additive discovery. A 512-page physical fence BAR needs a separate immutable
+ * module opt-in; the original INFO/CAPS/coordinator payload sizes stay fixed. */
+struct wddm_aperture_desktop_fences {
+    __u32 version, enabled, slots, stride;
+    __u64 bytes, reserved;
+};
+static inline int wddm_aperture_valid_desktop_fences(struct wddm_aperture_desktop_fences c)
+{
+    return c.version==1 && c.enabled<=1 && !c.reserved && c.stride==4096 &&
+        c.bytes==(__u64)c.slots*4096 &&
+        (c.enabled ? c.slots==512 : (c.slots==64 || c.slots==128 || c.slots==256));
+}
+#define WDDM_APERTURE_DESKTOP_FENCES _IOWR('W', 0x52, struct wddm_aperture_desktop_fences)
 #define WDDM_OBJECT_SYNC 1
 #define WDDM_OBJECT_RESOURCE 2
 #define WDDM_OBJECT_MAX 256

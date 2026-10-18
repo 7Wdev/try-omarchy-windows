@@ -116,7 +116,7 @@ static void graphics_payload(void) {
     if(!access("/newroot/opt/wddm-root/desktop-coordinator-probe",F_OK)) {
         directory("/newroot/etc/systemd/system/omarchy-wddm-normal-graphics.service.d",0755);
         write_new("/newroot/etc/systemd/system/omarchy-wddm-normal-graphics.service.d/coordinator.conf",
-            "[Service]\nRuntimeMaxSec=150\nTimeoutStopSec=5\n",0644);
+            access("/newroot/opt/wddm-root/desktop-fence-probe",R_OK)==0 ? "[Service]\nRuntimeMaxSec=270\nTimeoutStopSec=5\n" : "[Service]\nRuntimeMaxSec=150\nTimeoutStopSec=5\n",0644);
         directory("/newroot/etc/systemd/system/user@1000.service.d",0755);
         write_new("/newroot/etc/systemd/system/user@1000.service.d/coordinator.conf","[Service]\nTimeoutStopSec=5\n",0644);
     }

@@ -19,7 +19,8 @@ def main():
                'Read-only root image must be specified once')]
     cases += [(['--stdio','--driver-consume-shared-process'],'Shared GPU worker requires explicit consumption opt-in')]
     cases += [(['--driver-fence-slots', value], 'Fence aperture slots must be specified once')
-              for value in ('0','32','65','127','129','255','257','512','-1','4294967296','128x')]
+              for value in ('0','32','65','127','129','255','257','513','-1','4294967296','128x')]
+    cases += [(['--driver-fence-slots','512'],'512 fence slots require the explicit owned coordinator')]
     cases += [(['--driver-fence-slots','64','--driver-fence-slots','256'], 'specified once')]
     cases += [(['--stdio','--driver-fence-slots',value], 'Fence aperture capacity requires')
               for value in ('64','128','256')]

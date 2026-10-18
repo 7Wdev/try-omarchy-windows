@@ -67,7 +67,7 @@ public:
             if (syscall(SYS_ioctl, control, WDDM_APERTURE_INFO, &value)) failed("info");
         }
         if (value.version != WDDM_APERTURE_VERSION ||
-            (value.fence_slots != 64 && value.fence_slots != 128 && value.fence_slots != 256) ||
+            !driver_bridge::validFenceSlots(value.fence_slots,true) ||
             value.allocation_slots < 16 || value.allocation_slots > 512 ||
             (value.allocation_slots & (value.allocation_slots - 1)) ||
             value.cpu_slot_bytes != 1048576 || value.fence_bytes != value.fence_slots * 4096ull ||
@@ -80,7 +80,13 @@ public:
                value.active_leases>guest_broker::client().coordinatedProfile().objects.leaseLimit)
                 throw std::runtime_error("Kernel coordinated lease agreement missing");
         }
-        if (value.allocation_slots==512 && (value.fence_slots!=256 || capacity().flags!=(WDDM_APERTURE_DESKTOP_CPU_ENABLED|WDDM_APERTURE_SPARSE_ENABLED)))
+        if(value.fence_slots==512) {
+            const auto profile=std::getenv("WDDM_BRIDGE_ACTOR_PROFILE");
+            if(!guest_broker::clientEnabled() || !profile || std::strcmp(profile,"11") ||
+               guest_broker::client().coordinatedProfile().capacity.mapping.aperture.fenceSlots!=512)
+                throw std::runtime_error("Desktop fence aperture lacks coordinator agreement");
+        }
+        if (value.allocation_slots==512 && ((value.fence_slots!=256 && value.fence_slots!=512) || capacity().flags!=(WDDM_APERTURE_DESKTOP_CPU_ENABLED|WDDM_APERTURE_SPARSE_ENABLED)))
             throw std::runtime_error("Sparse kernel layout lacks exact capacity opt-in");
         return value;
     }

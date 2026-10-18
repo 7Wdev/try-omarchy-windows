@@ -41,7 +41,8 @@ static_assert(sizeof(Frame)==32 && offsetof(Frame,sequence)==8 && offsetof(Frame
 static_assert(sizeof(Registration)==8 && sizeof(Alias)==32 && sizeof(Reference)==16 && sizeof(Initialization)==80 && sizeof(Info)==176,"Coordinator control payloads");
 constexpr std::size_t MaxPacket=actors::MaxEnvelopeBytes;
 inline bool validInfo(const Info& value) {
-    return validOpenGlDesktopPresentationCapacity(value.capacity) && validCoordinatedObjectCapacity(value.objects) && validOpenGlDesktopPresentationProfile(value.gl) &&
+    return validCoordinatedAgreement(value.capacity,value.objects) && validCoordinatedPresentationProfile(value.gl) &&
+        value.gl.version==value.capacity.mapping.aperture.version &&
         validSyncSharingProfile(value.sync) && validResourceSharingProfile(value.resource) &&
         value.caps.version==Version && value.caps.vendor==0x10de && value.maxActors==actors::MaxActors && !value.flags && !value.reserved;
 }
@@ -107,7 +108,7 @@ public:
         if(h.operation==Operation::Initialize) {
             Initialization wanted{};
             if(profiles) return response(h,-16);
-            if(!payload(packet,wanted) || !validOpenGlDesktopPresentationCapacity(wanted.capacity) || !validCoordinatedObjectCapacity(wanted.objects)) return response(h,-22);
+            if(!payload(packet,wanted) || !validCoordinatedAgreement(wanted.capacity,wanted.objects)) return response(h,-22);
             // A partial native initialization cannot be retried. The owner
             // catches the exception and stops the VM before releasing state.
             poisoned=true;

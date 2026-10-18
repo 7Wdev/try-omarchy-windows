@@ -20,6 +20,7 @@
 _Static_assert(sizeof(struct wddm_aperture_info) == 72, "fixed info ABI");
 _Static_assert(sizeof(struct wddm_aperture_create) == 64, "fixed lease ABI");
 _Static_assert(sizeof(struct wddm_aperture_revoke) == 16, "fixed revoke ABI");
+_Static_assert(sizeof(struct wddm_aperture_desktop_fences)==32,"additive fence discovery ABI");
 static unsigned checks;
 #define REQUIRE(test) do { if (!(test)) { \
   fprintf(stderr,"APERTURE_CONTRACT_FAIL line=%d errno=%d\n",__LINE__,errno); exit(1); \
@@ -133,7 +134,22 @@ int main(void)
     printf("APERTURE_CAPACITY version=1 flags=%u cpuByteLimit=%llu exact=true\n",capacity.flags,
         (unsigned long long)capacity.cpu_byte_limit);
     struct wddm_aperture_info layout=info(control);
-    REQUIRE(layout.version==1 && (layout.fence_slots==64 || layout.fence_slots==128 || layout.fence_slots==256) &&
+    struct wddm_aperture_desktop_fences desktop_fences={.version=1};
+    REQUIRE(!ioctl(control,WDDM_APERTURE_DESKTOP_FENCES,&desktop_fences) && wddm_aperture_valid_desktop_fences(desktop_fences));
+    REQUIRE(desktop_fences.slots==layout.fence_slots && desktop_fences.bytes==layout.fence_bytes);
+    for(unsigned n=0;n<7;++n) {
+        struct wddm_aperture_desktop_fences bad={.version=1};
+        if(n==0) bad.version=2;
+        if(n==1) bad.enabled=1;
+        if(n==2) bad.slots=512;
+        if(n==3) bad.stride=4096;
+        if(n==4) bad.bytes=2097152;
+        if(n==5) bad.reserved=1;
+        if(n==6) bad.reserved=1ULL<<32;
+        errno=0;REQUIRE(ioctl(control,WDDM_APERTURE_DESKTOP_FENCES,&bad)==-1 && errno==EINVAL);
+    }
+    printf("DESKTOP_FENCE_CONTRACT enabled=%u slots=%u bytes=%llu actualIoctl=true\n",desktop_fences.enabled,desktop_fences.slots,(unsigned long long)desktop_fences.bytes);
+    REQUIRE(layout.version==1 && (layout.fence_slots==64 || layout.fence_slots==128 || layout.fence_slots==256 || (desktop_fences.enabled && layout.fence_slots==512)) &&
         layout.fence_bytes==(uint64_t)layout.fence_slots*4096 &&
         layout.allocation_slots>=16 && layout.allocation_slots<=(capacity.flags & WDDM_APERTURE_SPARSE_ENABLED ? 512u : 256u) &&
         !(layout.allocation_slots&(layout.allocation_slots-1)) &&
@@ -200,7 +216,11 @@ int main(void)
     /* Exhaustion rejects without allocating an FD or changing accounting. */
     struct wddm_aperture_coordinator_caps coordinator={.version=1};
     REQUIRE(!ioctl(control,WDDM_APERTURE_COORDINATOR_CAPS,&coordinator) && wddm_aperture_valid_coordinator_caps(coordinator));
-    REQUIRE(!coordinator.enabled || (layout.fence_slots==256 && layout.allocation_slots==512 && capacity.flags==3));
+    REQUIRE(!coordinator.enabled || (layout.fence_slots==(desktop_fences.enabled ? 512u : 256u) && layout.allocation_slots==512 && capacity.flags==3));
+    REQUIRE(!desktop_fences.enabled || coordinator.enabled);
+    // Validate the last physical page without reading an unbacked host slot.
+    arg=fence();arg.offset=layout.fence_bytes-4096;
+    REQUIRE(!ioctl(control,WDDM_APERTURE_CREATE,&arg));revoke_lease(control,arg.cookie);close(arg.fd);
     for(unsigned n=0;n<4;++n) {
         struct wddm_aperture_coordinator_caps bad={.version=1};
         if(n==0) bad.version=2;

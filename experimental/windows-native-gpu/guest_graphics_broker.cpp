@@ -9,7 +9,8 @@
 static int coordinated(guest_broker::Fd& listener,const char* path,unsigned uid,unsigned gid,guest_broker::Fd notification,guest_broker::Fd primaryPipe) {
     using namespace guest_broker;
     CoordinatorPort controller(path);Kernel layout;
-    const auto info=layout.info();const auto caps=layout.capacity();controller.initialize(info,caps,layout.coordinatedCapacity());layout.close();
+    const auto info=layout.info();const auto caps=layout.capacity();
+    controller.initialize(info,caps,layout.coordinatedCapacity(),info.fence_slots==512 ? layout.desktopFenceCapacity() : wddm_aperture_desktop_fences{});layout.close();
     const char ready='R';if(write(notification.get(),&ready,1)!=1) throw std::runtime_error("Coordinator readiness failed");
     notification=Fd();
     pollfd trusted{primaryPipe.get(),POLLIN,0};
@@ -28,7 +29,7 @@ static int coordinated(guest_broker::Fd& listener,const char* path,unsigned uid,
     } workers;
     // This diagnostic process is VM-owned. A stalled actor is a failed run;
     // the Windows owner reaps QEMU before releasing retained native objects.
-    alarm(120);
+    alarm(info.fence_slots==512 ? 240 : 120);
     bool primaryAccepted=false;
     unsigned connections=0;
     while(!primaryFinished || active) {
