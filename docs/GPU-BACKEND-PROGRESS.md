@@ -21,7 +21,7 @@ Demand-allocated staging avoids preparing about 64 MiB at startup while retainin
 three ring slots. Both runs stay below the unchanged 1 GiB reported-GPU-usage guard.
 This bounded repeat does not establish long-run memory stability.
 
-[Actual UWSM image, reproducible evidence and retained failures](LIVE-UWSM-DEMAND-STAGING.md)
+[Actual UWSM image, reproducible evidence and retained failures](https://github.com/7Wdev/try-omarchy-windows/blob/b2c3891722520768defffa7b7f6f2278b06d149a/docs/LIVE-UWSM-DEMAND-STAGING.md)
 bind every application and the shell to authenticated NVIDIA renderers, real
 resource FDs and independent recipient NT references. The
 [earlier CPU-scan removal checkpoint](https://github.com/7Wdev/try-omarchy-windows/blob/cb505099ef461603c45ccc8b322031546966ee36/docs/LIVE-OMARCHY-GPU-LIFECYCLES.md)

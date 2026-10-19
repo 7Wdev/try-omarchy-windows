@@ -21,9 +21,9 @@ all backing mappings and native children are reclaimed **before VM exit**.
 Hyprland, Quickshell and every Alacritty application use NVIDIA.
 Demand-allocated staging avoids preparing about **64 MiB at startup** while retaining all three ring slots.
 Both runs stay below the unchanged **1 GiB reported GPU usage guard**. Earlier failures remain retained.
-[Actual frame, reconstructable raw evidence and scope](docs/LIVE-UWSM-DEMAND-STAGING.md).
+[Actual frame, reconstructable raw evidence and scope](https://github.com/7Wdev/try-omarchy-windows/blob/b2c3891722520768defffa7b7f6f2278b06d149a/docs/LIVE-UWSM-DEMAND-STAGING.md).
 
-![Actual unedited 4K UWSM-managed NVIDIA desktop](docs/images/omarchy-4k-terminal-staging-gpu-2026-10-19.png)
+![Actual unedited 4K UWSM-managed NVIDIA desktop](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/b2c3891722520768defffa7b7f6f2278b06d149a/docs/images/omarchy-4k-terminal-staging-gpu-2026-10-19.png)
 
 The image is run 82, frame 12, converted directly from the GPU backbuffer. This uses a disposable
 session fixture; normal first-boot and launcher/input integration remain open. The separate Windows

@@ -4,7 +4,7 @@ Source: https://github.com/7Wdev/try-omarchy-windows
 
 This fork tracks `omacom/try-omarchy-windows` and develops a Windows-native
 NVIDIA backend for QEMU/WHPX. Two fresh guests now pass a
-[UWSM-managed 4K GPU desktop and five application lifecycles](LIVE-UWSM-DEMAND-STAGING.md)
+[UWSM-managed 4K GPU desktop and five application lifecycles](https://github.com/7Wdev/try-omarchy-windows/blob/b2c3891722520768defffa7b7f6f2278b06d149a/docs/LIVE-UWSM-DEMAND-STAGING.md)
 with active service-state proof, demand-allocated staging and complete terminal
 actor reclamation below the unchanged usage guard. Earlier failed runs remain
 retained; long-run stability is open. The released launcher continues using the
