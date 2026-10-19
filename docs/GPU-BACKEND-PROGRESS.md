@@ -4,22 +4,24 @@ Updated **2026-10-19**. This page tracks the experimental QEMU/WHPX Windows-nati
 NVIDIA backend. The released Try Omarchy launcher continues using the upstream
 graphics runtime.
 
-![4K Hyprland frame captured on NVIDIA with wallpaper, bar and GPU application; backend stages 4/8; desktop product gates 0/4](images/gpu-backend-progress-2026-10-19.svg)
+![Two fresh UWSM 4K NVIDIA captures pass with complete terminal cleanup; backend stages 4/8; desktop product gates 0/4](images/gpu-backend-progress-terminal-staging-2026-10-19.svg)
 
 ## What is verified now?
 
-One fresh guest passes **UWSM in a real PAM/logind session**.
+Two fresh guests pass **UWSM in a real PAM/logind session**.
 Independent supervisor queries verify the active compositor service, exact
-MainPID/cgroup and active graphical session target. It passes **five NVIDIA application launch/close cycles**
+MainPID/cgroup and active graphical session target. Each passes **five NVIDIA application launch/close cycles**
 while the same Hyprland compositor keeps running. The real Omarchy 4.0.4
 desktop is captured at **3840×2160** with shipped wallpaper, Quickshell bar
-and a readable GPU application. All six retired client actors and every backing
-mapping are reclaimed before VM exit. Twelve GPU handoffs, complete first/last
+and a readable GPU application. Every actor, including the primary compositor,
+is reclaimed before native disconnect; every backing mapping is reclaimed before VM exit.
+Twelve GPU handoffs, complete first/last
 backbuffer audits, natural shutdown and native cleanup pass per run.
-Its fresh repeat exceeds the unchanged 1 GiB reported-GPU-usage guard after
-two handoffs and remains rejected. Repeatable UWSM rendering is still open.
+Demand-allocated staging avoids preparing about 64 MiB at startup while retaining all
+three ring slots. Both runs stay below the unchanged 1 GiB reported-GPU-usage guard.
+This bounded repeat does not establish long-run memory stability.
 
-[Actual UWSM image, reproducible evidence and retained failures](https://github.com/7Wdev/try-omarchy-windows/blob/2adb39c8c150526f97e5ec8da7e0698dc9f33330/docs/LIVE-UWSM-GPU-SESSION.md)
+[Actual UWSM image, reproducible evidence and retained failures](https://github.com/7Wdev/try-omarchy-windows/blob/b2c3891722520768defffa7b7f6f2278b06d149a/docs/LIVE-UWSM-DEMAND-STAGING.md)
 bind every application and the shell to authenticated NVIDIA renderers, real
 resource FDs and independent recipient NT references. The
 [earlier CPU-scan removal checkpoint](https://github.com/7Wdev/try-omarchy-windows/blob/cb505099ef461603c45ccc8b322031546966ee36/docs/LIVE-OMARCHY-GPU-LIFECYCLES.md)
@@ -35,9 +37,9 @@ the desktop does not establish normal launcher presentation or interactive use.
 
 The Windows diagnostic client area is 1280×720. Physical 4K scanout, all-frame
 display, normal first-boot/launcher/input, long-run stability and performance are
-unverified. The passing UWSM run has **zero mappings deferred to VM exit**;
-The repeat's usage-guard failure requires VM-exit reclamation and remains rejected.
-Resolving that pressure, normal launcher/input, continuous multi-window presentation, longer workloads
+unverified. Both passing UWSM runs have **zero mappings or native children deferred to VM exit**.
+Earlier usage-guard and primary-reservation failures remain retained and rejected.
+Long-run memory pressure, normal launcher/input, continuous multi-window presentation, longer workloads
 and recovery are next. The [earlier capture checkpoint](https://github.com/7Wdev/try-omarchy-windows/blob/2290aa6209289dddfbae54b542c524927414c020/docs/LIVE-OMARCHY-4K-REFERENCE-FIX.md)
 retains its original scope and failures.
 
