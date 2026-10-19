@@ -130,6 +130,10 @@ jobs:
           /tmp/guest-coordinator-test
           c++ -std=c++17 -O2 -Wall -Wextra -Werror -pthread experimental/windows-native-gpu/guest_broker_receipts_test.cpp -o /tmp/guest-broker-receipts-test
           /tmp/guest-broker-receipts-test
+          c++ -std=c++17 -O2 -Wall -Wextra -Werror experimental/windows-native-gpu/bounded_gpu_retirement_wait_test.cpp -o /tmp/bounded-gpu-retirement-wait-test
+          /tmp/bounded-gpu-retirement-wait-test
+          c++ -std=c++17 -O2 -Wall -Wextra -Werror -pthread experimental/windows-native-gpu/fair_rpc_mutex_test.cpp -o /tmp/fair-rpc-mutex-test
+          /tmp/fair-rpc-mutex-test
           c++ -std=c++17 -O2 -Wall -Wextra -Werror experimental/windows-native-gpu/diagnostic_profile_test.cpp -o /tmp/profile-test
           /tmp/profile-test
           c++ -std=c++17 -O2 -Wall -Wextra -Werror -DWDDM_BRIDGE_4K_LAB=1 experimental/windows-native-gpu/diagnostic_profile_test.cpp -o /tmp/profile-4k-test

@@ -4,19 +4,22 @@
 #include "guest_broker_server.h"
 #include "driver_coordinator.h"
 #include "guest_broker_receipts.h"
+#include "fair_rpc_mutex.h"
 #include <deque>
 #include <set>
 #include <atomic>
+#include <sys/stat.h>
 
 namespace guest_broker {
 namespace cg=driver_bridge::coordinator;
 namespace ar=driver_bridge::actors;
 class CoordinatorPort {
     Port port;
-    std::mutex lock;
+    driver_bridge::FairRpcMutex lock;
     std::uint64_t sequence=1,actorSequence=1;
     std::atomic<bool> failed{false};
     cg::Info agreement{};
+    bool liveRetirement=false;
     template<class T> static T at(const std::vector<std::uint8_t>& packet,std::size_t offset=0) {
         if(offset>packet.size() || sizeof(T)>packet.size()-offset) throw std::runtime_error("Truncated coordinator response");
         T value{};std::memcpy(&value,packet.data()+offset,sizeof value);return value;
@@ -25,7 +28,7 @@ class CoordinatorPort {
 public:
     explicit CoordinatorPort(std::string path):port(std::move(path),cg::MaxPacket) {}
     std::vector<std::uint8_t> control(cg::Operation operation,const std::vector<std::uint8_t>& payload={}) {
-        std::lock_guard<std::mutex> guard(lock);
+        std::lock_guard<driver_bridge::FairRpcMutex> guard(lock);
         if(failed || sequence==UINT64_MAX) reject("Coordinator control unavailable");
         cg::Frame h;h.operation=operation;h.sequence=sequence++;h.bytes=static_cast<std::uint32_t>(payload.size());
         auto packet=encode(h);packet.insert(packet.end(),payload.begin(),payload.end());
@@ -59,13 +62,26 @@ public:
         if(references) receipt("BROKER_COORDINATOR_REFERENCE_CAPACITY profile=13 objectsVersion=5 resources=64 syncs=64 perActor=16 byteBudgetsMultiplied=false\n");
     }
     cg::Info info() const { return agreement; }
+    void beginLiveRetirement() {
+        const auto profile=decode<driver_bridge::LiveRetirementProfile>(control(cg::Operation::BeginLiveRetirement,encode(driver_bridge::LiveRetirementProfile{})));
+        if(!driver_bridge::validLiveRetirementProfile(profile)) reject("Live retirement profile mismatch");
+        liveRetirement=true;
+        receipt("BROKER_COORDINATOR_LIVE_RETIREMENT version=1 batch=16 phases=4 trustedControllerOnly=true\n");
+    }
+    bool liveRetirementEnabled() const { return liveRetirement; }
+    driver_bridge::LiveRetirementProgress retireExited(std::uint64_t actor) {
+        if(!liveRetirement) reject("Live retirement not negotiated");
+        const auto progress=decode<driver_bridge::LiveRetirementProgress>(control(cg::Operation::RetireExitedActor,encode(actor)));
+        if(!driver_bridge::validLiveRetirementProgress(progress)) reject("Live retirement progress mismatch");
+        return progress;
+    }
     std::uint64_t attach(bool primary) {
         const auto id=decode<std::uint64_t>(control(cg::Operation::Register,encode(cg::Registration{primary ? cg::Role::Compositor : cg::Role::Application,0})));
         if(!id) reject("Coordinator actor identity absent");
         return id;
     }
     std::vector<std::uint8_t> call(std::uint64_t actor,const std::vector<std::uint8_t>& payload) {
-        std::lock_guard<std::mutex> guard(lock);
+        std::lock_guard<driver_bridge::FairRpcMutex> guard(lock);
         if(failed || actorSequence==UINT64_MAX || payload.size()<sizeof(driver_bridge::Header) || payload.size()>native_gpu::MaxPacket)
             reject("Coordinator actor call unavailable");
         ar::Envelope h;h.actor=actor;h.sequence=actorSequence++;h.bytes=static_cast<std::uint32_t>(payload.size());
@@ -134,6 +150,39 @@ public:
     void processExited() { if(id) owner.disconnect(id);dead=true; }
     void finish() {
         if(!id) { receipt("BROKER_COORDINATOR_METADATA_EXIT pid=%d nativeActorAllocated=false\n",process);return; }
+        if(owner.liveRetirementEnabled() && !primary) {
+            const auto started=std::chrono::steady_clock::now();
+            const auto deadline=started+std::chrono::seconds(8);
+            unsigned destroyed=0,steps=0;
+            driver_bridge::LiveRetirementProgress progress;
+            do {
+                progress=owner.retireExited(id);++steps;destroyed+=progress.destroyed;
+                if(!progress.remaining) break;
+                poll(nullptr,0,1);
+            } while(steps<512 && std::chrono::steady_clock::now()<deadline);
+            receipt("BROKER_COORDINATOR_LIVE_RETIREMENT_TIMING actor=%llu elapsedMs=%lld steps=%u\n",
+                static_cast<unsigned long long>(id),static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-started).count()),steps);
+            if(!progress.remaining && owner.release(id)) {
+                // Diagnostic witness under a root-owned directory. The ordinary
+                // compositor can observe completion but cannot forge it.
+                char name[32];const auto count=snprintf(name,sizeof name,"%d",process);
+                if(count<=0 || static_cast<std::size_t>(count)>=sizeof name) throw std::runtime_error("Retirement marker PID");
+                Fd directory(open("/run/wddm-retired",O_RDONLY|O_DIRECTORY|O_CLOEXEC|O_NOFOLLOW));
+                struct stat status{};
+                if(directory.get()<0 || fstat(directory.get(),&status) || status.st_uid || (status.st_mode&0022))
+                    throw std::runtime_error("Retirement marker directory ownership");
+                Fd marker(openat(directory.get(),name,O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC|O_NOFOLLOW,0444));
+                char value[64];const auto bytes=snprintf(value,sizeof value,"%llu\n",static_cast<unsigned long long>(id));
+                if(marker.get()<0 || bytes<=0 || static_cast<std::size_t>(bytes)>=sizeof value || fchmod(marker.get(),0444) || write(marker.get(),value,bytes)!=bytes)
+                    throw std::runtime_error("Retirement marker write");
+                receipt("BROKER_COORDINATOR_LIVE_RETIRED actor=%llu pid=%d destroyedWireObjects=%u steps=%u processExited=true cpuViewsRevoked=true sharedFdsDrained=true\n",
+                    static_cast<unsigned long long>(id),process,destroyed,steps);
+                receipt("BROKER_COORDINATOR_ACTOR_EXIT actor=%llu empty=true retainedUntilVmExit=false\n",static_cast<unsigned long long>(id));
+                return;
+            }
+            receipt("BROKER_COORDINATOR_LIVE_DEFERRED actor=%llu pid=%d remaining=%u phase=%u flags=%u ntstatus=%d steps=%u\n",
+                static_cast<unsigned long long>(id),process,progress.remaining,progress.phase,progress.flags,progress.ntstatus,steps);
+        }
         const auto empty=owner.release(id);
         receipt("BROKER_COORDINATOR_ACTOR_EXIT actor=%llu empty=%s retainedUntilVmExit=%s\n",static_cast<unsigned long long>(id),empty ? "true" : "false",empty ? "false" : "true");
     }

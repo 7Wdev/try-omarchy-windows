@@ -451,6 +451,12 @@ static void actorResourceAliases() {
 }
 
 int main() {
+    for(const auto kind:{Kind::Adapter,Kind::Device,Kind::PagingQueue,Kind::Allocation,Kind::Context,
+            Kind::PagingSync,Kind::VendorAllocation,Kind::Sync,Kind::GpuReservation,Kind::VendorResource})
+        require(nativeDestroyWaitsForSubmissions(kind));
+    require(nativeDestroyWaitsForSubmissions(static_cast<Kind>(99)));
+    require(!nativeDestroyWaitsForSubmissions(Kind::SharedResource) && !nativeDestroyWaitsForSubmissions(Kind::SharedSync));
+    require(!nativeDestroyWaitsForSubmissions(Kind::HwQueue) && !nativeDestroyWaitsForSubmissions(Kind::HwQueueSync));
     actorResourceAliases();
     {
         static_assert(static_cast<unsigned>(Op::EvictVendorAllocations)==0x20a1);
@@ -1004,14 +1010,36 @@ int main() {
     {
         GpuStateRanges ranges; GpuStateRanges::Plan plan;
         const auto page = 4096ull, base = 67108864ull;
+        using Scope=GpuStateRanges::RetirementScope;
+        require(ranges.retirementScope(1,base,page,5,false)==Scope::PagingFence);
+        require(ranges.retirementScope(1,base,page,5,true)==Scope::OwningDevice);
+        require(GpuStateRanges::retirementCoversQueue(Scope::OwningDevice,1,1));
+        require(!GpuStateRanges::retirementCoversQueue(Scope::OwningDevice,1,2));
+        require(GpuStateRanges::retirementCoversQueue(Scope::AllDevices,1,2));
+        require(!GpuStateRanges::retirementCoversQueue(Scope::PagingFence,1,1));
+        require(GpuStateRanges::retirementCoversQueue(static_cast<Scope>(99),1,2));
+        require(!ranges.requiresRetirement(1,base,page,5,false));
+        require(ranges.requiresRetirement(1,base,page,5,true));
         require(ranges.prepare(1, base, 4 * page, 5, plan)); ranges.commit(plan);
+        require(ranges.retirementScope(1,base,page,8,false)==Scope::AllDevices);
+        require(ranges.retirementScope(1,base,page,8,true)==Scope::AllDevices);
+        require(ranges.retirementScope(2,base,page,5,true)==Scope::AllDevices);
+        require(!ranges.requiresRetirement(1,base,4*page,5,false));
+        require(!ranges.requiresRetirement(1,base+page,page,5,false));
+        require(!ranges.requiresRetirement(1,base+4*page,page,8,false));
+        require(ranges.requiresRetirement(1,base+3*page,2*page,8,false));
+        require(ranges.requiresRetirement(2,base,page,5,false));
+        require(ranges.requiresRetirement(1,base,page,5,true));
         require(ranges.prepare(1, base + page, 2 * page, 8, plan)); ranges.commit(plan);
+        require(ranges.requiresRetirement(1,base,4*page,5,false));
         require(ranges.size() == 3 && ranges.bytes() == 4 * page);
         require(!ranges.prepare(2, base + page, page, 5, plan) && ranges.size() == 3);
         require(ranges.prepare(1, base + page, 2 * page, 5, plan)); ranges.commit(plan);
         require(ranges.size() == 1 && ranges.bytes() == 4 * page);
         require(ranges.prepareRemove(base + page, 2 * page, plan)); ranges.commit(plan);
         require(ranges.size() == 2 && ranges.bytes() == 2 * page);
+        require(!ranges.requiresRetirement(1,base+page,2*page,8,false));
+        require(ranges.requiresRetirement(1,base+page,3*page,8,false));
         ranges.release(2); require(ranges.size() == 2); ranges.release(1); require(ranges.empty());
         require(ranges.prepare(1, base, GpuStateRanges::ByteLimit, 4, plan)); ranges.commit(plan);
         require(!ranges.prepare(1, base + GpuStateRanges::ByteLimit, page, 4, plan));

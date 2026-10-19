@@ -20,6 +20,7 @@
 #include <array>
 #include "driver_wire.h"
 #include "driver_coordinator.h"
+#include "bounded_gpu_retirement_wait.h"
 #include "shared_resource_probe.h"
 #include "shared_sync_handle.h"
 #include "shared_resource_handle.h"
@@ -312,13 +313,18 @@ class KmtDriver : public Driver {
     bool residencyEnabled = false;
     bool cpuEnabled = false;
     std::uint32_t vendorCpuBytes = 0, peakVendorCpuBytes = 0;
+    unsigned vendorCpuByteQuotaRejections=0,gpuStateRetirementWaits=0,gpuStateRetirementTimeouts=0;
+    unsigned ntReferencesClosedDuringGpuWork=0;
     unsigned completedVendorLocks = 0, completedVendorUnlocks = 0, failedVendorLocks = 0, failedVendorUnlocks = 0;
     unsigned completedVendorSubrangeLocks = 0;
     unsigned vendorCpuContentsChanged = 0;
     bool cpuStoreTest = false;
     unsigned completedCpuStoreTests = 0, failedCpuStoreTests = 0;
     unsigned cpuLocksReleasedAfterVmExit = 0;
-    static std::uint64_t fingerprint(void* memory, std::uint32_t bytes) {
+    std::uint64_t cpuAllocationFingerprintCalls=0,cpuAllocationFingerprintBytes=0;
+    std::uint64_t fingerprint(void* memory, std::uint32_t bytes) {
+        if(!cpuStoreTest) throw std::runtime_error("CPU allocation fingerprint requires the explicit store diagnostic");
+        ++cpuAllocationFingerprintCalls;cpuAllocationFingerprintBytes+=bytes;
         const auto data = static_cast<volatile const unsigned char*>(memory);
         std::uint64_t hash = 14695981039346656037ull;
         for (std::uint32_t n = 0; n < bytes; ++n) hash = (hash ^ data[n]) * 1099511628211ull;
@@ -657,6 +663,21 @@ public:
         if (!asyncSubmitEnabled) return {Invalid,0,0};
         return submitNativeHwCommand(handle,desc,data,true);
     }
+    bool supportsLiveRetirement() const override {
+        return coordinatedObjectsEnabled && coordinatedObjectCapacity.version==5 && openGlProfileVersion==13 &&
+            runtime && !runtime->hasStopped() && retirementEnabled && asyncSubmitEnabled;
+    }
+    bool prepareLiveRetirement() override {
+        if(!supportsLiveRetirement() || !collectRetiredSubmissions() || !pendingSubmissions.empty() || !pendingHwSignals.empty() ||
+            !pendingHwWaits.empty() || !pendingContextSignals.empty()) return false;
+        for(const auto& item:hwQueues) {
+            const auto& queue=item.second;
+            if(!queue.fence) return false;
+            MemoryBarrier();const auto observed=*queue.fence;
+            if(observed==UINT64_MAX || observed<queue.submittedFence) return false;
+        }
+        return true;
+    }
     bool beginCoordinatedObjects(CoordinatedObjectCapacity value) override {
         if(!validCoordinatedObjectCapacity(value) || coordinatedObjectsEnabled || !openglDesktopPresentationEnabled || !runtime || runtime->hasStopped() ||
             !ownedAdapters.empty() || !deviceAdapters.empty() || !hwQueues.empty() || !syncObjects.empty()) return false;
@@ -897,20 +918,52 @@ public:
             paging == pagingFences.end() || !deviceAdapters.count(paging->second.device) ||
             deviceAdapters.at(paging->second.device) != range->second.adapter ||
             !gpuRangeContains(range->second.address, range->second.bytes, desc.base, desc.sizePages * 4096)) return {{Invalid, 0, 0}, 0};
-        for (const auto& mapped : vendorAllocations)
-            if (gpuRangesOverlap(desc.base, desc.sizePages * 4096, mapped.second.address, mapped.second.pages * 4096) &&
-                (mapped.second.device != paging->second.device || !gpuRangeContains(desc.base, desc.sizePages * 4096, mapped.second.address, mapped.second.pages * 4096))) return {{Invalid, 0, 0}, 0};
+        bool allocationOverlap=false;
+        for(const auto& mapped:vendorAllocations) {
+            if(!gpuRangesOverlap(desc.base,desc.sizePages*4096,mapped.second.address,mapped.second.pages*4096)) continue;
+            if(mapped.second.device!=paging->second.device ||
+                !gpuRangeContains(desc.base,desc.sizePages*4096,mapped.second.address,mapped.second.pages*4096)) return {{Invalid,0,0},0};
+            allocationOverlap=true;
+        }
         for (const auto& mapped : allocations)
             if (gpuRangesOverlap(desc.base, desc.sizePages * 4096, mapped.second.gpuAddress, mapped.second.size)) return {{Invalid, 0, 0}, 0};
         GpuStateRanges::Plan plan;
         if (!gpuStates.prepare(reservation, desc.base, desc.sizePages * 4096, desc.protection, plan)) return {{Invalid, 0, 0}, 0};
-        // Before replacing a mapping,
-        // require every tracked hardware command to have retired.
-        for (const auto& item : hwQueues) {
-            const auto& hardware = item.second;
-            if (!hardware.fence) return {{Invalid, 0, 0}, 0};
-            MemoryBarrier(); const auto retired = *hardware.fence;
-            if (retired == UINT64_MAX || retired < hardware.submittedFence) return {{Invalid, 0, 0}, 0};
+        const auto retirementScope=gpuStates.retirementScope(reservation,desc.base,desc.sizePages*4096,desc.protection,allocationOverlap);
+        const bool retirementRequired=retirementScope!=GpuStateRanges::RetirementScope::PagingFence;
+        // A fresh or identical reserved state releases no allocation data.
+        // WDDM orders it with the paging fence below. Allocation replacements
+        // wait for their owning device; protection changes wait for all devices.
+        const auto retired=[&] {
+            for(const auto& item:hwQueues) {
+                const auto& hardware=item.second;
+                if(!GpuStateRanges::retirementCoversQueue(retirementScope,paging->second.device,hardware.device)) continue;
+                if(!hardware.fence) return false;
+                MemoryBarrier();const auto observed=*hardware.fence;
+                if(observed==UINT64_MAX || observed<hardware.submittedFence) return false;
+            }
+            return true;
+        };
+        if(retirementRequired && !retired()) {
+            const auto started=GetTickCount64();++gpuStateRetirementWaits;
+            const bool complete=boundedGpuRetirementWait(retired,[]{return GetTickCount64();},[]{Sleep(1);});
+            if(!complete) ++gpuStateRetirementTimeouts;
+            std::cerr<<"{\"nativeGpuStateRetirementWait\":true,\"complete\":"<<(complete ? "true" : "false")
+                <<",\"elapsedMs\":"<<GetTickCount64()-started<<",\"limitMs\":250,\"cpuFenceWritten\":false"
+                <<",\"mappingDevice\":"<<paging->second.device<<",\"allocationOverlap\":"<<(allocationOverlap ? "true" : "false")
+                <<",\"base\":"<<desc.base<<",\"bytes\":"<<desc.sizePages*4096<<",\"busyQueues\":[";
+            bool first=true;
+            for(const auto& item:hwQueues) {
+                const auto& hardware=item.second;MemoryBarrier();
+                if(!GpuStateRanges::retirementCoversQueue(retirementScope,paging->second.device,hardware.device)) continue;
+                const auto observed=hardware.fence ? *hardware.fence : UINT64_MAX;
+                if(observed!=UINT64_MAX && observed>=hardware.submittedFence) continue;
+                if(!first) std::cerr<<',';
+                first=false;
+                std::cerr<<"{\"device\":"<<hardware.device<<",\"submitted\":"<<hardware.submittedFence<<",\"observed\":"<<observed<<'}';
+            }
+            std::cerr<<"]}\n";
+            if(!complete) return {{Invalid,0,0},0};
         }
         D3DDDI_MAPGPUVIRTUALADDRESS a{}; a.hPagingQueue = queue; // NULL allocation is required for Zero/NoAccess.
         a.BaseAddress = desc.base; a.MinimumAddress = desc.minimum; a.MaximumAddress = desc.maximum;
@@ -930,6 +983,11 @@ public:
             ++failedGpuStateMaps; throw std::runtime_error("Native GPU address-state mapping or paging retirement failed");
         }
         ++completedGpuStateMaps; ++completedGpuStateWaits;
+        std::cerr<<"{\"nativeGpuStateMappingPolicy\":true,\"retirementRequired\":"<<(retirementRequired ? "true" : "false")
+            <<",\"allocationOverlap\":"<<(allocationOverlap ? "true" : "false")
+            <<",\"retirementScope\":\""<<(retirementScope==GpuStateRanges::RetirementScope::PagingFence ? "pagingFence" :
+                retirementScope==GpuStateRanges::RetirementScope::OwningDevice ? "owningDevice" : "allDevices")
+            <<"\",\"pagingFenceRetired\":true,\"cpuFenceWritten\":false}\n";
         return {{status, 0, a.VirtualAddress}, a.PagingFenceValue};
     }
     ResourceSharingProfile beginResourceSharing() override {
@@ -1667,8 +1725,15 @@ public:
             return {{Invalid,0,0},{0,0,0}};
         auto& owned = entry->second;
         const auto bytes = static_cast<std::uint32_t>(owned.pages * 4096);
-        if (!bytes || bytes > MaxVendorCpuMappingBytes || !vendorCpuBudgetFits(vendorCpuBytes, bytes, capabilities().flags,openglDesktop4kCpuEnabled) || !reportedGpuUsageAcceptable())
+        if (!bytes || bytes > MaxVendorCpuMappingBytes)
             return {{static_cast<std::int32_t>(0xc0000017u), 0, 0}, {0, 0, 0}};
+        if(!vendorCpuBudgetFits(vendorCpuBytes,bytes,capabilities().flags,openglDesktop4kCpuEnabled)) {
+            ++vendorCpuByteQuotaRejections;
+            std::cerr<<"{\"nativeCpuByteAdmissionRejected\":true,\"usedBytes\":"<<vendorCpuBytes<<",\"requestedBytes\":"<<bytes
+                <<",\"limitBytes\":"<<vendorCpuByteLimit(capabilities().flags,openglDesktop4kCpuEnabled)<<"}\n";
+            return {{static_cast<std::int32_t>(0xc0000017u),0,0},{0,0,0}};
+        }
+        if(!reportedGpuUsageAcceptable()) return {{static_cast<std::int32_t>(0xc0000017u),0,0},{0,0,0}};
         // Exhaustion is a native allocation failure that the live UMD can
         // recover from, not a QMP mapping exception after obtaining a lock.
         if (!runtime->canMapAllocation(bytes)) {
@@ -1713,9 +1778,14 @@ public:
         }
         owned.cpuBytes = bytes; vendorCpuBytes += bytes;
         peakVendorCpuBytes = (std::max)(peakVendorCpuBytes, vendorCpuBytes);
-        owned.initialCpuFingerprint = fingerprint(owned.cpuData, bytes);
-        owned.firstWord = *static_cast<volatile std::uint64_t*>(owned.cpuData);
-        owned.lastWord = *reinterpret_cast<volatile std::uint64_t*>(static_cast<char*>(owned.cpuData) + bytes - 8);
+        // Write-combined GPU memory must not be scanned for ordinary locking.
+        // These reads exist only for the explicit CPU-store diagnostic; actual
+        // desktop correctness uses the independent retired-backbuffer audits.
+        if(cpuStoreTest) {
+            owned.initialCpuFingerprint = fingerprint(owned.cpuData, bytes);
+            owned.firstWord = *static_cast<volatile std::uint64_t*>(owned.cpuData);
+            owned.lastWord = *reinterpret_cast<volatile std::uint64_t*>(static_cast<char*>(owned.cpuData) + bytes - 8);
+        }
         owned.cpuLease = runtime->mapAllocation(a.pData, bytes);
         if (region.RegionSize != bytes || region.BaseAddress != a.pData) ++completedVendorSubrangeLocks;
         ++completedVendorLocks;
@@ -1734,7 +1804,7 @@ public:
             owned.cpuLease.reset();
         }
         MemoryBarrier();
-        const bool changed = owned.cpuBytes && fingerprint(owned.cpuData, owned.cpuBytes) != owned.initialCpuFingerprint;
+        const bool changed = cpuStoreTest && owned.cpuBytes && fingerprint(owned.cpuData, owned.cpuBytes) != owned.initialCpuFingerprint;
         if (cpuStoreTest && owned.cpuBytes) {
             auto first = static_cast<volatile std::uint64_t*>(owned.cpuData);
             auto last = reinterpret_cast<volatile std::uint64_t*>(static_cast<char*>(owned.cpuData) + owned.cpuBytes - 8);
@@ -1958,12 +2028,15 @@ public:
         const auto status = D3DKMTQueryAllocationResidency(&a); return {status, 0, static_cast<std::uint64_t>(residency)};
     }
     Result destroy(Kind kind, std::uint32_t handle) override {
+        bool referenceClosedDuringGpuWork=false;
         if (asyncSubmitEnabled) {
             if (!collectRetiredSubmissions()) return {Invalid,0,0};
             // A failed/abrupt guest must not free a dependency of queued work.
             // Queue destruction below separately requires its own retirement.
-            if ((!pendingSubmissions.empty() || !pendingHwSignals.empty()) && kind != Kind::HwQueue && kind != Kind::HwQueueSync)
+            const bool pending=!pendingSubmissions.empty() || !pendingHwSignals.empty();
+            if (pending && nativeDestroyWaitsForSubmissions(kind))
                 return {Invalid,0,0};
+            referenceClosedDuringGpuWork=pending && (kind==Kind::SharedResource || kind==Kind::SharedSync);
         }
         NTSTATUS status{};
         if (kind == Kind::VendorAllocation) {
@@ -2124,6 +2197,11 @@ public:
             if (status >= 0) { --activeAdapters; ownedAdapters.erase(handle); }
         }
         if (status < 0) ++cleanupFailures;
+        if(!status && referenceClosedDuringGpuWork) {
+            ++ntReferencesClosedDuringGpuWork;
+            std::cerr<<"{\"nativeNtReferenceClosedDuringGpuWork\":true,\"kind\":\""<<(kind==Kind::SharedResource ? "resource" : "sync")
+                <<"\",\"backingObjectsDestroyed\":false,\"recipientReferencesIndependent\":true}\n";
+        }
         return {status, 0, 0};
     }
     void releaseGuestMemory() {
@@ -2271,8 +2349,14 @@ public:
                   << ",\"failedVendorCpuLocks\":" << failedVendorLocks
                   << ",\"failedVendorCpuUnlocks\":" << failedVendorUnlocks
                   << ",\"liveVendorCpuBytes\":" << vendorCpuBytes
+                  << ",\"vendorCpuByteQuotaRejections\":"<<vendorCpuByteQuotaRejections
+                  << ",\"gpuStateRetirementWaits\":"<<gpuStateRetirementWaits<<",\"gpuStateRetirementTimeouts\":"<<gpuStateRetirementTimeouts
+                  << ",\"ntReferencesClosedDuringGpuWork\":"<<ntReferencesClosedDuringGpuWork
                   << ",\"peakVendorCpuBytes\":" << peakVendorCpuBytes
                   << ",\"vendorCpuContentsChanged\":" << vendorCpuContentsChanged
+                  << ",\"cpuAllocationFingerprintsEnabled\":"<<(cpuStoreTest ? "true" : "false")
+                  << ",\"cpuAllocationFingerprintCalls\":"<<cpuAllocationFingerprintCalls
+                  << ",\"cpuAllocationFingerprintBytes\":"<<cpuAllocationFingerprintBytes
                   << ",\"cpuStoreTestRequested\":" << (cpuStoreTest ? "true" : "false")
                   << ",\"completedCpuStoreTests\":" << completedCpuStoreTests << ",\"failedCpuStoreTests\":" << failedCpuStoreTests
                   << ",\"cpuLocksReleasedAfterVmExit\":" << cpuLocksReleasedAfterVmExit
@@ -2346,7 +2430,8 @@ static void serve(Stream& stream, const std::string& sectionName = {}, std::uint
             } catch(...) { failure=std::current_exception(); }
             std::cerr<<"{\"nativeCoordinatorSummary\":true,\"requestsHandled\":"<<count<<",\"peakActors\":"<<peakActors
                      <<",\"peakLiveObjects\":"<<peakObjects<<",\"retainedActors\":"<<owner.actorCount()
-                     <<",\"liveObjectsBeforeDisconnect\":"<<owner.objectCount()<<",\"nativeDriverCount\":1,\"memoryBudgetsMultiplied\":false}\n";
+                     <<",\"liveObjectsBeforeDisconnect\":"<<owner.objectCount()<<",\"liveRetiredActors\":"<<owner.liveRetiredActorCount()
+                     <<",\"liveRetiredWireObjects\":"<<owner.liveRetiredObjectCount()<<",\"nativeDriverCount\":1,\"memoryBudgetsMultiplied\":false}\n";
             // Live actor Sessions retain backing pages until QEMU is reaped.
             runtime->stop(failure ? 0 : 5000);
             const auto emptied=owner.teardownAfterVmExit(runtime->hasStopped());

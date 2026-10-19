@@ -48,6 +48,14 @@ cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\driver_coordinator_test.c
 if not "%errorlevel%"=="0" exit /b %errorlevel%
 driver-coordinator-test.exe
 if not "%errorlevel%"=="0" exit /b %errorlevel%
+cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\bounded_gpu_retirement_wait_test.cpp" /Fe:bounded-gpu-retirement-wait-test.exe
+if not "%errorlevel%"=="0" exit /b %errorlevel%
+bounded-gpu-retirement-wait-test.exe
+if not "%errorlevel%"=="0" exit /b %errorlevel%
+cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\fair_rpc_mutex_test.cpp" /Fe:fair-rpc-mutex-test.exe
+if not "%errorlevel%"=="0" exit /b %errorlevel%
+fair-rpc-mutex-test.exe
+if not "%errorlevel%"=="0" exit /b %errorlevel%
 cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\readonly_rootfs_args_test.cpp" /Fe:readonly-rootfs-args-test.exe
 if not "%errorlevel%"=="0" exit /b %errorlevel%
 readonly-rootfs-args-test.exe

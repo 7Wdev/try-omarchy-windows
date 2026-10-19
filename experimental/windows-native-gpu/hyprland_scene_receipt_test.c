@@ -34,6 +34,10 @@ static int prefix_boundary_control(const char* receipt) {
 }
 
 int main(void) {
+    pid_t terminal_pid=0;
+    if(!visible_gpu_terminal_with_pid("[{\"workspace\":{\"id\":1},\"pid\":123,\"class\":\"omarchy-gpu-terminal\",\"mapped\":true,\"hidden\":false}]",&terminal_pid) || terminal_pid!=123 ||
+       visible_gpu_terminal_with_pid("[{\"pid\":321,\"class\":\"other\"},{\"class\":\"omarchy-gpu-terminal\",\"mapped\":true,\"hidden\":false}]",&terminal_pid) ||
+       visible_gpu_terminal_with_pid("{\"pid\":-1,\"class\":\"omarchy-gpu-terminal\",\"mapped\":true,\"hidden\":false}",&terminal_pid)) return 1;
     if(!visible_gpu_terminal("{\"mapped\":true,\"hidden\":false,\"class\":\"omarchy-gpu-terminal\"}") ||
        !visible_gpu_terminal("[{\"mapped\":true,\"hidden\":false,\"workspace\":{\"id\":1},\"title\":\"{terminal} \\\"quoted\\\"\",\"class\":\"omarchy-gpu-terminal\"}]") ||
        visible_gpu_terminal("{\"mapped\":false,\"hidden\":false,\"class\":\"omarchy-gpu-terminal\"}") ||

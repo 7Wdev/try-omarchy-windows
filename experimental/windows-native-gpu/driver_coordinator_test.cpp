@@ -12,6 +12,9 @@ struct NativeMock : Driver {
     std::uint64_t fenceOffset=0;
     bool vmStopped=false,requireVmStop=false;
     bool globalDevicePhase=false;
+    bool liveSupported=true,liveReady=true;
+    std::uint32_t blockedHandle=0;
+    unsigned livePrepares=0;
     std::map<std::uint32_t,std::uint32_t> paging,hardware;
     std::set<std::uint32_t> pagingSyncs,hardwareSyncs;
     unsigned pagingWaits=0;
@@ -19,6 +22,12 @@ struct NativeMock : Driver {
     native_gpu::Capabilities caps{1,AsyncHwSubmitCapability|SyncCapability|GpuReservationCapability|VendorMemoryManagementCapability|
         ExpandedVendorGpuCapability|ExpandedVendorCpuCapability|VendorAllocationCapability|SharedVendorResourceCapability|NativeSharedTextureCapability|ContextCapability|GuestPagingCapability|HwQueueCapability,0x10de,0x1234};
     native_gpu::Capabilities capabilities() const override { return caps; }
+    bool supportsLiveRetirement() const override { return liveSupported && !vmStopped; }
+    bool prepareLiveRetirement() override { ++livePrepares;return supportsLiveRetirement() && liveReady; }
+    SyncResult createSync(std::uint32_t device,SyncDesc desc) override {
+        CHECK(devices.count(device) && validSync(desc));return {openAdapter(),{desc.type==5 ? 4096ull : 0ull,desc.type==5 ? 8192ull : 0ull}};
+    }
+    Result exportSync(std::uint32_t sync) override { CHECK(live.count(sync));return openAdapter(); }
     bool beginCoordinatedObjects(CoordinatedObjectCapacity value) override { CHECK(++objectCalls==1 && validCoordinatedObjectCapacity(value));return badStage!=4; }
     OpenGlProfile beginOpenGl(std::uint32_t version) override { CHECK(++glCalls==1 && (version==10 || version==11 || version==12 || version==13));auto p=version==13 ? GuestOpenGlDesktopReferenceProfile : version==12 ? GuestOpenGlDesktopSlotProfile : version==11 ? GuestOpenGlDesktopFenceProfile : GuestOpenGlDesktopPresentationProfile;if(badStage==1) p.objectLimit=0;return p; }
     SyncSharingProfile beginSyncSharing() override { CHECK(++syncCalls==1);auto p=GuestSyncSharingProfile;if(badStage==2) p.version=1;return p; }
@@ -53,6 +62,7 @@ struct NativeMock : Driver {
         return {0,result.nativeHandle,0x10000000ull+result.nativeHandle*65536ull};
     }
     Result destroy(Kind kind,std::uint32_t id) override {
+        if(id==blockedHandle) return {-16,0,0};
         if(kind==Kind::PagingSync || kind==Kind::HwQueueSync) return {0,0,0};
         CHECK(!requireVmStop || vmStopped);
         if(globalDevicePhase && kind==Kind::Adapter && !devices.empty()) return {-16,0,0};
@@ -79,7 +89,107 @@ struct Control {
         const auto reply=control(cg::Operation::Register,encoded(cg::Registration{role,0}));CHECK(!at<cg::Frame>(reply).status);return at<std::uint64_t>(reply,32);
     }
 };
+static void liveRetirementControls() {
+    {
+        NativeMock driver;cg::Runtime owner(driver);Control c{owner};
+        c.control(cg::Operation::Initialize,encoded(cg::Initialization{GuestOpenGlDesktopReferenceCapacity,GuestCoordinatedReferenceObjects}));
+        const auto actor=c.reg();c.call(actor,hello());c.call(actor,inner(Op::OpenAdapter));
+        c.control(cg::Operation::Disconnect,encoded(actor));
+        CHECK(at<cg::Frame>(c.control(cg::Operation::RetireExitedActor,encoded(actor))).status==-95 && !driver.destroyed);
+        CHECK(at<cg::Frame>(c.control(cg::Operation::BeginLiveRetirement,encoded(LiveRetirementProfile{}))).status==-16);
+        CHECK(at<cg::Frame>(c.control(cg::Operation::Release,encoded(actor))).status==-16 && !driver.destroyed);
+        CHECK(owner.teardownAfterVmExit(true));
+    }
+    for(unsigned field=0;field<4;++field) {
+        auto profile=LiveRetirementProfile{};std::uint32_t words[4]{};std::memcpy(words,&profile,sizeof words);
+        ++words[field];std::memcpy(&profile,words,sizeof words);CHECK(!validLiveRetirementProfile(profile));
+    }
+    for(unsigned field=0;field<8;++field) {
+        LiveRetirementProgress progress{1,1,20,16,16,0,0,0};CHECK(validLiveRetirementProgress(progress));
+        if(field==0) progress.version=2;
+        if(field==1) progress.phase=5;
+        if(field==2) progress.remaining=0;
+        if(field==3) progress.attempted=17;
+        if(field==4) progress.destroyed=17;
+        if(field==5) progress.sharedReferences=21;
+        if(field==6) progress.flags=8;
+        if(field==7) progress.ntstatus=1;
+        CHECK(!validLiveRetirementProgress(progress));
+    }
+    for(const auto& capacity:{GuestOpenGlDesktopPresentationCapacity,GuestOpenGlDesktopFenceCapacity,GuestOpenGlDesktopSlotCapacity}) {
+        NativeMock driver;cg::Runtime owner(driver);Control c{owner};
+        const auto objects=capacity.mapping.aperture.version==10 ? CoordinatedObjectCapacity{} : GuestCoordinatedDesktopObjects;
+        CHECK(!at<cg::Frame>(c.control(cg::Operation::Initialize,encoded(cg::Initialization{capacity,objects}))).status);
+        CHECK(at<cg::Frame>(c.control(cg::Operation::BeginLiveRetirement,encoded(LiveRetirementProfile{}))).status==-95 && !driver.livePrepares);
+    }
+    NativeMock driver;cg::Runtime owner(driver);Control c{owner};
+    CHECK(!at<cg::Frame>(c.control(cg::Operation::Initialize,encoded(cg::Initialization{GuestOpenGlDesktopReferenceCapacity,GuestCoordinatedReferenceObjects}))).status);
+    driver.liveSupported=false;
+    CHECK(at<cg::Frame>(c.control(cg::Operation::BeginLiveRetirement,encoded(LiveRetirementProfile{}))).status==-95);
+    driver.liveSupported=true;
+    CHECK(validLiveRetirementProfile(at<LiveRetirementProfile>(c.control(cg::Operation::BeginLiveRetirement,encoded(LiveRetirementProfile{})),32)));
+    CHECK(at<cg::Frame>(c.control(cg::Operation::BeginLiveRetirement,encoded(LiveRetirementProfile{}))).status==-16);
+    const auto primary=c.reg(cg::Role::Compositor),app=c.reg(),spare1=c.reg(),spare2=c.reg();
+    (void)spare1;(void)spare2;
+    for(const auto actor:{primary,app}) {
+        CHECK(!at<Header>(c.call(actor,hello()),40).status);
+        CHECK(!at<Header>(c.call(actor,inner(Op::BeginOpenGl,0,encoded(GuestOpenGlDesktopReferenceCapacity))),40).status);
+        CHECK(at<Header>(c.call(actor,inner(Op::OpenAdapter)),40).handle==1);
+    }
+    CHECK(at<cg::Frame>(c.control(cg::Operation::RetireExitedActor,encoded(app))).status==-16 && !driver.destroyed);
+    CHECK(at<Header>(c.call(app,inner(Op::CreateDevice,1)),40).handle==2);
+    auto context=encoded(ContextDesc{0,1,16,16,4,0});context.resize(context.size()+4);
+    CHECK(at<Header>(c.call(app,inner(Op::CreateContext,2,context)),40).handle==3);
+    auto queue=encoded(HwQueueDesc{0,4,0,0});queue.resize(queue.size()+4);
+    CHECK(at<Header>(c.call(app,inner(Op::CreateHwQueue,3,queue)),40).handle==4);
+    driver.blockedHandle=driver.next-1;
+    for(unsigned n=0;n<25;++n) CHECK(!at<Header>(c.call(app,inner(Op::ReserveGpuAddress,1,encoded(GpuReservationDesc{0,0,0,65536}))),40).status);
+    CHECK(!at<cg::Frame>(c.control(cg::Operation::Disconnect,encoded(app))).status);
+    const auto before=owner.objectCount();driver.liveReady=false;
+    auto progress=at<LiveRetirementProgress>(c.control(cg::Operation::RetireExitedActor,encoded(app)),32);
+    CHECK(validLiveRetirementProgress(progress) && progress.flags==RetirementGpuBusy && !progress.attempted && !driver.destroyed && owner.objectCount()==before);
+    driver.liveReady=true;
+    progress=at<LiveRetirementProgress>(c.control(cg::Operation::RetireExitedActor,encoded(app)),32);
+    CHECK(progress.phase==0 && progress.flags==RetirementNativeBusy && progress.remaining && driver.hardware.size()==1 && driver.devices.size()==1);
+    CHECK(at<cg::Frame>(c.control(cg::Operation::Release,encoded(app))).status==-16);
+    CHECK(at<cg::Frame>(c.control(cg::Operation::Register,encoded(cg::Registration{}))).status==-24);
+    driver.blockedHandle=0;unsigned batches=0;
+    do {
+        progress=at<LiveRetirementProgress>(c.control(cg::Operation::RetireExitedActor,encoded(app)),32);++batches;
+        CHECK(validLiveRetirementProgress(progress) && progress.attempted<=16 && !progress.flags && batches<=8);
+        CHECK(!at<Header>(c.call(primary,inner(Op::QueryDriverVersion,1)),40).status);
+    } while(progress.remaining);
+    CHECK(batches>=2 && progress.phase==4 && !driver.vmStopped && driver.devices.empty() && driver.hardware.empty());
+    CHECK(!at<cg::Frame>(c.control(cg::Operation::Release,encoded(app))).status && owner.liveRetiredActorCount()==1);
+    CHECK(at<actors::Envelope>(c.call(app,hello())).status==-9);
+    for(unsigned cycle=0;cycle<5;++cycle) {
+        const auto actor=c.reg();CHECK(actor>4);
+        c.call(actor,hello());c.call(actor,inner(Op::OpenAdapter));c.call(actor,inner(Op::CreateDevice,1));
+        CHECK(!at<cg::Frame>(c.control(cg::Operation::Disconnect,encoded(actor))).status);
+        progress=at<LiveRetirementProgress>(c.control(cg::Operation::RetireExitedActor,encoded(actor)),32);
+        CHECK(!progress.remaining && progress.destroyed==2 && !driver.vmStopped);
+        CHECK(!at<cg::Frame>(c.control(cg::Operation::Release,encoded(actor))).status);
+    }
+    CHECK(owner.liveRetiredActorCount()==6 && owner.liveRetiredObjectCount()>=40);
+    const auto shared=c.reg();c.call(shared,hello());c.call(shared,inner(Op::BeginSyncSharing));
+    c.call(shared,inner(Op::OpenAdapter));c.call(shared,inner(Op::CreateDevice,1));
+    const auto sync=at<Header>(c.call(shared,inner(Op::CreateSync,2,encoded(SyncDesc{5,NtSharedGpuSyncFlags,1,0,0}))),40);
+    CHECK(!sync.status && sync.handle);
+    const auto exported=at<Header>(c.call(shared,inner(Op::ExportSync,sync.handle)),40);CHECK(!exported.status && exported.handle);
+    c.control(cg::Operation::Disconnect,encoded(shared));const auto prepares=driver.livePrepares;
+    progress=at<LiveRetirementProgress>(c.control(cg::Operation::RetireExitedActor,encoded(shared)),32);
+    CHECK(progress.flags==RetirementSharedReferences && progress.sharedReferences==1 && driver.livePrepares==prepares && !progress.attempted);
+    CHECK(!at<Header>(c.control(cg::Operation::ReapReference,encoded(cg::Reference{shared,Kind::SharedSync,exported.handle})),32).status);
+    progress=at<LiveRetirementProgress>(c.control(cg::Operation::RetireExitedActor,encoded(shared)),32);
+    CHECK(!progress.remaining && !progress.flags);
+    CHECK(!at<cg::Frame>(c.control(cg::Operation::Release,encoded(shared))).status);
+    c.control(cg::Operation::Disconnect,encoded(primary));
+    CHECK(at<cg::Frame>(c.control(cg::Operation::RetireExitedActor,encoded(primary))).status==-13);
+    CHECK(owner.teardownAfterVmExit(true) && driver.live.empty());
+    std::cout<<"LIVE_RETIREMENT_CONTROL negotiatedOnly=true exitedApplicationOnly=true pendingGpuWorkRetained=true sharedReferencesRetained=true failedQueueRetainsParents=true batch16=true actorSlotsReused=true native=mock gpu=false\n";
+}
 int main() {
+    liveRetirementControls();
     for(const auto capacity:{GuestOpenGlDesktopPresentationCapacity,GuestOpenGlDesktopFenceCapacity,GuestOpenGlDesktopSlotCapacity,GuestOpenGlDesktopReferenceCapacity}) {
         NativeMock driver;cg::Runtime owner(driver);Control client{owner};
         const auto objects=capacity.mapping.aperture.version==13 ? GuestCoordinatedReferenceObjects : capacity.mapping.aperture.version>=11 ? GuestCoordinatedDesktopObjects : CoordinatedObjectCapacity{};

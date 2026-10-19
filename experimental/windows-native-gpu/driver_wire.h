@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Independent, deliberately small WDDM experiment, not the /dev/dxg or RM ABI.
 #pragma once
+#include "actor_retirement.h"
 #include "stream_profile.h"
 #include "opengl_profile.h"
 #include "wire.h"
@@ -408,6 +409,12 @@ enum class Op : std::uint32_t {
     CreateNativeInteropResource, QueryNativeInteropCaps, CaptureCompositorResource, QueueCompositorFrame
 };
 enum class Kind { Adapter, Device, PagingQueue, Allocation, Context, PagingSync, VendorAllocation, HwQueue, HwQueueSync, Sync, GpuReservation, VendorResource, SharedSync, SharedResource };
+// Closing an exported NT reference does not destroy a KMT allocation/sync or
+// its independently opened recipient. Queue paths check their own retirement.
+// Every backing object still requires the global pending-submission guard.
+inline bool nativeDestroyWaitsForSubmissions(Kind kind) {
+    return kind!=Kind::HwQueue && kind!=Kind::HwQueueSync && kind!=Kind::SharedResource && kind!=Kind::SharedSync;
+}
 struct ContextDesc {
     std::uint32_t node, engine, flags, clientHint, privateBytes, reserved;
 };
@@ -482,6 +489,8 @@ inline bool validCoordinatedAgreement(OpenGlDesktopPresentationCapacity capacity
 }
 class Driver {
 public:
+    virtual bool supportsLiveRetirement() const { return false; }
+    virtual bool prepareLiveRetirement() { return false; }
     virtual bool beginCoordinatedObjects(CoordinatedObjectCapacity) { return false; }
     virtual ~Driver() = default;
     virtual native_gpu::Capabilities capabilities() const = 0;
@@ -673,6 +682,7 @@ class Session {
     };
     std::map<std::uint32_t, Query> queries;
     std::uint32_t nextId = 1;
+    unsigned liveRetirementPhase=0;
     std::uint32_t allocatedBytes = 0;
     std::uint32_t vendorMappedPages = 0;
     std::uint32_t vendorCpuBytes = 0;
@@ -785,6 +795,55 @@ public:
     unsigned requestLimit() const { return openglDesktopNegotiated ? 0 : streamingNegotiated ? GuestStreamProfile.requestLimit : openglCompositorNegotiated ? GuestOpenGlCompositorProfile.requestLimit : 10000; }
     Session(const Session&) = delete;
     Session& operator=(const Session&) = delete;
+    // Only the privileged coordinator may call this after pidfd-confirmed
+    // process exit, CPU-view revocation and shared capability drainage. Keep
+    // failed children owned; do not advance to parent/resource phases early.
+    LiveRetirementProgress retireExitedActor() {
+        if(!coordinated || mayPresent || coordinated->gl.version!=13)
+            throw std::runtime_error("Live retirement requires a coordinated application");
+        LiveRetirementProgress progress;
+        progress.remaining=static_cast<std::uint32_t>(objects.size());progress.phase=liveRetirementPhase;
+        for(const auto& item:objects)
+            if(item.second.kind==Kind::SharedResource || item.second.kind==Kind::SharedSync) ++progress.sharedReferences;
+        if(objects.empty()) { progress.phase=liveRetirementPhase=4;return progress; }
+        if(progress.sharedReferences) { progress.flags=RetirementSharedReferences;return progress; }
+        if(!driver.prepareLiveRetirement()) { progress.flags=RetirementGpuBusy;return progress; }
+        queries.clear();
+        while(liveRetirementPhase<4 && progress.attempted<LiveRetirementProfile{}.batch) {
+            bool remain=false;
+            auto cursor=objects.end();
+            while(cursor!=objects.begin() && progress.attempted<LiveRetirementProfile{}.batch) {
+                auto current=std::prev(cursor);const auto kind=current->second.kind;
+                const bool queue=kind==Kind::HwQueue || kind==Kind::HwQueueSync;
+                const bool selected=liveRetirementPhase==0 ? queue : liveRetirementPhase==1 ? !queue && kind!=Kind::GpuReservation && kind!=Kind::Adapter :
+                                    liveRetirementPhase==2 ? kind==Kind::GpuReservation : kind==Kind::Adapter;
+                if(!selected) { cursor=current;continue; }
+                remain=true;
+                if(std::any_of(objects.begin(),objects.end(),[&](const auto& child){return child.second.parent==current->first;})) {
+                    cursor=current;continue;
+                }
+                ++progress.attempted;
+                const auto result=driver.destroy(kind,current->second.nativeHandle);
+                if(result.ntstatus>0 || result.nativeHandle || result.value) throw std::runtime_error("Malformed live native destruction result");
+                if(!result.ntstatus) { cursor=objects.erase(current);++progress.destroyed; }
+                else { progress.flags|=RetirementNativeBusy;progress.ntstatus=result.ntstatus;cursor=current; }
+            }
+            // Recheck after the pass: a removed borrowed child may unblock its
+            // queue/parent in this same batch, while a failed child stays charged.
+            if(remain) {
+                const bool remaining=std::any_of(objects.begin(),objects.end(),[&](const auto& item) {
+                    const auto kind=item.second.kind;const bool queue=kind==Kind::HwQueue || kind==Kind::HwQueueSync;
+                    return liveRetirementPhase==0 ? queue : liveRetirementPhase==1 ? !queue && kind!=Kind::GpuReservation && kind!=Kind::Adapter :
+                           liveRetirementPhase==2 ? kind==Kind::GpuReservation : kind==Kind::Adapter;
+                });
+                if(remaining) break;
+            }
+            ++liveRetirementPhase;
+        }
+        progress.remaining=static_cast<std::uint32_t>(objects.size());progress.phase=liveRetirementPhase;
+        if(objects.empty()) { progress.phase=liveRetirementPhase=4;progress.flags=0;progress.ntstatus=0; }
+        return progress;
+    }
     // Trusted owner-only cleanup after proven VM exit. The coordinator runs
     // each phase across every Session before advancing: another actor's live
     // hardware queue must not prevent reservation release permanently.
@@ -1682,7 +1741,11 @@ public:
             if (object.cpuBytes) return reply(h, -16);
             if (!object.gpuPages || object.gpuOffsetPages) return reply(h, -95);
             const auto bytes = object.gpuPages * 4096u;
-            if (!vendorCpuBudgetFits(vendorCpuBytes, bytes, driver.capabilities().flags,openglDesktop4kCpuNegotiated)) return reply(h, -24);
+            if (!vendorCpuBudgetFits(vendorCpuBytes, bytes, driver.capabilities().flags,openglDesktop4kCpuNegotiated)) {
+                std::cerr<<"{\"wireCpuByteAdmissionRejected\":true,\"usedBytes\":"<<vendorCpuBytes<<",\"requestedBytes\":"<<bytes
+                    <<",\"limitBytes\":"<<vendorCpuByteLimit(driver.capabilities().flags,openglDesktop4kCpuNegotiated)<<"}\n";
+                return reply(h,-24);
+            }
             const auto native = driver.lockVendorAllocation(object.nativeHandle, device->second.nativeHandle);
             if (native.lock.nativeHandle || (native.lock.ntstatus >= 0 && (native.lock.ntstatus != 0 ||
                 !validVendorCpuReply(native.lock.value, native.output,openglDesktopSparseNegotiated,openglDesktopSlotsNegotiated) || native.output.bytes != bytes)) ||

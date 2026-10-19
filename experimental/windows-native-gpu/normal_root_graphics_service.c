@@ -7,6 +7,52 @@
 #include <pwd.h>
 #include <stdint.h>
 
+// Preserve a failed owned compositor's report before its RAM overlay disappears.
+// The PID comes from waitpid, not guest input; never follow a report symlink.
+static void compositor_crash_report(int trace,pid_t child,uid_t owner) {
+    char path[160];
+    const int path_size=snprintf(path,sizeof path,"/home/omarchy/.cache/hyprland/hyprlandCrashReport%ld.txt",(long)child);
+    if(path_size<=0 || (size_t)path_size>=sizeof path) return;
+    const int report=open(path,O_RDONLY|O_NOFOLLOW|O_CLOEXEC|O_NONBLOCK);
+    struct stat metadata;
+    if(report<0) {
+        dprintf(trace,"\nNORMAL_ROOT_GRAPHICS_CRASH_REPORT_UNAVAILABLE pid=%ld errno=%d\n",(long)child,errno);
+        return;
+    }
+    if(fstat(report,&metadata) || !S_ISREG(metadata.st_mode) || metadata.st_uid!=owner ||
+       metadata.st_nlink!=1 || metadata.st_size<=0) {
+        close(report);
+        dprintf(trace,"\nNORMAL_ROOT_GRAPHICS_CRASH_REPORT_REJECTED pid=%ld\n",(long)child);
+        return;
+    }
+    const size_t limit=96u*1024u;
+    const size_t bytes=(uintmax_t)metadata.st_size>limit ? limit : (size_t)metadata.st_size;
+    dprintf(trace,"\nNORMAL_ROOT_GRAPHICS_CRASH_REPORT_BEGIN pid=%ld bytes=%zu truncated=%s owner=%u\n",
+        (long)child,bytes,(uintmax_t)metadata.st_size>limit ? "true" : "false",(unsigned)owner);
+    size_t offset=0;unsigned index=0;
+    while(offset<bytes) {
+        unsigned char raw[1536];char line[sizeof raw*2+128];
+        const size_t requested=bytes-offset<sizeof raw ? bytes-offset : sizeof raw;
+        ssize_t count;
+        do { count=read(report,raw,requested); } while(count<0 && errno==EINTR);
+        if(count<=0) break;
+        const int prefix=snprintf(line,sizeof line,"\nNORMAL_ROOT_GRAPHICS_CRASH_REPORT_HEX pid=%ld index=%u data=",(long)child,index);
+        if(prefix<=0 || (size_t)prefix+(size_t)count*2+1>sizeof line) break;
+        static const char hex[]="0123456789abcdef";
+        for(size_t byte=0;byte<(size_t)count;++byte) {
+            line[prefix+byte*2]=hex[raw[byte]>>4];line[prefix+byte*2+1]=hex[raw[byte]&15];
+        }
+        const size_t size=(size_t)prefix+(size_t)count*2;line[size]='\n';
+        ssize_t written;
+        do { written=write(trace,line,size+1); } while(written<0 && errno==EINTR);
+        if(written!=(ssize_t)(size+1)) break;
+        offset+=(size_t)count;++index;
+    }
+    close(report);
+    dprintf(trace,"\nNORMAL_ROOT_GRAPHICS_CRASH_REPORT_END pid=%ld chunks=%u bytes=%zu complete=%s\n",
+        (long)child,index,offset,offset==bytes ? "true" : "false");
+}
+
 int main(void) {
     if(getpid()==1 || getuid() || geteuid() || access("/opt/wddm-root/normal-root-graphics",R_OK)) return 125;
     setvbuf(stdout,NULL,_IONBF,0);setvbuf(stderr,NULL,_IONBF,0);
@@ -100,6 +146,7 @@ int main(void) {
                    setenv("QSG_INFO","1",1)) _exit(125);
             }
             if(desktop && !access("/opt/wddm-root/desktop-content-probe",R_OK) && setenv("WDDM_BRIDGE_DESKTOP_CONTENT","1",1)) _exit(125);
+            if(desktop && !access("/opt/wddm-root/desktop-retirement-probe",R_OK) && setenv("WDDM_BRIDGE_DESKTOP_RETIREMENT","1",1)) _exit(125);
             if(desktop && !access("/opt/wddm-root/desktop-protocol-trace",R_OK) && setenv("WAYLAND_DEBUG","1",1)) _exit(125);
             if(desktop && !access("/opt/wddm-root/desktop-large-map-probe",R_OK) &&
                setenv("WDDM_BRIDGE_DESKTOP_LARGE_MAP_PROBE","1",1)) _exit(125);
@@ -134,6 +181,7 @@ int main(void) {
                     const int trace=open("/dev/console",O_WRONLY|O_NOCTTY|O_CLOEXEC);
                     if(trace>=0) {
                         dprintf(trace,"NORMAL_ROOT_GRAPHICS_CHILD_SIGNAL signal=%d coreDumped=%s\n",WTERMSIG(status),WCOREDUMP(status) ? "true" : "false");
+                        compositor_crash_report(trace,child,(uid_t)uid);
                         close(trace);
                     }
                 }

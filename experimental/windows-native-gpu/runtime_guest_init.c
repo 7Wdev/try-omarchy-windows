@@ -40,6 +40,7 @@ static pid_t graphics_broker_start_as(const char* port,unsigned uid,unsigned gid
         unsetenv("LD_PRELOAD"); setenv("LD_LIBRARY_PATH","/usr/lib/x86_64-linux-gnu",1);
         if(coordinated) {
             if(!access("/opt/wddm-root/desktop-reference-probe",R_OK) && setenv("WDDM_BRIDGE_COORDINATED_REFERENCES","1",1)) _exit(127);
+            if(!access("/opt/wddm-root/desktop-retirement-probe",R_OK) && setenv("WDDM_BRIDGE_COORDINATED_RETIREMENT","1",1)) _exit(127);
             close(primary[1]);if(fcntl(primary[0],F_SETFD,0)) _exit(127);
             char identity[24];snprintf(identity,sizeof identity,"%d",primary[0]);
             execl("/guest-graphics-broker","/guest-graphics-broker","/run/wddm-broker/graphics.sock",port,user,group,descriptor,"--coordinator",identity,(char*)NULL);

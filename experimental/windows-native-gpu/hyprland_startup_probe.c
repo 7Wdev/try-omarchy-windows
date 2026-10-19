@@ -197,7 +197,8 @@ static int visible_layer(const char* text,const char* name) {
     return !errno && parsed!=alpha+1 && parsed<=end && value>=0.99 && value<=1.0;
 }
 static int visible_shell_bar(const char* text) { return visible_layer(text,"\"omarchy-bar\""); }
-static int visible_gpu_terminal(const char* text) {
+static int visible_gpu_terminal_with_pid(const char* text,pid_t* pid) {
+    if(pid) *pid=0;
     const char* match=strstr(text,"\"omarchy-gpu-terminal\"");
     if(!match) return 0;
     // Client records contain nested workspace objects. Track the outer object
@@ -226,7 +227,59 @@ static int visible_gpu_terminal(const char* text) {
     mapped=strchr(mapped,':');hidden=strchr(hidden,':');if(!mapped || !hidden) return 0;
     do { ++mapped; } while(*mapped==' ' || *mapped=='\t');
     do { ++hidden; } while(*hidden==' ' || *hidden=='\t');
-    return !strncmp(mapped,"true",4) && !strncmp(hidden,"false",5);
+    if(strncmp(mapped,"true",4) || strncmp(hidden,"false",5)) return 0;
+    if(pid) {
+        const char* field=strstr(begin,"\"pid\"");
+        if(!field || field>=end || !(field=strchr(field,':')) || field>=end) return 0;
+        char* parsed=NULL;errno=0;const long value=strtol(field+1,&parsed,10);
+        if(errno || parsed==field+1 || parsed>end || value<=0 || value>INT32_MAX) return 0;
+        *pid=(pid_t)value;
+    }
+    return 1;
+}
+static int visible_gpu_terminal(const char* text) { return visible_gpu_terminal_with_pid(text,NULL); }
+static pid_t last_gpu_terminal_pid;
+static int wait_gpu_retirement(pid_t pid) {
+    char path[96];const int count=snprintf(path,sizeof path,"/run/wddm-retired/%d",pid);
+    if(pid<=0 || count<=0 || count>=(int)sizeof path) return -1;
+    for(unsigned tick=0;tick<120;++tick) {
+        struct stat status;errno=0;const int found=lstat(path,&status);
+        if(!found && status.st_size>0) {
+            if(!S_ISREG(status.st_mode) || status.st_uid || status.st_nlink!=1 || (status.st_mode&0222) || status.st_size>24) return -1;
+            FILE* file=fopen(path,"rb");if(!file) return -1;
+            char value[32]={0};const size_t bytes=fread(value,1,sizeof(value)-1,file);
+            const int bad=ferror(file),closed=fclose(file);if(bad || closed || !bytes) return -1;
+            char* end=NULL;errno=0;const unsigned long long actor=strtoull(value,&end,10);
+            if(errno || !actor || end==value || strcmp(end,"\n")) return -1;
+            char* const clients[]={"/usr/bin/hyprctl","-j","clients",NULL};
+            if(run_ctl(clients) || visible_gpu_terminal(last_control_reply)) return -1;
+            char line[256];const int length=snprintf(line,sizeof line,
+                "OMARCHY_GPU_LIVE_RETIREMENT_OBSERVED pid=%d actor=%llu compositorStillRunning=true rootOwnedWitness=true gpuProof=false\n",pid,actor);
+            return length<=0 || length>=(int)sizeof line ? -1 : scene_receipt(line);
+        }
+        if(found && errno!=ENOENT) return -1;
+        // Keep the actual compositor active while its former client's buffers
+        // and native actor drain; this is not a VM-shutdown witness.
+        if(!(tick%5)) {
+            char* const repaint[]={"/usr/bin/hyprctl","notify","-1","100","rgb(4477aa)","Retiring GPU application",NULL};
+            if(run_ctl(repaint)) return -1;
+        }
+        usleep(100000);
+    }
+    return -1;
+}
+static int close_gpu_terminal(pid_t pid,int final) {
+    char* const close_window[]={"/usr/bin/hyprctl","eval","hl.dispatch(hl.dsp.window.close({window='class:omarchy-gpu-terminal'}))",NULL};
+    if(run_ctl(close_window)) return -1;
+    for(unsigned tick=0;tick<50;++tick) {
+        char* const clients[]={"/usr/bin/hyprctl","-j","clients",NULL};
+        if(!run_ctl(clients) && !strstr(last_control_reply,"\"omarchy-gpu-terminal\"")) {
+            if(getenv("WDDM_BRIDGE_DESKTOP_RETIREMENT") && wait_gpu_retirement(pid)) return -1;
+            return final ? scene_receipt("OMARCHY_GPU_APPLICATION_CLOSED clientUnmapped=true gpuProof=false\n") : 0;
+        }
+        usleep(100000);
+    }
+    return -1;
 }
 static int prepare_scene(void) {
     if(getenv("WDDM_BRIDGE_NORMAL_DESKTOP_PROBE")) {
@@ -250,24 +303,39 @@ static int prepare_scene(void) {
         scene_hex_receipt("OMARCHY_DESKTOP_LAYERS_HEX",last_control_reply,strlen(last_control_reply));
         if(getenv("WDDM_BRIDGE_DESKTOP_CONTENT")) {
             if(!visible_shell_bar(last_control_reply) || !visible_layer(last_control_reply,"\"omarchy-background\"")) return -1;
-            char* const launch[]={"/usr/bin/hyprctl","eval",
-                "hl.exec_cmd([[systemd-cat -t omarchy-gpu-app -- /opt/wddm-root/bin/alacritty --config-file /opt/wddm-root/data/alacritty-desktop.toml -vv --class omarchy-gpu-terminal --title 'Omarchy terminal' --hold -e /usr/bin/env -u LD_PRELOAD /bin/bash /opt/wddm-root/data/gpu-terminal-scene.sh]], {float=true, size={1200,800}, center=true})",NULL};
-            if(run_ctl(launch)) return -1;
-            char* const clients[]={"/usr/bin/hyprctl","-j","clients",NULL};
-            unsigned tick=0;
-            for(;tick<40;++tick) { if(!run_ctl(clients) && visible_gpu_terminal(last_control_reply)) break;sleep(1); }
-            scene_hex_receipt("OMARCHY_GPU_APPLICATION_CLIENTS_HEX",last_control_reply,strlen(last_control_reply));
-            printf("OMARCHY_GPU_APPLICATION_WAIT mapped=%s polls=%u gpuProof=false\n",tick<40 ? "true" : "false",tick);
-            if(tick==40) return -1;
-            char* const place[]={"/usr/bin/hyprctl","eval","hl.dispatch(hl.dsp.window.resize({x=1200,y=800})); hl.dispatch(hl.dsp.window.center())",NULL};
-            if(run_ctl(place)) return -1;
-            unsigned content_tick=0;
-            for(;content_tick<100 && access("/tmp/omarchy-gpu-terminal-ready",R_OK);++content_tick) usleep(200000);
-            if(content_tick==100) return -1;
-            puts("OMARCHY_GPU_APPLICATION_CONTENT_READY ptyMarkerObserved=true gpuProof=false");
-            sleep(2);
-            if(run_ctl(clients) || !visible_gpu_terminal(last_control_reply)) return -1;
-            scene_hex_receipt("OMARCHY_GPU_APPLICATION_READY_CLIENTS_HEX",last_control_reply,strlen(last_control_reply));
+            const int live=getenv("WDDM_BRIDGE_DESKTOP_RETIREMENT")!=NULL;
+            const unsigned cycles=live ? 5u : 1u;
+            for(unsigned cycle=0;cycle<cycles;++cycle) {
+                const int final=cycle+1==cycles;
+                if(live && unlink("/tmp/omarchy-gpu-terminal-ready") && errno!=ENOENT) return -1;
+                char* const launch[]={"/usr/bin/hyprctl","eval",
+                    "hl.exec_cmd([[systemd-cat -t omarchy-gpu-app -- /opt/wddm-root/bin/alacritty --config-file /opt/wddm-root/data/alacritty-desktop.toml -vv --class omarchy-gpu-terminal --title 'Omarchy terminal' --hold -e /usr/bin/env -u LD_PRELOAD /bin/bash /opt/wddm-root/data/gpu-terminal-scene.sh]], {float=true, size={1200,800}, center=true})",NULL};
+                if(run_ctl(launch)) return -1;
+                char* const clients[]={"/usr/bin/hyprctl","-j","clients",NULL};
+                unsigned tick=0;
+                for(;tick<40;++tick) { if(!run_ctl(clients) && visible_gpu_terminal(last_control_reply)) break;sleep(1); }
+                if(final) scene_hex_receipt("OMARCHY_GPU_APPLICATION_CLIENTS_HEX",last_control_reply,strlen(last_control_reply));
+                printf("OMARCHY_GPU_APPLICATION_WAIT mapped=%s polls=%u gpuProof=false\n",tick<40 ? "true" : "false",tick);
+                if(tick==40) return -1;
+                char* const place[]={"/usr/bin/hyprctl","eval","hl.dispatch(hl.dsp.window.resize({x=1200,y=800})); hl.dispatch(hl.dsp.window.center())",NULL};
+                if(run_ctl(place)) return -1;
+                unsigned content_tick=0;
+                for(;content_tick<100 && access("/tmp/omarchy-gpu-terminal-ready",R_OK);++content_tick) usleep(200000);
+                if(content_tick==100) return -1;
+                if(final) puts("OMARCHY_GPU_APPLICATION_CONTENT_READY ptyMarkerObserved=true gpuProof=false");
+                sleep(2);
+                if(run_ctl(clients) || !visible_gpu_terminal(last_control_reply)) return -1;
+                pid_t pid=0;
+                if(live && !visible_gpu_terminal_with_pid(last_control_reply,&pid)) return -1;
+                if(final) {
+                    last_gpu_terminal_pid=pid;
+                    scene_hex_receipt("OMARCHY_GPU_APPLICATION_READY_CLIENTS_HEX",last_control_reply,strlen(last_control_reply));
+                } else {
+                    scene_hex_receipt("OMARCHY_GPU_LIVE_WARMUP_CLIENTS_HEX",last_control_reply,strlen(last_control_reply));
+                    char line[160];const int length=snprintf(line,sizeof line,"OMARCHY_GPU_LIVE_WARMUP_READY cycle=%u pid=%d ptyMarkerObserved=true gpuProof=false\n",cycle+1,pid);
+                    if(length<=0 || length>=(int)sizeof line || scene_receipt(line) || close_gpu_terminal(pid,0)) return -1;
+                }
+            }
         }
         if(scene_receipt("OMARCHY_DESKTOP_PROBE_CAPTURE normalConfig=true shellVerified=false applicationGpuVerified=false\n")) return -1;
         atomic_store(&scene_ready,1);
@@ -305,14 +373,7 @@ static int prepare_scene(void) {
 }
 static int close_scene(void) {
     if(getenv("WDDM_BRIDGE_DESKTOP_CONTENT")) {
-        char* const close_window[]={"/usr/bin/hyprctl","eval","hl.dispatch(hl.dsp.window.close({window='class:omarchy-gpu-terminal'}))",NULL};
-        if(run_ctl(close_window)) return -1;
-        for(unsigned tick=0;tick<50;++tick) {
-            char* const clients[]={"/usr/bin/hyprctl","-j","clients",NULL};
-            if(!run_ctl(clients) && !strstr(last_control_reply,"\"omarchy-gpu-terminal\"")) return scene_receipt("OMARCHY_GPU_APPLICATION_CLOSED clientUnmapped=true gpuProof=false\n");
-            usleep(100000);
-        }
-        return -1;
+        return close_gpu_terminal(last_gpu_terminal_pid,1);
     }
     if(getenv("WDDM_BRIDGE_NORMAL_DESKTOP_PROBE")) return 0;
     char* const close_window[]={"/usr/bin/hyprctl","dispatch","closewindow","class:wddm-scene",NULL};

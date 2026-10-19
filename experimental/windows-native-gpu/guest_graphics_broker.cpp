@@ -14,6 +14,16 @@ static int coordinated(guest_broker::Fd& listener,const char* path,unsigned uid,
     if(references && std::strcmp(references,"1")) throw std::runtime_error("Invalid coordinated reference opt-in");
     controller.initialize(info,caps,layout.coordinatedCapacity(),info.fence_slots==512 ? layout.desktopFenceCapacity() : wddm_aperture_desktop_fences{},
         info.allocation_slots==1024 ? layout.desktopSlotCapacity() : wddm_aperture_desktop_slots{},references!=nullptr);layout.close();
+    if(const auto retirement=std::getenv("WDDM_BRIDGE_COORDINATED_RETIREMENT")) {
+        if(std::strcmp(retirement,"1") || !references) throw std::runtime_error("Invalid coordinated live retirement opt-in");
+        if(mkdir("/run/wddm-retired",0755) && errno!=EEXIST) throw std::runtime_error("Retirement witness directory");
+        struct stat status{};
+        if(lstat("/run/wddm-retired",&status) || !S_ISDIR(status.st_mode) || status.st_uid || (status.st_mode&0022))
+            throw std::runtime_error("Untrusted retirement witness directory");
+        Fd directory(open("/run/wddm-retired",O_RDONLY|O_DIRECTORY|O_CLOEXEC|O_NOFOLLOW));
+        if(directory.get()<0 || fchmod(directory.get(),0755)) throw std::runtime_error("Retirement witness directory mode");
+        controller.beginLiveRetirement();
+    }
     const char ready='R';if(write(notification.get(),&ready,1)!=1) throw std::runtime_error("Coordinator readiness failed");
     notification=Fd();
     pollfd trusted{primaryPipe.get(),POLLIN,0};

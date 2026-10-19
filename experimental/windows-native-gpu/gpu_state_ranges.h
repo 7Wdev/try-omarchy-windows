@@ -10,6 +10,7 @@ namespace driver_bridge {
 class GpuStateRanges {
 public:
     struct Range { std::uint32_t owner; std::uint64_t address, bytes, protection; };
+    enum class RetirementScope { PagingFence, OwningDevice, AllDevices };
     using Plan = std::vector<Range>;
     static constexpr std::size_t Limit = 32;
     // Address-only state does not allocate video memory. Match the bounded
@@ -69,5 +70,27 @@ public:
     }
     std::size_t size() const noexcept { return ranges.size(); }
     bool empty() const noexcept { return ranges.empty(); }
+    // Fresh reserved pages and an identical Zero/NoAccess state do not
+    // invalidate existing allocation data. Their native paging fence still
+    // orders access. Changing old protection or replacing allocation mappings
+    // requires the separate hardware-retirement barrier.
+    bool requiresRetirement(std::uint32_t owner,std::uint64_t address,std::uint64_t bytes,
+                            std::uint64_t protection,bool allocationOverlap) const noexcept {
+        return allocationOverlap || std::any_of(ranges.begin(),ranges.end(),[&](const Range& range) {
+            return overlap(range,address,bytes) && (range.owner!=owner || range.protection!=protection);
+        });
+    }
+    RetirementScope retirementScope(std::uint32_t owner,std::uint64_t address,std::uint64_t bytes,
+                                    std::uint64_t protection,bool allocationOverlap) const noexcept {
+        // Physical overlaps have already been checked against the paging
+        // device by the caller. Recipient imports use independently mapped
+        // allocations/VAs. A protection change without that ownership proof
+        // retains the conservative process-wide barrier.
+        if(requiresRetirement(owner,address,bytes,protection,false)) return RetirementScope::AllDevices;
+        return allocationOverlap ? RetirementScope::OwningDevice : RetirementScope::PagingFence;
+    }
+    static bool retirementCoversQueue(RetirementScope scope,std::uint32_t device,std::uint32_t queueDevice) noexcept {
+        return scope!=RetirementScope::PagingFence && (scope!=RetirementScope::OwningDevice || device==queueDevice);
+    }
 };
 } // namespace driver_bridge
