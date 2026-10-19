@@ -4,7 +4,7 @@ Updated **2026-10-19**. This page tracks the experimental QEMU/WHPX Windows-nati
 NVIDIA backend. The released Try Omarchy launcher continues using the upstream
 graphics runtime.
 
-![UWSM-managed 4K GPU capture passes once; repeat hits GPU usage guard; backend stages 4/8; desktop product gates 0/4](images/gpu-backend-progress.svg?v=uwsm-2026-10-19)
+![4K Hyprland frame captured on NVIDIA with wallpaper, bar and GPU application; backend stages 4/8; desktop product gates 0/4](images/gpu-backend-progress-2026-10-19.svg)
 
 ## What is verified now?
 

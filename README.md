@@ -10,7 +10,7 @@ The experimental QEMU/WHPX bridge now captures a real **3840×2160 Omarchy deskt
 the shipped wallpaper, Omarchy bar and readable Alacritty application appear together.
 Full integration into the Windows launcher and a stable interactive desktop remain in development.
 
-![UWSM-managed 4K GPU capture passes once; repeat hits GPU usage guard; backend 4/8 stages; desktop product 0/4 gates](docs/images/gpu-backend-progress.svg?v=uwsm-2026-10-19)
+![4K Hyprland frame captured on NVIDIA with wallpaper, bar and GPU application; backend 4/8 stages; desktop product 0/4 gates](docs/images/gpu-backend-progress-2026-10-19.svg)
 
 **Latest verified checkpoint — October 19, 2026:** one fresh guest runs Hyprland through **UWSM in
 a real PAM/logind session**, with an independently verified active compositor service and graphical target.

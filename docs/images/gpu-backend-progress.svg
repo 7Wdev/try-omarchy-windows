@@ -1,9 +1,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="800" height="350" viewBox="0 0 800 350" role="img" aria-labelledby="title desc">
-  <title id="title">4K NVIDIA desktop capture: 3 of 3 scene elements verified twice; backend 4 of 8 stages; desktop product 0 of 4 acceptance gates complete</title>
+  <title id="title">4K Hyprland frame captured on NVIDIA: wallpaper, bar and GPU application verified; backend 4 of 8 stages; desktop product 0 of 4 acceptance gates complete</title>
   <desc id="desc">The 4K wallpaper, bar and readable GPU application capture was verified twice in direct-start guests. One fresh UWSM-managed PAM/logind session also passes active compositor/graphical target checks, five GPU application cycles and complete live cleanup. Its repeat exceeds the unchanged 1 GiB reported GPU usage guard and remains rejected. Four backend stages are demonstrated; stages five and six are in progress. No desktop product gate is complete: normal first-boot/launcher/input, continuous multi-window display, stability, recovery and performance remain open. Counts are checklists, not effort percentages. Updated October 19, 2026.</desc>
   <rect width="800" height="350" rx="10" fill="#141b24"/>
   <g font-family="sans-serif">
-    <text x="20" y="30" fill="#eef4fc" font-size="18">4K GPU capture · 3/3 scene elements verified twice</text>
+    <text x="20" y="30" fill="#eef4fc" font-size="18">4K Hyprland frame captured · NVIDIA GPU · 3/3 scene elements</text>
     <g transform="translate(20 44)" fill="#51c38b">
       <rect width="248" height="18" rx="4"/><rect x="256" width="248" height="18" rx="4"/><rect x="512" width="248" height="18" rx="4"/>
     </g>
