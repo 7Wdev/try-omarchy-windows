@@ -3,9 +3,10 @@
 Source: https://github.com/7Wdev/try-omarchy-windows
 
 This fork tracks `omacom/try-omarchy-windows` and develops a Windows-native
-NVIDIA backend for QEMU/WHPX. Two fresh guest diagnostics now pass
-[five GPU application lifecycles and audited 4K Omarchy frames](https://github.com/7Wdev/try-omarchy-windows/blob/cb505099ef461603c45ccc8b322031546966ee36/docs/LIVE-OMARCHY-GPU-LIFECYCLES.md),
-with live resource reclamation. The released launcher continues using the
+NVIDIA backend for QEMU/WHPX. One guest now passes a
+[UWSM-managed 4K GPU desktop and five application lifecycles](LIVE-UWSM-GPU-SESSION.md)
+with active service-state proof and live resource reclamation. Its repeat hits
+the unchanged reported-GPU-usage guard and remains rejected. The released launcher continues using the
 upstream graphics runtime; supported device integration, normal launcher/input,
 sustained use and near-native performance remain unfinished.
 

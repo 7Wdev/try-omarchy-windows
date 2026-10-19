@@ -21,8 +21,15 @@
 #include "guest-kernel/wddm_aperture.h"
 #include "guest-kernel/wddm_render.h"
 #include <dirent.h>
+#include "guest_primary_identity.h"
 static void timeout_handler(int signal_number) { (void)signal_number; }
 static int graphics_primary_writer=-1;
+static inline int graphics_primary_register(pid_t child,int process) {
+    if(graphics_primary_writer<0) return -1;
+    const int registered=wddm_primary_send(graphics_primary_writer,child,process);
+    close(graphics_primary_writer);graphics_primary_writer=-1;
+    return registered;
+}
 static pid_t graphics_broker_start_as(const char* port,unsigned uid,unsigned gid) {
     if (!uid || !gid) return -1;
     if (access("/graphics-broker-required", F_OK)) return 0;
@@ -30,7 +37,7 @@ static pid_t graphics_broker_start_as(const char* port,unsigned uid,unsigned gid
     if ((mkdir("/run",0755) && errno != EEXIST) || mkdir("/run/wddm-broker",0755) || pipe2(ready,O_CLOEXEC)) return -1;
     const int coordinated=access("/opt/wddm-root/desktop-coordinator-probe",R_OK)==0;
     int primary[2]={-1,-1};
-    if(coordinated && pipe2(primary,O_CLOEXEC)) { close(ready[0]);close(ready[1]);return -1; }
+    if(coordinated && socketpair(AF_UNIX,SOCK_SEQPACKET|SOCK_CLOEXEC,0,primary)) { close(ready[0]);close(ready[1]);return -1; }
     const pid_t child=fork();
     if (!child) {
         close(ready[0]);

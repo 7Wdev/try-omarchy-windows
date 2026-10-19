@@ -107,6 +107,18 @@ static void graphics_payload(void) {
         if(symlink("/dev/null","/newroot/etc/systemd/system/serial-getty@ttyS0.service")) fail("dedicated-graphics-console");
         puts("NORMAL_ROOT_SERIAL_CONSOLE dedicatedToGraphics=true serialGettyMaskedInRam=true");
     }
+    if(!access("/newroot/opt/wddm-root/uwsm-desktop-probe",F_OK)) {
+        // Reserve this disposable guest's first VT for the real PAM session.
+        // The persistent image and the ordinary launcher are untouched.
+        if(symlink("/dev/null","/newroot/etc/systemd/system/getty@tty1.service")) fail("dedicated-uwsm-login-vt");
+        directory("/newroot/etc/systemd/system/omarchy-provision-owner.service.d",0755);
+        write_new("/newroot/etc/systemd/system/omarchy-provision-owner.service.d/90-wddm-probe.conf",
+            "[Unit]\nConditionPathExists=!/opt/wddm-root/uwsm-desktop-probe\n",0644);
+        directory("/newroot/etc/systemd/system/display-manager.service.d",0755);
+        write_new("/newroot/etc/systemd/system/display-manager.service.d/90-wddm-probe.conf",
+            "[Unit]\nConditionPathExists=!/opt/wddm-root/uwsm-desktop-probe\n",0644);
+        puts("NORMAL_ROOT_UWSM_VT terminal=tty1 competingGettyMaskedInRam=true realPamSessionRequired=true factoryPromptDeferredInRam=true normalLauncher=false");
+    }
     write_new("/newroot/etc/systemd/system/omarchy-wddm-normal-graphics.service",
         "[Unit]\nDescription=Owned normal-root NVIDIA integration experiment\nAfter=local-fs.target systemd-journald.service\n"
         "[Service]\nType=simple\nExecStartPre=/bin/sh -c '/usr/bin/getent passwd omarchy >/dev/null || /usr/bin/useradd -m -U -u 1000 -s /bin/bash omarchy'\n"

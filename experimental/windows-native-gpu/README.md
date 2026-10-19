@@ -1,5 +1,14 @@
 # Native Windows GPU experiment
 
+The [UWSM-managed NVIDIA desktop checkpoint](../../docs/LIVE-UWSM-GPU-SESSION.md)
+passes one fresh PAM/logind session with independently verified active service
+state, five GPU application lifecycles, twelve audited 4K handoffs and no
+mappings deferred to VM exit. It adds root-selected pidfd compositor admission;
+the controlled factory/session fixture is still separate from normal launcher,
+input and sustained desktop acceptance. Its repeat exceeds the unchanged GPU
+usage guard and remains rejected. Earlier checkpoints below keep their
+original scope and limitations.
+
 The [repeated compositor presentation checkpoint](../../docs/LIVE-HYPRLAND-QUEUED-PRESENTATION.md)
 passes twelve actual Hyprland submissions per fresh guest, twice. The new
 `WDDM_BRIDGE_COMPOSITOR_HOST_PRESENT=1` startup mode uses two audit readbacks and

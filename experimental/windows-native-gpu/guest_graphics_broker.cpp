@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #include "guest_broker_server.h"
 #include "guest_coordinator.h"
+#include "guest_primary_identity.h"
 #include <sys/stat.h>
 #include <sys/un.h>
 #include <limits>
@@ -26,12 +27,12 @@ static int coordinated(guest_broker::Fd& listener,const char* path,unsigned uid,
     }
     const char ready='R';if(write(notification.get(),&ready,1)!=1) throw std::runtime_error("Coordinator readiness failed");
     notification=Fd();
-    pollfd trusted{primaryPipe.get(),POLLIN,0};
-    if(poll(&trusted,1,10000)!=1) throw std::runtime_error("Coordinator trusted primary identity timeout");
-    std::uint64_t primary=0;
-    if(read(primaryPipe.get(),&primary,sizeof primary)!=sizeof primary || !primary || primary>INT32_MAX)
-        throw std::runtime_error("Coordinator primary identity missing");
+    std::uint64_t primary=0;int descriptor=-1;
+    if(wddm_primary_receive(primaryPipe.get(),30000,&primary,&descriptor))
+        throw std::runtime_error("Coordinator trusted primary pidfd missing or invalid");
+    Fd primaryProcess(descriptor);
     primaryPipe=Fd();
+    receipt("BROKER_COORDINATOR_PRIMARY pid=%llu rootChannel=true pinnedPidfd=true gpuProof=false\n",static_cast<unsigned long long>(primary));
     ObjectRegistry<> objects;
     std::atomic<unsigned> active{0},failures{0};std::atomic<bool> primaryFinished{false};
     struct Workers {
@@ -60,7 +61,8 @@ static int coordinated(guest_broker::Fd& listener,const char* path,unsigned uid,
         std::unique_ptr<Peer> peer;
         try { peer=std::make_unique<Peer>(std::move(channel),uid,gid); }
         catch(const std::exception& error) { receipt("BROKER_COORDINATOR_PEER denied=true reason=%s\n",error.what());continue; }
-        const auto isPrimary=static_cast<std::uint64_t>(peer->pid())==primary;
+        const auto isPrimary=static_cast<std::uint64_t>(peer->pid())==primary &&
+            wddm_primary_live(primaryProcess.get()) && !peer->processExited();
         if((!primaryAccepted && !isPrimary) || (isPrimary && primaryAccepted)) {
             receipt("BROKER_COORDINATOR_PEER denied=true primaryPidMismatch=true\n");continue;
         }
@@ -95,7 +97,7 @@ int main(int argc,char** argv) {
     using namespace guest_broker;
     try {
         const bool group=argc==8 && std::string(argv[6])=="--coordinator";
-        if ((argc != 6 && !group) || getuid() || geteuid()) throw std::runtime_error("Broker requires root: SOCKET PORT UID GID READY_FD [--coordinator PRIMARY_PID_FD]");
+        if ((argc != 6 && !group) || getuid() || geteuid()) throw std::runtime_error("Broker requires root: SOCKET PORT UID GID READY_FD [--coordinator PRIMARY_IDENTITY_FD]");
         const auto number=[](const char* value) {
             if (!value || !*value || std::strspn(value,"0123456789") != std::strlen(value)) throw std::runtime_error("Invalid broker numeric argument");
             const auto n=std::stoul(value); if (n >= std::numeric_limits<unsigned>::max()) throw std::runtime_error("Broker numeric argument overflow"); return static_cast<unsigned>(n);
@@ -114,9 +116,9 @@ int main(int argc,char** argv) {
             throw std::system_error(errno,std::generic_category(),"Broker listener setup");
         Fd notification(static_cast<int>(ready));
         if(group) {
-            const auto descriptor=number(argv[7]);struct stat status{};
-            if(descriptor<3 || descriptor==ready || descriptor>INT32_MAX || fstat(static_cast<int>(descriptor),&status) || !S_ISFIFO(status.st_mode) || status.st_uid)
-                throw std::runtime_error("Coordinator requires a distinct inherited root pipe for the primary PID");
+            const auto descriptor=number(argv[7]);
+            if(descriptor<3 || descriptor==ready || descriptor>INT32_MAX || wddm_primary_channel(static_cast<int>(descriptor)))
+                throw std::runtime_error("Coordinator requires a distinct inherited root seqpacket channel for the primary pidfd");
             return coordinated(listener,argv[2],uid,gid,std::move(notification),Fd(static_cast<int>(descriptor)));
         }
         const char marker='R';

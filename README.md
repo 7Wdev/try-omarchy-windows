@@ -10,28 +10,33 @@ The experimental QEMU/WHPX bridge now captures a real **3840×2160 Omarchy deskt
 the shipped wallpaper, Omarchy bar and readable Alacritty application appear together.
 Full integration into the Windows launcher and a stable interactive desktop remain in development.
 
-![4K GPU capture: wallpaper, bar and readable application verified twice; backend 4/8 stages; desktop product 0/4 gates](docs/images/gpu-backend-progress.svg)
+![UWSM-managed 4K GPU capture passes once; repeat hits GPU usage guard; backend 4/8 stages; desktop product 0/4 gates](docs/images/gpu-backend-progress.svg?v=uwsm-2026-10-19)
 
-**Latest verified checkpoint — October 19, 2026:** two fresh guests each pass **five GPU application
+**Latest verified checkpoint — October 19, 2026:** one fresh guest runs Hyprland through **UWSM in
+a real PAM/logind session**, with an independently verified active compositor service and graphical target.
+It passes **five GPU application
 launch/close cycles**, twelve 4K handoffs, exact first/last backbuffer audits and natural shutdown.
 All six retired client actors and every backing mapping are reclaimed **before VM exit**.
 Hyprland, Quickshell and every Alacritty application use NVIDIA.
-[Actual frame, reconstructable raw evidence and retained failures](https://github.com/7Wdev/try-omarchy-windows/blob/cb505099ef461603c45ccc8b322031546966ee36/docs/LIVE-OMARCHY-GPU-LIFECYCLES.md).
+The repeat hits the unchanged **1 GiB reported GPU usage guard** after two handoffs and remains rejected.
+[Actual frame, reconstructable raw evidence and retained failures](docs/LIVE-UWSM-GPU-SESSION.md).
 
-![Actual unedited 4K NVIDIA desktop after repeated GPU application lifecycles](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/cb505099ef461603c45ccc8b322031546966ee36/docs/images/omarchy-4k-live-gpu-lifecycles-2026-10-19.png)
+![Actual unedited 4K UWSM-managed NVIDIA desktop](docs/images/omarchy-4k-uwsm-gpu-2026-10-19.png)
 
-The image is run 67, frame 12, converted directly from the GPU backbuffer. The separate Windows
+The image is run 77, frame 12, converted directly from the GPU backbuffer. This uses a disposable
+session fixture; normal first-boot and launcher/input integration remain open. The separate Windows
 diagnostic client area is 1280×720; physical 4K scanout and all-frame display remain unverified.
 The released launcher still uses the upstream graphics runtime.
 
 | Progress measure | Verified status | What remains |
 | --- | --- | --- |
-| 4K diagnostic scene elements | **3/3:** shipped wallpaper, Omarchy bar, readable GPU application; repeated in two fresh guests | This counts captured scene content, not interactive desktop acceptance. |
+| 4K diagnostic scene elements | **3/3:** shipped wallpaper, Omarchy bar, readable GPU application; repeated direct-start captures and one passing UWSM run | This counts captured scene content, not interactive desktop acceptance. |
 | Backend verification stages | **4/8 demonstrated; stages 5–6 in progress** | Sustained device/buffer integration, API coverage and product validation. |
-| Desktop product acceptance | **0/4 complete; first two gates in progress** | Normal launcher/UWSM/input, continuous multi-window display, longer workloads, recovery and matched-native performance. |
+| Desktop product acceptance | **0/4 complete; first two gates in progress** | Normal account setup/launcher/input, continuous multi-window display, longer workloads, recovery and matched-native performance. |
 
-**Live resource reuse now passes twice:** application retirement takes 0.28–0.53 seconds after removing
-unconditional CPU scans of mapped GPU memory. The complete frame-byte audits remain enabled.
+**UWSM startup and live resource reuse pass once; repeatability remains open.** The earlier
+[CPU-scan removal checkpoint](https://github.com/7Wdev/try-omarchy-windows/blob/cb505099ef461603c45ccc8b322031546966ee36/docs/LIVE-OMARCHY-GPU-LIFECYCLES.md)
+retains its measured 0.28–0.53-second application retirement result. Complete frame-byte audits remain enabled.
 **Next milestone:** normal launcher/input integration and sustained multi-window presentation.
 The checklist counts are not percentages of engineering effort.
 [Current roadmap, gate definitions and evidence](docs/GPU-BACKEND-PROGRESS.md).
