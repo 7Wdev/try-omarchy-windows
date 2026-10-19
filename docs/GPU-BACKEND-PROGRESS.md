@@ -15,7 +15,7 @@ and a readable GPU application. All six retired client actors and every backing
 mapping are reclaimed before VM exit. Twelve GPU handoffs, complete first/last
 backbuffer audits, natural shutdown and native cleanup pass per run.
 
-[Actual image, reproducible evidence and retained failures](LIVE-OMARCHY-GPU-LIFECYCLES.md)
+[Actual image, reproducible evidence and retained failures](https://github.com/7Wdev/try-omarchy-windows/blob/cb505099ef461603c45ccc8b322031546966ee36/docs/LIVE-OMARCHY-GPU-LIFECYCLES.md)
 bind every application and the shell to authenticated NVIDIA renderers, real
 resource FDs and independent recipient NT references. Removing unconditional
 CPU scans of mapped GPU memory reduces application retirement to 0.28–0.53

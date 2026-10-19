@@ -2,9 +2,12 @@
 
 Source: https://github.com/7Wdev/try-omarchy-windows
 
-This fork tracks `omacom/try-omarchy-windows` and adds an NVIDIA backend
-investigation, native host renderer and partial QEMU WDDM control bridge. These do not
-accelerate the Omarchy guest; read [Windows NVIDIA backend](WINDOWS-NVIDIA-BACKEND.md).
+This fork tracks `omacom/try-omarchy-windows` and develops a Windows-native
+NVIDIA backend for QEMU/WHPX. Two fresh guest diagnostics now pass
+[five GPU application lifecycles and audited 4K Omarchy frames](https://github.com/7Wdev/try-omarchy-windows/blob/cb505099ef461603c45ccc8b322031546966ee36/docs/LIVE-OMARCHY-GPU-LIFECYCLES.md),
+with live resource reclamation. The released launcher continues using the
+upstream graphics runtime; supported device integration, normal launcher/input,
+sustained use and near-native performance remain unfinished.
 
 ## Upstream updates
 

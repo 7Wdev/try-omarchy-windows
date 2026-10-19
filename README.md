@@ -16,9 +16,9 @@ Full integration into the Windows launcher and a stable interactive desktop rema
 launch/close cycles**, twelve 4K handoffs, exact first/last backbuffer audits and natural shutdown.
 All six retired client actors and every backing mapping are reclaimed **before VM exit**.
 Hyprland, Quickshell and every Alacritty application use NVIDIA.
-[Actual frame, reconstructable raw evidence and retained failures](docs/LIVE-OMARCHY-GPU-LIFECYCLES.md).
+[Actual frame, reconstructable raw evidence and retained failures](https://github.com/7Wdev/try-omarchy-windows/blob/cb505099ef461603c45ccc8b322031546966ee36/docs/LIVE-OMARCHY-GPU-LIFECYCLES.md).
 
-![Actual unedited 4K NVIDIA desktop after repeated GPU application lifecycles](docs/images/omarchy-4k-live-gpu-lifecycles-2026-10-19.png)
+![Actual unedited 4K NVIDIA desktop after repeated GPU application lifecycles](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/cb505099ef461603c45ccc8b322031546966ee36/docs/images/omarchy-4k-live-gpu-lifecycles-2026-10-19.png)
 
 The image is run 67, frame 12, converted directly from the GPU backbuffer. The separate Windows
 diagnostic client area is 1280×720; physical 4K scanout and all-frame display remain unverified.
