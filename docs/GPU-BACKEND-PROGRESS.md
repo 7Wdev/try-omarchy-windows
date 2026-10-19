@@ -4,22 +4,26 @@ Updated **2026-10-19**. This page tracks the experimental QEMU/WHPX Windows-nati
 NVIDIA backend. The released Try Omarchy launcher continues using the upstream
 graphics runtime.
 
-![4K GPU capture: 3/3 scene elements verified twice; backend stages 4/8; desktop product gates 0/4](images/gpu-backend-progress.svg)
+![UWSM-managed 4K GPU capture passes once; repeat hits GPU usage guard; backend stages 4/8; desktop product gates 0/4](images/gpu-backend-progress.svg?v=uwsm-2026-10-19)
 
 ## What is verified now?
 
-Two fresh guests each pass **five NVIDIA application launch/close cycles**
+One fresh guest passes **UWSM in a real PAM/logind session**.
+Independent supervisor queries verify the active compositor service, exact
+MainPID/cgroup and active graphical session target. It passes **five NVIDIA application launch/close cycles**
 while the same Hyprland compositor keeps running. The real Omarchy 4.0.4
 desktop is captured at **3840×2160** with shipped wallpaper, Quickshell bar
 and a readable GPU application. All six retired client actors and every backing
 mapping are reclaimed before VM exit. Twelve GPU handoffs, complete first/last
 backbuffer audits, natural shutdown and native cleanup pass per run.
+Its fresh repeat exceeds the unchanged 1 GiB reported-GPU-usage guard after
+two handoffs and remains rejected. Repeatable UWSM rendering is still open.
 
-[Actual image, reproducible evidence and retained failures](https://github.com/7Wdev/try-omarchy-windows/blob/cb505099ef461603c45ccc8b322031546966ee36/docs/LIVE-OMARCHY-GPU-LIFECYCLES.md)
+[Actual UWSM image, reproducible evidence and retained failures](https://github.com/7Wdev/try-omarchy-windows/blob/2adb39c8c150526f97e5ec8da7e0698dc9f33330/docs/LIVE-UWSM-GPU-SESSION.md)
 bind every application and the shell to authenticated NVIDIA renderers, real
-resource FDs and independent recipient NT references. Removing unconditional
-CPU scans of mapped GPU memory reduces application retirement to 0.28–0.53
-seconds while keeping the complete frame audits. The 192 MiB CPU mapped-data
+resource FDs and independent recipient NT references. The
+[earlier CPU-scan removal checkpoint](https://github.com/7Wdev/try-omarchy-windows/blob/cb505099ef461603c45ccc8b322031546966ee36/docs/LIVE-OMARCHY-GPU-LIFECYCLES.md)
+measures 0.28–0.53-second application retirement while keeping complete frame audits. The 192 MiB CPU mapped-data
 and 1 GiB GPU-VA/reported-usage guards are unchanged. Ten ordinary frames per
 run avoid CPU upload/readback; two use diagnostic GPU readback.
 
@@ -30,9 +34,10 @@ These are different checklists, not engineering-effort percentages. Capturing
 the desktop does not establish normal launcher presentation or interactive use.
 
 The Windows diagnostic client area is 1280×720. Physical 4K scanout, all-frame
-display, normal launcher/UWSM/input, long-run stability and performance are
-unverified. The new checkpoint has **zero mappings deferred to VM exit**;
-normal launcher/input, continuous multi-window presentation, longer workloads
+display, normal first-boot/launcher/input, long-run stability and performance are
+unverified. The passing UWSM run has **zero mappings deferred to VM exit**;
+The repeat's usage-guard failure requires VM-exit reclamation and remains rejected.
+Resolving that pressure, normal launcher/input, continuous multi-window presentation, longer workloads
 and recovery are next. The [earlier capture checkpoint](https://github.com/7Wdev/try-omarchy-windows/blob/2290aa6209289dddfbae54b542c524927414c020/docs/LIVE-OMARCHY-4K-REFERENCE-FIX.md)
 retains its original scope and failures.
 
@@ -64,7 +69,7 @@ not close the broader product requirements below.
 
 ## Remaining work
 
-1. Integrate the supported guest device path, normal UWSM session and Windows
+1. Integrate the supported guest device path, normal first-boot session and Windows
    launcher/input, with independently verified continuous presentation.
 2. Extend the bounded live-retirement result to concurrent application windows,
    longer workloads and failure recovery.

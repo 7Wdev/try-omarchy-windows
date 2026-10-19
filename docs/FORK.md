@@ -3,9 +3,10 @@
 Source: https://github.com/7Wdev/try-omarchy-windows
 
 This fork tracks `omacom/try-omarchy-windows` and develops a Windows-native
-NVIDIA backend for QEMU/WHPX. Two fresh guest diagnostics now pass
-[five GPU application lifecycles and audited 4K Omarchy frames](https://github.com/7Wdev/try-omarchy-windows/blob/cb505099ef461603c45ccc8b322031546966ee36/docs/LIVE-OMARCHY-GPU-LIFECYCLES.md),
-with live resource reclamation. The released launcher continues using the
+NVIDIA backend for QEMU/WHPX. One guest now passes a
+[UWSM-managed 4K GPU desktop and five application lifecycles](https://github.com/7Wdev/try-omarchy-windows/blob/2adb39c8c150526f97e5ec8da7e0698dc9f33330/docs/LIVE-UWSM-GPU-SESSION.md)
+with active service-state proof and live resource reclamation. Its repeat hits
+the unchanged reported-GPU-usage guard and remains rejected. The released launcher continues using the
 upstream graphics runtime; supported device integration, normal launcher/input,
 sustained use and near-native performance remain unfinished.
 
@@ -21,6 +22,13 @@ branch for inspection. Concurrent edits of `master` stop publication safely.
 GitHub Actions must be enabled. GitHub can suspend schedules after repository
 inactivity, so check the Actions page when returning after a long break.
 Graphics changes still require physical acceptance even when CI passes.
+
+GitHub's built-in Actions token cannot publish upstream changes to workflow
+files. Such updates stop the sync run before publication, preserving `master`.
+Apply those merges with authenticated Git credentials permitted to update
+workflows, then run the same validation before pushing. The 2026-10-09 run
+stopped for this reason; all 63 missing commits were merged manually on
+2026-10-10 without resetting fork or GPU development history.
 
 For a local merge (the script does not push):
 
@@ -51,4 +59,4 @@ are unsigned development artifacts.
 
 The generic upstream `go build` without fork linker flags retains official
 update behavior. Use the fork build script for your version. The GPU experiment
-builds separately; see its [README](../experimental/windows-native-gpu/README.md).
+builds separately; see its [README](https://github.com/7Wdev/try-omarchy-windows/blob/2adb39c8c150526f97e5ec8da7e0698dc9f33330/experimental/windows-native-gpu/README.md).
