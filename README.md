@@ -5,76 +5,37 @@
 <h1 align="center">Try Omarchy for Windows</h1>
 
 **7Wdev development fork:** [build and upstream sync](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/FORK.md) ·
-[Windows NVIDIA investigation](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/WINDOWS-NVIDIA-BACKEND.md).
-The NVIDIA bridge has demonstrated [4K guest shaders and GPU texture handoffs](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-4K.md)
-through QEMU/WHPX. Full acceleration of the Omarchy/Hyprland desktop through this new backend remains under development.
+[NVIDIA development PR #2](https://github.com/7Wdev/try-omarchy-windows/pull/2).
+The experimental QEMU/WHPX bridge now captures a real **3840×2160 Omarchy desktop on NVIDIA**:
+the shipped wallpaper, Omarchy bar and readable Alacritty application appear together.
+Full integration into the Windows launcher and a stable interactive desktop remain in development.
 
-![NVIDIA backend: 4 of 8 verification stages demonstrated; Omarchy desktop: 0 of 4 acceptance gates complete](docs/images/gpu-backend-progress.svg)
+![4K GPU capture: wallpaper, bar and readable application verified twice; backend 4/8 stages; desktop product 0/4 gates](docs/images/gpu-backend-progress.svg)
 
-**4/8 verification stages demonstrated; 0/4 desktop acceptance gates complete.** These are checklist counts, not percentages of engineering work completed.
-Guest graphics integration is in progress. The largest integration work remains. [See the roadmap and evidence](docs/GPU-BACKEND-PROGRESS.md).
+**Latest verified checkpoint — October 19, 2026:** two fresh guests each pass twelve GPU handoffs,
+exact first/last backbuffer audits, application close, natural VM exit and native cleanup.
+Hyprland, Quickshell and Alacritty all use the NVIDIA D3D12 renderer.
+[Actual frame, reconstructable raw evidence and retained failures](https://github.com/7Wdev/try-omarchy-windows/blob/2290aa6209289dddfbae54b542c524927414c020/docs/LIVE-OMARCHY-4K-REFERENCE-FIX.md).
 
-**Distance to the full desktop:** the new backend renders verified test workloads, but has not yet rendered an Omarchy/Hyprland session.
-The next major milestone is the **first correctly displayed Hyprland frame**. Getting there requires a guest graphics device path,
-compositor-compatible buffers and synchronization, and continuous presentation into the Windows app.
-Interactive use, long-run stability and the ≥93% native-performance target then need their own acceptance tests.
-There is no reliable completion date yet; the remaining work includes substantial driver and compositor integration.
+![Actual unedited 4K NVIDIA Omarchy wallpaper, bar and readable GPU terminal](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/2290aa6209289dddfbae54b542c524927414c020/docs/images/omarchy-4k-reference-fix-gpu-desktop-2026-10-19.png)
 
-| Desktop gate | Status | Acceptance requirement |
+The image is run 59, frame 12, converted directly from the GPU backbuffer. The separate Windows
+diagnostic client area is 1280×720; physical 4K scanout and all-frame display remain unverified.
+The released launcher still uses the upstream graphics runtime.
+
+| Progress measure | Verified status | What remains |
 | --- | --- | --- |
-| Guest graphics integration | In progress | Hyprland can access the graphics device and safely share buffers and synchronization. |
-| First Hyprland frame | Pending | Independently verify a correctly displayed compositor frame in the Windows app, capture its image and update PR #2 with the result. |
-| Interactive desktop | Pending | Continuously display real apps with input, multiple windows, resizing and fullscreen up to 4K. |
-| Stable, near-native product | Pending | Pass long runs, bounded-memory and recovery checks, plus matched benchmarks meeting ≥93% of native performance. |
+| 4K diagnostic scene elements | **3/3:** shipped wallpaper, Omarchy bar, readable GPU application; repeated in two fresh guests | This counts captured scene content, not interactive desktop acceptance. |
+| Backend verification stages | **4/8 demonstrated; stages 5–6 in progress** | Sustained device/buffer integration, API coverage and product validation. |
+| Desktop product acceptance | **0/4 complete; first two gates in progress** | Live resource reuse/recovery, normal launcher/UWSM/input, continuous multi-window display, stability and matched-native performance. |
 
-Vulkan, CUDA, video acceleration, NVIDIA-specific features and concurrent Windows/guest GPU use need separate real-application acceptance tests as part of the wider goal.
+**Next milestone:** repeat GPU application launch/close cycles with safe live resource reclamation,
+then integrate the normal launcher and input path. The accepted capture checkpoint still retains
+some mappings until VM exit. The checklist counts are not percentages of engineering effort.
+[Current roadmap, gate definitions and evidence](docs/GPU-BACKEND-PROGRESS.md).
 
-Latest lab result: [native resource DMA-BUF ownership](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-NATIVE-BUFFER.md)
-passes two fresh ordinary-user guests: a real Linux DMA-BUF retains the native GPU texture through FD closure,
-and both full 4K storage passes succeed after import. All 72 buffers and 165 memory leases release per run;
-the disabled control and EGL fence regression also pass. GBM allocation, EGL image import, DRM/device integration
-and stable presentation remain open. **No desktop gate is closed by this diagnostic.**
-
-Earlier [actual EGL native-fence callbacks](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-EGL-NATIVE-SYNC.md)
-pass two fresh ordinary-user guests, including a GPU wait that gates a subsequently exported EGL fence,
-completed-source lifetime, error rejection and full cleanup. The disabled-extension and legacy timeline regressions also pass.
-Compositor-compatible DRM/GBM buffers, sustained compositor work and reliable Windows presentation remain the next integration steps.
-Earlier [native GPU waits through Linux sync-file import](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-NATIVE-SYNC-LINEAGE.md)
-passes two fresh ordinary-user guests, including a future GPU dependency and completed import after original source/FD release.
-Earlier [GPU-driven Linux sync-file export](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-NATIVE-SYNC-FILE.md)
-passes two fresh ordinary-user guests, including pending/completed FD transfer, revocation errors and cleanup.
-General sync-file interoperability, compositor-compatible buffers and stable presentation still need implementation and testing.
-Earlier [ordinary-user 4K frames copied by a separate Windows GPU process](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-WINDOWS-WORKER.md)
-pass two fresh guest runs. Window presentation passes once and fails on repeat; Hyprland remains pending.
-Earlier [OpenGL shader frames](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-OPENGL.md)
-also pass independent pixel audits through Mesa and the NVIDIA bridge.
-The [first guest kernel memory-lease component](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-KERNEL-APERTURE.md)
-also passes FD isolation/revocation checks and two fresh OpenGL runs. DRM and compositor integration remain pending.
-The [native fence-sharing diagnostic](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-SYNC-FD.md)
-now preserves native fence ownership through guest kernel FDs.
-The [guest D3D12 timeline diagnostic](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-TIMELINE.md)
-also passes native fence import, nonblocking GPU signals and a future queue wait released by a second queue.
-The [opt-in Mesa native timeline FD test](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-MESA-FENCE-FD.md)
-now passes genuine OpenGL semaphore import, GPU signals and a future GPU wait in two fresh guests.
-The [process-exit lifetime fix](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-EXIT-LIFETIME.md)
-also passes three fresh finalizer tests and two Mesa timeline regressions. Compositor synchronization, full desktop integration,
-general stability and a separate legacy capacity rejection remain open.
-The [native texture-FD diagnostic](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-RESOURCE-FD.md)
-now passes full 4K storage checks through an imported resource, including after source/FD release, in two fresh guests.
-The [CPU aperture capacity fix](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/CPU-APERTURE-CAPACITY.md)
-now passes that full 33 MB readback in two fresh guests using 256 virtual slots and the same 96 MiB physical mapping limit.
-The old 128-slot failure is retained. General fragmentation, DMA-BUF interoperability, GBM and Hyprland integration remain pending.
-The [opt-in guest graphics broker](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-BROKER-ROUTING.md)
-now renders both 130×73 NVIDIA OpenGL shader frames as UID 65534 in two fresh guests.
-A third also verifies a real native fence in a library finalizer after channel close; all three exit cleanly.
-The [native capability store](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-BROKER-OBJECTS.md)
-now passes ordinary-user full 4K texture export/import, native timeline GPU ordering,
-and two fresh tests retaining a resource FD beyond its producer's exit, with clean last-FD-close cleanup.
-Independent guest GPU clients and imports, DRM/GBM and Hyprland remain to be integrated.
-The [separate Windows GPU consumer](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-WINDOWS-WORKER.md)
-now imports and copies both full 4K shader frames from an ordinary guest user in two fresh final-source runs.
-One strict two-frame window presentation passes; its repeat fails, so display stability remains open.
-Independent guest GPU clients and the actual Hyprland buffer/display path still require integration.
+Vulkan, CUDA, video acceleration, broader NVIDIA features, concurrent Windows/guest workloads
+and **≥93% matched-native performance** each still require real-application acceptance tests.
 
 Download links below refer to official upstream releases.
 

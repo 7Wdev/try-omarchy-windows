@@ -1,19 +1,30 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="800" height="208" viewBox="0 0 800 208" role="img" aria-labelledby="title desc">
-  <title id="title">NVIDIA backend: 4 of 8 verification stages demonstrated; Omarchy desktop: 0 of 4 acceptance gates complete</title>
-  <desc id="desc">Four verification stages demonstrated in the lab. No desktop acceptance gate is complete. Guest graphics integration is in progress; the first Hyprland frame, interactive desktop and stable near-native product remain pending. Checklist counts do not measure engineering effort.</desc>
-  <rect width="800" height="208" rx="10" fill="#141b24"/>
-  <text x="20" y="28" fill="#eef4fc" font-family="sans-serif" font-size="17">NVIDIA backend · verification stages 4/8 demonstrated</text>
-  <g transform="translate(20 42)">
-    <rect width="88" height="18" rx="4" fill="#51c38b"/><rect x="96" width="88" height="18" rx="4" fill="#51c38b"/>
-    <rect x="192" width="88" height="18" rx="4" fill="#51c38b"/><rect x="288" width="88" height="18" rx="4" fill="#51c38b"/>
-    <rect x="384" width="88" height="18" rx="4" fill="#3b4657"/><rect x="480" width="88" height="18" rx="4" fill="#3b4657"/>
-    <rect x="576" width="88" height="18" rx="4" fill="#3b4657"/><rect x="672" width="88" height="18" rx="4" fill="#3b4657"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="350" viewBox="0 0 800 350" role="img" aria-labelledby="title desc">
+  <title id="title">4K NVIDIA desktop capture: 3 of 3 scene elements verified twice; backend 4 of 8 stages; desktop product 0 of 4 acceptance gates complete</title>
+  <desc id="desc">Two fresh QEMU guests capture the shipped wallpaper, Omarchy bar and readable NVIDIA application at 3840 by 2160. Four backend stages are demonstrated, and stages five and six are in progress. No desktop product gate is complete: the first two gates have diagnostic evidence, while live reuse, normal launcher/input, continuous display, stability and performance remain open. Counts are checklists, not effort percentages. Updated October 19, 2026.</desc>
+  <rect width="800" height="350" rx="10" fill="#141b24"/>
+  <g font-family="sans-serif">
+    <text x="20" y="30" fill="#eef4fc" font-size="18">4K GPU capture · 3/3 scene elements verified twice</text>
+    <g transform="translate(20 44)" fill="#51c38b">
+      <rect width="248" height="18" rx="4"/><rect x="256" width="248" height="18" rx="4"/><rect x="512" width="248" height="18" rx="4"/>
+    </g>
+    <g fill="#bac7d9" font-size="13">
+      <text x="20" y="82">Shipped wallpaper</text><text x="276" y="82">Omarchy bar</text><text x="532" y="82">Readable GPU application</text>
+    </g>
+    <text x="20" y="118" fill="#eef4fc" font-size="17">Backend verification · 4/8 stages demonstrated</text>
+    <g transform="translate(20 132)">
+      <rect width="88" height="18" rx="4" fill="#51c38b"/><rect x="96" width="88" height="18" rx="4" fill="#51c38b"/>
+      <rect x="192" width="88" height="18" rx="4" fill="#51c38b"/><rect x="288" width="88" height="18" rx="4" fill="#51c38b"/>
+      <rect x="384" width="88" height="18" rx="4" fill="#e0aa49"/><rect x="480" width="88" height="18" rx="4" fill="#e0aa49"/>
+      <rect x="576" width="88" height="18" rx="4" fill="#3b4657"/><rect x="672" width="88" height="18" rx="4" fill="#3b4657"/>
+    </g>
+    <text x="20" y="192" fill="#eef4fc" font-size="17">Desktop product · 0/4 acceptance gates complete</text>
+    <g transform="translate(20 206)">
+      <rect width="184" height="18" rx="4" fill="#e0aa49"/><rect x="192" width="184" height="18" rx="4" fill="#e0aa49"/>
+      <rect x="384" width="184" height="18" rx="4" fill="#3b4657"/><rect x="576" width="184" height="18" rx="4" fill="#3b4657"/>
+    </g>
+    <text x="20" y="258" fill="#eef4fc" font-size="14">Next: live GPU resource reuse, then normal launcher/input and stable display</text>
+    <text x="20" y="284" fill="#bac7d9" font-size="13">4K framebuffer captured · Windows diagnostic client: 1280×720</text>
+    <text x="20" y="310" fill="#bac7d9" font-size="12">Green: verified · Amber: in progress · Gray: pending · Updated 2026-10-19</text>
+    <text x="20" y="332" fill="#bac7d9" font-size="12">Checklist counts do not measure engineering effort or product readiness.</text>
   </g>
-  <text x="20" y="102" fill="#eef4fc" font-family="sans-serif" font-size="17">Omarchy desktop · acceptance gates 0/4 complete</text>
-  <g transform="translate(20 116)">
-    <rect width="184" height="18" rx="4" fill="#e0aa49"/><rect x="192" width="184" height="18" rx="4" fill="#3b4657"/>
-    <rect x="384" width="184" height="18" rx="4" fill="#3b4657"/><rect x="576" width="184" height="18" rx="4" fill="#3b4657"/>
-  </g>
-  <text x="20" y="164" fill="#eef4fc" font-family="sans-serif" font-size="14">Next milestone: first correctly displayed Hyprland frame</text>
-  <text x="20" y="188" fill="#bac7d9" font-family="sans-serif" font-size="12">Green: demonstrated · Amber: in progress · Gray: pending · Updated 2026-10-12</text>
 </svg>
