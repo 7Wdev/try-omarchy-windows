@@ -10,31 +10,34 @@ The experimental QEMU/WHPX bridge now captures a real **3840×2160 Omarchy deskt
 the shipped wallpaper, Omarchy bar and readable Alacritty application appear together.
 Full integration into the Windows launcher and a stable interactive desktop remain in development.
 
-![4K Hyprland frame captured on NVIDIA with wallpaper, bar and GPU application; backend 4/8 stages; desktop product 0/4 gates](docs/images/gpu-backend-progress-2026-10-19.svg)
+![Two fresh UWSM 4K NVIDIA captures pass with complete terminal cleanup; backend 4/8 stages; desktop product 0/4 gates](docs/images/gpu-backend-progress-terminal-staging-2026-10-19.svg)
 
-**Latest verified checkpoint — October 19, 2026:** one fresh guest runs Hyprland through **UWSM in
+**Latest verified checkpoint — October 19, 2026:** two fresh guests run Hyprland through **UWSM in
 a real PAM/logind session**, with an independently verified active compositor service and graphical target.
-It passes **five GPU application
+Each passes **five GPU application
 launch/close cycles**, twelve 4K handoffs, exact first/last backbuffer audits and natural shutdown.
-All six retired client actors and every backing mapping are reclaimed **before VM exit**.
+Every client actor, including the primary compositor, is reclaimed **before native disconnect**;
+all backing mappings and native children are reclaimed **before VM exit**.
 Hyprland, Quickshell and every Alacritty application use NVIDIA.
-The repeat hits the unchanged **1 GiB reported GPU usage guard** after two handoffs and remains rejected.
-[Actual frame, reconstructable raw evidence and retained failures](https://github.com/7Wdev/try-omarchy-windows/blob/2adb39c8c150526f97e5ec8da7e0698dc9f33330/docs/LIVE-UWSM-GPU-SESSION.md).
+Demand-allocated staging avoids preparing about **64 MiB at startup** while retaining all three ring slots.
+Both runs stay below the unchanged **1 GiB reported GPU usage guard**. Earlier failures remain retained.
+[Actual frame, reconstructable raw evidence and scope](docs/LIVE-UWSM-DEMAND-STAGING.md).
 
-![Actual unedited 4K UWSM-managed NVIDIA desktop](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/2adb39c8c150526f97e5ec8da7e0698dc9f33330/docs/images/omarchy-4k-uwsm-gpu-2026-10-19.png)
+![Actual unedited 4K UWSM-managed NVIDIA desktop](docs/images/omarchy-4k-terminal-staging-gpu-2026-10-19.png)
 
-The image is run 77, frame 12, converted directly from the GPU backbuffer. This uses a disposable
+The image is run 82, frame 12, converted directly from the GPU backbuffer. This uses a disposable
 session fixture; normal first-boot and launcher/input integration remain open. The separate Windows
 diagnostic client area is 1280×720; physical 4K scanout and all-frame display remain unverified.
 The released launcher still uses the upstream graphics runtime.
 
 | Progress measure | Verified status | What remains |
 | --- | --- | --- |
-| 4K diagnostic scene elements | **3/3:** shipped wallpaper, Omarchy bar, readable GPU application; repeated direct-start captures and one passing UWSM run | This counts captured scene content, not interactive desktop acceptance. |
+| 4K diagnostic scene elements | **3/3:** shipped wallpaper, Omarchy bar, readable GPU application; repeated direct-start captures and two passing UWSM runs | This counts captured scene content, not interactive desktop acceptance. |
 | Backend verification stages | **4/8 demonstrated; stages 5–6 in progress** | Sustained device/buffer integration, API coverage and product validation. |
 | Desktop product acceptance | **0/4 complete; first two gates in progress** | Normal account setup/launcher/input, continuous multi-window display, longer workloads, recovery and matched-native performance. |
 
-**UWSM startup and live resource reuse pass once; repeatability remains open.** The earlier
+**UWSM startup, live resource reuse and terminal cleanup pass twice in bounded diagnostics.** Longer-run
+stability remains open. The earlier
 [CPU-scan removal checkpoint](https://github.com/7Wdev/try-omarchy-windows/blob/cb505099ef461603c45ccc8b322031546966ee36/docs/LIVE-OMARCHY-GPU-LIFECYCLES.md)
 retains its measured 0.28–0.53-second application retirement result. Complete frame-byte audits remain enabled.
 **Next milestone:** normal launcher/input integration and sustained multi-window presentation.

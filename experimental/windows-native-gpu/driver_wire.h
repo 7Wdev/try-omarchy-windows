@@ -491,6 +491,7 @@ class Driver {
 public:
     virtual bool supportsLiveRetirement() const { return false; }
     virtual bool prepareLiveRetirement() { return false; }
+    virtual bool stopCoordinatedPresentation() { return false; }
     virtual bool beginCoordinatedObjects(CoordinatedObjectCapacity) { return false; }
     virtual ~Driver() = default;
     virtual native_gpu::Capabilities capabilities() const = 0;
@@ -801,6 +802,22 @@ public:
     LiveRetirementProgress retireExitedActor() {
         if(!coordinated || mayPresent || coordinated->gl.version!=13)
             throw std::runtime_error("Live retirement requires a coordinated application");
+        return retireExitedObjects();
+    }
+    // Only the terminal group control may retire the presentation owner, after
+    // every actor exited and the native presentation queues were drained.
+    LiveRetirementProgress retireStoppedPrimary() {
+        if(!coordinated || !mayPresent || coordinated->gl.version!=13)
+            throw std::runtime_error("Terminal retirement requires the coordinated primary");
+        return retireExitedObjects();
+    }
+    bool hasSharedReferences() const {
+        return std::any_of(objects.begin(),objects.end(),[](const auto& item) {
+            return item.second.kind==Kind::SharedResource || item.second.kind==Kind::SharedSync;
+        });
+    }
+private:
+    LiveRetirementProgress retireExitedObjects() {
         LiveRetirementProgress progress;
         progress.remaining=static_cast<std::uint32_t>(objects.size());progress.phase=liveRetirementPhase;
         for(const auto& item:objects)
@@ -844,6 +861,7 @@ public:
         if(objects.empty()) { progress.phase=liveRetirementPhase=4;progress.flags=0;progress.ntstatus=0; }
         return progress;
     }
+public:
     // Trusted owner-only cleanup after proven VM exit. The coordinator runs
     // each phase across every Session before advancing: another actor's live
     // hardware queue must not prevent reservation release permanently.

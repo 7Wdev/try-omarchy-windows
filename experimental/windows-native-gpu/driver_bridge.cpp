@@ -678,6 +678,16 @@ public:
         }
         return true;
     }
+    bool stopCoordinatedPresentation() override {
+        if(!supportsLiveRetirement()) return false;
+        // Stop joins the UI thread and retires its real input/output fences
+        // before releasing imported source references or presentation heaps.
+        if(compositorOutput) {
+            if(!compositorOutput->stop()) return false;
+            compositorOutput.reset();
+        }
+        return true;
+    }
     bool beginCoordinatedObjects(CoordinatedObjectCapacity value) override {
         if(!validCoordinatedObjectCapacity(value) || coordinatedObjectsEnabled || !openglDesktopPresentationEnabled || !runtime || runtime->hasStopped() ||
             !ownedAdapters.empty() || !deviceAdapters.empty() || !hwQueues.empty() || !syncObjects.empty()) return false;
@@ -1513,7 +1523,7 @@ public:
             compositorOutput=std::make_unique<driver_shared::CompositorPresenter>();
             hr=compositorOutput->initialize(luid,desc,[this](const char* stage,std::uint64_t bytes) {
                 return reportedGpuUsageAcceptable(bytes,stage);
-            });
+            },coordinatedObjectsEnabled && coordinatedObjectCapacity.version==5 && openGlProfileVersion==13);
         }
         if (SUCCEEDED(hr)) hr=compositorOutput->submit(resource,source->second.handle.get(),fence->second.get(),desc,frame);
         if (FAILED(hr)) {

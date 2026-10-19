@@ -69,6 +69,23 @@ public:
         receipt("BROKER_COORDINATOR_LIVE_RETIREMENT version=1 batch=16 phases=4 trustedControllerOnly=true\n");
     }
     bool liveRetirementEnabled() const { return liveRetirement; }
+    void retireStoppedGroup() {
+        if(!liveRetirement) reject("Terminal group retirement not negotiated");
+        const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(8);
+        unsigned steps=0,destroyed=0;
+        driver_bridge::LiveRetirementProgress progress;
+        do {
+            progress=decode<driver_bridge::LiveRetirementProgress>(control(cg::Operation::RetireStoppedGroup));
+            if(!driver_bridge::validLiveRetirementProgress(progress)) reject("Terminal retirement progress mismatch");
+            ++steps;destroyed+=progress.destroyed;
+            if(!progress.remaining) {
+                receipt("BROKER_COORDINATOR_PRIMARY_RETIRED destroyedWireObjects=%u steps=%u groupSealed=true\n",destroyed,steps);
+                return;
+            }
+            poll(nullptr,0,1);
+        } while(steps<512 && std::chrono::steady_clock::now()<deadline);
+        reject("Terminal group retirement did not finish within its bounded deadline");
+    }
     driver_bridge::LiveRetirementProgress retireExited(std::uint64_t actor) {
         if(!liveRetirement) reject("Live retirement not negotiated");
         const auto progress=decode<driver_bridge::LiveRetirementProgress>(control(cg::Operation::RetireExitedActor,encode(actor)));
@@ -216,6 +233,10 @@ template<class Authority=KernelObjects> class ObjectRegistry {
     }
 public:
     explicit ObjectRegistry(Authority value={}) : kernel(std::move(value)) {}
+    bool empty() {
+        std::lock_guard<std::mutex> guard(mutex);
+        return entries.empty() && pending.empty();
+    }
 };
 template<class Native,class Authority> class ActorObjects {
     ObjectRegistry<Authority>& registry;

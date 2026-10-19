@@ -1,6 +1,14 @@
 # Native Windows GPU experiment
 
-The [UWSM-managed NVIDIA desktop checkpoint](../../docs/LIVE-UWSM-GPU-SESSION.md)
+The [guarded staging and terminal cleanup checkpoint](../../docs/LIVE-UWSM-DEMAND-STAGING.md)
+passes two fresh UWSM/PAM guests, each with five GPU application cycles and twelve
+4K handoffs. Staging textures are allocated on demand without reducing ring
+capacity or admission limits. A trusted terminal group operation requires every
+actor to exit and drain its capabilities, seals admission, drains native presentation
+and retires the primary's remaining objects before disconnect. Earlier failures
+remain retained. Long-run memory stability and normal launcher/input remain open.
+
+The earlier [UWSM-managed NVIDIA desktop checkpoint](../../docs/LIVE-UWSM-GPU-SESSION.md)
 passes one fresh PAM/logind session with independently verified active service
 state, five GPU application lifecycles, twelve audited 4K handoffs and no
 mappings deferred to VM exit. It adds root-selected pidfd compositor admission;

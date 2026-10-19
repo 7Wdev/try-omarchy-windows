@@ -11,7 +11,7 @@
 namespace driver_bridge::coordinator {
 constexpr std::uint32_t Magic=0x55504743; // CGPU
 constexpr std::uint16_t ProtocolVersion=4;
-enum class Operation : std::uint16_t { Initialize=1, Info, Register, Alias, ReapReference, Disconnect, Release, BeginLiveRetirement, RetireExitedActor };
+enum class Operation : std::uint16_t { Initialize=1, Info, Register, Alias, ReapReference, Disconnect, Release, BeginLiveRetirement, RetireExitedActor, RetireStoppedGroup };
 enum class Role : std::uint32_t { Application=1, Compositor=2 };
 struct Frame {
     std::uint32_t magic=Magic;
@@ -59,7 +59,7 @@ class Runtime {
     actors::Router router;
     std::uint64_t nextSequence=1;
     bool poisoned=false,primaryClaimed=false;
-    bool liveRetirement=false;
+    bool liveRetirement=false,terminalRetirement=false,presentationStopped=false;
     std::uint64_t primaryActor=0,retiredActors=0,retiredObjects=0;
     std::set<std::uint64_t> retired;
     static std::vector<std::uint8_t> response(Frame h,std::int32_t status,const std::vector<std::uint8_t>& payload={}) {
@@ -103,17 +103,19 @@ public:
             actors::Envelope h{};
             if(packet.size()<sizeof h) { poisoned=true;return {}; }
             std::memcpy(&h,packet.data(),sizeof h);
-            if(!profiles || h.operation!=actors::Operation::Call) { poisoned=true;return {}; }
+            if(!profiles || terminalRetirement || h.operation!=actors::Operation::Call) { poisoned=true;return {}; }
             return router.dispatch(packet);
         }
         if(magic!=Magic || packet.size()<sizeof(Frame)) { poisoned=true;return {}; }
         Frame h{};std::memcpy(&h,packet.data(),sizeof h);
         if(h.version!=ProtocolVersion || h.status || h.reserved || h.bytes!=packet.size()-sizeof h ||
             h.sequence!=nextSequence || nextSequence==UINT64_MAX ||
-            h.operation<Operation::Initialize || h.operation>Operation::RetireExitedActor) {
+            h.operation<Operation::Initialize || h.operation>Operation::RetireStoppedGroup) {
             poisoned=true;return response(h,-71);
         }
         ++nextSequence;
+        if(terminalRetirement && h.operation!=Operation::RetireStoppedGroup && h.operation!=Operation::Info)
+            return response(h,-32);
         if(h.operation==Operation::Initialize) {
             Initialization wanted{};
             if(profiles) return response(h,-16);
@@ -126,6 +128,39 @@ public:
             return response(h,0);
         }
         if(!profiles) return response(h,-71);
+        if(h.operation==Operation::RetireStoppedGroup) {
+            if(h.bytes) return response(h,-22);
+            if(!liveRetirement || !primaryClaimed) return response(h,-95);
+            // Disconnected means the trusted broker observed pidfd exit and
+            // revoked CPU views. Non-primary actors must already be reclaimed;
+            // no session or capability may outlive this terminal transition.
+            for(const auto& entry:sessions)
+                if(entry.first!=primaryActor || !router.disconnected(entry.first) || entry.second->hasSharedReferences())
+                    return response(h,-16);
+            terminalRetirement=true;
+            if(!presentationStopped) {
+                if(!driver.stopCoordinatedPresentation()) {
+                    poisoned=true;throw std::runtime_error("Terminal presentation drain failed");
+                }
+                presentationStopped=true;
+            }
+            LiveRetirementProgress progress;progress.phase=4;
+            const auto actor=sessions.find(primaryActor);
+            if(actor!=sessions.end()) {
+                try { progress=actor->second->retireStoppedPrimary(); }
+                catch(...) { poisoned=true;throw; }
+                if(!validLiveRetirementProgress(progress)) throw std::runtime_error("Malformed terminal retirement progress");
+                if(!progress.remaining) {
+                    if(!router.detachEmpty(primaryActor)) throw std::runtime_error("Terminal primary still owns objects");
+                    sessions.erase(actor);
+                }
+            }
+            std::cerr<<"{\"nativeStoppedGroupRetirement\":true,\"primaryActor\":"<<primaryActor<<",\"phase\":"<<progress.phase
+                <<",\"remaining\":"<<progress.remaining<<",\"attempted\":"<<progress.attempted<<",\"destroyed\":"<<progress.destroyed
+                <<",\"sharedReferences\":"<<progress.sharedReferences<<",\"flags\":"<<progress.flags<<",\"ntstatus\":"<<progress.ntstatus
+                <<",\"presentationDrained\":true,\"groupSealed\":true,\"ordinaryClientOpcode\":false}\n";
+            return response(h,0,encoded(progress));
+        }
         if(h.operation==Operation::BeginLiveRetirement) {
             LiveRetirementProfile wanted{};
             if(liveRetirement || !sessions.empty()) return response(h,-16);

@@ -88,6 +88,15 @@ static int coordinated(guest_broker::Fd& listener,const char* path,unsigned uid,
     }
     listener=Fd();
     for(auto& task:workers.tasks) task->thread.join();
+    if(controller.liveRetirementEnabled() && !failures) {
+        pollfd exited{primaryProcess.get(),POLLIN,0};
+        if(!primaryAccepted || !primaryFinished || active || poll(&exited,1,0)!=1 ||
+            !(exited.revents&POLLIN) || (exited.revents&(POLLERR|POLLNVAL)) || !objects.empty())
+            throw std::runtime_error("Terminal group lacks complete process/capability retirement");
+        receipt("BROKER_COORDINATOR_GROUP_STOPPED primaryPid=%llu workersJoined=true listenerClosed=true primaryPidfdExited=true registryEmpty=true\n",
+            static_cast<unsigned long long>(primary));
+        controller.retireStoppedGroup();
+    }
     alarm(0);
     std::fprintf(stderr,"BROKER_COORDINATOR_EXIT connections=%u failed=%u primaryPidFromRoot=true gpuProof=false\n",connections,failures.load());
     return failures ? 1 : 0;

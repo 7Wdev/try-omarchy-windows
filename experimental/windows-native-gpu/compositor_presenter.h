@@ -28,6 +28,9 @@ class CompositorPresenter {
     std::array<Slot,3> slots;
     Device device;
     GpuUsageGuard budget;
+    bool demandStaging = false;
+    unsigned stagingTexturesCreated = 0, stagingTexturesReleased = 0;
+    std::uint64_t stagingTextureBytes = 0;
     Microsoft::WRL::ComPtr<ID3D12CommandQueue> inputQueue, outputQueue;
     Microsoft::WRL::ComPtr<ID3D12Fence> inputRetired, outputRetired, auditRetired;
     Resource auditReadback;
@@ -58,6 +61,32 @@ class CompositorPresenter {
         while ((observed=fence->GetCompletedValue())<value && GetTickCount64()<deadline) Sleep(1);
         if (observed==UINT64_MAX || observed<value) ExitProcess(3);
     }
+    HRESULT prepareStaging(unsigned index,bool initializationPhase) {
+        if(index>=slots.size()) return E_INVALIDARG;
+        auto& slot=slots[index];
+        if(slot.texture) return S_OK;
+        D3D12_HEAP_PROPERTIES heap{}; heap.Type=D3D12_HEAP_TYPE_DEFAULT; heap.CreationNodeMask=heap.VisibleNodeMask=1;
+        D3D12_RESOURCE_DESC texture{}; texture.Dimension=D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        texture.Width=layout.width; texture.Height=layout.height; texture.DepthOrArraySize=texture.MipLevels=1;
+        texture.Format=static_cast<DXGI_FORMAT>(driver_bridge::compositorDxgiFormat(layout.format)); texture.SampleDesc.Count=1;
+        const auto allocation=device->GetResourceAllocationInfo(0,1,&texture);
+        if(!allocation.SizeInBytes || allocation.SizeInBytes==UINT64_MAX ||
+           allocation.SizeInBytes>UINT64_MAX-stagingTextureBytes) return E_INVALIDARG;
+        if(budget && !budget("staging-before",allocation.SizeInBytes)) return E_OUTOFMEMORY;
+        // Publish ownership only after both admission checks. A failed create
+        // or post-create check releases this unused local resource immediately.
+        Resource prepared;
+        const auto hr=device->CreateCommittedResource(&heap,D3D12_HEAP_FLAG_NONE,&texture,D3D12_RESOURCE_STATE_COMMON,nullptr,IID_PPV_ARGS(&prepared));
+        if(FAILED(hr)) return hr;
+        if(budget && !budget("staging-after",0)) return E_OUTOFMEMORY;
+        slot.texture=std::move(prepared);
+        ++stagingTexturesCreated;stagingTextureBytes+=allocation.SizeInBytes;
+        std::cerr<<"{\"nativeCompositorStagingAllocated\":true,\"slot\":"<<index<<",\"bytes\":"<<allocation.SizeInBytes
+            <<",\"preparedTextures\":"<<stagingTexturesCreated<<",\"preparedBytes\":"<<stagingTextureBytes
+            <<",\"capacity\":3,\"onDemand\":"<<(demandStaging?"true":"false")
+            <<",\"phase\":\""<<(initializationPhase?"initialization":"serialized-submit")<<"\"}\n";
+        return S_OK;
+    }
     HRESULT create() {
         if(budget && !budget("device-before",0)) return E_OUTOFMEMORY;
         Microsoft::WRL::ComPtr<IDXGIFactory4> factory;
@@ -73,16 +102,11 @@ class CompositorPresenter {
         if (SUCCEEDED(hr)) hr=device->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&auditRetired));
         if (FAILED(hr)) return hr;
         if(budget && !budget("device-after",0)) return E_OUTOFMEMORY;
-        D3D12_HEAP_PROPERTIES heap{}; heap.Type=D3D12_HEAP_TYPE_DEFAULT; heap.CreationNodeMask=heap.VisibleNodeMask=1;
-        D3D12_RESOURCE_DESC texture{}; texture.Dimension=D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-        texture.Width=layout.width; texture.Height=layout.height; texture.DepthOrArraySize=texture.MipLevels=1;
-        texture.Format=static_cast<DXGI_FORMAT>(driver_bridge::compositorDxgiFormat(layout.format)); texture.SampleDesc.Count=1;
-        const auto allocation=device->GetResourceAllocationInfo(0,1,&texture);
-        if(!allocation.SizeInBytes || allocation.SizeInBytes==UINT64_MAX) return E_INVALIDARG;
-        for (auto& slot:slots) {
-            if(budget && !budget("staging-before",allocation.SizeInBytes)) return E_OUTOFMEMORY;
-            hr=device->CreateCommittedResource(&heap,D3D12_HEAP_FLAG_NONE,&texture,D3D12_RESOURCE_STATE_COMMON,nullptr,IID_PPV_ARGS(&slot.texture));
-            if(SUCCEEDED(hr) && budget && !budget("staging-after",0)) { slot.texture.Reset(); return E_OUTOFMEMORY; }
+        for (unsigned index=0;index<slots.size();++index) {
+            auto& slot=slots[index];
+            // Slot zero supplies the audit footprint. Other full-size textures
+            // are created on first use by the serialized native submit path.
+            if(!demandStaging || !index) hr=prepareStaging(index,true);
             if (SUCCEEDED(hr)) hr=device->CreateCommandAllocator(queue.Type,IID_PPV_ARGS(&slot.inputAllocator));
             if (SUCCEEDED(hr)) hr=device->CreateCommandAllocator(queue.Type,IID_PPV_ARGS(&slot.outputAllocator));
             if (SUCCEEDED(hr)) hr=device->CreateCommandList(0,queue.Type,slot.inputAllocator.Get(),nullptr,IID_PPV_ARGS(&slot.inputCommands));
@@ -201,10 +225,13 @@ class CompositorPresenter {
                 if (SUCCEEDED(status)) status=window.initialize(factory.Get(),device.Get(),outputQueue.Get(),layout.width,layout.height,
                     static_cast<DXGI_FORMAT>(driver_bridge::compositorDxgiFormat(layout.format)),true,budget);
             }
+            // Publish the initialization receipt before submit() can allocate
+            // another slot on its own thread or publish the first frame.
+            if(SUCCEEDED(status)) std::cerr<<"{\"nativeCompositorRingOpened\":true,\"slots\":3,\"sourceCacheLimit\":3,\"uiThreadOwned\":true,\"ordinaryCpuReadback\":false"
+                <<",\"onDemandStaging\":"<<(demandStaging?"true":"false")<<",\"initialStagingTextures\":"<<stagingTexturesCreated<<"}\n";
             { std::lock_guard<std::mutex> lock(guard); initialization=status; initialized=true; }
             ready.notify_one();
             if (FAILED(status)) { failure=status; return; }
-            std::cerr<<"{\"nativeCompositorRingOpened\":true,\"slots\":3,\"sourceCacheLimit\":3,\"uiThreadOwned\":true,\"ordinaryCpuReadback\":false}\n";
             for (;;) {
                 if (!window.serviceMessages()) { failure=HRESULT_FROM_WIN32(ERROR_CANCELLED); break; }
                 Frame frame{}; bool have=false;
@@ -231,9 +258,9 @@ class CompositorPresenter {
 public:
     CompositorPresenter()=default;
     ~CompositorPresenter() { stop(); }
-    HRESULT initialize(LUID luid,driver_bridge::CompositorCaptureDesc desc,GpuUsageGuard usage = {}) {
+    HRESULT initialize(LUID luid,driver_bridge::CompositorCaptureDesc desc,GpuUsageGuard usage = {},bool demand = false) {
         if (ui.joinable() || !driver_bridge::validCompositorFrame(desc)) return E_INVALIDARG;
-        selected=luid; layout=desc; layout.flags=0; budget=std::move(usage);
+        selected=luid; layout=desc; layout.flags=0; budget=std::move(usage); demandStaging=demand;
         work=CreateEventW(nullptr,FALSE,FALSE,nullptr); if (!work) return HRESULT_FROM_WIN32(GetLastError());
         inputEvent=CreateEventW(nullptr,FALSE,FALSE,nullptr);
         if (!inputEvent) { const auto error=GetLastError(); if (!CloseHandle(work)) ExitProcess(3); work=nullptr; return HRESULT_FROM_WIN32(error); }
@@ -264,6 +291,10 @@ public:
                 std::lock_guard<std::mutex> lock(guard); if (!published) slot.occupied=false;
             }
         } rollback{slot,guard,failure,inputSubmitted,inputCompleted,published};
+        // Native calls are serialized; do not allocate a new texture on the UI
+        // thread while a guest residency operation is admitted elsewhere.
+        auto staging=prepareStaging(index,false);
+        if(FAILED(staging)) return staging;
         auto source=sources.find(resourceId);
         HRESULT hr=S_OK;
         if (source==sources.end()) {
@@ -332,12 +363,17 @@ public:
         const bool clean=SUCCEEDED(failure.load()) && presented==submitted && frames.empty() &&
             std::none_of(slots.begin(),slots.end(),[](const Slot& slot){return slot.occupied;});
         sources.clear();
-        for (auto& slot:slots) { slot.inputCommands.Reset(); slot.outputCommands.Reset(); slot.inputAllocator.Reset(); slot.outputAllocator.Reset(); slot.texture.Reset(); }
+        for (auto& slot:slots) {
+            slot.inputCommands.Reset(); slot.outputCommands.Reset(); slot.inputAllocator.Reset(); slot.outputAllocator.Reset();
+            if(slot.texture) { slot.texture.Reset();++stagingTexturesReleased; }
+        }
         auditReadback.Reset();auditRetired.Reset(); inputQueue.Reset(); outputQueue.Reset(); inputRetired.Reset(); outputRetired.Reset(); device.Reset();
         const bool closed=CloseHandle(work)!=FALSE; work=nullptr;
         const bool inputClosed=CloseHandle(inputEvent)!=FALSE; inputEvent=nullptr;
         std::cerr<<"{\"nativeCompositorRingStopped\":"<<(clean&&closed?"true":"false")<<",\"submitted\":"<<submitted<<",\"presented\":"<<presented
             <<",\"completedAudits\":"<<completedAudits<<",\"peakQueued\":"<<peakQueued<<",\"peakSources\":"<<peakSources
+            <<",\"onDemandStaging\":"<<(demandStaging?"true":"false")<<",\"stagingTexturesCreated\":"<<stagingTexturesCreated
+            <<",\"stagingTexturesReleased\":"<<stagingTexturesReleased<<",\"stagingTextureBytes\":"<<stagingTextureBytes
             <<",\"workHandleClosed\":"<<(closed?"true":"false")<<",\"inputEventClosed\":"<<(inputClosed?"true":"false")
             <<",\"uiThreadJoined\":true,\"liveGpuResources\":0,\"displayVerified\":false}\n";
         if (!closed || !inputClosed) ExitProcess(3);
