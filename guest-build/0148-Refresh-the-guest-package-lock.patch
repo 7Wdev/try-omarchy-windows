@@ -1,0 +1,459 @@
+From b01b459b5c578c6743eee6823a4480fe5eb56685 Mon Sep 17 00:00:00 2001
+From: Try Omarchy Release <actions@users.noreply.github.com>
+Date: Mon, 19 Oct 2026 13:18:36 +0000
+Subject: [PATCH] Refresh the guest package lock
+
+avahi 1:0.9rc5-1 -> 1:0.9rc5-2
+bubblewrap 0.13.0-1 -> 0.13.1-1
+clang 23.1.1-1 -> 23.1.3-3
+compiler-rt 23.1.1-1 -> 23.1.3-3
+curl 8.22.0-1 -> 8.23.0-1
+dua-cli 2.45.1-1 -> 2.46.0-1
+fastfetch 2.69.0-1 -> 2.70.0-1
+freetype2 2.14.3-1 -> 2.15.0-1
+glycin 2.2.2-1 -> 2.2.3-1
+glycin-gtk4 2.2.2-1 -> 2.2.3-1
+graphicsmagick 1.3.49-2 -> 1.3.49-3
+graphviz 16.1.0-1 -> 16.1.0-2
+hyprland-preview-share-picker 0.2.1-1 -> 0.2.1-3
+imagemagick 7.1.2.33-3 -> 7.1.2.34-2
+libarchive 3.8.9-1 -> 3.8.10-1
+libbs2b 3.1.0-10 -> 3.1.0-11
+libcolord 1.4.8-1 -> 1.4.8-2
+libei 1.6.0-1 -> 1.6.0-2
+libgudev 238-3 -> 238-4
+libmm-glib 1.24.2-1 -> 1.24.2-2
+libnotify 0.8.8-1 -> 0.8.9-1
+libpulse 17.0+r98+gb096704c0-1 -> 17.0+r134+g77d25a1e6-1
+librsvg 2:2.63.2-1 -> 2:2.63.3-1
+libx11 1.8.13-2 -> 1.8.14-1
+libxi 1.8.3-1 -> 1.8.4-1
+libxpm 3.5.19-1 -> 3.5.20-1
+libxrender 0.9.12-1 -> 0.9.13-1
+libxtst 1.2.5-1 -> 1.2.6-1
+linux 7.2.9.arch1-1 -> 7.2.11.arch1-1
+linux-api-headers 7.2-1 -> 7.3-1
+linux-headers 7.2.9.arch1-1 -> 7.2.11.arch1-1
+llvm-libs 23.1.1-1 -> 23.1.3-3
+luajit 2.1.1791890110+634daf2-1 -> 2.1.1792349434+dd3b243-1
+mesa 1:26.2.4-1 -> 1:26.2.5-1
+omacalc 0.2.2-1 -> 0.3.1-1
+omacut 0.4.0-1 -> 0.7.2-1
+omarchy-nvim 2026.8.13-1 -> 2026.9.21-5
+omawrite 0.5.0-1 -> 0.7.0-1
+openssh 10.6p1-1 -> 10.6p1-2
+pacman 7.1.0.r9.g54d9411-2 -> 7.1.0.r9.g54d9411-3
+pcsclite 2.5.2-1 -> 2.5.3-1
+perl 5.42.3-1 -> 5.44.0-1
+qt6-base 6.12.0-2 -> 6.12.0-3
+speex 1.2.1-2 -> 1.2.1-3
+speexdsp 1.2.1-2 -> 1.2.1-3
+starship 1.26.0-1 -> 1.27.0-1
+systemd 262-1 -> 262.1-1
+systemd-libs 262-1 -> 262.1-1
+systemd-resolvconf 262-1 -> 262.1-1
+systemd-sysvcompat 262-1 -> 262.1-1
+texinfo 7.3-1 -> 7.3-3
+uwsm 0.27.0-1 -> 0.27.1-1
+vulkan-mesa-implicit-layers 1:26.2.4-1 -> 1:26.2.5-1
+vulkan-swrast 1:26.2.4-1 -> 1:26.2.5-1
+vulkan-virtio 1:26.2.4-1 -> 1:26.2.5-1
+webrtc-audio-processing-1 1.3-5 -> 1.3-6
+xdg-desktop-portal-gtk 1.15.3-1 -> 1.15.3-2
+xorg-server 21.1.25-1 -> 21.1.25-2
+xorg-server-common 21.1.25-1 -> 21.1.25-2
+llvm 23.1.3-3 (new)
+llvm-lit 23.1.3-3 (new)
+---
+ guest/packages.lock.json | 120 ++++++++++++++++++++-------------------
+ 1 file changed, 61 insertions(+), 59 deletions(-)
+
+diff --git a/guest/packages.lock.json b/guest/packages.lock.json
+index a1a0750..c78a916 100644
+--- a/guest/packages.lock.json
++++ b/guest/packages.lock.json
+@@ -19,7 +19,7 @@
+     "audit": "4.2.1-1",
+     "autoconf": "2.73-1",
+     "automake": "1.19-1",
+-    "avahi": "1:0.9rc5-1",
++    "avahi": "1:0.9rc5-2",
+     "base": "3-3",
+     "base-devel": "1-2",
+     "bash": "5.3.20-1",
+@@ -31,22 +31,22 @@
+     "boost-libs": "1.92.0-1",
+     "brotli": "1.2.0-1",
+     "btop": "1.4.7-1",
+-    "bubblewrap": "0.13.0-1",
++    "bubblewrap": "0.13.1-1",
+     "bzip2": "1.0.8-6",
+     "ca-certificates": "20240618-1",
+     "ca-certificates-mozilla": "3.131-1",
+     "ca-certificates-utils": "20240618-1",
+     "cairo": "1.18.6-1",
+     "chromium": "154.0.8037.97-1",
+-    "clang": "23.1.1-1",
++    "clang": "23.1.3-3",
+     "cmake": "4.4.4-1",
+-    "compiler-rt": "23.1.1-1",
++    "compiler-rt": "23.1.3-3",
+     "coreutils": "9.12-2",
+     "cpio": "2.15-3",
+     "cppdap": "1.58.0-3",
+     "cpptrace": "1.0.4-2",
+     "cryptsetup": "2.8.8-1",
+-    "curl": "8.22.0-1",
++    "curl": "8.23.0-1",
+     "dav1d": "1.5.4-1",
+     "db5.3": "5.3.28-7",
+     "dbus": "1.16.2-1",
+@@ -61,7 +61,7 @@
+     "diffutils": "3.12-2",
+     "dkms": "3.4.4-1",
+     "double-conversion": "3.4.0-1",
+-    "dua-cli": "2.45.1-1",
++    "dua-cli": "2.46.0-1",
+     "duktape": "2.7.0-7",
+     "e2fsprogs": "1.47.4-1",
+     "elfutils": "0.196-1",
+@@ -71,7 +71,7 @@
+     "expat": "2.9.0-1",
+     "eza": "0.23.5-2",
+     "fakeroot": "1:1.37.2-3",
+-    "fastfetch": "2.69.0-1",
++    "fastfetch": "2.70.0-1",
+     "fcft": "3.3.3-1",
+     "fcitx5": "5.1.23-1",
+     "fcitx5-chewing": "5.1.13-1",
+@@ -87,7 +87,7 @@
+     "flex": "2.6.4-6",
+     "fontconfig": "2:2.18.3-2",
+     "foot": "1.28.0-2",
+-    "freetype2": "2.14.3-1",
++    "freetype2": "2.15.0-1",
+     "fribidi": "1.0.17-1",
+     "fuse-common": "3.18.3-1",
+     "fuse3": "3.18.3-1",
+@@ -114,8 +114,8 @@
+     "glibc": "2.44+r50+g1848099f063e-1",
+     "glslang": "1:1.4.363.0-1",
+     "glu": "9.0.3-3",
+-    "glycin": "2.2.2-1",
+-    "glycin-gtk4": "2.2.2-1",
++    "glycin": "2.2.3-1",
++    "glycin-gtk4": "2.2.3-1",
+     "gmp": "6.3.0-3",
+     "gnome-autoar": "0.5.2-1",
+     "gnome-desktop-4": "1:51.0-1",
+@@ -131,9 +131,9 @@
+     "gpm": "1.20.7.r38.ge82d1a6-7",
+     "gpu-screen-recorder": "6.1.4-1",
+     "graphene": "1.10.8-2",
+-    "graphicsmagick": "1.3.49-2",
++    "graphicsmagick": "1.3.49-3",
+     "graphite": "1:1.3.15-1",
+-    "graphviz": "16.1.0-1",
++    "graphviz": "16.1.0-2",
+     "grep": "3.12-2",
+     "grim": "1.5.0-2",
+     "groff": "1.24.2-1",
+@@ -169,7 +169,7 @@
+     "hypridle": "0.1.8-2",
+     "hyprland": "0.56.2-4",
+     "hyprland-guiutils": "0.2.2-4",
+-    "hyprland-preview-share-picker": "0.2.1-1",
++    "hyprland-preview-share-picker": "0.2.1-3",
+     "hyprlang": "0.6.8-5",
+     "hyprpicker": "0.4.7-4",
+     "hyprsunset": "0.4.0-3",
+@@ -180,7 +180,7 @@
+     "iana-etc": "20260617-1",
+     "icu": "78.3-1",
+     "ijs": "0.35-7",
+-    "imagemagick": "7.1.2.33-3",
++    "imagemagick": "7.1.2.34-2",
+     "imv": "5.0.1-2",
+     "iniparser": "4.3.2-1",
+     "inotify-tools": "4.26.270-1",
+@@ -208,7 +208,7 @@
+     "leptonica": "1.87.0-2",
+     "less": "1:710-1",
+     "libadwaita": "1:1.10.0-1",
+-    "libarchive": "3.8.9-1",
++    "libarchive": "3.8.10-1",
+     "libasan": "16.2.1+r23+gd564253eb6c8-1",
+     "libass": "0.17.5-1",
+     "libassuan": "3.0.0-1",
+@@ -229,7 +229,7 @@
+     "libblockdev-swap": "3.5.0-2",
+     "libbluray": "1.5.1-1",
+     "libbpf": "1.7.0-1",
+-    "libbs2b": "3.1.0-10",
++    "libbs2b": "3.1.0-11",
+     "libbsd": "0.12.2-2",
+     "libbytesize": "2.12-3",
+     "libcap": "2.78-1",
+@@ -238,7 +238,7 @@
+     "libcdio-paranoia": "10.2+2.0.2-3",
+     "libchewing": "0.13.1-1",
+     "libcloudproviders": "0.4.1-1",
+-    "libcolord": "1.4.8-1",
++    "libcolord": "1.4.8-2",
+     "libcue": "2.3.0-2",
+     "libcups": "2:2.4.20-1",
+     "libdaemon": "0.14-6",
+@@ -254,7 +254,7 @@
+     "libdwarf": "1:2.3.3-1",
+     "libebur128": "1.2.6-2",
+     "libedit": "20260512_3.1-1",
+-    "libei": "1.6.0-1",
++    "libei": "1.6.0-2",
+     "libelf": "0.196-1",
+     "libepoxy": "1.5.10-3",
+     "libevdev": "1.14.0-1",
+@@ -273,7 +273,7 @@
+     "libgomp": "16.2.1+r23+gd564253eb6c8-1",
+     "libgpg-error": "1.61-1",
+     "libgsf": "1.14.60-1",
+-    "libgudev": "238-3",
++    "libgudev": "238-4",
+     "libgxps": "0.3.2-5",
+     "libheif": "1.23.6-1",
+     "libhwasan": "16.2.1+r23+gd564253eb6c8-1",
+@@ -299,7 +299,7 @@
+     "libmakepkg-dropins": "20-2",
+     "libmd": "1.3.0-1",
+     "libmediainfo": "26.10-1",
+-    "libmm-glib": "1.24.2-1",
++    "libmm-glib": "1.24.2-2",
+     "libmms": "0.6.4-6",
+     "libmnl": "1.0.5-2",
+     "libmodplug": "0.8.9.0-7",
+@@ -317,7 +317,7 @@
+     "libnice": "0.1.24-1",
+     "libnl": "3.12.0-1",
+     "libnm": "1.58.1-2",
+-    "libnotify": "0.8.8-1",
++    "libnotify": "0.8.9-1",
+     "libnsbmp": "0.1.7-2",
+     "libnsgif": "1.0.0-2",
+     "libnsl": "2.0.1-2",
+@@ -340,11 +340,11 @@
+     "libportal-gtk4": "0.11.0-1",
+     "libproxy": "0.5.12-1",
+     "libpsl": "0.21.5-2",
+-    "libpulse": "17.0+r98+gb096704c0-1",
++    "libpulse": "17.0+r134+g77d25a1e6-1",
+     "libquadmath": "16.2.1+r23+gd564253eb6c8-1",
+     "libraqm": "0.11.0-1",
+     "libraw1394": "2.1.2-4",
+-    "librsvg": "2:2.63.2-1",
++    "librsvg": "2:2.63.3-1",
+     "libsamplerate": "0.2.2-3",
+     "libsasl": "2.1.28-5",
+     "libseccomp": "2.6.0-1",
+@@ -389,7 +389,7 @@
+     "libwacom": "2.20.0-1",
+     "libwebp": "1.6.0-2",
+     "libwireplumber": "0.5.18-1",
+-    "libx11": "1.8.13-2",
++    "libx11": "1.8.14-1",
+     "libxau": "1.0.12-1",
+     "libxcb": "1.17.0-1",
+     "libxcomposite": "0.4.7-1",
+@@ -402,22 +402,22 @@
+     "libxfixes": "6.0.2-1",
+     "libxfont2": "2.0.9-1",
+     "libxft": "2.3.9-1",
+-    "libxi": "1.8.3-1",
++    "libxi": "1.8.4-1",
+     "libxinerama": "1.1.6-1",
+     "libxkbcommon": "1.13.2-1",
+     "libxkbcommon-x11": "1.13.2-1",
+     "libxkbfile": "1.2.0-1",
+     "libxml2": "2.15.4-1",
+     "libxmu": "1.3.1-1",
+-    "libxpm": "3.5.19-1",
++    "libxpm": "3.5.20-1",
+     "libxpresent": "1.0.2-1",
+     "libxrandr": "1.5.5-1",
+-    "libxrender": "0.9.12-1",
++    "libxrender": "0.9.13-1",
+     "libxshmfence": "1.3.3-1",
+     "libxslt": "1.1.45-2",
+     "libxss": "1.2.5-1",
+     "libxt": "1.3.1-1",
+-    "libxtst": "1.2.5-1",
++    "libxtst": "1.2.6-1",
+     "libxv": "1.0.13-1",
+     "libxxf86vm": "1.1.7-1",
+     "libyaml": "0.2.5-3",
+@@ -426,18 +426,20 @@
+     "libzip": "1.11.4-1",
+     "licenses": "20240728-1",
+     "lilv": "0.28.0-1",
+-    "linux": "7.2.9.arch1-1",
+-    "linux-api-headers": "7.2-1",
+-    "linux-headers": "7.2.9.arch1-1",
++    "linux": "7.2.11.arch1-1",
++    "linux-api-headers": "7.3-1",
++    "linux-headers": "7.2.11.arch1-1",
+     "llhttp": "9.3.1-1",
+-    "llvm-libs": "23.1.1-1",
++    "llvm": "23.1.3-3",
++    "llvm-libs": "23.1.3-3",
++    "llvm-lit": "23.1.3-3",
+     "lm_sensors": "1:3.6.2-1",
+     "lmdb": "0.9.35-1",
+     "localsearch": "3.12.0-1",
+     "lua": "5.5.1-1",
+     "lua51-lpeg": "1.1.0-5",
+     "lua54": "5.4.9-1",
+-    "luajit": "2.1.1791890110+634daf2-1",
++    "luajit": "2.1.1792349434+dd3b243-1",
+     "lv2": "1.18.10-2",
+     "lz4": "1:1.10.0-2",
+     "lzo": "2.10-5",
+@@ -446,7 +448,7 @@
+     "man-db": "2.13.1-2",
+     "md4c": "0.6.0-2",
+     "mdadm": "4.6-2",
+-    "mesa": "1:26.2.4-1",
++    "mesa": "1:26.2.5-1",
+     "ministream": "0.99.1-1",
+     "minizip": "1:1.3.2-4",
+     "mkinitcpio": "42.2-1",
+@@ -475,23 +477,23 @@
+     "nss": "3.131-1",
+     "numactl": "2.0.19-1",
+     "ocl-icd": "2.3.5-1",
+-    "omacalc": "0.2.2-1",
+-    "omacut": "0.4.0-1",
++    "omacalc": "0.3.1-1",
++    "omacut": "0.7.2-1",
+     "omarchy-keyring": "20251027-1",
+-    "omarchy-nvim": "2026.8.13-1",
+-    "omawrite": "0.5.0-1",
++    "omarchy-nvim": "2026.9.21-5",
++    "omawrite": "0.7.0-1",
+     "oniguruma": "6.9.10-3",
+     "openal": "1.25.2-2",
+     "opencore-amr": "0.1.6-2",
+     "openh264": "2.6.0-2",
+     "openjpeg2": "2.5.4-1",
+-    "openssh": "10.6p1-1",
++    "openssh": "10.6p1-2",
+     "openssl": "3.6.5-1",
+     "opus": "1.6.1-1",
+     "orc": "0.4.44-1",
+     "osinfo-db": "20260812-1",
+     "p11-kit": "0.26.5-1",
+-    "pacman": "7.1.0.r9.g54d9411-2",
++    "pacman": "7.1.0.r9.g54d9411-3",
+     "pacman-contrib": "1.13.1-1",
+     "pacman-mirrorlist": "20260610-1",
+     "pahole": "1:1.32-1",
+@@ -504,8 +506,8 @@
+     "pciutils": "3.15.0-1",
+     "pcre": "8.45-5",
+     "pcre2": "10.49-1",
+-    "pcsclite": "2.5.2-1",
+-    "perl": "5.42.3-1",
++    "pcsclite": "2.5.3-1",
++    "perl": "5.44.0-1",
+     "perl-error": "0.17030-3",
+     "perl-mailtools": "2.22-3",
+     "perl-timedate": "2.35-1",
+@@ -535,7 +537,7 @@
+     "python-yaml": "6.0.3-2",
+     "qoi": "r350.4461cc3-1",
+     "qrencode": "4.1.1-4",
+-    "qt6-base": "6.12.0-2",
++    "qt6-base": "6.12.0-3",
+     "qt6-declarative": "6.12.0-1",
+     "qt6-multimedia": "6.12.0-1",
+     "qt6-multimedia-ffmpeg": "6.12.0-1",
+@@ -568,25 +570,25 @@
+     "sord": "0.16.22-1",
+     "source-highlight": "3.1.9-19",
+     "spandsp": "0.0.6-7",
+-    "speex": "1.2.1-2",
+-    "speexdsp": "1.2.1-2",
++    "speex": "1.2.1-3",
++    "speexdsp": "1.2.1-3",
+     "spirv-tools": "1:1.4.363.0-1",
+     "sqlite": "3.54.0-1",
+     "sratom": "0.6.22-1",
+     "srt": "1.5.7-2",
+-    "starship": "1.26.0-1",
++    "starship": "1.27.0-1",
+     "sudo": "1.9.17.p2-6",
+     "svt-av1": "4.2.0-1",
+-    "systemd": "262-1",
+-    "systemd-libs": "262-1",
+-    "systemd-resolvconf": "262-1",
+-    "systemd-sysvcompat": "262-1",
++    "systemd": "262.1-1",
++    "systemd-libs": "262.1-1",
++    "systemd-resolvconf": "262.1-1",
++    "systemd-sysvcompat": "262.1-1",
+     "tar": "1.35-5",
+     "tensaku": "0.29.0-2",
+     "tesseract": "5.5.3-1",
+     "tesseract-data-eng": "2:4.1.0-5",
+     "tesseract-data-osd": "2:4.1.0-5",
+-    "texinfo": "7.3-1",
++    "texinfo": "7.3-3",
+     "tinysparql": "3.12.0-1",
+     "tinyxml2": "11.0.0-2",
+     "tmux": "3.8-1",
+@@ -613,7 +615,7 @@
+     "upower": "1.91.5-1",
+     "util-linux": "2.42.4-1",
+     "util-linux-libs": "2.42.4-1",
+-    "uwsm": "0.27.0-1",
++    "uwsm": "0.27.1-1",
+     "v4l-utils": "1.32.0-2",
+     "v4l2loopback-dkms": "0.15.4-2",
+     "vapoursynth": "80-1",
+@@ -621,12 +623,12 @@
+     "vmaf": "3.2.1-1",
+     "volume_key": "0.3.12-12",
+     "vulkan-icd-loader": "1.4.363.0-1",
+-    "vulkan-mesa-implicit-layers": "1:26.2.4-1",
+-    "vulkan-swrast": "1:26.2.4-1",
+-    "vulkan-virtio": "1:26.2.4-1",
++    "vulkan-mesa-implicit-layers": "1:26.2.5-1",
++    "vulkan-swrast": "1:26.2.5-1",
++    "vulkan-virtio": "1:26.2.5-1",
+     "wayland": "1.26.0-1",
+     "wayland-protocols": "1.49-1",
+-    "webrtc-audio-processing-1": "1.3-5",
++    "webrtc-audio-processing-1": "1.3-6",
+     "which": "2.25-1",
+     "wireplumber": "0.5.18-1",
+     "wl-clipboard": "1:2.3.0-1",
+@@ -645,7 +647,7 @@
+     "xcb-util-renderutil": "0.3.10-2",
+     "xcb-util-wm": "0.4.2-2",
+     "xdg-desktop-portal": "1.22.1-2",
+-    "xdg-desktop-portal-gtk": "1.15.3-1",
++    "xdg-desktop-portal-gtk": "1.15.3-2",
+     "xdg-desktop-portal-hyprland": "1.4.1-2",
+     "xdg-terminal-exec": "0.14.3-2",
+     "xdg-user-dirs": "0.20-1",
+@@ -654,8 +656,8 @@
+     "xf86-input-libinput": "1.5.0-1",
+     "xkeyboard-config": "2.48-1",
+     "xorg-fonts-encodings": "1.1.0-2",
+-    "xorg-server": "21.1.25-1",
+-    "xorg-server-common": "21.1.25-1",
++    "xorg-server": "21.1.25-2",
++    "xorg-server-common": "21.1.25-2",
+     "xorg-setxkbmap": "1.3.5-1",
+     "xorg-xauth": "1.1.5-1",
+     "xorg-xkbcomp": "1.5.0-1",
+-- 
+2.55.0
+
