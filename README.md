@@ -12,14 +12,15 @@ Full integration into the Windows launcher and a stable interactive desktop rema
 
 ![4K GPU capture: wallpaper, bar and readable application verified twice; backend 4/8 stages; desktop product 0/4 gates](docs/images/gpu-backend-progress.svg)
 
-**Latest verified checkpoint — October 19, 2026:** two fresh guests each pass twelve GPU handoffs,
-exact first/last backbuffer audits, application close, natural VM exit and native cleanup.
-Hyprland, Quickshell and Alacritty all use the NVIDIA D3D12 renderer.
-[Actual frame, reconstructable raw evidence and retained failures](https://github.com/7Wdev/try-omarchy-windows/blob/2290aa6209289dddfbae54b542c524927414c020/docs/LIVE-OMARCHY-4K-REFERENCE-FIX.md).
+**Latest verified checkpoint — October 19, 2026:** two fresh guests each pass **five GPU application
+launch/close cycles**, twelve 4K handoffs, exact first/last backbuffer audits and natural shutdown.
+All six retired client actors and every backing mapping are reclaimed **before VM exit**.
+Hyprland, Quickshell and every Alacritty application use NVIDIA.
+[Actual frame, reconstructable raw evidence and retained failures](https://github.com/7Wdev/try-omarchy-windows/blob/cb505099ef461603c45ccc8b322031546966ee36/docs/LIVE-OMARCHY-GPU-LIFECYCLES.md).
 
-![Actual unedited 4K NVIDIA Omarchy wallpaper, bar and readable GPU terminal](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/2290aa6209289dddfbae54b542c524927414c020/docs/images/omarchy-4k-reference-fix-gpu-desktop-2026-10-19.png)
+![Actual unedited 4K NVIDIA desktop after repeated GPU application lifecycles](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/cb505099ef461603c45ccc8b322031546966ee36/docs/images/omarchy-4k-live-gpu-lifecycles-2026-10-19.png)
 
-The image is run 59, frame 12, converted directly from the GPU backbuffer. The separate Windows
+The image is run 67, frame 12, converted directly from the GPU backbuffer. The separate Windows
 diagnostic client area is 1280×720; physical 4K scanout and all-frame display remain unverified.
 The released launcher still uses the upstream graphics runtime.
 
@@ -27,11 +28,12 @@ The released launcher still uses the upstream graphics runtime.
 | --- | --- | --- |
 | 4K diagnostic scene elements | **3/3:** shipped wallpaper, Omarchy bar, readable GPU application; repeated in two fresh guests | This counts captured scene content, not interactive desktop acceptance. |
 | Backend verification stages | **4/8 demonstrated; stages 5–6 in progress** | Sustained device/buffer integration, API coverage and product validation. |
-| Desktop product acceptance | **0/4 complete; first two gates in progress** | Live resource reuse/recovery, normal launcher/UWSM/input, continuous multi-window display, stability and matched-native performance. |
+| Desktop product acceptance | **0/4 complete; first two gates in progress** | Normal launcher/UWSM/input, continuous multi-window display, longer workloads, recovery and matched-native performance. |
 
-**Next milestone:** repeat GPU application launch/close cycles with safe live resource reclamation,
-then integrate the normal launcher and input path. The accepted capture checkpoint still retains
-some mappings until VM exit. The checklist counts are not percentages of engineering effort.
+**Live resource reuse now passes twice:** application retirement takes 0.28–0.53 seconds after removing
+unconditional CPU scans of mapped GPU memory. The complete frame-byte audits remain enabled.
+**Next milestone:** normal launcher/input integration and sustained multi-window presentation.
+The checklist counts are not percentages of engineering effort.
 [Current roadmap, gate definitions and evidence](docs/GPU-BACKEND-PROGRESS.md).
 
 Vulkan, CUDA, video acceleration, broader NVIDIA features, concurrent Windows/guest workloads

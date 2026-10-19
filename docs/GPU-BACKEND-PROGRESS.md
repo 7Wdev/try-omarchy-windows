@@ -8,19 +8,20 @@ graphics runtime.
 
 ## What is verified now?
 
-Two fresh guests capture the real Omarchy 4.0.4 desktop at **3840×2160** with
-the shipped wallpaper, Quickshell bar and readable Alacritty application.
-Hyprland, shell and application each have authenticated NVIDIA D3D12 renderer
-and GPU resource-handoff evidence. Each run retires twelve compositor handoffs;
-the complete first and last GPU backbuffers pass independent byte/pixel audits.
-Application close, natural VM exit and native cleanup pass in both runs.
+Two fresh guests each pass **five NVIDIA application launch/close cycles**
+while the same Hyprland compositor keeps running. The real Omarchy 4.0.4
+desktop is captured at **3840×2160** with shipped wallpaper, Quickshell bar
+and a readable GPU application. All six retired client actors and every backing
+mapping are reclaimed before VM exit. Twelve GPU handoffs, complete first/last
+backbuffer audits, natural shutdown and native cleanup pass per run.
 
-[Actual unedited image, raw evidence, measurements and failures](https://github.com/7Wdev/try-omarchy-windows/blob/2290aa6209289dddfbae54b542c524927414c020/docs/LIVE-OMARCHY-4K-REFERENCE-FIX.md)
-are pinned to hardware checkpoint `2290aa6`. The later test-only fixes through
-`aec20fe` do not change that hardware scope. Native recipient-reference admission
-and tiled readback fixes pass without raising the 192 MiB CPU mapped-data or
-1 GiB GPU-VA/reported-usage guards. Ten ordinary frames per run avoid CPU
-upload/readback; the two full-buffer audits use diagnostic GPU readback.
+[Actual image, reproducible evidence and retained failures](https://github.com/7Wdev/try-omarchy-windows/blob/cb505099ef461603c45ccc8b322031546966ee36/docs/LIVE-OMARCHY-GPU-LIFECYCLES.md)
+bind every application and the shell to authenticated NVIDIA renderers, real
+resource FDs and independent recipient NT references. Removing unconditional
+CPU scans of mapped GPU memory reduces application retirement to 0.28–0.53
+seconds while keeping the complete frame audits. The 192 MiB CPU mapped-data
+and 1 GiB GPU-VA/reported-usage guards are unchanged. Ten ordinary frames per
+run avoid CPU upload/readback; two use diagnostic GPU readback.
 
 **3/3 diagnostic scene elements** means wallpaper, bar and readable GPU
 application are present in the accepted 4K captures. **4/8 backend stages** and
@@ -30,10 +31,10 @@ the desktop does not establish normal launcher presentation or interactive use.
 
 The Windows diagnostic client area is 1280×720. Physical 4K scanout, all-frame
 display, normal launcher/UWSM/input, long-run stability and performance are
-unverified. The accepted checkpoint still retains 142 fence, 206 allocation
-and 267 CPU-slot mappings until VM exit. Safe live retirement/reuse and repeated
-application lifecycles are the next work. New experiments must pass the complete
-GPU, pixel and lifecycle audit before replacing this checkpoint.
+unverified. The new checkpoint has **zero mappings deferred to VM exit**;
+normal launcher/input, continuous multi-window presentation, longer workloads
+and recovery are next. The [earlier capture checkpoint](https://github.com/7Wdev/try-omarchy-windows/blob/2290aa6209289dddfbae54b542c524927414c020/docs/LIVE-OMARCHY-4K-REFERENCE-FIX.md)
+retains its original scope and failures.
 
 ## Backend verification stages
 
@@ -43,7 +44,7 @@ GPU, pixel and lifecycle audit before replacing this checkpoint.
 | 2. Windows bridge and D3D12 initialization | Demonstrated in the lab | Genuine Linux NVIDIA runtime initializes through QEMU and creates owned Windows KMT objects. |
 | 3. 4K guest shaders and shared GPU textures | Demonstrated in the lab | [Independent 4K shader pixels, GPU copies and fence retirement](https://github.com/7Wdev/try-omarchy-windows/blob/2290aa6209289dddfbae54b542c524927414c020/docs/LIVE-GPU-4K.md). |
 | 4. Repeated guest rendering | Demonstrated in bounded diagnostics | [64-frame guest runs](https://github.com/7Wdev/try-omarchy-windows/blob/2290aa6209289dddfbae54b542c524927414c020/docs/LIVE-GPU-GUEST-STREAM.md), safe allocator/texture reuse and explicit cleanup. This is not long-run desktop or all-frame display acceptance. |
-| 5. Guest graphics/device integration | In progress | Native render-node/GBM, EGL fences, authenticated separate GPU clients and verified 4K Hyprland captures pass. Supported device integration, safe live reuse, recovery and sustained work remain required. |
+| 5. Guest graphics/device integration | In progress | Native render-node/GBM, EGL fences, separate GPU clients, 4K captures and five application lifecycles with live reclamation pass twice. Supported device integration, recovery and sustained work remain required. |
 | 6. Interactive Omarchy/Hyprland desktop | In progress: diagnostic 4K desktop captured | Validate the normal launcher session, continuous correctly displayed frames, real apps, keyboard/cursor input, focus, resizing, fullscreen and multiple windows. |
 | 7. Required APIs and NVIDIA features | Pending acceptance | OpenGL diagnostics pass; test general OpenGL, Vulkan, CUDA, video and NVIDIA capabilities in real guest applications. |
 | 8. Reliability and ≥93% native performance | Pending acceptance | Matched guest/native benchmarks through 4K, concurrent host/guest GPU workloads, long runs, bounded memory and device/VM recovery. |
@@ -56,17 +57,17 @@ not close the broader product requirements below.
 
 | Gate | Current evidence | What closes the gate |
 | --- | --- | --- |
-| Guest graphics device, buffers and synchronization | In progress: separate NVIDIA compositor/shell/application clients, native resource FDs, GPU waits and 4K captures pass. Some mappings remain until VM exit. | A supported guest device path with correct sustained buffer ownership, synchronization, live retirement/reuse and recovery. |
+| Guest graphics device, buffers and synchronization | In progress: separate NVIDIA clients, native resource FDs, GPU waits and five application lifecycles pass twice; every backing mapping is reclaimed live. | A supported guest device path with correct sustained ownership, synchronization and recovery beyond the bounded diagnostic. |
 | First Hyprland frame in the Windows app | In progress: actual 4K wallpaper, bar and readable GPU application captured twice. Separate diagnostic presentation is not normal launcher acceptance. | Boot the normal guest session, independently verify a correctly displayed compositor frame in the Windows app, and publish its image in PR #2. |
 | Usable interactive desktop | Pending acceptance: one application is present in the captured scene; continuous multi-window/input operation is unverified. | Continuously display real apps and multiple windows with working input, focus, resizing and fullscreen through 4K. |
 | Stable and performant product | Pending acceptance: no matched near-native result or long desktop run has passed. | Sustain workloads, recover from failures, keep memory bounded and meet ≥93% of matched native performance. |
 
 ## Remaining work
 
-1. Safely retire and reuse GPU application resources while the compositor and
-   other clients keep running; pass repeated launch/close cycles and recovery.
-2. Integrate the normal UWSM session, Windows launcher and input path, with
-   independently verified continuous presentation.
+1. Integrate the supported guest device path, normal UWSM session and Windows
+   launcher/input, with independently verified continuous presentation.
+2. Extend the bounded live-retirement result to concurrent application windows,
+   longer workloads and failure recovery.
 3. Exercise multiple applications, resize/fullscreen, longer runs and bounded
    whole-process memory use through 4K.
 4. Benchmark matched native/guest workloads and concurrent Windows/guest GPU use.
