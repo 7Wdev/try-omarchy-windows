@@ -19,7 +19,7 @@ backbuffer audits, natural shutdown and native cleanup pass per run.
 Its fresh repeat exceeds the unchanged 1 GiB reported-GPU-usage guard after
 two handoffs and remains rejected. Repeatable UWSM rendering is still open.
 
-[Actual UWSM image, reproducible evidence and retained failures](LIVE-UWSM-GPU-SESSION.md)
+[Actual UWSM image, reproducible evidence and retained failures](https://github.com/7Wdev/try-omarchy-windows/blob/2adb39c8c150526f97e5ec8da7e0698dc9f33330/docs/LIVE-UWSM-GPU-SESSION.md)
 bind every application and the shell to authenticated NVIDIA renderers, real
 resource FDs and independent recipient NT references. The
 [earlier CPU-scan removal checkpoint](https://github.com/7Wdev/try-omarchy-windows/blob/cb505099ef461603c45ccc8b322031546966ee36/docs/LIVE-OMARCHY-GPU-LIFECYCLES.md)

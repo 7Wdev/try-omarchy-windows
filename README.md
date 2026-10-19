@@ -19,9 +19,9 @@ launch/close cycles**, twelve 4K handoffs, exact first/last backbuffer audits an
 All six retired client actors and every backing mapping are reclaimed **before VM exit**.
 Hyprland, Quickshell and every Alacritty application use NVIDIA.
 The repeat hits the unchanged **1 GiB reported GPU usage guard** after two handoffs and remains rejected.
-[Actual frame, reconstructable raw evidence and retained failures](docs/LIVE-UWSM-GPU-SESSION.md).
+[Actual frame, reconstructable raw evidence and retained failures](https://github.com/7Wdev/try-omarchy-windows/blob/2adb39c8c150526f97e5ec8da7e0698dc9f33330/docs/LIVE-UWSM-GPU-SESSION.md).
 
-![Actual unedited 4K UWSM-managed NVIDIA desktop](docs/images/omarchy-4k-uwsm-gpu-2026-10-19.png)
+![Actual unedited 4K UWSM-managed NVIDIA desktop](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/2adb39c8c150526f97e5ec8da7e0698dc9f33330/docs/images/omarchy-4k-uwsm-gpu-2026-10-19.png)
 
 The image is run 77, frame 12, converted directly from the GPU backbuffer. This uses a disposable
 session fixture; normal first-boot and launcher/input integration remain open. The separate Windows
