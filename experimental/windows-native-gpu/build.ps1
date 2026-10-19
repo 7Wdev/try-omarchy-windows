@@ -80,6 +80,10 @@ cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\qmp_protocol_test.cpp" /F
 if not "%errorlevel%"=="0" exit /b %errorlevel%
 qmp-protocol-test.exe
 if not "%errorlevel%"=="0" exit /b %errorlevel%
+cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\compositor_audit_tiles_test.cpp" /Fe:compositor-audit-tiles-test.exe
+if not "%errorlevel%"=="0" exit /b %errorlevel%
+compositor-audit-tiles-test.exe
+if not "%errorlevel%"=="0" exit /b %errorlevel%
 cl /nologo /std:c++17 /EHsc /W4 /WX /O2 $profileDefine /DUNICODE /D_UNICODE "$PSScriptRoot\driver_bridge.cpp" /Fe:driver-bridge.exe /link d3d12.lib dxgi.lib gdi32.lib ws2_32.lib bcrypt.lib user32.lib dwmapi.lib
 if not "%errorlevel%"=="0" exit /b %errorlevel%
 cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\rgba_oracle.cpp" /Fe:rgba-oracle.exe

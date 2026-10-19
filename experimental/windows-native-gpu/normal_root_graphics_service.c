@@ -96,7 +96,7 @@ int main(void) {
             if(desktop && !access("/opt/wddm-root/desktop-presentation-probe",R_OK) &&
                setenv("WDDM_BRIDGE_DESKTOP_PRESENTATION_PROBE","1",1)) _exit(125);
             if(desktop && !access("/opt/wddm-root/desktop-coordinator-probe",R_OK)) {
-                if(setenv("WDDM_BRIDGE_ACTOR_PROFILE",!access("/opt/wddm-root/desktop-slot-probe",R_OK) ? "12" : !access("/opt/wddm-root/desktop-fence-probe",R_OK) ? "11" : "10",1) || setenv("QSG_RHI_BACKEND","opengl",1) ||
+                if(setenv("WDDM_BRIDGE_ACTOR_PROFILE",!access("/opt/wddm-root/desktop-reference-probe",R_OK) ? "13" : !access("/opt/wddm-root/desktop-slot-probe",R_OK) ? "12" : !access("/opt/wddm-root/desktop-fence-probe",R_OK) ? "11" : "10",1) || setenv("QSG_RHI_BACKEND","opengl",1) ||
                    setenv("QSG_INFO","1",1)) _exit(125);
             }
             if(desktop && !access("/opt/wddm-root/desktop-content-probe",R_OK) && setenv("WDDM_BRIDGE_DESKTOP_CONTENT","1",1)) _exit(125);
@@ -152,12 +152,21 @@ cleanup:
         if(!stopped) result=125;
         printf("NORMAL_ROOT_COORDINATOR_USER_STOP ordinaryUserManagerStopped=%s ownedGuestOnly=true\n",stopped ? "true" : "false");
     }
+    if(graphics_broker_wait(broker)) result=125;
     if(desktop) {
+        // Replay only the owned applications' renderer identities once their
+        // trace writers have stopped. Keep journal metadata, including PID,
+        // so verification can bind each renderer to its authenticated peer.
+        if(write(STDOUT_FILENO,"\n",1)!=1) result=125;
         const pid_t journal=fork();
-        if(!journal) { execl("/usr/bin/journalctl","journalctl","-b","-t","omarchy-shell","--no-pager","-n","100",(char*)NULL);_exit(127); }
+        if(!journal) {
+            execl("/usr/bin/journalctl","journalctl","-b","-t","omarchy-shell","-t","omarchy-gpu-app",
+                "--no-pager","-n","64","--grep",
+                "OpenGL VENDOR|Created QRhi|Running on D3D12|Using OpenGL 3.3 renderer",(char*)NULL);
+            _exit(127);
+        }
         if(journal>0) waitpid(journal,NULL,0);
     }
-    if(graphics_broker_wait(broker)) result=125;
     if(native_render_loaded && native_render_stop()) result=125;
     if(aperture>0 && kernel_aperture_stop()) result=125;
     printf("NORMAL_ROOT_GRAPHICS_EXIT result=%d normalOmarchySession=false\n",result);

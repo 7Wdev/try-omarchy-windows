@@ -225,6 +225,26 @@ public:
         barrier(D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_PRESENT);
         return S_OK;
     }
+    // The queued compositor audits the current backbuffer before Present.
+    HRESULT copyAuditTile(ID3D12GraphicsCommandList* commands,ID3D12Resource* readback,
+                          D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint,UINT top,UINT rows) {
+        if(!opened || !commands || !readback || index>=buffers.size() || !rows || top>=outputHeight || rows>outputHeight-top ||
+            footprint.Offset || footprint.Footprint.Width!=outputWidth || footprint.Footprint.Height!=rows ||
+            footprint.Footprint.Depth!=1 || footprint.Footprint.Format!=buffers[index]->GetDesc().Format ||
+            footprint.Footprint.RowPitch<outputWidth*4 || footprint.Footprint.RowPitch>16384 || footprint.Footprint.RowPitch%256 ||
+            readback->GetDesc().Dimension!=D3D12_RESOURCE_DIMENSION_BUFFER ||
+            readback->GetDesc().Width<std::uint64_t(rows)*footprint.Footprint.RowPitch) return E_INVALIDARG;
+        D3D12_RESOURCE_BARRIER barrier{};barrier.Type=D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        barrier.Transition.pResource=buffers[index].Get();barrier.Transition.Subresource=D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        barrier.Transition.StateBefore=D3D12_RESOURCE_STATE_PRESENT;barrier.Transition.StateAfter=D3D12_RESOURCE_STATE_COPY_SOURCE;
+        commands->ResourceBarrier(1,&barrier);
+        D3D12_TEXTURE_COPY_LOCATION from{};from.pResource=buffers[index].Get();from.Type=D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+        D3D12_TEXTURE_COPY_LOCATION to{};to.pResource=readback;to.Type=D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;to.PlacedFootprint=footprint;
+        const D3D12_BOX region{0,top,0,outputWidth,top+rows,1};
+        commands->CopyTextureRegion(&to,0,0,0,&from,&region);
+        barrier.Transition.StateBefore=D3D12_RESOURCE_STATE_COPY_SOURCE;barrier.Transition.StateAfter=D3D12_RESOURCE_STATE_PRESENT;
+        commands->ResourceBarrier(1,&barrier);return S_OK;
+    }
     // Stream acceptance is separate from the strict two-frame display proof.
     // A retired queue and Present(S_OK) alone do not prove scanout.
     HRESULT presentStreaming(ID3D12CommandQueue* queue, UINT64 frame) {

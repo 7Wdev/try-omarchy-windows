@@ -20,7 +20,7 @@ struct NativeMock : Driver {
         ExpandedVendorGpuCapability|ExpandedVendorCpuCapability|VendorAllocationCapability|SharedVendorResourceCapability|NativeSharedTextureCapability|ContextCapability|GuestPagingCapability|HwQueueCapability,0x10de,0x1234};
     native_gpu::Capabilities capabilities() const override { return caps; }
     bool beginCoordinatedObjects(CoordinatedObjectCapacity value) override { CHECK(++objectCalls==1 && validCoordinatedObjectCapacity(value));return badStage!=4; }
-    OpenGlProfile beginOpenGl(std::uint32_t version) override { CHECK(++glCalls==1 && (version==10 || version==11 || version==12));auto p=version==12 ? GuestOpenGlDesktopSlotProfile : version==11 ? GuestOpenGlDesktopFenceProfile : GuestOpenGlDesktopPresentationProfile;if(badStage==1) p.objectLimit=0;return p; }
+    OpenGlProfile beginOpenGl(std::uint32_t version) override { CHECK(++glCalls==1 && (version==10 || version==11 || version==12 || version==13));auto p=version==13 ? GuestOpenGlDesktopReferenceProfile : version==12 ? GuestOpenGlDesktopSlotProfile : version==11 ? GuestOpenGlDesktopFenceProfile : GuestOpenGlDesktopPresentationProfile;if(badStage==1) p.objectLimit=0;return p; }
     SyncSharingProfile beginSyncSharing() override { CHECK(++syncCalls==1);auto p=GuestSyncSharingProfile;if(badStage==2) p.version=1;return p; }
     ResourceSharingProfile beginResourceSharing() override { CHECK(++resourceCalls==1);auto p=GuestResourceSharingProfile;if(badStage==3) p.handleLimit=0;return p; }
     Result openAdapter() override { ++calls;live.insert(++next);return {0,next,0}; }
@@ -80,9 +80,9 @@ struct Control {
     }
 };
 int main() {
-    for(const auto capacity:{GuestOpenGlDesktopPresentationCapacity,GuestOpenGlDesktopFenceCapacity,GuestOpenGlDesktopSlotCapacity}) {
+    for(const auto capacity:{GuestOpenGlDesktopPresentationCapacity,GuestOpenGlDesktopFenceCapacity,GuestOpenGlDesktopSlotCapacity,GuestOpenGlDesktopReferenceCapacity}) {
         NativeMock driver;cg::Runtime owner(driver);Control client{owner};
-        const auto objects=capacity.mapping.aperture.version>=11 ? GuestCoordinatedDesktopObjects : CoordinatedObjectCapacity{};
+        const auto objects=capacity.mapping.aperture.version==13 ? GuestCoordinatedReferenceObjects : capacity.mapping.aperture.version>=11 ? GuestCoordinatedDesktopObjects : CoordinatedObjectCapacity{};
         CHECK(!at<cg::Frame>(client.control(cg::Operation::Initialize,encoded(cg::Initialization{capacity,objects}))).status);
         auto info=at<cg::Info>(client.control(cg::Operation::Info),32);
         CHECK(cg::validInfo(info) && info.gl.version==capacity.mapping.aperture.version);
@@ -103,7 +103,7 @@ int main() {
         if(capacity.mapping.aperture.version>=11) CHECK(at<PagingReply>(paging,72).offset==driver.fenceOffset);
         CHECK(owner.teardownAfterVmExit(true) && driver.live.empty());
     }
-    for(const auto original:{GuestOpenGlDesktopFenceCapacity,GuestOpenGlDesktopSlotCapacity}) for(unsigned field=0;field<12;++field) {
+    for(const auto original:{GuestOpenGlDesktopFenceCapacity,GuestOpenGlDesktopSlotCapacity,GuestOpenGlDesktopReferenceCapacity}) for(unsigned field=0;field<12;++field) {
         NativeMock driver;cg::Runtime owner(driver);Control client{owner};
         auto capacity=original;std::uint32_t words[12]{};
         std::memcpy(words,&capacity,sizeof words);++words[field];std::memcpy(&capacity,words,sizeof words);
@@ -119,12 +119,22 @@ int main() {
     CHECK(!validCoordinatedAgreement(GuestOpenGlDesktopPresentationCapacity,GuestCoordinatedDesktopObjects));
     CHECK(validCoordinatedAgreement(GuestOpenGlDesktopFenceCapacity,GuestCoordinatedDesktopObjects));
     CHECK(validCoordinatedAgreement(GuestOpenGlDesktopSlotCapacity,GuestCoordinatedDesktopObjects));
+    CHECK(validCoordinatedAgreement(GuestOpenGlDesktopReferenceCapacity,GuestCoordinatedReferenceObjects));
+    CHECK(!validCoordinatedAgreement(GuestOpenGlDesktopReferenceCapacity,GuestCoordinatedDesktopObjects));
+    CHECK(!validCoordinatedAgreement(GuestOpenGlDesktopSlotCapacity,GuestCoordinatedReferenceObjects));
+    CHECK(!validCoordinatedAgreement(GuestOpenGlDesktopFenceCapacity,GuestCoordinatedReferenceObjects));
+    for(const auto capacity:{GuestOpenGlDesktopReferenceCapacity,GuestOpenGlDesktopSlotCapacity,GuestOpenGlDesktopFenceCapacity})
+        for(const auto objects:{GuestCoordinatedReferenceObjects,GuestCoordinatedDesktopObjects}) {
+            const bool matching=capacity.mapping.aperture.version==13 ? objects.version==5 : objects.version==4;
+            CHECK(validCoordinatedAgreement(capacity,objects)==matching);
+        }
     CHECK(!validCoordinatedAgreement(GuestOpenGlDesktopSlotCapacity,{}));
     CHECK(CoordinatedObjectCapacity{}.version==3 && !CoordinatedObjectCapacity{}.vendorAllocations);
     {
         NativeMock driver;Session legacy(driver);CHECK(!at<Header>(legacy.dispatch(hello())).status);
         CHECK(at<Header>(legacy.dispatch(inner(Op::BeginOpenGl,0,encoded(GuestOpenGlDesktopFenceCapacity)))).status==-93 && !driver.glCalls);
         CHECK(at<Header>(legacy.dispatch(inner(Op::BeginOpenGl,0,encoded(GuestOpenGlDesktopSlotCapacity)))).status==-93 && !driver.glCalls);
+        CHECK(at<Header>(legacy.dispatch(inner(Op::BeginOpenGl,0,encoded(GuestOpenGlDesktopReferenceCapacity)))).status==-93 && !driver.glCalls);
     }
     std::cout<<"COORDINATOR_FENCE_CONTROL profile11Exact512=true legacyLastPageRejected=true profileMismatchRejected=true byteBudgetsUnchanged=true native=mock gpu=false\n";
     NativeMock native;

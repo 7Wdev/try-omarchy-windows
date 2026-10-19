@@ -3,6 +3,7 @@
 #pragma once
 #include "guest_broker_server.h"
 #include "driver_coordinator.h"
+#include "guest_broker_receipts.h"
 #include <deque>
 #include <set>
 #include <atomic>
@@ -37,24 +38,25 @@ public:
         return {reply.begin()+sizeof r,reply.end()};
     }
     void initialize(const wddm_aperture_info& layout,const wddm_aperture_caps& caps,const wddm_aperture_coordinator_caps& leases,
-                    const wddm_aperture_desktop_fences& fences={},const wddm_aperture_desktop_slots& slots={}) {
+                    const wddm_aperture_desktop_fences& fences={},const wddm_aperture_desktop_slots& slots={},bool references=false) {
         const bool wide=layout.fence_slots==512;
         const bool expanded=layout.allocation_slots==1024;
-        const driver_bridge::OpenGlDesktopPresentationCapacity wanted{{{expanded ? 12u : wide ? 11u : 10u,caps.version,caps.cpu_byte_limit,layout.allocation_slots,layout.fence_slots,0},
+        const driver_bridge::OpenGlDesktopPresentationCapacity wanted{{{expanded ? references ? 13u : 12u : wide ? 11u : 10u,caps.version,caps.cpu_byte_limit,layout.allocation_slots,layout.fence_slots,0},
             driver_bridge::OpenGlDesktopLargeMapBytes},driver_bridge::OpenGlDesktopPresentationReportedBytes};
-        if(!wddm_aperture_valid_coordinator_caps(leases) || !leases.enabled || leases.lease_limit!=driver_bridge::CoordinatedObjectCapacity{}.leaseLimit ||
+        if((references && !expanded) || !wddm_aperture_valid_coordinator_caps(leases) || !leases.enabled || leases.lease_limit!=driver_bridge::CoordinatedObjectCapacity{}.leaseLimit ||
             !wddm_aperture_valid_caps(caps) || caps.flags!=(WDDM_APERTURE_DESKTOP_CPU_ENABLED|WDDM_APERTURE_SPARSE_ENABLED) ||
             !driver_bridge::validCoordinatedPresentationCapacity(wanted) ||
             (wide && (!wddm_aperture_valid_desktop_fences(fences) || !fences.enabled || fences.slots!=layout.fence_slots || fences.bytes!=layout.fence_bytes)) ||
             (expanded && (!wddm_aperture_valid_desktop_slots(slots) || !slots.enabled || slots.slots!=layout.allocation_slots || slots.bytes!=layout.allocation_bytes))) reject("Coordinator kernel capacity mismatch");
-        const auto objects=wide ? driver_bridge::GuestCoordinatedDesktopObjects : driver_bridge::CoordinatedObjectCapacity{};
+        const auto objects=references ? driver_bridge::GuestCoordinatedReferenceObjects : wide ? driver_bridge::GuestCoordinatedDesktopObjects : driver_bridge::CoordinatedObjectCapacity{};
         if(!control(cg::Operation::Initialize,encode(cg::Initialization{wanted,objects})).empty()) reject("Coordinator initialization payload");
         agreement=decode<cg::Info>(control(cg::Operation::Info));
         if(!cg::validInfo(agreement) || std::memcmp(&wanted,&agreement.capacity,sizeof wanted)) reject("Coordinator agreement mismatch");
-        std::fprintf(stderr,"BROKER_COORDINATOR_KERNEL_CAPACITY verified=true leaseLimit=%u cpuBytes=%llu flags=%u actualIoctl=true\n",
+        receipt("BROKER_COORDINATOR_KERNEL_CAPACITY verified=true leaseLimit=%u cpuBytes=%llu flags=%u actualIoctl=true\n",
             leases.lease_limit,static_cast<unsigned long long>(caps.cpu_byte_limit),caps.flags);
-        if(wide) std::fprintf(stderr,"BROKER_COORDINATOR_FENCE_CAPACITY profile=%u slots=%u bytes=%llu actualIoctl=true\n",wanted.mapping.aperture.version,fences.slots,static_cast<unsigned long long>(fences.bytes));
-        if(expanded) std::fprintf(stderr,"BROKER_COORDINATOR_SLOT_CAPACITY profile=12 slots=%u bytes=%llu cpuByteLimit=%llu actualIoctl=true\n",slots.slots,static_cast<unsigned long long>(slots.bytes),static_cast<unsigned long long>(caps.cpu_byte_limit));
+        if(wide) receipt("BROKER_COORDINATOR_FENCE_CAPACITY profile=%u slots=%u bytes=%llu actualIoctl=true\n",wanted.mapping.aperture.version,fences.slots,static_cast<unsigned long long>(fences.bytes));
+        if(expanded) receipt("BROKER_COORDINATOR_SLOT_CAPACITY profile=%u slots=%u bytes=%llu cpuByteLimit=%llu actualIoctl=true\n",wanted.mapping.aperture.version,slots.slots,static_cast<unsigned long long>(slots.bytes),static_cast<unsigned long long>(caps.cpu_byte_limit));
+        if(references) receipt("BROKER_COORDINATOR_REFERENCE_CAPACITY profile=13 objectsVersion=5 resources=64 syncs=64 perActor=16 byteBudgetsMultiplied=false\n");
     }
     cg::Info info() const { return agreement; }
     std::uint64_t attach(bool primary) {
@@ -79,7 +81,10 @@ public:
     driver_bridge::SharedReferenceAlias alias(cg::Alias value) {
         const auto result=decode<driver_bridge::SharedReferenceAlias>(control(cg::Operation::Alias,encode(value)));
         if(result.ntstatus>0 || (result.ntstatus ? result.ticket!=0 : !result.ticket)) reject("Coordinator alias reply mismatch");
-        if(result.ntstatus) throw std::system_error(ENOMEM,std::generic_category(),"Native recipient alias failed");
+        if(result.ntstatus) {
+            receipt("BROKER_COORDINATOR_ALIAS_REJECTED kind=%u ntstatus=%d nativeReplyPreserved=true\n",static_cast<unsigned>(value.kind),result.ntstatus);
+            throw std::system_error(ENOMEM,std::generic_category(),"Native recipient alias failed");
+        }
         return result;
     }
     void disconnect(std::uint64_t actor) { if(!control(cg::Operation::Disconnect,encode(actor)).empty()) reject("Coordinator disconnect payload"); }
@@ -104,7 +109,7 @@ public:
         if(packet.size()<sizeof(Header)) throw std::runtime_error("Actor native request truncated");
         if(!id && !dead) {
             id=owner.attach(primary);
-            std::fprintf(stderr,"BROKER_COORDINATOR_ACTOR actor=%llu pid=%d primary=%s pidfdAuthenticated=true nativeDriverCount=1\n",
+            receipt("BROKER_COORDINATOR_ACTOR actor=%llu pid=%d primary=%s pidfdAuthenticated=true nativeDriverCount=1\n",
                 static_cast<unsigned long long>(id),process,primary ? "true" : "false");
         }
         Header h{};std::memcpy(&h,packet.data(),sizeof h);std::vector<std::uint8_t> reply;
@@ -128,9 +133,9 @@ public:
     }
     void processExited() { if(id) owner.disconnect(id);dead=true; }
     void finish() {
-        if(!id) { std::fprintf(stderr,"BROKER_COORDINATOR_METADATA_EXIT pid=%d nativeActorAllocated=false\n",process);return; }
+        if(!id) { receipt("BROKER_COORDINATOR_METADATA_EXIT pid=%d nativeActorAllocated=false\n",process);return; }
         const auto empty=owner.release(id);
-        std::fprintf(stderr,"BROKER_COORDINATOR_ACTOR_EXIT actor=%llu empty=%s retainedUntilVmExit=%s\n",static_cast<unsigned long long>(id),empty ? "true" : "false",empty ? "false" : "true");
+        receipt("BROKER_COORDINATOR_ACTOR_EXIT actor=%llu empty=%s retainedUntilVmExit=%s\n",static_cast<unsigned long long>(id),empty ? "true" : "false",empty ? "false" : "true");
     }
 };
 // One kernel object controller gives every capability a globally unique
@@ -192,7 +197,7 @@ public:
             const auto ticket=native.alias(entry.producer,entry.source,kind);
             local.retainAlias(ObjectRef{kind,ticket,ref.cookie});
             alias=entry.aliases.emplace(native.actor(),ticket).first;
-            std::fprintf(stderr,"BROKER_COORDINATOR_ALIAS donor=%llu recipient=%llu kind=%u sourceTicket=%u recipientTicket=%u cookie=%llu realFd=true\n",
+            receipt("BROKER_COORDINATOR_ALIAS donor=%llu recipient=%llu kind=%u sourceTicket=%u recipientTicket=%u cookie=%llu realFd=true\n",
                 static_cast<unsigned long long>(entry.producer),static_cast<unsigned long long>(native.actor()),kind,entry.source,ticket,static_cast<unsigned long long>(ref.cookie));
         }
         return {kind,alias->second,ref.cookie};

@@ -4,14 +4,24 @@ Updated 2026-10-19. **4 of 8 verification stages demonstrated.** This is a
 checklist count, not 50% of engineering effort or a product-readiness estimate.
 The largest integration tasks are still ahead.
 
-Two fresh guests now pass [readable 4K GPU desktop captures](LIVE-OMARCHY-4K-READABLE-GPU-DESKTOP.md):
+Two fresh guests pass [4K GPU desktop captures after reference and readback fixes](LIVE-OMARCHY-4K-REFERENCE-FIX.md):
+the shipped wallpaper, Omarchy bar and readable NVIDIA application appear
+together with exact raw-pixel audits and natural shutdown. Profile 13 fixes
+the group-wide 16-reference admission ceiling while keeping each actor's cap
+at sixteen. Tiled actual-backbuffer readback uses 3.75 MiB instead of 31.6 MiB,
+without increasing any CPU/GPU byte guard. Both runs exercise seventeen live
+resource references. Prior admission, memory and framing failures remain retained.
+Live resource retirement/reuse, normal launcher/input, sustained work and
+matched-native benchmarks remain open. Counts stay 4/8 and 0/4.
+
+The [previous readable 4K GPU desktop checkpoint](LIVE-OMARCHY-4K-READABLE-GPU-DESKTOP.md):
 the shipped wallpaper, Omarchy bar and a real NVIDIA Alacritty terminal appear
 together, with verified raw pixels and bounded shutdown. Actual profile-12
 CPU mappings extend beyond the old 512-slot range while mapped data remains
 below 192 MiB. A real Bash CRLF control explains the earlier readiness failure.
 A later cleaner-child-payload run fails native recipient-reference admission
-and aborts Hyprland. Fixing reference lifetimes/recovery, normal launcher/input
-and sustained work remains necessary. Counts stay 4/8 and 0/4.
+and aborts Hyprland. The new checkpoint above addresses that admission failure;
+live lifetimes/recovery, normal launcher/input and sustained work remain necessary.
 
 [4K wallpaper and a GPU application surface](LIVE-OMARCHY-4K-DESKTOP-CONTENT.md)
 previously appeared in the actual NVIDIA-composed framebuffer. The shipped image matches

@@ -151,16 +151,18 @@ done:
 static int scene_receipt(const char* line) {
     // Keep the message and newline in one syscall. Other guest processes share
     // the serial console; unbuffered puts can split these into separate writes.
-    const size_t bytes=strlen(line);
+    const size_t bytes=strlen(line);char framed[2048];
+    if(bytes>=sizeof(framed)-1) { atomic_store(&queue_failed,1);return -1; }
+    framed[0]='\n';memcpy(framed+1,line,bytes);
     ssize_t written;
-    do { written=write(STDOUT_FILENO,line,bytes); } while(written<0 && errno==EINTR);
-    if(written!=(ssize_t)bytes) { atomic_store(&queue_failed,1);return -1; }
+    do { written=write(STDOUT_FILENO,framed,bytes+1); } while(written<0 && errno==EINTR);
+    if(written!=(ssize_t)(bytes+1)) { atomic_store(&queue_failed,1);return -1; }
     return 0;
 }
 static void scene_hex_receipt(const char* label,const char* data,size_t bytes) {
     static const char hex[]="0123456789abcdef";
     char line[17000];
-    const int prefix=snprintf(line,sizeof(line),"%s ",label);
+    const int prefix=snprintf(line,sizeof(line),"\n%s ",label);
     if(prefix<=0 || (size_t)prefix+bytes*2+1>=sizeof(line)) return;
     for(size_t index=0;index<bytes;++index) {
         const unsigned char value=(unsigned char)data[index];
@@ -397,8 +399,8 @@ static int startup_main(int argc,char** argv,char** environment) {
     if((mkdir(runtime,0700) && errno!=EEXIST) ||
        (mkdir(home,0700) && errno!=EEXIST)) return 122;
 #ifdef WDDM_BRIDGE_COMPOSITOR_HOST_SCENE
-    const unsigned profile=getenv("WDDM_BRIDGE_ACTOR_PROFILE") && !strcmp(getenv("WDDM_BRIDGE_ACTOR_PROFILE"),"12") ? 12 : getenv("WDDM_BRIDGE_ACTOR_PROFILE") && !strcmp(getenv("WDDM_BRIDGE_ACTOR_PROFILE"),"11") ? 11 : getenv("WDDM_BRIDGE_DESKTOP_PRESENTATION_PROBE") ? 10 : getenv("WDDM_BRIDGE_DESKTOP_LARGE_MAP_PROBE") ? 9 : getenv("WDDM_BRIDGE_DESKTOP_SPARSE_PROBE") ? 8 : getenv("WDDM_BRIDGE_DESKTOP_4K_CPU_PROBE") ? 7 : getenv("WDDM_BRIDGE_DESKTOP_4K_PROBE") ? 6 : 5;
-    const char* begin_name=profile==12 ? "wddm_bridge_begin_opengl_desktop_slot_render" : profile==11 ? "wddm_bridge_begin_opengl_desktop_fence_render" : profile==10 ? "wddm_bridge_begin_opengl_desktop_presentation_render" : profile==9 ? "wddm_bridge_begin_opengl_desktop_large_map_render" : profile==8 ? "wddm_bridge_begin_opengl_desktop_sparse_render" : profile==7 ? "wddm_bridge_begin_opengl_desktop_4k_cpu_render" : profile==6 ? "wddm_bridge_begin_opengl_desktop_4k_render" : "wddm_bridge_begin_opengl_desktop_render";
+    const unsigned profile=getenv("WDDM_BRIDGE_ACTOR_PROFILE") && !strcmp(getenv("WDDM_BRIDGE_ACTOR_PROFILE"),"13") ? 13 : getenv("WDDM_BRIDGE_ACTOR_PROFILE") && !strcmp(getenv("WDDM_BRIDGE_ACTOR_PROFILE"),"12") ? 12 : getenv("WDDM_BRIDGE_ACTOR_PROFILE") && !strcmp(getenv("WDDM_BRIDGE_ACTOR_PROFILE"),"11") ? 11 : getenv("WDDM_BRIDGE_DESKTOP_PRESENTATION_PROBE") ? 10 : getenv("WDDM_BRIDGE_DESKTOP_LARGE_MAP_PROBE") ? 9 : getenv("WDDM_BRIDGE_DESKTOP_SPARSE_PROBE") ? 8 : getenv("WDDM_BRIDGE_DESKTOP_4K_CPU_PROBE") ? 7 : getenv("WDDM_BRIDGE_DESKTOP_4K_PROBE") ? 6 : 5;
+    const char* begin_name=profile==13 ? "wddm_bridge_begin_opengl_desktop_reference_render" : profile==12 ? "wddm_bridge_begin_opengl_desktop_slot_render" : profile==11 ? "wddm_bridge_begin_opengl_desktop_fence_render" : profile==10 ? "wddm_bridge_begin_opengl_desktop_presentation_render" : profile==9 ? "wddm_bridge_begin_opengl_desktop_large_map_render" : profile==8 ? "wddm_bridge_begin_opengl_desktop_sparse_render" : profile==7 ? "wddm_bridge_begin_opengl_desktop_4k_cpu_render" : profile==6 ? "wddm_bridge_begin_opengl_desktop_4k_render" : "wddm_bridge_begin_opengl_desktop_render";
 #else
     const unsigned profile=4;
     const char* begin_name="wddm_bridge_begin_opengl_compositor_render";

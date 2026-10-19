@@ -115,6 +115,8 @@ jobs:
           /tmp/cpu-aperture-test
           c++ -std=c++17 -Wall -Wextra -Werror -DWDDM_BRIDGE_4K_LAB=1 experimental/windows-native-gpu/cpu_capacity_test.cpp -o /tmp/cpu-capacity-test
           /tmp/cpu-capacity-test
+          c++ -std=c++17 -O2 -Wall -Wextra -Werror experimental/windows-native-gpu/compositor_audit_tiles_test.cpp -o /tmp/compositor-audit-tiles-test
+          /tmp/compositor-audit-tiles-test
           c++ -std=c++17 -O2 -Wall -Wextra -Werror -shared -fPIC experimental/windows-native-gpu/guest_broker_finalizer_probe.cpp -o /tmp/broker-finalizer.so
           c++ -std=c++17 -O2 -Wall -Wextra -Werror -pthread experimental/windows-native-gpu/guest_broker_peer_test.cpp -ldl -o /tmp/broker-peer-test
           /tmp/broker-peer-test /tmp/broker-finalizer.so
@@ -126,6 +128,8 @@ jobs:
           sudo /tmp/broker-objects-4k-test
           c++ -std=c++17 -O2 -Wall -Wextra -Werror -pthread experimental/windows-native-gpu/guest_coordinator_test.cpp -o /tmp/guest-coordinator-test
           /tmp/guest-coordinator-test
+          c++ -std=c++17 -O2 -Wall -Wextra -Werror -pthread experimental/windows-native-gpu/guest_broker_receipts_test.cpp -o /tmp/guest-broker-receipts-test
+          /tmp/guest-broker-receipts-test
           c++ -std=c++17 -O2 -Wall -Wextra -Werror experimental/windows-native-gpu/diagnostic_profile_test.cpp -o /tmp/profile-test
           /tmp/profile-test
           c++ -std=c++17 -O2 -Wall -Wextra -Werror -DWDDM_BRIDGE_4K_LAB=1 experimental/windows-native-gpu/diagnostic_profile_test.cpp -o /tmp/profile-4k-test

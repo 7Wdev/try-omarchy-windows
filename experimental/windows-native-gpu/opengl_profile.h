@@ -45,6 +45,9 @@ constexpr OpenGlProfile GuestOpenGlDesktopFenceProfile{11, 0, 0, 128, 16ull * 10
 // Version 12 adds sparse virtual CPU slots, not mapped bytes. An actual kernel
 // receipt and owned coordinator are required; version 11 stays at 512 slots.
 constexpr OpenGlProfile GuestOpenGlDesktopSlotProfile{12, 0, 0, 128, 16ull * 1024 * 1024 * 1024, 0, 1024};
+// Version 13 requires the v5 group object agreement: 64 native resource and
+// sync references across four actors, with the per-actor 16-reference caps fixed.
+constexpr OpenGlProfile GuestOpenGlDesktopReferenceProfile{13, 0, 0, 128, 16ull * 1024 * 1024 * 1024, 0, 1024};
 constexpr std::uint64_t OpenGlDesktopPresentationReportedBytes=1024ull*1024*1024;
 constexpr std::uint32_t OpenGlDesktopLargeMapBytes=1024u*1024*1024;
 constexpr std::uint32_t OpenGlDesktop4kCpuBytes = 192u * 1024 * 1024;
@@ -73,6 +76,7 @@ static_assert(sizeof(OpenGlDesktopPresentationCapacity)==48,"Fixed explicit pres
 constexpr OpenGlDesktopPresentationCapacity GuestOpenGlDesktopPresentationCapacity{{{10,1,OpenGlDesktop4kCpuBytes,512,256,0},OpenGlDesktopLargeMapBytes},OpenGlDesktopPresentationReportedBytes};
 constexpr OpenGlDesktopPresentationCapacity GuestOpenGlDesktopFenceCapacity{{{11,1,OpenGlDesktop4kCpuBytes,512,512,0},OpenGlDesktopLargeMapBytes},OpenGlDesktopPresentationReportedBytes};
 constexpr OpenGlDesktopPresentationCapacity GuestOpenGlDesktopSlotCapacity{{{12,1,OpenGlDesktop4kCpuBytes,1024,512,0},OpenGlDesktopLargeMapBytes},OpenGlDesktopPresentationReportedBytes};
+constexpr OpenGlDesktopPresentationCapacity GuestOpenGlDesktopReferenceCapacity{{{13,1,OpenGlDesktop4kCpuBytes,1024,512,0},OpenGlDesktopLargeMapBytes},OpenGlDesktopPresentationReportedBytes};
 inline bool validOpenGlDesktopPresentationCapacity(OpenGlDesktopPresentationCapacity c) {
     auto map=c.mapping;
     if(map.aperture.version!=10 || c.reportedGpuByteLimit!=OpenGlDesktopPresentationReportedBytes) return false;
@@ -90,6 +94,7 @@ inline bool validOpenGlDesktopFenceCapacity(OpenGlDesktopPresentationCapacity c)
     return validOpenGlDesktopPresentationCapacity(c);
 }
 inline bool validCoordinatedPresentationCapacity(OpenGlDesktopPresentationCapacity c) {
+    if(c.mapping.aperture.version==13) c.mapping.aperture.version=12;
     if(c.mapping.aperture.version==12) {
         if(c.mapping.aperture.cpuSlots!=1024) return false;
         c.mapping.aperture.version=11;c.mapping.aperture.cpuSlots=512;
@@ -100,6 +105,9 @@ inline bool validCoordinatedPresentationCapacity(OpenGlDesktopPresentationCapaci
 inline bool validOpenGlDesktopSlotCapacity(OpenGlDesktopPresentationCapacity c) {
     return c.mapping.aperture.version==12 && validCoordinatedPresentationCapacity(c);
 }
+inline bool validOpenGlDesktopReferenceCapacity(OpenGlDesktopPresentationCapacity c) {
+    return c.mapping.aperture.version==13 && validCoordinatedPresentationCapacity(c);
+}
 inline bool validOpenGlDesktopFenceProfile(OpenGlProfile p) {
     if(p.version!=11) return false;
     p.version=10;
@@ -107,13 +115,16 @@ inline bool validOpenGlDesktopFenceProfile(OpenGlProfile p) {
         p.reservedBytes==16ull*1024*1024*1024 && !p.requestLimit && p.objectLimit==1024;
 }
 inline bool validCoordinatedPresentationProfile(OpenGlProfile p) {
-    if(p.version==12) p.version=11;
+    if(p.version==12 || p.version==13) p.version=11;
     return p.version==11 ? validOpenGlDesktopFenceProfile(p) : p.version==10 &&
         !p.frames && !p.commandLimit && p.reservationLimit==64 &&
         p.reservedBytes==16ull*1024*1024*1024 && !p.requestLimit && p.objectLimit==1024;
 }
 inline bool validOpenGlDesktopSlotProfile(OpenGlProfile p) {
     return p.version==12 && validCoordinatedPresentationProfile(p);
+}
+inline bool validOpenGlDesktopReferenceProfile(OpenGlProfile p) {
+    return p.version==13 && validCoordinatedPresentationProfile(p);
 }
 inline bool validOpenGlDesktopPresentationProfile(OpenGlProfile p) {
     return p.version==10 && !p.frames && !p.commandLimit && p.reservationLimit==64 &&

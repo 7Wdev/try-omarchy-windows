@@ -8,6 +8,7 @@
 #include "gpu_state_ranges.h"
 #include "compositor_capture_wire.h"
 #include <algorithm>
+#include <iostream>
 #include <map>
 #include <stdexcept>
 
@@ -464,16 +465,20 @@ struct CoordinatedObjectCapacity {
     // native allocation-object quota; CPU/GPU byte budgets remain independent.
     std::uint32_t reservations=256,vendorAllocations=0;
 };
+// v5 fixes aggregate native NT-reference limits independently of byte budgets.
+// Per-actor resource/sync profiles still advertise/enforce sixteen references.
+constexpr std::size_t MaxCoordinatedSharedReferences=64;
 static_assert(sizeof(CoordinatedObjectCapacity)==32,"Fixed coordinated object/address-space capacity");
 inline bool validCoordinatedObjectCapacity(CoordinatedObjectCapacity value) {
-    return ((value.version==3 && !value.vendorAllocations) || (value.version==4 && value.vendorAllocations==1024)) &&
+    return ((value.version==3 && !value.vendorAllocations) || ((value.version==4 || value.version==5) && value.vendorAllocations==1024)) &&
         value.hwQueues==32 && value.syncObjects==384 && value.leaseLimit==768 &&
         value.reservedGpuBytes==64ull*1024*1024*1024 && value.reservations==256;
 }
 constexpr CoordinatedObjectCapacity GuestCoordinatedDesktopObjects{4,32,384,768,64ull*1024*1024*1024,256,1024};
+constexpr CoordinatedObjectCapacity GuestCoordinatedReferenceObjects{5,32,384,768,64ull*1024*1024*1024,256,1024};
 inline bool validCoordinatedAgreement(OpenGlDesktopPresentationCapacity capacity,CoordinatedObjectCapacity objects) {
     return validCoordinatedPresentationCapacity(capacity) && validCoordinatedObjectCapacity(objects) &&
-        objects.version==(capacity.mapping.aperture.version>=11 ? 4u : 3u);
+        objects.version==(capacity.mapping.aperture.version==13 ? 5u : capacity.mapping.aperture.version>=11 ? 4u : 3u);
 }
 class Driver {
 public:
@@ -739,8 +744,13 @@ public:
         if(parent==donor.objects.end() || parent->second.kind!=Kind::Adapter ||
             !driver.samePhysicalAdapter(parent->second.nativeHandle,target->second.nativeHandle)) return {invalid,0};
         const auto count=std::count_if(objects.begin(),objects.end(),[kind](const auto& value){return value.second.kind==kind;});
-        if(objects.size()>=objectLimit() || nextId==UINT32_MAX || static_cast<std::size_t>(count)>=
-            (kind==Kind::SharedResource ? MaxSharedResourceHandles : MaxSharedSyncHandles)) return {exhausted,0};
+        const auto referenceLimit=kind==Kind::SharedResource ? MaxSharedResourceHandles : MaxSharedSyncHandles;
+        if(objects.size()>=objectLimit() || nextId==UINT32_MAX || static_cast<std::size_t>(count)>=referenceLimit) {
+            std::cerr<<"{\"nativeSharedAliasAdmissionRejected\":true,\"stage\":\"wire\",\"kind\":\""<<(kind==Kind::SharedResource ? "resource" : "sync")
+                <<"\",\"liveWireObjects\":"<<objects.size()<<",\"wireObjectLimit\":"<<objectLimit()<<",\"liveReferences\":"<<count
+                <<",\"referenceLimit\":"<<referenceLimit<<",\"idExhausted\":"<<(nextId==UINT32_MAX ? "true" : "false")<<"}\n";
+            return {exhausted,0};
+        }
         const auto native=driver.duplicateSharedReference(kind,source->second.nativeHandle);
         const bool known=native.nativeHandle==source->second.nativeHandle || std::any_of(objects.begin(),objects.end(),
             [&](const auto& value){return value.second.kind==kind && value.second.nativeHandle==native.nativeHandle;});
@@ -875,10 +885,10 @@ public:
             std::uint32_t version = 1;
             if (packet.size() != sizeof h) {
                 std::memcpy(&version, packet.data() + sizeof h, sizeof version);
-                if((version==11 || version==12) && !coordinated) return reply(h,-93);
-                if (version != 2 && version != 3 && version != 4 && version != 5 && version != 6 && version != 7 && version != 8 && version != 9 && version != 10 && version!=11 && version!=12) return reply(h, -93);
+                if((version==11 || version==12 || version==13) && !coordinated) return reply(h,-93);
+                if (version != 2 && version != 3 && version != 4 && version != 5 && version != 6 && version != 7 && version != 8 && version != 9 && version != 10 && version!=11 && version!=12 && version!=13) return reply(h, -93);
             }
-            if (version==10 || version==11 || version==12) {
+            if (version==10 || version==11 || version==12 || version==13) {
                 if(packet.size()!=sizeof h+sizeof(OpenGlDesktopPresentationCapacity)) return reply(h,-22);
                 OpenGlDesktopPresentationCapacity capacity{};std::memcpy(&capacity,packet.data()+sizeof h,sizeof capacity);
                 if(version>=11 ? !coordinated || !validCoordinatedPresentationCapacity(capacity) : !validOpenGlDesktopPresentationCapacity(capacity)) return reply(h,-22);
@@ -897,7 +907,7 @@ public:
             if ((driver.capabilities().flags & required) != required) return reply(h, -95);
             if(coordinated && version!=coordinated->gl.version) return reply(h,-95);
             const auto profile = coordinated ? coordinated->gl : driver.beginOpenGl(version);
-            if (version == 1 ? !validOpenGlProfile(profile) : version == 2 ? !validOpenGlFenceProfile(profile) : version == 3 ? !validOpenGlCompositorProfile(profile) : version == 4 ? !validOpenGlCompositorRenderProfile(profile) : version == 5 ? !validOpenGlDesktopProfile(profile) : version==6 ? !validOpenGlDesktop4kProfile(profile) : version==7 ? !validOpenGlDesktop4kCpuProfile(profile) : version==8 ? !validOpenGlDesktopSparseProfile(profile) : version==9 ? !validOpenGlDesktopLargeMapProfile(profile) : version==12 ? !validOpenGlDesktopSlotProfile(profile) : version==11 ? !validOpenGlDesktopFenceProfile(profile) : !validOpenGlDesktopPresentationProfile(profile)) return reply(h, -95);
+            if (version == 1 ? !validOpenGlProfile(profile) : version == 2 ? !validOpenGlFenceProfile(profile) : version == 3 ? !validOpenGlCompositorProfile(profile) : version == 4 ? !validOpenGlCompositorRenderProfile(profile) : version == 5 ? !validOpenGlDesktopProfile(profile) : version==6 ? !validOpenGlDesktop4kProfile(profile) : version==7 ? !validOpenGlDesktop4kCpuProfile(profile) : version==8 ? !validOpenGlDesktopSparseProfile(profile) : version==9 ? !validOpenGlDesktopLargeMapProfile(profile) : version==13 ? !validOpenGlDesktopReferenceProfile(profile) : version==12 ? !validOpenGlDesktopSlotProfile(profile) : version==11 ? !validOpenGlDesktopFenceProfile(profile) : !validOpenGlDesktopPresentationProfile(profile)) return reply(h, -95);
             openglNegotiated = true;
             fenceApertureBytes=version>=11 ? DesktopFenceApertureBytes : FenceApertureBytes;
             openglFenceNegotiated = version >= 2;
@@ -907,7 +917,7 @@ public:
             openglDesktop4kNegotiated = version >= 6;
             openglDesktop4kCpuNegotiated = version >= 7;
             openglDesktopSparseNegotiated = version >= 8;
-            openglDesktopSlotsNegotiated = version == 12;
+            openglDesktopSlotsNegotiated = version >= 12;
             openglDesktopLargeMapNegotiated = version >= 9;
             if (version >= 2) wireObjectLimit = profile.objectLimit;
             auto out = reply(h, 0); out.resize(sizeof h + sizeof profile);

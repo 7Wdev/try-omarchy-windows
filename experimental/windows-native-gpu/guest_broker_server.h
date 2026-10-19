@@ -165,14 +165,14 @@ template<class Authority> void verifyCpuCapacityProfile(const std::vector<std::u
     Header h{}; std::memcpy(&h,packet.data(),sizeof h);
     std::uint32_t version=0; std::memcpy(&version,packet.data()+sizeof h,sizeof version);
     if (h.type!=static_cast<unsigned>(Op::BeginOpenGl) || version<7) return;
-    if ((version!=7 && version!=8 && version!=9 && version!=10 && version!=11 && version!=12) || packet.size()!=sizeof h+(version>=10 ? sizeof(OpenGlDesktopPresentationCapacity) : version==9 ? sizeof(OpenGlDesktopLargeMapCapacity) : sizeof(OpenGlDesktop4kCapacity)))
+    if ((version!=7 && version!=8 && version!=9 && version!=10 && version!=11 && version!=12 && version!=13) || packet.size()!=sizeof h+(version>=10 ? sizeof(OpenGlDesktopPresentationCapacity) : version==9 ? sizeof(OpenGlDesktopLargeMapCapacity) : sizeof(OpenGlDesktop4kCapacity)))
         throw std::system_error(EPROTO,std::generic_category(),"Missing kernel capacity receipt");
     OpenGlDesktop4kCapacity wanted{}; std::memcpy(&wanted,packet.data()+sizeof h,sizeof wanted);
     OpenGlDesktopLargeMapCapacity large{};
     if (version==9) std::memcpy(&large,packet.data()+sizeof h,sizeof large);
     OpenGlDesktopPresentationCapacity presentation{};
     if(version>=10) std::memcpy(&presentation,packet.data()+sizeof h,sizeof presentation);
-    if (version==12 ? !validOpenGlDesktopSlotCapacity(presentation) : version==11 ? !validOpenGlDesktopFenceCapacity(presentation) : version==10 ? !validOpenGlDesktopPresentationCapacity(presentation) : version==7 ? !validOpenGlDesktop4kCapacity(wanted) : version==8 ? !validOpenGlDesktopSparseCapacity(wanted) : !validOpenGlDesktopLargeMapCapacity(large)) throw std::system_error(EPROTO,std::generic_category(),"Invalid CPU capacity contract");
+    if (version==13 ? !validOpenGlDesktopReferenceCapacity(presentation) : version==12 ? !validOpenGlDesktopSlotCapacity(presentation) : version==11 ? !validOpenGlDesktopFenceCapacity(presentation) : version==10 ? !validOpenGlDesktopPresentationCapacity(presentation) : version==7 ? !validOpenGlDesktop4kCapacity(wanted) : version==8 ? !validOpenGlDesktopSparseCapacity(wanted) : !validOpenGlDesktopLargeMapCapacity(large)) throw std::system_error(EPROTO,std::generic_category(),"Invalid CPU capacity contract");
     const auto caps=kernel.capacity(); const auto layout=kernel.info();
     if (!wddm_aperture_valid_caps(caps) || caps.flags!=(WDDM_APERTURE_DESKTOP_CPU_ENABLED | (version>=8 ? WDDM_APERTURE_SPARSE_ENABLED : 0u)) ||
         caps.cpu_byte_limit!=wanted.cpuByteLimit || layout.version!=1 ||
@@ -184,7 +184,7 @@ template<class Authority> void verifyCpuCapacityProfile(const std::vector<std::u
            fences.bytes!=layout.fence_bytes || !wddm_aperture_valid_coordinator_caps(leases) || !leases.enabled)
             throw std::system_error(EPROTO,std::generic_category(),"Missing actual desktop fence receipt");
     }
-    if(version==12) {
+    if(version>=12) {
         const auto slots=kernel.desktopSlotCapacity();
         if(!wddm_aperture_valid_desktop_slots(slots) || !slots.enabled || slots.slots!=wanted.cpuSlots || slots.bytes!=layout.allocation_bytes)
             throw std::system_error(EPROTO,std::generic_category(),"Missing actual desktop slot receipt");

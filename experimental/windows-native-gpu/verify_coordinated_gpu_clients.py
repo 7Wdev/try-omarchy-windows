@@ -14,12 +14,12 @@ RENDERER='OpenGL VENDOR: Microsoft Corporation RENDERER: D3D12 (NVIDIA GeForce R
 
 
 def validate(report,guest,records,source,profile=10):
-    require(profile in (10,11,12),'Unsupported coordinated audit profile')
+    require(profile in (10,11,12,13),'Unsupported coordinated audit profile')
     fence_slots=512 if profile>=11 else 256
-    cpu_slots=1024 if profile==12 else 512
+    cpu_slots=1024 if profile>=12 else 512
     manifest=source['manifest']; clean=report['disconnectCleanup']; vm=report['ownedQemuControl']
     require(source['sourceImageSha256Before']==source['sourceImageSha256After']==ROOT and source['sourceImageUnchanged'] is True,'Source image changed')
-    require(report['qemuSha256']==(DESKTOP_SLOT_QEMU if profile==12 else DESKTOP_FENCE_QEMU if profile==11 else QEMU) and report['driverBridgeSha256']==source['nativeBuildReceipt']['bridgeSha256'] and
+    require(report['qemuSha256']==(DESKTOP_SLOT_QEMU if profile>=12 else DESKTOP_FENCE_QEMU if profile==11 else QEMU) and report['driverBridgeSha256']==source['nativeBuildReceipt']['bridgeSha256'] and
             report['initramfsSha256']==manifest['initramfsSha256'],'Mixed native/guest provenance')
     require(manifest['coordinatedNativeActors'] is True and manifest['ordinaryUid']==1000 and
             manifest['desktopGeometryProbe']==[3840,2160] and manifest['kernelCpuCapacityProfile']==profile and
@@ -44,15 +44,19 @@ def validate(report,guest,records,source,profile=10):
     group=one('nativeCoordinatorSummary'); cap=one('nativeCoordinatedObjectCapacity')
     require(group['nativeDriverCount']==1 and group['memoryBudgetsMultiplied'] is False and 2<=group['peakActors']<=4,'Wrong group ownership/budget')
     require((cap['version'],cap['hwQueues'],cap['syncObjects'],cap['reservedAddressBytes'],cap['reservationCount'],cap['kernelLeaseLimit'],cap['fenceSlots'],cap['cpuBytes'],cap['gpuVaBytes'],cap['reportedGpuBytes'],cap['memoryBudgetsMultiplied'])==
-            (4 if profile>=11 else 3,32,384,68719476736,256,768,fence_slots,201326592,1073741824,1073741824,False),'Unexpected aggregate admission')
+            (5 if profile==13 else 4 if profile>=11 else 3,32,384,68719476736,256,768,fence_slots,201326592,1073741824,1073741824,False),'Unexpected aggregate admission')
     if profile>=11:
         require(cap.get('vendorAllocationObjects')==1024 and vm['fenceApertureSlots']==512 and vm['allocationApertureSlots']==cpu_slots and
                 'DESKTOP_FENCE_CONTRACT enabled=1 slots=512 bytes=2097152 actualIoctl=true' in guest and
                 f'BROKER_COORDINATOR_FENCE_CAPACITY profile={profile} slots=512 bytes=2097152 actualIoctl=true' in guest,'Missing actual desktop aperture/object agreement')
-    if profile==12:
+    if profile>=12:
         require('DESKTOP_SLOT_CONTRACT enabled=1 slots=1024 bytes=1073741824 actualIoctl=true' in guest and
-                'BROKER_COORDINATOR_SLOT_CAPACITY profile=12 slots=1024 bytes=1073741824 cpuByteLimit=201326592 actualIoctl=true' in guest,
+                f'BROKER_COORDINATOR_SLOT_CAPACITY profile={profile} slots=1024 bytes=1073741824 cpuByteLimit=201326592 actualIoctl=true' in guest,
                 'Missing actual CPU-slot capacity agreement')
+    if profile==13:
+        require(cap.get('sharedResourceReferences')==cap.get('sharedSyncReferences')==64 and
+                'BROKER_COORDINATOR_REFERENCE_CAPACITY profile=13 objectsVersion=5 resources=64 syncs=64 perActor=16 byteBudgetsMultiplied=false' in guest,
+                'Missing exact aggregate reference agreement')
     waits=[r for r in records if 'nativeBorrowedQueueGpuWaitAccepted' in r]
     require(waits and all(r['nativeBorrowedQueueGpuWaitAccepted'] is True and r['cpuValueWrittenByBridge'] is False and
             r['paging']+r['hardware']>0 for r in waits),'Missing real borrowed-fence waits')

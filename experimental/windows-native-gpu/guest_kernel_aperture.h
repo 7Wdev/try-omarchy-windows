@@ -82,13 +82,13 @@ public:
         }
         if(value.fence_slots==512) {
             const auto profile=std::getenv("WDDM_BRIDGE_ACTOR_PROFILE");
-            if(!guest_broker::clientEnabled() || !profile || (std::strcmp(profile,"11") && std::strcmp(profile,"12")) ||
+            if(!guest_broker::clientEnabled() || !profile || (std::strcmp(profile,"11") && std::strcmp(profile,"12") && std::strcmp(profile,"13")) ||
                guest_broker::client().coordinatedProfile().capacity.mapping.aperture.fenceSlots!=512)
                 throw std::runtime_error("Desktop fence aperture lacks coordinator agreement");
         }
         if(value.allocation_slots==1024) {
             const auto profile=std::getenv("WDDM_BRIDGE_ACTOR_PROFILE");
-            if(!guest_broker::clientEnabled() || !profile || std::strcmp(profile,"12") || value.fence_slots!=512 ||
+            if(!guest_broker::clientEnabled() || !profile || (std::strcmp(profile,"12") && std::strcmp(profile,"13")) || value.fence_slots!=512 ||
                 guest_broker::client().coordinatedProfile().capacity.mapping.aperture.cpuSlots!=1024)
                 throw std::runtime_error("Desktop CPU slots lack coordinator agreement");
         }

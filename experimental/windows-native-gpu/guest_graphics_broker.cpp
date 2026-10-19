@@ -10,8 +10,10 @@ static int coordinated(guest_broker::Fd& listener,const char* path,unsigned uid,
     using namespace guest_broker;
     CoordinatorPort controller(path);Kernel layout;
     const auto info=layout.info();const auto caps=layout.capacity();
+    const auto references=std::getenv("WDDM_BRIDGE_COORDINATED_REFERENCES");
+    if(references && std::strcmp(references,"1")) throw std::runtime_error("Invalid coordinated reference opt-in");
     controller.initialize(info,caps,layout.coordinatedCapacity(),info.fence_slots==512 ? layout.desktopFenceCapacity() : wddm_aperture_desktop_fences{},
-        info.allocation_slots==1024 ? layout.desktopSlotCapacity() : wddm_aperture_desktop_slots{});layout.close();
+        info.allocation_slots==1024 ? layout.desktopSlotCapacity() : wddm_aperture_desktop_slots{},references!=nullptr);layout.close();
     const char ready='R';if(write(notification.get(),&ready,1)!=1) throw std::runtime_error("Coordinator readiness failed");
     notification=Fd();
     pollfd trusted{primaryPipe.get(),POLLIN,0};
@@ -44,20 +46,20 @@ static int coordinated(guest_broker::Fd& listener,const char* path,unsigned uid,
         if(!readyCount) continue;
         Fd channel(accept4(listener.get(),nullptr,nullptr,SOCK_CLOEXEC|SOCK_NONBLOCK));
         if(channel.get()<0) { if(errno==EINTR || errno==EAGAIN) continue;throw std::runtime_error("Coordinator accept failed"); }
-        if(connections>=64) { std::fprintf(stderr,"BROKER_COORDINATOR_PEER denied=true lifetimeConnectionLimit=64\n");continue; }
+        if(connections>=64) { receipt("BROKER_COORDINATOR_PEER denied=true lifetimeConnectionLimit=64\n");continue; }
         std::unique_ptr<Peer> peer;
         try { peer=std::make_unique<Peer>(std::move(channel),uid,gid); }
-        catch(const std::exception& error) { std::fprintf(stderr,"BROKER_COORDINATOR_PEER denied=true reason=%s\n",error.what());continue; }
+        catch(const std::exception& error) { receipt("BROKER_COORDINATOR_PEER denied=true reason=%s\n",error.what());continue; }
         const auto isPrimary=static_cast<std::uint64_t>(peer->pid())==primary;
         if((!primaryAccepted && !isPrimary) || (isPrimary && primaryAccepted)) {
-            std::fprintf(stderr,"BROKER_COORDINATOR_PEER denied=true primaryPidMismatch=true\n");continue;
+            receipt("BROKER_COORDINATOR_PEER denied=true primaryPidMismatch=true\n");continue;
         }
         primaryAccepted|=isPrimary;++connections;
         char path[64],exe[4096];snprintf(path,sizeof path,"/proc/%d/exe",peer->pid());
         const auto bytes=readlink(path,exe,sizeof exe);
         std::string hex;
         if(bytes>0) { constexpr char digits[]="0123456789abcdef";for(ssize_t i=0;i<bytes;++i) { const auto c=static_cast<unsigned char>(exe[i]);hex+=digits[c>>4];hex+=digits[c&15]; } }
-        std::fprintf(stderr,"BROKER_COORDINATOR_PEER pid=%d primary=%s exePathHex=%s pidfdAuthenticated=true\n",peer->pid(),isPrimary ? "true" : "false",hex.c_str());
+        receipt("BROKER_COORDINATOR_PEER pid=%d primary=%s exePathHex=%s pidfdAuthenticated=true\n",peer->pid(),isPrimary ? "true" : "false",hex.c_str());
         ++active;
         auto task=std::make_unique<Workers::Task>();auto* completed=task.get();
         task->thread=std::thread([&,peer=std::move(peer),isPrimary,completed]() mutable {

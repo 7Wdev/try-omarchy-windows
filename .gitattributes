@@ -25,7 +25,9 @@ experimental/windows-native-gpu/linux_ioctl_bridge.cpp text eol=lf
 experimental/windows-native-gpu/hyprland_startup_probe.c text eol=lf
 experimental/windows-native-gpu/hyprland_queue_probe.h text eol=lf
 experimental/windows-native-gpu/verify_omarchy_desktop_content.py text eol=lf
+experimental/windows-native-gpu/verify_omarchy_desktop_references.py text eol=lf
 docs/evidence/OMARCHY-4K-READABLE-GPU-DESKTOP-2026-10-19.json text eol=lf
+docs/evidence/OMARCHY-4K-REFERENCE-FIX-GPU-DESKTOP-2026-10-19.json text eol=lf
 
 # Unified-diff context lines and format-patch trailers carry intentional spaces.
 guest-build/*.patch text eol=lf whitespace=-blank-at-eol,-blank-at-eof

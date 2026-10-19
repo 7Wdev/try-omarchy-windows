@@ -55,6 +55,10 @@ class KmtDriver : public Driver {
     bool submitEnabled = false;
     bool asyncSubmitEnabled = false;
     bool openglEnabled = false;
+    std::uint32_t openGlProfileVersion=0;
+    std::size_t peakSharedResourceHandles=0,peakSharedSyncHandles=0;
+    std::size_t sharedResourceLimit() const { return coordinatedObjectsEnabled && coordinatedObjectCapacity.version==5 ? MaxCoordinatedSharedReferences : MaxSharedResourceHandles; }
+    std::size_t sharedSyncLimit() const { return coordinatedObjectsEnabled && coordinatedObjectCapacity.version==5 ? MaxCoordinatedSharedReferences : MaxSharedSyncHandles; }
     bool openglFencesEnabled = false;
     bool openglCompositorEnabled = false;
     bool openglRenderEnabled = false;
@@ -77,7 +81,7 @@ class KmtDriver : public Driver {
     std::uint64_t reservationQuotaRejections=0;
     std::size_t peakReservations=0;
     std::size_t syncObjectLimit() const { return coordinatedObjectsEnabled ? CoordinatedObjectCapacity{}.syncObjects : openglCompositorEnabled ? OpenGlCompositorSyncObjects : MaxSyncObjects; }
-    std::size_t vendorObjectLimit() const { return coordinatedObjectsEnabled && coordinatedObjectCapacity.version==4 ? coordinatedObjectCapacity.vendorAllocations : openglDesktopEnabled ? OpenGlDesktopVendorAllocations : openglCompositorEnabled ? OpenGlCompositorVendorAllocations : openglFencesEnabled ? OpenGlFenceVendorAllocations : vendorAllocationObjectLimit(capabilities().flags); }
+    std::size_t vendorObjectLimit() const { return coordinatedObjectsEnabled && coordinatedObjectCapacity.version>=4 ? coordinatedObjectCapacity.vendorAllocations : openglDesktopEnabled ? OpenGlDesktopVendorAllocations : openglCompositorEnabled ? OpenGlCompositorVendorAllocations : openglFencesEnabled ? OpenGlFenceVendorAllocations : vendorAllocationObjectLimit(capabilities().flags); }
     bool vendorObjectAdmission() const {
         const bool allowed=vendorAllocations.size()<vendorObjectLimit();
         if(!allowed) std::cerr<<"{\"nativeVendorObjectAdmissionRejected\":true,\"live\":"<<vendorAllocations.size()<<",\"limit\":"<<vendorObjectLimit()<<"}\n";
@@ -656,10 +660,11 @@ public:
     bool beginCoordinatedObjects(CoordinatedObjectCapacity value) override {
         if(!validCoordinatedObjectCapacity(value) || coordinatedObjectsEnabled || !openglDesktopPresentationEnabled || !runtime || runtime->hasStopped() ||
             !ownedAdapters.empty() || !deviceAdapters.empty() || !hwQueues.empty() || !syncObjects.empty()) return false;
-        if(value.version!=(runtime->fenceSlotLimit()==512 ? 4u : 3u)) return false;
+        if(value.version!=(openGlProfileVersion==13 ? 5u : runtime->fenceSlotLimit()==512 ? 4u : 3u)) return false;
         coordinatedObjectCapacity=value;coordinatedObjectsEnabled=true;
         std::cerr<<"{\"nativeCoordinatedObjectCapacity\":true,\"version\":"<<value.version<<",\"vendorAllocationObjects\":"<<vendorObjectLimit()<<",\"hwQueues\":"<<hwQueueLimit()<<",\"syncObjects\":"<<syncObjectLimit()
                  <<",\"reservedAddressBytes\":"<<reservationByteLimit()<<",\"reservationCount\":"<<reservationLimit()
+                 <<",\"sharedResourceReferences\":"<<sharedResourceLimit()<<",\"sharedSyncReferences\":"<<sharedSyncLimit()
                  <<",\"kernelLeaseLimit\":768,\"fenceSlots\":"<<runtime->fenceSlotLimit()<<",\"cpuBytes\":201326592,\"gpuVaBytes\":1073741824,\"reportedGpuBytes\":1073741824,\"memoryBudgetsMultiplied\":false}\n";
         return true;
     }
@@ -674,13 +679,13 @@ public:
     OpenGlProfile beginOpenGl(std::uint32_t version = 1) override {
         if (version>=6 && !(capabilities().flags & ExpandedVendorGpuCapability)) return {};
         if (version>=7 && (!(capabilities().flags & ExpandedVendorCpuCapability) || !runtime ||
-            runtime->allocationSlotLimit()!=(version==12 ? DesktopVendorCpuSlots : version>=8 ? SparseVendorCpuSlots : MaxVendorCpuSlots) || runtime->fenceSlotLimit()!=(version>=11 ? 512u : 256u))) return {};
+            runtime->allocationSlotLimit()!=(version>=12 ? DesktopVendorCpuSlots : version>=8 ? SparseVendorCpuSlots : MaxVendorCpuSlots) || runtime->fenceSlotLimit()!=(version>=11 ? 512u : 256u))) return {};
         if (runtime && runtime->allocationSlotLimit()==SparseVendorCpuSlots && version!=8 && version!=9 && version!=10 && version!=11) return {};
-        if (runtime && runtime->allocationSlotLimit()==DesktopVendorCpuSlots && version!=12) return {};
+        if (runtime && runtime->allocationSlotLimit()==DesktopVendorCpuSlots && version!=12 && version!=13) return {};
         if (!gpu_diagnostic::HighResolution || openglEnabled || streamingEnabled || !asyncSubmitEnabled || !syncEnabled || !reservationEnabled ||
             !runtime || runtime->hasStopped() || !ownedAdapters.empty() || !deviceAdapters.empty() ||
-            !pendingSubmissions.empty() || !pendingHwSignals.empty() || (version != 1 && version != 2 && version != 3 && version != 4 && version != 5 && version != 6 && version != 7 && version != 8 && version != 9 && version != 10 && version!=11 && version!=12)) return {};
-        openglEnabled = true;
+            !pendingSubmissions.empty() || !pendingHwSignals.empty() || (version != 1 && version != 2 && version != 3 && version != 4 && version != 5 && version != 6 && version != 7 && version != 8 && version != 9 && version != 10 && version!=11 && version!=12 && version!=13)) return {};
+        openglEnabled = true;openGlProfileVersion=version;
         openglFencesEnabled = version >= 2;
         openglCompositorEnabled = version >= 3;
         openglRenderEnabled = version >= 4;
@@ -690,7 +695,7 @@ public:
         openglDesktopSparseEnabled = version >= 8;
         openglDesktopLargeMapEnabled = version >= 9;
         openglDesktopPresentationEnabled = version >= 10;
-        const auto profile = version==12 ? GuestOpenGlDesktopSlotProfile : version==11 ? GuestOpenGlDesktopFenceProfile : version == 10 ? GuestOpenGlDesktopPresentationProfile : version == 9 ? GuestOpenGlDesktopLargeMapProfile : version == 8 ? GuestOpenGlDesktopSparseProfile : version == 7 ? GuestOpenGlDesktop4kCpuProfile : version == 6 ? GuestOpenGlDesktop4kProfile : version == 5 ? GuestOpenGlDesktopProfile : version == 4 ? GuestOpenGlCompositorRenderProfile : version == 3 ? GuestOpenGlCompositorProfile : version == 2 ? GuestOpenGlFenceProfile : GuestOpenGlProfile;
+        const auto profile = version==13 ? GuestOpenGlDesktopReferenceProfile : version==12 ? GuestOpenGlDesktopSlotProfile : version==11 ? GuestOpenGlDesktopFenceProfile : version == 10 ? GuestOpenGlDesktopPresentationProfile : version == 9 ? GuestOpenGlDesktopLargeMapProfile : version == 8 ? GuestOpenGlDesktopSparseProfile : version == 7 ? GuestOpenGlDesktop4kCpuProfile : version == 6 ? GuestOpenGlDesktop4kProfile : version == 5 ? GuestOpenGlDesktopProfile : version == 4 ? GuestOpenGlCompositorRenderProfile : version == 3 ? GuestOpenGlCompositorProfile : version == 2 ? GuestOpenGlFenceProfile : GuestOpenGlProfile;
         std::cerr << "{\"openGlProfileNegotiated\":true,\"version\":" << version << ",\"frames\":" << profile.frames << ",\"commandLimit\":" << profile.commandLimit << ",\"pendingCommands\":16,\"reservationLimit\":" << profile.reservationLimit << ",\"reservedByteLimit\":17179869184,\"requestLimit\":" << profile.requestLimit;
         if (version >= 2) std::cerr << ",\"objectLimit\":" << profile.objectLimit
             << ",\"hwQueueLimit\":" << OpenGlFenceHwQueues << ",\"vendorObjectLimit\":" << vendorObjectLimit() << ",\"syncObjectLimit\":" << syncObjectLimit();
@@ -936,7 +941,7 @@ public:
     Result exportResource(std::uint32_t resource) override {
         const auto source = resourceGuestRuntime.find(resource);
         if (!resourceSharingEnabled || !runtime || runtime->hasStopped() || source == resourceGuestRuntime.end() ||
-            !sharedResourceIds.count(resource) || sharedResourceHandles.size() >= MaxSharedResourceHandles ||
+            !sharedResourceIds.count(resource) || sharedResourceHandles.size() >= sharedResourceLimit() ||
             nextSharedResource == UINT32_MAX) return {Invalid, 0, 0};
         SharedResource shared;
         shared.guestRuntime = source->second;
@@ -944,7 +949,7 @@ public:
         if (status) return {status, 0, 0};
         const auto ticket = nextSharedResource++;
         if (!sharedResourceHandles.emplace(ticket, std::move(shared)).second) throw std::runtime_error("Shared resource ticket collision");
-        ++exportedResourceHandles;
+        ++exportedResourceHandles;peakSharedResourceHandles=(std::max)(peakSharedResourceHandles,sharedResourceHandles.size());
         std::cerr << "{\"nativeResourceHandleExported\":true,\"rawHandleExposed\":false}\n";
         return {0, ticket, 0};
     }
@@ -970,25 +975,38 @@ public:
         if(!runtime || runtime->hasStopped()) return {Invalid,0,0};
         if(kind==Kind::SharedResource) {
             const auto found=sharedResourceHandles.find(source);
-            if(!resourceSharingEnabled || found==sharedResourceHandles.end() || sharedResourceHandles.size()>=MaxSharedResourceHandles ||
-                nextSharedResource==UINT32_MAX) return {Invalid,0,0};
+            if(!resourceSharingEnabled || found==sharedResourceHandles.end() || sharedResourceHandles.size()>=sharedResourceLimit() ||
+                nextSharedResource==UINT32_MAX) {
+                std::cerr<<"{\"nativeSharedAliasAdmissionRejected\":true,\"stage\":\"driver\",\"kind\":\"resource\",\"liveReferences\":"<<sharedResourceHandles.size()
+                    <<",\"referenceLimit\":"<<sharedResourceLimit()<<",\"sourceOwned\":"<<(found!=sharedResourceHandles.end() ? "true" : "false")
+                    <<",\"enabled\":"<<(resourceSharingEnabled ? "true" : "false")<<",\"idExhausted\":"<<(nextSharedResource==UINT32_MAX ? "true" : "false")
+                    <<",\"exported\":"<<exportedResourceHandles<<",\"closed\":"<<closedResourceHandles<<"}\n";
+                return {Invalid,0,0};
+            }
             SharedResource alias;alias.guestRuntime=found->second.guestRuntime;
-            const auto status=alias.handle.duplicate(found->second.handle.get());if(status) return {status,0,0};
+            const auto status=alias.handle.duplicate(found->second.handle.get());
+            if(status) { std::cerr<<"{\"nativeSharedAliasDuplicationFailed\":true,\"kind\":\"resource\",\"ntstatus\":"<<status<<"}\n";return {status,0,0}; }
             const auto ticket=nextSharedResource++;
             if(!sharedResourceHandles.emplace(ticket,std::move(alias)).second) throw std::runtime_error("Resource alias ticket collision");
-            ++exportedResourceHandles;
+            ++exportedResourceHandles;peakSharedResourceHandles=(std::max)(peakSharedResourceHandles,sharedResourceHandles.size());
             std::cerr<<"{\"nativeSharedReferenceAliased\":true,\"kind\":\"resource\",\"independentNtReference\":true,\"inheritable\":false,\"rawHandleExposed\":false}\n";
             return {0,ticket,0};
         }
         if(kind==Kind::SharedSync) {
             const auto found=sharedSyncHandles.find(source);
-            if(!syncSharingEnabled || found==sharedSyncHandles.end() || sharedSyncHandles.size()>=MaxSharedSyncHandles ||
-                nextSharedSync==UINT32_MAX) return {Invalid,0,0};
+            if(!syncSharingEnabled || found==sharedSyncHandles.end() || sharedSyncHandles.size()>=sharedSyncLimit() ||
+                nextSharedSync==UINT32_MAX) {
+                std::cerr<<"{\"nativeSharedAliasAdmissionRejected\":true,\"stage\":\"driver\",\"kind\":\"sync\",\"liveReferences\":"<<sharedSyncHandles.size()
+                    <<",\"referenceLimit\":"<<sharedSyncLimit()<<",\"sourceOwned\":"<<(found!=sharedSyncHandles.end() ? "true" : "false")
+                    <<",\"enabled\":"<<(syncSharingEnabled ? "true" : "false")<<",\"idExhausted\":"<<(nextSharedSync==UINT32_MAX ? "true" : "false")<<"}\n";
+                return {Invalid,0,0};
+            }
             driver_shared::SyncHandle alias;
-            const auto status=alias.duplicate(found->second.get());if(status) return {status,0,0};
+            const auto status=alias.duplicate(found->second.get());
+            if(status) { std::cerr<<"{\"nativeSharedAliasDuplicationFailed\":true,\"kind\":\"sync\",\"ntstatus\":"<<status<<"}\n";return {status,0,0}; }
             const auto ticket=nextSharedSync++;
             if(!sharedSyncHandles.emplace(ticket,std::move(alias)).second) throw std::runtime_error("Sync alias ticket collision");
-            ++exportedSyncHandles;
+            ++exportedSyncHandles;peakSharedSyncHandles=(std::max)(peakSharedSyncHandles,sharedSyncHandles.size());
             std::cerr<<"{\"nativeSharedReferenceAliased\":true,\"kind\":\"sync\",\"independentNtReference\":true,\"inheritable\":false,\"rawHandleExposed\":false}\n";
             return {0,ticket,0};
         }
@@ -1084,13 +1102,13 @@ public:
         const auto source = syncObjects.find(sync);
         if (!syncSharingEnabled || !runtime || runtime->hasStopped() || source == syncObjects.end() ||
             source->second.type != 5 || !source->second.shared ||
-            sharedSyncHandles.size() >= MaxSharedSyncHandles || nextSharedSync == UINT32_MAX) return {Invalid, 0, 0};
+            sharedSyncHandles.size() >= sharedSyncLimit() || nextSharedSync == UINT32_MAX) return {Invalid, 0, 0};
         driver_shared::SyncHandle shared;
         const auto status = shared.share(sync);
         if (status) return {status, 0, 0};
         const auto ticket = nextSharedSync++;
         if (!sharedSyncHandles.emplace(ticket, std::move(shared)).second) throw std::runtime_error("Shared sync ticket collision");
-        ++exportedSyncHandles;
+        ++exportedSyncHandles;peakSharedSyncHandles=(std::max)(peakSharedSyncHandles,sharedSyncHandles.size());
         std::cerr << "{\"nativeSyncHandleExported\":true,\"rawHandleExposed\":false}\n";
         return {0, ticket, 0};
     }
@@ -2143,8 +2161,10 @@ public:
                   << ",\"liveContexts\":" << activeContexts
                   << ",\"liveSharedResourceHandles\":" << sharedResourceHandles.size() << ",\"exportedResourceHandles\":" << exportedResourceHandles
                   << ",\"closedResourceHandles\":" << closedResourceHandles
+                  << ",\"peakSharedResourceHandles\":"<<peakSharedResourceHandles<<",\"sharedResourceReferenceLimit\":"<<sharedResourceLimit()
                   << ",\"importedResourceFdObjects\":" << importedResourceFdObjects
                   << ",\"liveSharedSyncHandles\":" << sharedSyncHandles.size() << ",\"exportedSyncHandles\":" << exportedSyncHandles
+                  << ",\"peakSharedSyncHandles\":"<<peakSharedSyncHandles<<",\"sharedSyncReferenceLimit\":"<<sharedSyncLimit()
                   << ",\"closedSyncHandles\":" << closedSyncHandles << ",\"importedSyncObjects\":" << importedSyncObjects
                   << ",\"liveTextureConsumers\":" << textureConsumers.size()
                   << ",\"openedTextureConsumers\":" << openedTextureConsumers

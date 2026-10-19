@@ -4,11 +4,14 @@
 #pragma once
 #include <atomic>
 #include <condition_variable>
+#include <cstring>
 #include <deque>
 #include <mutex>
 #include <thread>
+#include <vector>
 #include "binary_capture.h"
 #include "compositor_capture_wire.h"
+#include "compositor_audit_tiles.h"
 #include "shared_texture_presenter.h"
 namespace driver_shared {
 class CompositorPresenter {
@@ -26,10 +29,12 @@ class CompositorPresenter {
     Device device;
     GpuUsageGuard budget;
     Microsoft::WRL::ComPtr<ID3D12CommandQueue> inputQueue, outputQueue;
-    Microsoft::WRL::ComPtr<ID3D12Fence> inputRetired, outputRetired;
+    Microsoft::WRL::ComPtr<ID3D12Fence> inputRetired, outputRetired, auditRetired;
     Resource auditReadback;
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
     UINT64 auditBytes = 0;
+    AuditTilePlan auditPlan{};
+    std::uint64_t auditSequence=0;
     std::map<std::uint32_t,Resource> sources;
     std::mutex guard;
     std::condition_variable ready;
@@ -65,6 +70,7 @@ class CompositorPresenter {
         if (SUCCEEDED(hr)) hr=device->CreateCommandQueue(&queue,IID_PPV_ARGS(&outputQueue));
         if (SUCCEEDED(hr)) hr=device->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&inputRetired));
         if (SUCCEEDED(hr)) hr=device->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&outputRetired));
+        if (SUCCEEDED(hr)) hr=device->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&auditRetired));
         if (FAILED(hr)) return hr;
         if(budget && !budget("device-after",0)) return E_OUTOFMEMORY;
         D3D12_HEAP_PROPERTIES heap{}; heap.Type=D3D12_HEAP_TYPE_DEFAULT; heap.CreationNodeMask=heap.VisibleNodeMask=1;
@@ -96,9 +102,10 @@ class CompositorPresenter {
         if (rows!=layout.height || rowBytes!=layout.stride || footprint.Offset || footprint.Footprint.RowPitch<rowBytes ||
             footprint.Footprint.RowPitch>16384 || footprint.Footprint.RowPitch%256 ||
             auditBytes<std::uint64_t(layout.height-1)*footprint.Footprint.RowPitch+layout.stride || auditBytes>64ull*1024*1024) return E_INVALIDARG;
+        if(!planAuditTiles(layout.width,layout.height,footprint.Footprint.RowPitch,auditPlan)) return E_INVALIDARG;
         D3D12_HEAP_PROPERTIES heap{}; heap.Type=D3D12_HEAP_TYPE_READBACK; heap.CreationNodeMask=heap.VisibleNodeMask=1;
         D3D12_RESOURCE_DESC buffer{}; buffer.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER;
-        buffer.Width=auditBytes; buffer.Height=1; buffer.DepthOrArraySize=buffer.MipLevels=1;
+        buffer.Width=auditPlan.tileBytes; buffer.Height=1; buffer.DepthOrArraySize=buffer.MipLevels=1;
         buffer.SampleDesc.Count=1; buffer.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
         const auto allocation=device->GetResourceAllocationInfo(0,1,&buffer);
         if(!allocation.SizeInBytes || allocation.SizeInBytes==UINT64_MAX) return E_INVALIDARG;
@@ -106,6 +113,35 @@ class CompositorPresenter {
         const auto hr=device->CreateCommittedResource(&heap,D3D12_HEAP_FLAG_NONE,&buffer,D3D12_RESOURCE_STATE_COPY_DEST,nullptr,IID_PPV_ARGS(&auditReadback));
         if(SUCCEEDED(hr) && budget && !budget("readback-after",0)) { auditReadback.Reset(); return E_OUTOFMEMORY; }
         return hr;
+    }
+    HRESULT auditBackbuffer(TexturePresenter& window,Slot& slot,Frame frame,std::uint64_t& hash) {
+        // The slot remains occupied until all tile copies retire. A separate
+        // fence sequence prevents an already completed frame fence from
+        // falsely satisfying a later tile copy before allocator reset/Map.
+        std::vector<std::uint8_t> pixels(static_cast<std::size_t>(auditPlan.fullBytes));
+        for(unsigned n=0;n<auditPlan.count;++n) {
+            unsigned top=0,rows=0;
+            if(!auditPlan.at(n,top,rows) || auditSequence==UINT64_MAX) return E_INVALIDARG;
+            auto hr=slot.outputAllocator->Reset();
+            if(SUCCEEDED(hr)) hr=slot.outputCommands->Reset(slot.outputAllocator.Get(),nullptr);
+            if(FAILED(hr)) return hr;
+            auto tile=footprint;tile.Footprint.Height=rows;
+            hr=window.copyAuditTile(slot.outputCommands.Get(),auditReadback.Get(),tile,top,rows);
+            if(SUCCEEDED(hr)) hr=slot.outputCommands->Close();
+            if(FAILED(hr)) return hr;
+            ID3D12CommandList* lists[]{slot.outputCommands.Get()};outputQueue->ExecuteCommandLists(1,lists);
+            const auto target=++auditSequence;
+            if(FAILED(outputQueue->Signal(auditRetired.Get(),target))) ExitProcess(3);
+            retire(auditRetired.Get(),target);
+            void* mapped=nullptr;
+            const D3D12_RANGE range{0,static_cast<SIZE_T>(std::uint64_t(rows-1)*auditPlan.pitch+layout.stride)};
+            hr=auditReadback->Map(0,&range,&mapped);if(FAILED(hr)) return hr;
+            for(unsigned y=0;y<rows;++y)
+                std::memcpy(pixels.data()+std::uint64_t(top+y)*auditPlan.pitch,
+                    static_cast<const std::uint8_t*>(mapped)+std::uint64_t(y)*auditPlan.pitch,layout.stride);
+            const D3D12_RANGE empty{};auditReadback->Unmap(0,&empty);
+        }
+        return driver_capture::writeCompositor(frame.audit,layout.width,layout.height,layout.format,pixels.data(),auditPlan.pitch,hash);
     }
     HRESULT draw(TexturePresenter& window,Frame frame) {
         auto& slot=slots[frame.slot];
@@ -119,7 +155,7 @@ class CompositorPresenter {
         if (FAILED(hr)) return hr;
         auto before=transition(slot.texture.Get(),D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_COPY_SOURCE);
         slot.outputCommands->ResourceBarrier(1,&before);
-        hr=window.copy(slot.outputCommands.Get(),slot.texture.Get(),frame.audit ? auditReadback.Get() : nullptr,footprint);
+        hr=window.copy(slot.outputCommands.Get(),slot.texture.Get(),nullptr,footprint);
         if (FAILED(hr)) return hr;
         auto after=transition(slot.texture.Get(),D3D12_RESOURCE_STATE_COPY_SOURCE,D3D12_RESOURCE_STATE_COMMON);
         slot.outputCommands->ResourceBarrier(1,&after);
@@ -129,16 +165,15 @@ class CompositorPresenter {
         outputSubmitted=frame.sequence;
         if (frame.audit) {
             retire(outputRetired.Get(),frame.sequence);
-            void* pixels=nullptr; const D3D12_RANGE range{0,static_cast<SIZE_T>(auditBytes)};
-            hr=auditReadback->Map(0,&range,&pixels); if (FAILED(hr)) return hr;
             std::uint64_t hash=0;
-            hr=driver_capture::writeCompositor(frame.audit,layout.width,layout.height,layout.format,pixels,footprint.Footprint.RowPitch,hash);
-            const D3D12_RANGE empty{}; auditReadback->Unmap(0,&empty);
+            hr=auditBackbuffer(window,slot,frame,hash);
             if (FAILED(hr)) return hr;
             ++completedAudits;
             std::cerr<<"{\"nativeCompositorRingAudited\":true,\"frame\":"<<frame.sequence<<",\"auditRound\":"<<frame.audit
                 <<",\"fnv1a\":"<<hash<<",\"width\":"<<layout.width<<",\"height\":"<<layout.height
-                <<",\"fourcc\":"<<layout.format<<",\"copyFenceObserved\":"<<outputRetired->GetCompletedValue()<<"}\n";
+                <<",\"fourcc\":"<<layout.format<<",\"copyFenceObserved\":"<<outputRetired->GetCompletedValue()
+                <<",\"readbackTiles\":"<<auditPlan.count<<",\"readbackTileBytes\":"<<auditPlan.tileBytes
+                <<",\"auditFenceObserved\":"<<auditRetired->GetCompletedValue()<<",\"backbufferSource\":true}\n";
         }
         {
             std::lock_guard<std::mutex> lock(guard);
@@ -298,7 +333,7 @@ public:
             std::none_of(slots.begin(),slots.end(),[](const Slot& slot){return slot.occupied;});
         sources.clear();
         for (auto& slot:slots) { slot.inputCommands.Reset(); slot.outputCommands.Reset(); slot.inputAllocator.Reset(); slot.outputAllocator.Reset(); slot.texture.Reset(); }
-        auditReadback.Reset(); inputQueue.Reset(); outputQueue.Reset(); inputRetired.Reset(); outputRetired.Reset(); device.Reset();
+        auditReadback.Reset();auditRetired.Reset(); inputQueue.Reset(); outputQueue.Reset(); inputRetired.Reset(); outputRetired.Reset(); device.Reset();
         const bool closed=CloseHandle(work)!=FALSE; work=nullptr;
         const bool inputClosed=CloseHandle(inputEvent)!=FALSE; inputEvent=nullptr;
         std::cerr<<"{\"nativeCompositorRingStopped\":"<<(clean&&closed?"true":"false")<<",\"submitted\":"<<submitted<<",\"presented\":"<<presented

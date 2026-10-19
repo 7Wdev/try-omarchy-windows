@@ -142,7 +142,9 @@ static void cpuCapacityPolicy() {
     expandedViews.observe(expandedBegin,packet(Op::BeginOpenGl,0,encode(GuestOpenGlDesktopSlotProfile)));
     for(unsigned field=0;field<12;++field) {
         auto capacity=GuestOpenGlDesktopSlotCapacity;std::uint32_t words[12]{};
-        std::memcpy(words,&capacity,sizeof words);++words[field];std::memcpy(&capacity,words,sizeof words);
+        std::memcpy(words,&capacity,sizeof words);
+        if(field==0) words[field]=UINT32_MAX;else ++words[field];
+        std::memcpy(&capacity,words,sizeof words);
         const auto malformed=packet(Op::BeginOpenGl,0,encode(capacity));
         denied([&]{verifyCpuCapacityProfile(malformed,expanded);},EPROTO);
         Views views;denied([&]{views.observe(malformed,packet(Op::BeginOpenGl,0,encode(GuestOpenGlDesktopSlotProfile)));},EPROTO);
@@ -151,6 +153,22 @@ static void cpuCapacityPolicy() {
         Views views;denied([&]{views.observe(expandedBegin,packet(Op::BeginOpenGl,0,encode(profile)));},EPROTO);
     }
     std::cout<<"BROKER_DESKTOP_SLOTS exact1024Slots=true actualControllerReceiptRequired=true cpu192MiBUnchanged=true v11LayoutUnchanged=true kernel=mock gpu=false\n";
+    const auto referenceBegin=packet(Op::BeginOpenGl,0,encode(GuestOpenGlDesktopReferenceCapacity));
+    verifyCpuCapacityProfile(referenceBegin,expanded);
+    denied([&]{verifyCpuCapacityProfile(referenceBegin,wide);},EPROTO);
+    Views referenceViews;
+    referenceViews.observe(referenceBegin,packet(Op::BeginOpenGl,0,encode(GuestOpenGlDesktopReferenceProfile)));
+    for(unsigned field=0;field<12;++field) {
+        auto capacity=GuestOpenGlDesktopReferenceCapacity;std::uint32_t words[12]{};
+        std::memcpy(words,&capacity,sizeof words);++words[field];std::memcpy(&capacity,words,sizeof words);
+        const auto malformed=packet(Op::BeginOpenGl,0,encode(capacity));
+        denied([&]{verifyCpuCapacityProfile(malformed,expanded);},EPROTO);
+        Views views;denied([&]{views.observe(malformed,packet(Op::BeginOpenGl,0,encode(GuestOpenGlDesktopReferenceProfile)));},EPROTO);
+    }
+    for(const auto profile:{GuestOpenGlDesktopSlotProfile,GuestOpenGlDesktopFenceProfile}) {
+        Views views;denied([&]{views.observe(referenceBegin,packet(Op::BeginOpenGl,0,encode(profile)));},EPROTO);
+    }
+    std::cout<<"BROKER_REFERENCE_PROFILE exact13=true actualCpuAndFenceReceiptsRequired=true olderProfilesUnchanged=true kernel=mock gpu=false\n";
     std::cout<<"BROKER_LARGE_MAP exact1GiB=true fixed40ByteReceipt=true malformedRejected=true oldProfilesUnchanged=true kernel=mock gpu=false\n";
     std::cout<<"BROKER_SPARSE_CAPACITY exact512Slots=true oldProfileRejected=true oldKernelRejected=true kernel=mock gpu=false\n";
     std::cout<<"BROKER_CPU_CAPACITY exact192MiB=true ownKernelQuery=true missingAndMalformedRejected=true legacyUnchanged=true kernel=mock gpu=false\n";

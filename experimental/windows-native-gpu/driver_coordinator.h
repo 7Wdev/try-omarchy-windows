@@ -40,6 +40,8 @@ struct Info {
 static_assert(sizeof(Frame)==32 && offsetof(Frame,sequence)==8 && offsetof(Frame,reserved)==24,"Coordinator framing");
 static_assert(sizeof(Registration)==8 && sizeof(Alias)==32 && sizeof(Reference)==16 && sizeof(Initialization)==80 && sizeof(Info)==176,"Coordinator control payloads");
 constexpr std::size_t MaxPacket=actors::MaxEnvelopeBytes;
+static_assert(MaxCoordinatedSharedReferences==actors::MaxActors*MaxSharedResourceHandles &&
+              MaxCoordinatedSharedReferences==actors::MaxActors*MaxSharedSyncHandles,"Fixed v5 group and per-actor reference bounds");
 inline bool validInfo(const Info& value) {
     return validCoordinatedAgreement(value.capacity,value.objects) && validCoordinatedPresentationProfile(value.gl) &&
         value.gl.version==value.capacity.mapping.aperture.version &&

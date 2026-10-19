@@ -1,5 +1,9 @@
 # 4K Omarchy wallpaper and readable NVIDIA application
 
+Historical checkpoint: the later [reference and capture-memory fixes](LIVE-OMARCHY-4K-REFERENCE-FIX.md)
+resolve the admission failure described here and repeat the clean-child fixture
+in two fresh guests. The original results and failures below retain their scope.
+
 Updated 2026-10-19. Two fresh QEMU/WHPX guests now capture the shipped Omarchy
 wallpaper, Quickshell bar and readable Alacritty terminal together in a
 **3840×2160 NVIDIA-composed framebuffer**. Hyprland, Quickshell and Alacritty
