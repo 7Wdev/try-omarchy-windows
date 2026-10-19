@@ -9,7 +9,7 @@
 static void require(bool value) { if(!value) throw std::runtime_error("Diagnostic tile extent or stitching control"); }
 int main() {
     using namespace driver_shared;
-    for(const auto dimensions:{std::pair<unsigned,unsigned>{1,1},{130,73},{640,360},{3840,2160},{4096,4096}}) {
+    for(const auto& dimensions:{std::pair<unsigned,unsigned>{1,1},{130,73},{640,360},{3840,2160},{4096,4096}}) {
         const auto width=dimensions.first,height=dimensions.second,pitch=(width*4+255)&~255u;
         AuditTilePlan plan;require(planAuditTiles(width,height,pitch,plan));
         require(plan.fullBytes==std::uint64_t(height)*pitch && plan.tileBytes<=4u*1024*1024);
@@ -35,7 +35,7 @@ int main() {
         require(!plan.at(UINT32_MAX,top,rows) && !top && !rows);
         if(width==3840) require(plan.count==9 && plan.tileBytes==3932160 && plan.at(8,top,rows) && top==2048 && rows==112);
     }
-    for(const auto invalid:{std::pair<unsigned,unsigned>{0,1},{1,0},{4097,1},{1,4097},{UINT32_MAX,UINT32_MAX}}) {
+    for(const auto& invalid:{std::pair<unsigned,unsigned>{0,1},{1,0},{4097,1},{1,4097},{UINT32_MAX,UINT32_MAX}}) {
         AuditTilePlan plan;require(!planAuditTiles(invalid.first,invalid.second,16384,plan) && !plan.count);
     }
     for(const auto pitch:{0u,255u,257u,15359u,16385u,UINT32_MAX}) {
