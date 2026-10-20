@@ -66,6 +66,17 @@ hidden and no physical scanout claim is made.
 
 ## QEMU preparation and unchanged input
 
+The subsequent **shared-context mode passes twice (runs 8–9)**. Named texture
+and semaphore imports happen in a distinct OpenGL 4.5 core context shared with
+the existing SDL root. The non-shareable FBO, GPU wait, complete source/window
+readbacks, blit and consumer signal run in that root context. Every pixel and
+both fence directions pass; peak reported usage is 157,892,608 bytes. A fresh
+single-context compatibility control also passes (run 10). The original two
+runs, source snapshot and auditor remain unchanged.
+[Separate shared-context evidence](evidence/SDL-SHARED-CONTEXT-2026-10-20.json)
+retains its own build receipt and complete-buffer references. **Cross-process
+import, actual QEMU scanout and physical display/input remain unverified.**
+
 A separate source worktree at the locked QEMU revision passes application of
 the lab patches followed by all **24 unchanged official runtime patches**.
 The existing upstream pointer, cursor, keyboard-hook and scanout controls all

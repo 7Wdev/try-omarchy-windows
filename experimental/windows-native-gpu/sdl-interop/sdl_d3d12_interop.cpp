@@ -56,7 +56,7 @@ struct ModuleReference {
 };
 struct Sdl {
     HMODULE module=nullptr;ModuleReference moduleOwner{module};
-    SDL_Window* window=nullptr;void* context=nullptr;bool started=false;
+    SDL_Window* window=nullptr;void* context=nullptr;void* importContext=nullptr;bool started=false;
     Sdl(const Sdl&)=delete;
     Sdl& operator=(const Sdl&)=delete;
     int (__cdecl *init)(unsigned)=nullptr;
@@ -68,6 +68,7 @@ struct Sdl {
     void* (__cdecl *createContext)(SDL_Window*)=nullptr;
     void (__cdecl *deleteContext)(void*)=nullptr;
     int (__cdecl *makeCurrent)(SDL_Window*,void*)=nullptr;
+    int (__cdecl *setAttribute)(int,int)=nullptr;
     void* (__cdecl *getProc)(const char*)=nullptr;
     void (__cdecl *swap)(SDL_Window*)=nullptr;
     int (__cdecl *swapInterval)(int)=nullptr;
@@ -83,6 +84,7 @@ struct Sdl {
         createContext=symbol<decltype(createContext)>("SDL_GL_CreateContext");
         deleteContext=symbol<decltype(deleteContext)>("SDL_GL_DeleteContext");
         makeCurrent=symbol<decltype(makeCurrent)>("SDL_GL_MakeCurrent");getProc=symbol<decltype(getProc)>("SDL_GL_GetProcAddress");
+        setAttribute=symbol<decltype(setAttribute)>("SDL_GL_SetAttribute");
         swap=symbol<decltype(swap)>("SDL_GL_SwapWindow");swapInterval=symbol<decltype(swapInterval)>("SDL_GL_SetSwapInterval");
         drawableSize=symbol<decltype(drawableSize)>("SDL_GL_GetDrawableSize");
     }
@@ -99,13 +101,28 @@ struct Sdl {
         require(makeCurrent(window,context)==0,"Cannot activate SDL OpenGL context");
         require(swapInterval(0)==0,"Cannot set the SDL swap interval");
     }
+    void openSharedImportContext() {
+        // SDL_GLattr values from the pinned SDL 2.32.10 ABI. Mirror QEMU's
+        // shared core-context creation while leaving its root context intact.
+        require(makeCurrent(window,context)==0,"Cannot activate the SDL root context");
+        require(setAttribute(22,1)==0 && setAttribute(21,1)==0 &&
+                setAttribute(17,4)==0 && setAttribute(18,5)==0,"Cannot configure the shared SDL context");
+        importContext=createContext(window);
+        require(importContext!=nullptr && importContext!=context,"Cannot create a distinct shared import context");
+        require(makeCurrent(window,importContext)==0,"Cannot activate the shared import context");
+    }
+    void activateRoot() {
+        require(makeCurrent(window,context)==0,"Cannot restore the SDL root context");
+    }
     void close() {
+        if(importContext) { deleteContext(importContext);importContext=nullptr; }
         if(context) { deleteContext(context);context=nullptr; }
         if(window) { destroy(window);window=nullptr; }
         if(started) { quit();started=false; }
         if(module) { require(FreeLibrary(module)!=FALSE,"SDL module reference not released");module=nullptr; }
     }
     ~Sdl() {
+        if(importContext && deleteContext) deleteContext(importContext);
         if(context && deleteContext) deleteContext(context);
         if(window && destroy) destroy(window);
         if(started && quit) quit();
@@ -216,13 +233,24 @@ static void save(const std::filesystem::path& directory,const wchar_t* prefix,un
     out.write(reinterpret_cast<const char*>(bytes.data()),static_cast<std::streamsize>(bytes.size()));
     out.close();require(!out.fail(),"Incomplete diagnostic pixel write");
 }
-static void run(const wchar_t* dll,const std::filesystem::path& directory,bool capabilitiesOnly) {
+static void run(const wchar_t* dll,const std::filesystem::path& directory,bool capabilitiesOnly,bool sharedContexts) {
     Sdl s(dll);s.open();
     const auto vendor=reinterpret_cast<const char*>(glGetString(GL_VENDOR));
     const auto renderer=reinterpret_cast<const char*>(glGetString(GL_RENDERER));
     const auto version=reinterpret_cast<const char*>(glGetString(GL_VERSION));
     require(vendor && renderer && version && std::strstr(vendor,"NVIDIA"),"OpenGL context is not on NVIDIA");
     std::cout<<"{\"sdlGlContext\":true,\"vendor\":"<<quote(vendor)<<",\"renderer\":"<<quote(renderer)<<",\"version\":"<<quote(version)<<"}\n";
+    if(sharedContexts) {
+        s.openSharedImportContext();
+        const auto importVendor=reinterpret_cast<const char*>(glGetString(GL_VENDOR));
+        const auto importRenderer=reinterpret_cast<const char*>(glGetString(GL_RENDERER));
+        const auto importVersion=reinterpret_cast<const char*>(glGetString(GL_VERSION));
+        require(importVendor && importRenderer && importVersion &&
+                !std::strcmp(vendor,importVendor) && !std::strcmp(renderer,importRenderer),
+                "Shared import context uses a different GPU");
+        std::cout<<"{\"sdlGlSharedImportContext\":true,\"distinctContexts\":true,\"vendor\":"<<quote(importVendor)
+            <<",\"renderer\":"<<quote(importRenderer)<<",\"version\":"<<quote(importVersion)<<"}\n";
+    }
     Gl g(s);
     for(const auto name:{"GL_EXT_memory_object","GL_EXT_memory_object_win32","GL_EXT_semaphore","GL_EXT_semaphore_win32"})
         require(g.extension(name),"Required external-memory/fence extension is not advertised");
@@ -278,6 +306,15 @@ static void run(const wchar_t* dll,const std::filesystem::path& directory,bool c
     g.importSemaphoreName(producerSemaphore,GL_HANDLE_TYPE_D3D12_FENCE_EXT,producerName.c_str());
     g.importSemaphoreName(consumerSemaphore,GL_HANDLE_TYPE_D3D12_FENCE_EXT,consumerName.c_str());glCheck("Named D3D12 fence imports");
     memoryHandle.close();producerHandle.close();consumerHandle.close();
+    if(sharedContexts) {
+        // The texture, memory and semaphores are shareable. FBOs are not:
+        // create and consume the scanout FBO only in the SDL root context.
+        glFlush();glCheck("Publish imported GL objects to the shared root");
+        s.activateRoot();
+        std::array<unsigned char,8> rootLuid{};g.unsignedBytes(GL_DEVICE_LUID_EXT,rootLuid.data());
+        require(rootLuid==luid,"SDL root and import contexts have different adapter LUIDs");
+        glCheck("Root adapter LUID after shared import");
+    }
     g.genFramebuffers(1,&framebuffer);g.bindFramebuffer(GL_READ_FRAMEBUFFER,framebuffer);
     g.attachTexture(GL_READ_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,sharedTexture,0);
     require(g.framebufferStatus(GL_READ_FRAMEBUFFER)==GL_FRAMEBUFFER_COMPLETE,"Imported texture framebuffer is incomplete");glCheck("Imported framebuffer");
@@ -293,7 +330,7 @@ static void run(const wchar_t* dll,const std::filesystem::path& directory,bool c
     require(drawableWidth>0 && drawableHeight>0 && drawableWidth<=4096 && drawableHeight<=4096,"Invalid SDL drawable extent");
     std::cout<<"{\"sdlD3D12ObjectsOpened\":true,\"sourceWidth\":"<<Width<<",\"sourceHeight\":"<<Height
         <<",\"windowWidth\":"<<drawableWidth<<",\"windowHeight\":"<<drawableHeight<<",\"originalNtHandlesClosed\":true,"
-        "\"namedObjects\":true,\"independentFences\":true}\n";
+        "\"namedObjects\":true,\"independentFences\":true,\"sharedImportContext\":"<<(sharedContexts?"true":"false")<<"}\n";
     const GLenum layout=GL_LAYOUT_GENERAL_EXT;
     for(unsigned frame=1;frame<=2;++frame) {
         check(allocator->Reset(),"Cannot reset retired allocator");check(commands->Reset(allocator.Get(),nullptr),"Cannot reset retired command list");
@@ -344,14 +381,17 @@ static void run(const wchar_t* dll,const std::filesystem::path& directory,bool c
     std::cout<<"{\"sdlD3D12InteropComplete\":true,\"frames\":2,\"sharedHandlesClosed\":3,\"sameAdapterLuid\":true,"
         "\"namedObjects\":true,\"independentFences\":true,"
         "\"gpuOnlyTransfer\":true,\"glObjectsReleased\":true,\"d3dObjectsReleased\":true,\"sdlClosed\":true,"
-        "\"qemuFrontendVerified\":false,\"guestFrameVerified\":false,\"nearNativePerformanceVerified\":false}\n";
+        "\"qemuFrontendVerified\":false,\"guestFrameVerified\":false,\"nearNativePerformanceVerified\":false,"
+        "\"sharedImportContext\":"<<(sharedContexts?"true":"false")<<"}\n";
 }
 int wmain(int argc,wchar_t** argv) {
     try {
-        require(argc==3 || (argc==4 && !std::wcscmp(argv[3],L"--capabilities-only")),"Usage: probe SDL2.dll fresh-output-directory [--capabilities-only]");
+        const bool capabilitiesOnly=argc==4 && !std::wcscmp(argv[3],L"--capabilities-only");
+        const bool sharedContexts=argc==4 && !std::wcscmp(argv[3],L"--shared-contexts");
+        require(argc==3 || capabilitiesOnly || sharedContexts,"Usage: probe SDL2.dll fresh-output-directory [--capabilities-only|--shared-contexts]");
         const std::filesystem::path directory(argv[2]);require(directory.is_absolute(),"Output directory must be absolute");
         require(CreateDirectoryW(directory.c_str(),nullptr)!=FALSE,"Use a fresh output directory");
-        std::cout.setf(std::ios::unitbuf);run(argv[1],directory,argc==4);return 0;
+        std::cout.setf(std::ios::unitbuf);run(argv[1],directory,capabilitiesOnly,sharedContexts);return 0;
     } catch(const std::exception& error) {
         std::cerr<<"{\"sdlD3D12InteropRejected\":true,\"error\":"<<quote(error.what())<<"}\n";return 1;
     }
