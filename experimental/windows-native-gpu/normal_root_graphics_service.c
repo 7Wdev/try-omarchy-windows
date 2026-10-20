@@ -53,7 +53,7 @@ static int uwsm_environment(const char* variables[][2],size_t count) {
         "WDDM_BRIDGE_DESKTOP_4K_PROBE","WDDM_BRIDGE_DESKTOP_4K_CPU_PROBE","WDDM_BRIDGE_DESKTOP_SPARSE_PROBE",
         "WDDM_BRIDGE_DESKTOP_PRESENTATION_PROBE","WDDM_BRIDGE_ACTOR_PROFILE","QSG_RHI_BACKEND","QSG_INFO",
         "WDDM_BRIDGE_DESKTOP_CONTENT","WDDM_BRIDGE_DESKTOP_RETIREMENT","WDDM_BRIDGE_DESKTOP_LARGE_MAP_PROBE",
-        "WAYLAND_DEBUG","WDDM_BRIDGE_BROKER_SOCKET","XDG_RUNTIME_DIR","WDDM_BRIDGE_UWSM_PROBE"};
+        "WAYLAND_DEBUG","WDDM_BRIDGE_BROKER_SOCKET","XDG_RUNTIME_DIR","WDDM_BRIDGE_UWSM_PROBE","WDDM_BRIDGE_NATIVE_INPUT"};
     for(size_t index=0;index<sizeof names/sizeof names[0];++index)
         if(uwsm_environment_value(output,names[index],getenv(names[index]))) result=-1;
     // EGL_PLATFORM was deliberately unset for coordinated Wayland clients.
@@ -192,7 +192,7 @@ int main(void) {
         if(!setup) {
             if(setgroups(0,NULL) || setgid(gid) || setuid(uid) || setenv("HOME","/home/omarchy",1)) _exit(126);
             execl("/bin/bash","bash","-eu","-c",
-                "umask 077; current=$HOME/.local/state/omarchy/current; mkdir -p \"$current\"; "
+                "umask 077; current=$HOME/.local/state/omarchy/current; mkdir -p \"$current\" \"$HOME/.cache/hyprland\"; "
                 "test -f /usr/share/omarchy/themes/tokyo-night/backgrounds/0-winding-road.jpg; "
                 "ln -sfn /usr/share/omarchy/themes/tokyo-night \"$current/theme\"; "
                 "printf 'tokyo-night\\n' > \"$current/theme.name\"; "
@@ -206,7 +206,7 @@ int main(void) {
     for(unsigned tick=0;tick<200 && access(port,F_OK);++tick) usleep(50000);
     if(chmod(port,0600)) { perror("native port permissions");return 125; }
     int result=125;
-    pid_t shell_trace=-1,session_status=-1;
+    pid_t shell_trace=-1,session_status=-1,compositor_pid=-1;
     const int aperture=broker_peer_start() ? -1 : kernel_aperture_start();
     const int render=aperture>0 ? native_render_start() : -1;
     const pid_t broker=aperture>0 && render>0 ? graphics_broker_start_as(port,uid,gid) : -1;
@@ -252,6 +252,7 @@ int main(void) {
             }
             if(desktop && !access("/opt/wddm-root/desktop-content-probe",R_OK) && setenv("WDDM_BRIDGE_DESKTOP_CONTENT","1",1)) _exit(125);
             if(desktop && !access("/opt/wddm-root/desktop-retirement-probe",R_OK) && setenv("WDDM_BRIDGE_DESKTOP_RETIREMENT","1",1)) _exit(125);
+            if(desktop && !access("/opt/wddm-root/native-input-probe",R_OK) && setenv("WDDM_BRIDGE_NATIVE_INPUT","1",1)) _exit(125);
             if(desktop && !access("/opt/wddm-root/desktop-protocol-trace",R_OK) && setenv("WAYLAND_DEBUG","1",1)) _exit(125);
             if(desktop && !access("/opt/wddm-root/desktop-large-map-probe",R_OK) &&
                setenv("WDDM_BRIDGE_DESKTOP_LARGE_MAP_PROBE","1",1)) _exit(125);
@@ -302,6 +303,7 @@ int main(void) {
                 const int registered=process>=0 ? graphics_primary_register(primary,process) : -1;
                 if(process>=0) close(process);
                 if(registered) { kill(child,SIGKILL);waitpid(child,NULL,0);goto cleanup; }
+                compositor_pid=primary;
                 if(uwsm) {
                     session_status=fork();
                     if(!session_status) {
@@ -340,6 +342,16 @@ int main(void) {
         }
     }
 cleanup:
+    if(uwsm && compositor_pid>0) {
+        char path[160];struct stat metadata;
+        const int bytes=snprintf(path,sizeof path,"/home/omarchy/.cache/hyprland/hyprlandCrashReport%ld.txt",(long)compositor_pid);
+        if(bytes>0 && (size_t)bytes<sizeof path && !lstat(path,&metadata) && S_ISREG(metadata.st_mode) &&
+            metadata.st_uid==uid && metadata.st_nlink==1 && metadata.st_size>0) {
+            const int trace=open("/dev/console",O_WRONLY|O_NOCTTY|O_CLOEXEC);
+            if(trace>=0) { compositor_crash_report(trace,compositor_pid,(uid_t)uid);close(trace); }
+            result=125;
+        }
+    }
     if(shell_trace>0) { kill(shell_trace,SIGTERM);waitpid(shell_trace,NULL,0); }
     if(session_status>0) {
         if(waitpid(session_status,NULL,WNOHANG)!=session_status) { kill(session_status,SIGTERM);waitpid(session_status,NULL,0); }

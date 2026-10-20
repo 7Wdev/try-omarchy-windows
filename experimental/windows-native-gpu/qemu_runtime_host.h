@@ -223,6 +223,10 @@ public:
             L"socket,id=wddm,host=127.0.0.1,port=" + std::to_wstring(driverPort), L"-device",
             L"virtserialport,bus=bridge-serial.0,chardev=wddm,name=org.7wdev.wddm"};
         args.insert(args.end(),rootArguments.begin(),rootArguments.end());
+        if(readonlyRoot) {
+            args.insert(args.end(),{L"-device",L"virtio-keyboard-pci,id=wddm-keyboard",
+                                    L"-device",L"virtio-tablet-pci,id=wddm-pointer"});
+        }
         if (allocationsEnabled) {
             args.push_back(L"-device");
             args.push_back(L"wddm-allocation-hub,id=wddm-allocations,source-process=" +

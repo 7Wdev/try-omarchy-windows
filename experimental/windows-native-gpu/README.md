@@ -1,5 +1,12 @@
 # Native Windows GPU experiment
 
+The [native input discovery checkpoint](../../docs/LIVE-UWSM-NATIVE-INPUT-DISCOVERY.md)
+passes two fresh UWSM guests with the actual virtio keyboard and tablet enumerated
+alongside five NVIDIA application cycles, twelve 4K handoffs and complete cleanup.
+It reuses the existing logind seat and defers initial input events until the
+compositor event loop starts. Typed input, Windows pointer delivery and launcher
+integration remain unverified.
+
 The [guarded staging and terminal cleanup checkpoint](../../docs/LIVE-UWSM-DEMAND-STAGING.md)
 passes two fresh UWSM/PAM guests, each with five GPU application cycles and twelve
 4K handoffs. Staging textures are allocated on demand without reducing ring

@@ -1,6 +1,7 @@
 // Private, bounded actual-compositor startup. No Windows display acceptance.
 #define _GNU_SOURCE
 #include <dlfcn.h>
+#include <link.h>
 #include <errno.h>
 #include <pthread.h>
 #include <signal.h>
@@ -171,6 +172,16 @@ static void scene_hex_receipt(const char* label,const char* data,size_t bytes) {
     line[prefix+bytes*2]='\n';
     const size_t count=(size_t)prefix+bytes*2+1;
     if(write(STDOUT_FILENO,line,count)!=(ssize_t)count) atomic_store(&queue_failed,1);
+}
+void wddm_bridge_native_input_log(const char* text,uint32_t bytes) {
+    if(text && bytes && bytes<=4096)
+        scene_hex_receipt("OMARCHY_NATIVE_INPUT_BACKEND_LOG_HEX",text,bytes);
+}
+static int native_input_library(struct dl_phdr_info* info,size_t bytes,void* unused) {
+    (void)bytes;(void)unused;
+    if(info->dlpi_name && strstr(info->dlpi_name,"libaquamarine"))
+        scene_hex_receipt("OMARCHY_NATIVE_INPUT_LIBRARY_HEX",info->dlpi_name,strlen(info->dlpi_name));
+    return 0;
 }
 static void scene_diagnostics(void) {
     const char* paths[]={"/tmp/foot-scene.log","/tmp/scene-font-sans","/tmp/scene-font-mono","/tmp/desktop-scene-ready"};
@@ -400,6 +411,12 @@ static void* bounded_control(void* unused) {
         printf("HYPRLAND_STARTUP_OUTPUT createExit=%d windowsPresentation=false\n",created);
 #ifdef WDDM_BRIDGE_COMPOSITOR_HOST_PRESENT
 #ifdef WDDM_BRIDGE_COMPOSITOR_HOST_SCENE
+        if(getenv("WDDM_BRIDGE_NATIVE_INPUT")) {
+            dl_iterate_phdr(native_input_library,NULL);
+            char* const devices[]={"/usr/bin/hyprctl","-j","devices",NULL};
+            if(run_ctl(devices)) atomic_store(&queue_failed,1);
+            else scene_hex_receipt("OMARCHY_NATIVE_INPUT_DEVICES_HEX",last_control_reply,strlen(last_control_reply));
+        }
         if(created || prepare_scene()) atomic_store(&queue_failed,1);
 #endif
         for(unsigned tick=0;tick<HYPRLAND_QUEUE_FRAMES*2+100 && atomic_load(&queued_frames)<HYPRLAND_QUEUE_FRAMES && !atomic_load(&queue_failed);++tick) {
@@ -411,6 +428,10 @@ static void* bounded_control(void* unused) {
             snprintf(notification,sizeof notification,"GPU composition probe %u; Quickshell GPU integration pending",tick);
             if(getenv("WDDM_BRIDGE_ACTOR_PROFILE")) snprintf(notification,sizeof notification,"4K GPU desktop composition probe %u",tick);
             char* const lua_repaint[]={"/usr/bin/hyprctl","notify","-1","100","rgb(4477aa)",notification,NULL};
+            if(getenv("WDDM_BRIDGE_NATIVE_INPUT")) {
+                char* const dismiss[]={"/usr/bin/hyprctl","dismissnotify","-1",NULL};
+                if(run_ctl(dismiss)) { atomic_store(&queue_failed,1);break; }
+            }
             char* const* repaint=getenv("WDDM_BRIDGE_NORMAL_DESKTOP_PROBE") ? lua_repaint : legacy_repaint;
             if (run_ctl(repaint)) { atomic_store(&queue_failed,1); break; }
             usleep(50000);

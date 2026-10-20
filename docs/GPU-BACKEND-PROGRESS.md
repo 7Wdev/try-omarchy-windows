@@ -1,10 +1,10 @@
 # NVIDIA backend progress
 
-Updated **2026-10-19**. This page tracks the experimental QEMU/WHPX Windows-native
+Updated **2026-10-20**. This page tracks the experimental QEMU/WHPX Windows-native
 NVIDIA backend. The released Try Omarchy launcher continues using the upstream
 graphics runtime.
 
-![Two fresh UWSM 4K NVIDIA captures pass with complete terminal cleanup; backend stages 4/8; desktop product gates 0/4](images/gpu-backend-progress-terminal-staging-2026-10-19.svg)
+![Two fresh 4K NVIDIA captures with guest keyboard/tablet discovery; backend stages 4/8; desktop product gates 0/4](images/gpu-backend-progress-input-discovery-2026-10-20.svg)
 
 ## What is verified now?
 
@@ -19,9 +19,11 @@ Twelve GPU handoffs, complete first/last
 backbuffer audits, natural shutdown and native cleanup pass per run.
 Demand-allocated staging avoids preparing about 64 MiB at startup while retaining all
 three ring slots. Both runs stay below the unchanged 1 GiB reported-GPU-usage guard.
+Hyprland also enumerates QEMU's keyboard and tablet through the guest input seat.
+Typed input and pointer delivery from the Windows window remain unverified.
 This bounded repeat does not establish long-run memory stability.
 
-[Actual UWSM image, reproducible evidence and retained failures](https://github.com/7Wdev/try-omarchy-windows/blob/b2c3891722520768defffa7b7f6f2278b06d149a/docs/LIVE-UWSM-DEMAND-STAGING.md)
+[Actual UWSM image, reproducible evidence and retained failures](LIVE-UWSM-NATIVE-INPUT-DISCOVERY.md)
 bind every application and the shell to authenticated NVIDIA renderers, real
 resource FDs and independent recipient NT references. The
 [earlier CPU-scan removal checkpoint](https://github.com/7Wdev/try-omarchy-windows/blob/cb505099ef461603c45ccc8b322031546966ee36/docs/LIVE-OMARCHY-GPU-LIFECYCLES.md)

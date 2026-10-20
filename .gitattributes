@@ -20,6 +20,15 @@ experimental/windows-native-gpu/compositor_presenter.h text eol=lf
 experimental/windows-native-gpu/driver_coordinator.h text eol=lf
 experimental/windows-native-gpu/driver_coordinator_test.cpp text eol=lf
 experimental/windows-native-gpu/guest_coordinator.h text eol=lf
+experimental/windows-native-gpu/qemu_runtime_host.h text eol=lf
+experimental/windows-native-gpu/apply_aquamarine_native_input_patch.py text eol=lf
+experimental/windows-native-gpu/test_aquamarine_input_patch.py text eol=lf
+experimental/windows-native-gpu/aquamarine-native-input.lock.json text eol=lf
+# Preserve the original byte-pinned build receipt, including its CRLF newlines.
+experimental/windows-native-gpu/aquamarine-native-capture.lock.json -text whitespace=cr-at-eol
+experimental/windows-native-gpu/verify_uwsm_native_input_devices.py text eol=lf
+experimental/windows-native-gpu/test_uwsm_native_input_devices_milestone.py text eol=lf
+docs/evidence/OMARCHY-4K-NATIVE-INPUT-DISCOVERY-2026-10-20.json text eol=lf
 experimental/windows-native-gpu/verify_uwsm_demand_staging.py text eol=lf
 experimental/windows-native-gpu/test_uwsm_demand_staging_milestone.py text eol=lf
 docs/evidence/OMARCHY-4K-DEMAND-STAGING-2026-10-19.json text eol=lf
