@@ -76,6 +76,11 @@ the modifications to its existing files retain QEMU's GPL terms; the new
 independently written backend and helper scripts use the project MIT license.
 Bundled DLLs retain their own package licenses.
 
+CI also keeps a bounded compiler cache per build variant. Compiler content and
+compilation inputs are checked by ccache; runtime, input and memory controls
+still run. Cache statistics accompany successful artifacts. A local MSYS2 build
+can opt in with QEMU_COMPILER_CACHE=1 after installing the UCRT64 ccache package.
+
 This fixture has no balloon device, hotplug, confidential memory or migration.
 Adding it to a general VM requires a defined memory layout and allocation
 lifetime contract before guests can register RAM ranges with Windows. A

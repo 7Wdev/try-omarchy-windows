@@ -44,10 +44,23 @@ if [[ "$sdl_candidate" == 1 ]]; then
 fi
 mkdir "$output/build"
 cd "$output/build"
+compiler_options=()
+if [[ "${QEMU_COMPILER_CACHE:-0}" == 1 ]]; then
+    export CCACHE_DIR="$root/.qemu-ccache/${QEMU_CACHE_VARIANT:-local}"
+    export CCACHE_BASEDIR="$root"
+    export CCACHE_COMPILERCHECK=content
+    ccache --max-size=1G
+    ccache --zero-stats
+    compiler_options=(--cc="ccache gcc")
+fi
 ../source/configure --target-list=x86_64-softmmu --enable-whpx --enable-sdl \
+    "${compiler_options[@]}" \
     --disable-gtk --disable-vnc "$gl_option" --disable-virglrenderer \
     --disable-tools --disable-guest-agent --disable-docs --disable-slirp --disable-libusb
 ninja -j4 qemu-system-x86_64.exe
+if [[ "${QEMU_COMPILER_CACHE:-0}" == 1 ]]; then
+    ccache --show-stats | tee "$output/ccache-stats.txt"
+fi
 mkdir -p "$output/bin" "$output/share"
 cp qemu-system-x86_64.exe "$output/bin/"
 cp -r "$output/source/pc-bios" "$output/share/qemu"
