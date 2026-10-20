@@ -37,6 +37,10 @@ experimental/windows-native-gpu/test_sustained_uwsm_resize_milestone.py text eol
 experimental/windows-native-gpu/sdl-interop/sdl_d3d12_interop.cpp text eol=lf
 experimental/windows-native-gpu/sdl-interop/build.ps1 text eol=lf
 experimental/windows-native-gpu/sdl-interop/gl_external_api.h text eol=lf
+experimental/windows-native-gpu/sdl-relay-producer/d3d12_named_producer.cpp text eol=lf
+experimental/windows-native-gpu/sdl-relay-producer/build.ps1 text eol=lf
+experimental/windows-native-gpu/sdl-relay-producer/accept_qemu.py text eol=lf
+experimental/windows-native-gpu/sdl-relay-producer/test_cli.py text eol=lf
 experimental/windows-native-gpu/verify_sdl_interop.py text eol=lf
 experimental/windows-native-gpu/test_sdl_interop_milestone.py text eol=lf
 experimental/windows-native-gpu/verify_sdl_shared_context.py text eol=lf
