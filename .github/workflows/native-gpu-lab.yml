@@ -100,6 +100,7 @@ jobs:
           cc -std=c11 -O2 -Wall -Wextra -Werror -DWDDM_BRIDGE_COMPOSITOR_HOST_PRESENT=1 -shared -fPIC experimental/windows-native-gpu/hyprland_startup_probe.c -ldl -pthread -o /tmp/hyprland-present-probe.so
           cc -std=c11 -O2 -Wall -Wextra -Werror -DWDDM_BRIDGE_COMPOSITOR_HOST_PRESENT=1 -DWDDM_BRIDGE_COMPOSITOR_HOST_SCENE=1 -shared -fPIC experimental/windows-native-gpu/hyprland_startup_probe.c -ldl -pthread -o /tmp/hyprland-scene-probe.so
           cc -std=c11 -O2 -Wall -Wextra -Werror -DWDDM_BRIDGE_COMPOSITOR_HOST_PRESENT=1 -DWDDM_BRIDGE_COMPOSITOR_HOST_SCENE=1 -DHYPRLAND_QUEUE_FRAMES=300 -shared -fPIC experimental/windows-native-gpu/hyprland_startup_probe.c -ldl -pthread -o /tmp/hyprland-scene-300-probe.so
+          cc -std=c11 -O2 -Wall -Wextra -Werror -DWDDM_BRIDGE_COMPOSITOR_HOST_PRESENT=1 -DWDDM_BRIDGE_COMPOSITOR_HOST_SCENE=1 -DWDDM_BRIDGE_DESKTOP_RESIZE_PROBE=1 -DHYPRLAND_QUEUE_FRAMES=300 -shared -fPIC experimental/windows-native-gpu/hyprland_startup_probe.c -ldl -pthread -o /tmp/hyprland-resize-300-probe.so
           c++ -std=c++17 -O2 -Wall -Wextra -Werror -pthread experimental/windows-native-gpu/atomic_line_log_test.cpp -o /tmp/atomic-line-log-test
           /tmp/atomic-line-log-test
       - run: |

@@ -1,5 +1,19 @@
 # Native Windows GPU experiment
 
+**Product integration priority:** preserve the official launcher's keyboard,
+cursor and reserved-key logic and QEMU SDL input path. Connect the graphics
+backend to that frontend. The fixed QMP test and separate native window remain
+diagnostics. [Verified upstream source map and integration boundary](../../docs/UPSTREAM-INPUT-GRAPHICS-INTEGRATION.md).
+
+Two fresh guests now pass **300 actual 4K NVIDIA handoffs with real application
+resizing**. The same terminal grows to 1440×960 and 1600×1000, then returns to
+1200×800 while handoffs continue. Complete first/last GPU buffers independently
+verify the enlarged panel and restored wallpaper; input response and live cleanup
+also pass. Two earlier 300-frame input-response baselines remain separate.
+See [actual images, four-run evidence and scope](../../docs/LIVE-UWSM-SUSTAINED-RESIZE.md).
+Hardware staging reallocation during rendering, physical Windows input and
+normal launcher/continuous-display acceptance remain open.
+
 Two fresh 4K NVIDIA guests pass the complete Alacritty PTY input-response audit
 after safe reclamation of idle staging textures under residency pressure. Each
 actually releases 31.875 MiB after both copy fences retire, preserves three-slot

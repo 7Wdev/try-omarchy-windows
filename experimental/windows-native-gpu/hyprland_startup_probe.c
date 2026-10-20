@@ -21,6 +21,9 @@
 #if defined(WDDM_BRIDGE_COMPOSITOR_HOST_SCENE) && !defined(WDDM_BRIDGE_COMPOSITOR_HOST_PRESENT)
 #error Scene diagnostics require queued presentation
 #endif
+#if defined(WDDM_BRIDGE_DESKTOP_RESIZE_PROBE) && !defined(WDDM_BRIDGE_COMPOSITOR_HOST_SCENE)
+#error Application resize diagnostics require the real desktop scene
+#endif
 #ifdef WDDM_BRIDGE_COMPOSITOR_HOST_SCENE
 static _Atomic int scene_ready;
 static _Atomic int input_delivery_required,input_response_ready;
@@ -28,6 +31,12 @@ static char last_control_reply[8192];
 #endif
 #ifdef WDDM_BRIDGE_COMPOSITOR_HOST_PRESENT
 #include "hyprland_queue_probe.h"
+#ifdef WDDM_BRIDGE_DESKTOP_RESIZE_PROBE
+#if HYPRLAND_QUEUE_FRAMES < 200
+#error Application resize diagnostics require at least 200 handoffs
+#endif
+static _Atomic int resize_probe_done;
+#endif
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <sys/un.h>
@@ -58,6 +67,11 @@ int wddm_bridge_compositor_commit(int fd,uint32_t width,uint32_t height,uint32_t
     // real PTY receipt. Keep processing the compositor and input event loops
     // while holding the bounded fixture's remaining GPU handoffs.
     if(atomic_load(&input_delivery_required) && atomic_load(&queued_frames)>=2 && !atomic_load(&input_response_ready)) return 0;
+#ifdef WDDM_BRIDGE_DESKTOP_RESIZE_PROBE
+    // Ordinary handoffs continue during application buffer churn. Hold only
+    // the final audit until the real window has returned to its known layout.
+    if(atomic_load(&queued_frames)>=HYPRLAND_QUEUE_FRAMES-1 && !atomic_load(&resize_probe_done)) return 0;
+#endif
 #endif
     if(frame>=2) return queue_output(fd,width,height,format,stride);
 #endif
@@ -257,6 +271,45 @@ static int visible_gpu_terminal_with_pid(const char* text,pid_t* pid) {
 }
 static int visible_gpu_terminal(const char* text) { return visible_gpu_terminal_with_pid(text,NULL); }
 static pid_t last_gpu_terminal_pid;
+#ifdef WDDM_BRIDGE_DESKTOP_RESIZE_PROBE
+static int resize_gpu_terminal(unsigned phase,unsigned width,unsigned height) {
+    char command[256],label[96],receipt[384];
+    const unsigned before=atomic_load(&queued_frames),committed_before=atomic_load(&compositor_commits);
+    char* const active[]={"/usr/bin/hyprctl","-j","activewindow",NULL};
+    if(run_ctl(active)) return -1;
+    snprintf(label,sizeof label,"OMARCHY_GPU_RESIZE_%u_BEFORE_ACTIVE_HEX",phase);
+    scene_hex_receipt(label,last_control_reply,strlen(last_control_reply));
+    const int bytes=snprintf(command,sizeof command,
+        "hl.dispatch(hl.dsp.window.resize({x=%u,y=%u})); hl.dispatch(hl.dsp.window.center())",width,height);
+    if(bytes<=0 || (size_t)bytes>=sizeof command) return -1;
+    char* const resize[]={"/usr/bin/hyprctl","eval",command,NULL};
+    if(run_ctl(resize)) return -1;
+    for(unsigned tick=0;tick<60;++tick) {
+        if(run_ctl(active)) return -1;
+        const char* size=strstr(last_control_reply,"\"size\"");
+        unsigned actual_width=0,actual_height=0;pid_t pid=0;
+        const unsigned committed=atomic_load(&compositor_commits);
+        if(size && sscanf(size,"\"size\" : [ %u , %u ]",&actual_width,&actual_height)==2 &&
+           actual_width==width && actual_height==height &&
+           visible_gpu_terminal_with_pid(last_control_reply,&pid) && pid==last_gpu_terminal_pid &&
+           committed>=committed_before && committed-committed_before>=3) {
+            snprintf(label,sizeof label,"OMARCHY_GPU_RESIZE_%u_AFTER_ACTIVE_HEX",phase);
+            scene_hex_receipt(label,last_control_reply,strlen(last_control_reply));
+            const int count=snprintf(receipt,sizeof receipt,
+                "OMARCHY_GPU_RESIZE phase=%u pid=%d width=%u height=%u beforeQueued=%u afterQueued=%u beforeCommit=%u observedCommit=%u gpuProof=false\n",
+                phase,pid,width,height,before,atomic_load(&queued_frames),committed_before,committed);
+            return count<=0 || (size_t)count>=sizeof receipt ? -1 : scene_receipt(receipt);
+        }
+        // Compositor callbacks and ordinary GPU handoffs keep running.
+        if(!(tick%5)) {
+            char* const repaint[]={"/usr/bin/hyprctl","notify","-1","100","rgb(4477aa)","Resizing GPU application",NULL};
+            if(run_ctl(repaint)) return -1;
+        }
+        usleep(50000);
+    }
+    return -1;
+}
+#endif
 static int input_delivery_enabled(void) { return !access("/opt/wddm-root/native-input-delivery-probe",R_OK); }
 static int input_delivery_snapshot(const char* phase) {
     char* const active[]={"/usr/bin/hyprctl","-j","activewindow",NULL};
@@ -385,6 +438,9 @@ static int prepare_scene(void) {
             }
         }
         if(scene_receipt("OMARCHY_DESKTOP_PROBE_CAPTURE normalConfig=true shellVerified=false applicationGpuVerified=false\n")) return -1;
+#ifdef WDDM_BRIDGE_DESKTOP_RESIZE_PROBE
+        if(!input_delivery_enabled() || resize_gpu_terminal(1,1440,960)) return -1;
+#endif
         if(input_delivery_enabled() && input_delivery_snapshot("BEFORE")) return -1;
         atomic_store(&scene_ready,1);
         return 0;
@@ -456,6 +512,9 @@ static void* bounded_control(void* unused) {
         }
         if(created || prepare_scene()) atomic_store(&queue_failed,1);
         unsigned response_commit=0;int response_observed=0;
+#ifdef WDDM_BRIDGE_DESKTOP_RESIZE_PROBE
+        unsigned resize_phase=1;
+#endif
 #endif
         for(unsigned tick=0;tick<HYPRLAND_QUEUE_FRAMES*2+100 && atomic_load(&queued_frames)<HYPRLAND_QUEUE_FRAMES && !atomic_load(&queue_failed);++tick) {
 #ifdef WDDM_BRIDGE_COMPOSITOR_HOST_SCENE
@@ -463,6 +522,16 @@ static void* bounded_control(void* unused) {
                 if(input_delivery_result()) { atomic_store(&queue_failed,1);break; }
                 response_commit=atomic_load(&compositor_commits);response_observed=1;
             }
+#ifdef WDDM_BRIDGE_DESKTOP_RESIZE_PROBE
+            if(resize_phase==1 && atomic_load(&queued_frames)>=50) {
+                if(resize_gpu_terminal(2,1600,1000)) { atomic_store(&queue_failed,1);break; }
+                resize_phase=2;
+            }
+            if(resize_phase==2 && atomic_load(&queued_frames)>=150) {
+                if(resize_gpu_terminal(3,1200,800)) { atomic_store(&queue_failed,1);break; }
+                resize_phase=3;atomic_store(&resize_probe_done,1);
+            }
+#endif
 #endif
             char* const legacy_repaint[]={"/usr/bin/hyprctl","keyword","decoration:rounding","0",NULL};
             // A Lua config assignment to an unchanged value does not damage a
@@ -498,6 +567,9 @@ static void* bounded_control(void* unused) {
         printf("HYPRLAND_HOST_QUEUE_END frames=%u target=%u failed=%d\n",atomic_load(&queued_frames),HYPRLAND_QUEUE_FRAMES,atomic_load(&queue_failed));
 #ifdef WDDM_BRIDGE_COMPOSITOR_HOST_SCENE
         if(atomic_load(&input_delivery_required) && !atomic_load(&input_response_ready)) atomic_store(&queue_failed,1);
+#ifdef WDDM_BRIDGE_DESKTOP_RESIZE_PROBE
+        if(!atomic_load(&resize_probe_done)) atomic_store(&queue_failed,1);
+#endif
         if(close_scene()) atomic_store(&queue_failed,1);
 #endif
 #else
