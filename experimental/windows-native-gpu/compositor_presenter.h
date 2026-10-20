@@ -13,6 +13,7 @@
 #include "compositor_capture_wire.h"
 #include "compositor_audit_tiles.h"
 #include "shared_texture_presenter.h"
+#include "input_delivery_diagnostic.h"
 namespace driver_shared {
 class CompositorPresenter {
     using Device = Microsoft::WRL::ComPtr<ID3D12Device>;
@@ -28,6 +29,8 @@ class CompositorPresenter {
     std::array<Slot,3> slots;
     Device device;
     GpuUsageGuard budget;
+    std::shared_ptr<driver_input::Channel> windowInput;
+    bool inputDiagnostic=false;
     bool demandStaging = false;
     unsigned stagingTexturesCreated = 0, stagingTexturesReleased = 0;
     std::uint64_t stagingTextureBytes = 0;
@@ -223,7 +226,7 @@ class CompositorPresenter {
                 Microsoft::WRL::ComPtr<IDXGIFactory4> factory;
                 status=CreateDXGIFactory1(IID_PPV_ARGS(&factory));
                 if (SUCCEEDED(status)) status=window.initialize(factory.Get(),device.Get(),outputQueue.Get(),layout.width,layout.height,
-                    static_cast<DXGI_FORMAT>(driver_bridge::compositorDxgiFormat(layout.format)),true,budget);
+                    static_cast<DXGI_FORMAT>(driver_bridge::compositorDxgiFormat(layout.format)),true,budget,windowInput,inputDiagnostic);
             }
             // Publish the initialization receipt before submit() can allocate
             // another slot on its own thread or publish the first frame.
@@ -238,7 +241,14 @@ class CompositorPresenter {
                 { std::lock_guard<std::mutex> lock(guard);
                   if (!frames.empty()) { frame=frames.front(); frames.pop_front(); have=true; }
                   else if (stopping) break; }
-                if (have) { status=draw(window,frame); if (FAILED(status)) { failure=status; break; } continue; }
+                if (have) {
+                    status=draw(window,frame); if (FAILED(status)) { failure=status; break; }
+                    if(inputDiagnostic && frame.sequence==1) {
+                        if(!windowInput || !driver_input::deliveryDiagnostic(*windowInput)) { failure=E_FAIL;break; }
+                        std::cerr<<"{\"nativeInputDeliveryDiagnosticQueued\":true,\"afterGpuFrame\":1,\"syntheticAtChannel\":true,\"windowsMessagesVerified\":false}\n";
+                    }
+                    continue;
+                }
                 const auto wake=MsgWaitForMultipleObjectsEx(1,&work,1000,QS_ALLINPUT,MWMO_INPUTAVAILABLE);
                 if (wake!=WAIT_OBJECT_0 && wake!=WAIT_OBJECT_0+1 && wake!=WAIT_TIMEOUT) { failure=E_FAIL; break; }
             }
@@ -258,9 +268,11 @@ class CompositorPresenter {
 public:
     CompositorPresenter()=default;
     ~CompositorPresenter() { stop(); }
-    HRESULT initialize(LUID luid,driver_bridge::CompositorCaptureDesc desc,GpuUsageGuard usage = {},bool demand = false) {
+    HRESULT initialize(LUID luid,driver_bridge::CompositorCaptureDesc desc,GpuUsageGuard usage = {},bool demand = false,
+                       std::shared_ptr<driver_input::Channel> input = {},bool diagnostic = false) {
         if (ui.joinable() || !driver_bridge::validCompositorFrame(desc)) return E_INVALIDARG;
-        selected=luid; layout=desc; layout.flags=0; budget=std::move(usage); demandStaging=demand;
+        selected=luid; layout=desc; layout.flags=0; budget=std::move(usage); demandStaging=demand;windowInput=std::move(input);
+        inputDiagnostic=diagnostic;if(inputDiagnostic && !windowInput) return E_INVALIDARG;
         work=CreateEventW(nullptr,FALSE,FALSE,nullptr); if (!work) return HRESULT_FROM_WIN32(GetLastError());
         inputEvent=CreateEventW(nullptr,FALSE,FALSE,nullptr);
         if (!inputEvent) { const auto error=GetLastError(); if (!CloseHandle(work)) ExitProcess(3); work=nullptr; return HRESULT_FROM_WIN32(error); }

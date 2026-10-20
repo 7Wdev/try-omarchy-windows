@@ -9,6 +9,8 @@
 #include "cpu_aperture.h"
 #include "qemu_fence_test.h"
 #include "readonly_rootfs_args.h"
+#include "bounded_input_channel.h"
+#include "tcp_peer_owner.h"
 #include <array>
 #include <memory>
 #include <optional>
@@ -99,6 +101,8 @@ public:
             if (owner.exited() || GetTickCount64() >= deadline) throw std::runtime_error("Owned QEMU QMP unavailable");
             Sleep(20);
         }
+        if(!tcpPeerOwned(socket.value,GetProcessId(owner.handle.value)))
+            throw std::runtime_error("QMP socket peer is not the owned QEMU process");
         const DWORD milliseconds = 5000;
         if (setsockopt(socket.value, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&milliseconds), sizeof milliseconds) ||
             setsockopt(socket.value, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&milliseconds), sizeof milliseconds))
@@ -149,6 +153,7 @@ class Runtime {
     Handle job;
     OwnedProcess process;
     std::unique_ptr<Qmp> qmp;
+    std::shared_ptr<driver_input::Channel> windowInput;
     std::array<std::optional<FenceLease>, driver_bridge::DesktopFenceSlots> leases;
     std::uint32_t fenceSlots = driver_bridge::DefaultFenceSlots;
     std::size_t allocationSlots = driver_bridge::DefaultVendorCpuSlots;
@@ -158,14 +163,17 @@ class Runtime {
     unsigned mapped = 0, mappedTotal = 0, unmappedTotal = 0;
     unsigned fencesReleasedAfterVmExit = 0, allocationsReleasedAfterVmExit = 0, allocationSlotsReleasedAfterVmExit = 0;
     bool stopped = false, failed = false;
+    bool inputDiagnostic = false;
     std::filesystem::path logfile;
 public:
-    Runtime(unsigned short driverPort, const qemu_fence::Paths& paths, bool enableCpu = false, bool cpuStoreTest = false, bool cpuEofTest = false, bool hwQueueEofTest = false, std::size_t cpuSlots = driver_bridge::DefaultVendorCpuSlots, bool syncEofTest = false, bool reservationEofTest = false, bool gpuStateEofTest = false, bool cpuSpanEofTest = false, bool syncNoMaxEofTest = false, bool hwQueueNoBroadcastEofTest = false, bool hwQueueNoBroadcastWaitEofTest = false, std::uint32_t configuredFenceSlots = 0, const char* readonlyRoot = nullptr, bool desktopFences = false)
+    Runtime(unsigned short driverPort, const qemu_fence::Paths& paths, bool enableCpu = false, bool cpuStoreTest = false, bool cpuEofTest = false, bool hwQueueEofTest = false, std::size_t cpuSlots = driver_bridge::DefaultVendorCpuSlots, bool syncEofTest = false, bool reservationEofTest = false, bool gpuStateEofTest = false, bool cpuSpanEofTest = false, bool syncNoMaxEofTest = false, bool hwQueueNoBroadcastEofTest = false, bool hwQueueNoBroadcastWaitEofTest = false, std::uint32_t configuredFenceSlots = 0, const char* readonlyRoot = nullptr, bool desktopFences = false, bool enableWindowInput = false, bool inputSelfTest = false)
         : fenceSlots(configuredFenceSlots ? configuredFenceSlots : cpuSlots >= driver_bridge::ExpandedVendorCpuSlots ? driver_bridge::ExpandedFenceSlots : driver_bridge::DefaultFenceSlots),
           allocationSlots(cpuSlots), allocationAperture(cpuSlots,desktopFences), allocationsEnabled(enableCpu), logfile(std::filesystem::absolute(paths.log)) {
         if (!driver_bridge::validFenceSlots(fenceSlots,desktopFences) || !driver_bridge::validVendorCpuSlots(cpuSlots,gpu_diagnostic::HighResolution,desktopFences) || (cpuSlots==driver_bridge::SparseVendorCpuSlots && fenceSlots!=(desktopFences ? 512u : 256u)) || (cpuSlots==driver_bridge::DesktopVendorCpuSlots && (!desktopFences || fenceSlots!=512)) || (!enableCpu && cpuSlots != driver_bridge::DefaultVendorCpuSlots))
             throw std::runtime_error("Invalid configured allocation aperture capacity");
         std::vector<std::wstring> rootArguments;
+        inputDiagnostic=inputSelfTest;if(inputDiagnostic && !enableWindowInput) throw std::runtime_error("Input self-test requires window input");
+        if(enableWindowInput && (!readonlyRoot || !desktopFences)) throw std::runtime_error("Window input requires the owned desktop root runtime");
         if (readonlyRoot) {
             const auto root=std::filesystem::path(readonlyRoot);
             if (!root.is_absolute() || !std::filesystem::is_regular_file(root))
@@ -183,6 +191,7 @@ public:
         if (!job.value || !SetInformationJobObject(job.value, JobObjectExtendedLimitInformation, &limit, sizeof limit))
             throw std::runtime_error("Cannot create owned QEMU process job");
         Socket reservation; const auto qmpPort = reservePort(reservation);
+        Socket inputReservation;const auto inputPort=enableWindowInput?reservePort(inputReservation):static_cast<unsigned short>(0);
         unsigned char random[16]{};
         if (BCryptGenRandom(nullptr, random, sizeof random, BCRYPT_USE_SYSTEM_PREFERRED_RNG) < 0)
             throw std::runtime_error("Cannot create owned QEMU name");
@@ -223,6 +232,7 @@ public:
             L"socket,id=wddm,host=127.0.0.1,port=" + std::to_wstring(driverPort), L"-device",
             L"virtserialport,bus=bridge-serial.0,chardev=wddm,name=org.7wdev.wddm"};
         args.insert(args.end(),rootArguments.begin(),rootArguments.end());
+        if(enableWindowInput) args.insert(args.end(),{L"-qmp",L"tcp:127.0.0.1:"+std::to_wstring(inputPort)+L",server=on,wait=off"});
         if(readonlyRoot) {
             args.insert(args.end(),{L"-device",L"virtio-keyboard-pci,id=wddm-keyboard",
                                     L"-device",L"virtio-tablet-pci,id=wddm-pointer"});
@@ -240,6 +250,7 @@ public:
         startup.lpAttributeList = attributes;
         PROCESS_INFORMATION child{};
         closesocket(reservation.value); reservation.value = INVALID_SOCKET;
+        if(inputReservation.value!=INVALID_SOCKET) { closesocket(inputReservation.value);inputReservation.value=INVALID_SOCKET; }
         const auto started = ready && CreateProcessW(executable.c_str(), command.data(), nullptr, nullptr, TRUE,
             CREATE_NO_WINDOW | CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT, nullptr, nullptr, &startup.StartupInfo, &child);
         if (initialized) DeleteProcThreadAttributeList(attributes);
@@ -253,7 +264,18 @@ public:
         std::cout << "{\"ownedQemuPid\":" << child.dwProcessId << ",\"guestMemoryMiB\":" << memoryMiB << "}\n" << std::flush;
         if (readonlyRoot) std::cout << "{\"ownedQemuReadonlyRootAttached\":true,\"fileNodeReadonly\":true,\"rawNodeReadonly\":true,\"sourceWriteSharingDenied\":true}\n" << std::flush;
         qmp = std::make_unique<Qmp>(qmpPort, process, name);
+        if(enableWindowInput) {
+            auto inputQmp=std::make_shared<Qmp>(inputPort,process,name);
+            windowInput=std::make_shared<driver_input::Channel>([inputQmp](const driver_qmp::Json& arguments) {
+                const auto reply=inputQmp->call("input-send-event",arguments);
+                if(!reply.is_object() || !reply.empty()) throw std::runtime_error("QMP input acknowledgement invalid");
+            });
+            std::cerr<<"{\"nativeInputChannelOpened\":true,\"ownedQemuPid\":"<<child.dwProcessId
+                <<",\"socketPeerVerified\":true,\"dedicatedQmp\":true,\"queueCapacity\":256,\"typedInputVerified\":false}\n";
+        }
     }
+    std::shared_ptr<driver_input::Channel> inputChannel() const { return windowInput; }
+    bool inputSelfTest() const { return inputDiagnostic; }
     ~Runtime() { stop(); report(); }
     FenceLease map(volatile std::uint64_t* fence) {
         if (stopped || !fence || generation == UINT64_MAX) throw std::runtime_error("Fence mapping owner unavailable");
@@ -276,6 +298,13 @@ public:
     }
     void stop(DWORD grace = 5000) noexcept {
         if (stopped) return;
+        if(windowInput) {
+            const bool clean=windowInput->stop();if(!clean) failed=true;
+            std::cerr<<"{\"nativeInputChannelStopped\":"<<(clean?"true":"false")<<",\"workerJoined\":true,\"acknowledgements\":"
+                <<windowInput->acknowledgements()<<",\"coalescedMotions\":"<<windowInput->coalescedMotions()
+                <<",\"resetCount\":"<<windowInput->resetCount()<<",\"beforeOwnedVmStop\":true}\n";
+            windowInput.reset();
+        }
         process.stop(grace); // Every driver owner must outlive this step.
         qmp.reset();
         fencesReleasedAfterVmExit += mapped;

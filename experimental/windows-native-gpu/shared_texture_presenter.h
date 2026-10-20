@@ -3,8 +3,10 @@
 #pragma once
 #include <dwmapi.h>
 #include <functional>
+#include <memory>
 #include "diagnostic_profile.h"
 #include "stream_profile.h"
+#include "bounded_input_channel.h"
 namespace driver_shared {
 // An admission observation, not a physical allocation quota. The owner checks
 // process-reported local + nonlocal usage, including its KMT and D3D12 devices.
@@ -23,16 +25,71 @@ class TexturePresenter {
     UINT index = 0;
     std::uint64_t preparedFrames = 0;
     std::uint64_t queuedPresentationFence = 0;
+    std::shared_ptr<driver_input::Channel> windowInput;
+    bool inputDiagnosticIsolated=false;
+    unsigned heldButtons=0;
+    int wheelVertical=0,wheelHorizontal=0;
     static constexpr const wchar_t* ClassName = L"7WdevGuestShaderPresentationLab";
     static constexpr const wchar_t* CompositorClassName = L"7WdevHyprlandPresentationLab";
+    void resetInput(HWND hwnd) {
+        heldButtons=0;wheelVertical=wheelHorizontal=0;
+        if(windowInput) windowInput->post({driver_input::Kind::Reset});
+        if(GetCapture()==hwnd) ReleaseCapture();
+    }
+    bool pointerPosition(HWND hwnd,LPARAM position) {
+        RECT client{};driver_input::Event event{};
+        return GetClientRect(hwnd,&client) && driver_input::absolute(static_cast<short>(LOWORD(position)),
+            static_cast<short>(HIWORD(position)),client.right,client.bottom,event) && windowInput->post(event);
+    }
+    bool handleInput(HWND hwnd,UINT message,WPARAM wparam,LPARAM lparam) {
+        if(!windowInput || inputDiagnosticIsolated) return false;
+        if(message==WM_KILLFOCUS || message==WM_CANCELMODE || message==WM_CLOSE) { resetInput(hwnd);return false; }
+        if(message==WM_CAPTURECHANGED && heldButtons && reinterpret_cast<HWND>(lparam)!=hwnd) { resetInput(hwnd);return false; }
+        if(message==WM_KEYDOWN || message==WM_KEYUP || message==WM_SYSKEYDOWN || message==WM_SYSKEYUP) {
+            if(GetFocus()!=hwnd) return false;
+            const bool down=message==WM_KEYDOWN || message==WM_SYSKEYDOWN;
+            const unsigned scan=wparam==VK_PAUSE?0xffu:static_cast<unsigned>((lparam>>16)&0x7f)|((lparam&(1ll<<24))?0x80u:0u);
+            if(driver_input::key(scan) && (!down || !(lparam&(1ll<<30)))) windowInput->post({driver_input::Kind::Key,scan,0,0,down});
+            return true;
+        }
+        if(message==WM_CHAR || message==WM_SYSCHAR) return GetFocus()==hwnd;
+        const bool down=message==WM_LBUTTONDOWN || message==WM_MBUTTONDOWN || message==WM_RBUTTONDOWN || message==WM_XBUTTONDOWN;
+        const bool up=message==WM_LBUTTONUP || message==WM_MBUTTONUP || message==WM_RBUTTONUP || message==WM_XBUTTONUP;
+        if(down || up) {
+            if(down) SetFocus(hwnd);
+            if(GetFocus()!=hwnd) return false;
+            const unsigned code=(message==WM_LBUTTONDOWN || message==WM_LBUTTONUP)?0u:
+                (message==WM_MBUTTONDOWN || message==WM_MBUTTONUP)?1u:
+                (message==WM_RBUTTONDOWN || message==WM_RBUTTONUP)?2u:HIWORD(wparam)==XBUTTON1?3u:4u;
+            if(down) { heldButtons|=1u<<code;SetCapture(hwnd); }
+            pointerPosition(hwnd,lparam);
+            windowInput->post({driver_input::Kind::Button,code,0,0,down});
+            if(up) { heldButtons&=~(1u<<code);if(!heldButtons && GetCapture()==hwnd) ReleaseCapture(); }
+            return true;
+        }
+        if(message==WM_MOUSEMOVE && GetFocus()==hwnd) { pointerPosition(hwnd,lparam);return true; }
+        if((message==WM_MOUSEWHEEL || message==WM_MOUSEHWHEEL) && GetFocus()==hwnd) {
+            auto& remainder=message==WM_MOUSEWHEEL?wheelVertical:wheelHorizontal;
+            remainder+=static_cast<short>(HIWORD(wparam));
+            while(remainder>=WHEEL_DELTA || remainder<=-WHEEL_DELTA) {
+                const bool positive=remainder>0;
+                const unsigned code=message==WM_MOUSEWHEEL?(positive?5u:6u):(positive?8u:7u);
+                if(!windowInput->post({driver_input::Kind::Wheel,code})) break;
+                remainder+=positive?-WHEEL_DELTA:WHEEL_DELTA;
+            }
+            return true;
+        }
+        return false;
+    }
     static LRESULT CALLBACK procedure(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
         if (message == WM_NCCREATE) {
             const auto create = reinterpret_cast<const CREATESTRUCTW*>(lparam);
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(create->lpCreateParams));
         }
+        const auto owner = reinterpret_cast<TexturePresenter*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+        if(owner && owner->handleInput(hwnd,message,wparam,lparam)) return message==WM_XBUTTONDOWN || message==WM_XBUTTONUP ? TRUE : 0;
         // Retire submitted work before destroying the compositor window.
         if (message == WM_CLOSE) {
-            const auto owner = reinterpret_cast<TexturePresenter*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
             if (owner && owner->compositorOutput) owner->closeRequested = true;
             return 0;
         }
@@ -70,7 +127,7 @@ class TexturePresenter {
         }
     }
 public:
-    bool serviceMessages() { pump(); return !closeRequested; }
+    bool serviceMessages() { pump(); return !closeRequested && (!windowInput || windowInput->healthy()); }
     HRESULT presentQueued(ID3D12CommandQueue* queue, std::uint64_t frame) {
         if (!opened || !compositorOutput || !frame || frame == UINT64_MAX) return E_INVALIDARG;
         pump(); if (closeRequested) return HRESULT_FROM_WIN32(ERROR_CANCELLED);
@@ -107,6 +164,7 @@ public:
             << ",\"windowVisible\":" << (!closeRequested && IsWindowVisible(window) && !IsIconic(window) ? "true" : "false") << "}\n";
     }
     ~TexturePresenter() {
+        if(windowInput && window) resetInput(window);
         // Only this bounded capture diagnostic holds its last output at EOF.
         // There is no per-frame hold in the compositor handoff.
         if (acceptedCompositor && !closeRequested) {
@@ -135,7 +193,7 @@ public:
     HRESULT initialize(IDXGIFactory4* factory, ID3D12Device* device, ID3D12CommandQueue* queue,
                        UINT width = gpu_diagnostic::Width, UINT height = gpu_diagnostic::Height,
                        DXGI_FORMAT format = DXGI_FORMAT_R8G8B8A8_UNORM, bool compositor = false,
-                       const GpuUsageGuard& budget = {}) {
+                       const GpuUsageGuard& budget = {},std::shared_ptr<driver_input::Channel> input = {},bool isolateInputDiagnostic = false) {
         if (!factory || !device || !queue || windowClass || !width || !height || width > 4096 || height > 4096 ||
             (format != DXGI_FORMAT_R8G8B8A8_UNORM && format != DXGI_FORMAT_B8G8R8A8_UNORM)) return E_INVALIDARG;
         if(budget) {
@@ -146,14 +204,17 @@ public:
             if(!allocation.SizeInBytes || allocation.SizeInBytes>UINT64_MAX/2 ||
                 !budget("swapchain-before",allocation.SizeInBytes*2)) return E_OUTOFMEMORY;
         }
-        outputWidth = width; outputHeight = height; compositorOutput = compositor;
+        outputWidth = width; outputHeight = height; compositorOutput = compositor;windowInput=std::move(input);
+        inputDiagnosticIsolated=isolateInputDiagnostic;
+        if(windowInput && !compositor) return E_INVALIDARG;
         registeredClass = compositor ? CompositorClassName : ClassName;
         WNDCLASSEXW type{}; type.cbSize = sizeof type; type.lpfnWndProc = procedure;
         type.hInstance = GetModuleHandleW(nullptr); type.lpszClassName = registeredClass;
+        if(windowInput) type.hCursor=LoadCursorW(nullptr,MAKEINTRESOURCEW(32512)); // Standard arrow, including non-UNICODE callers.
         windowClass = RegisterClassExW(&type);
         if (!windowClass) return HRESULT_FROM_WIN32(GetLastError());
         constexpr DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU;
-        constexpr DWORD extended = WS_EX_NOACTIVATE;
+        const DWORD extended = windowInput && !inputDiagnosticIsolated?0:WS_EX_NOACTIVATE;
         UINT clientWidth = compositor ? (std::min)(width, 1280u) : 780u;
         UINT clientHeight = compositor ? (std::max)(1u, height * clientWidth / width) : 438u;
         if (compositor && clientHeight > 720) { clientHeight = 720; clientWidth = (std::max)(1u, width * clientHeight / height); }
@@ -197,6 +258,8 @@ public:
             << ",\"height\":" << outputHeight << ",\"bufferCount\":2"
             << (compositorOutput ? ",\"compositorOutput\":true,\"flipDiscard\":true,\"frameLatencyWaitable\":true,\"maximumFrameLatency\":1" : "")
             << ",\"flipModel\":true,\"clientWidth\":" << client.right << ",\"clientHeight\":" << client.bottom
+            << ",\"windowInputEnabled\":"<<(windowInput && !inputDiagnosticIsolated?"true":"false")
+            << ",\"inputSelfTestIsolated\":"<<(inputDiagnosticIsolated?"true":"false")<<",\"windowHandle\":"<<reinterpret_cast<std::uintptr_t>(window)
             << ",\"windowVisible\":true,\"sameAdapter\":true,\"cpuUpload\":false}\n";
         return S_OK;
     }

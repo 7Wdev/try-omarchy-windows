@@ -211,6 +211,8 @@ def main():
     parser.add_argument('--driver-consume-shared-process', action='store_true', help='Use an owned separate Windows GPU consumer process')
     parser.add_argument('--driver-native-metadata', action='store_true', help='Enable typed texture allocation with Windows-generated runtime metadata')
     parser.add_argument('--driver-coordinator', action='store_true', help='Use the explicit privileged multi-client native coordinator in the owned 4K root lab')
+    parser.add_argument('--driver-window-input', action='store_true', help='Enable the dedicated bounded input channel for the owned desktop window')
+    parser.add_argument('--driver-input-self-test', action='store_true', help='Send the fixed disposable-guest PTY test sequence after its first GPU frame; does not prove physical Windows input')
     parser.add_argument('--driver-rootfs-readonly',type=pathlib.Path,help='Opt-in real-root boot through two read-only block nodes; private image, no persistent writes')
     parser.add_argument('--driver-present-shared', action='store_true', help='Present consumed guest frames in an owned diagnostic Windows window')
     parser.add_argument('--driver-shared-resources', action='store_true', help='Opt into bounded shareable NVIDIA resource creation and native import probing')
@@ -352,6 +354,10 @@ def main():
     api.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
     api.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
     api.CloseHandle.argtypes = [wintypes.HANDLE]
+    if args.driver_window_input and (not args.driver_coordinator or not args.driver_rootfs_readonly or args.driver_fence_slots != 512):
+        parser.error('Window input requires the owned read-only-root coordinator and 512 fence slots')
+    if args.driver_input_self_test and not args.driver_window_input:
+        parser.error('Input self-test requires explicit window input')
     owner = subprocess.Popen([str(args.bridge.resolve()), '--run-qemu', str(args.qemu.resolve()),
                               str(args.firmware.resolve()), str(args.kernel.resolve()), str(args.initramfs.resolve()),
                               str(log_path.resolve()), '--driver-contexts', '--driver-queries'] +
@@ -373,6 +379,8 @@ def main():
                              (['--driver-present-shared'] if args.driver_present_shared else []) +
                              (['--driver-native-metadata'] if args.driver_native_metadata else []) +
                              (['--driver-coordinator'] if args.driver_coordinator else []) +
+                             (['--driver-window-input'] if args.driver_window_input else []) +
+                             (['--driver-input-self-test'] if args.driver_input_self_test else []) +
                              (['--cpu-store-test'] if args.cpu_store_test else []) + (['--cpu-eof-test'] if args.cpu_eof_test else []) +
                              (['--cpu-span-eof-test'] if args.cpu_span_eof_test else []) +
                              (['--hwqueue-eof-test'] if args.hwqueue_eof_test else []) +

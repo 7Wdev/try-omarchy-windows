@@ -1523,7 +1523,7 @@ public:
             compositorOutput=std::make_unique<driver_shared::CompositorPresenter>();
             hr=compositorOutput->initialize(luid,desc,[this](const char* stage,std::uint64_t bytes) {
                 return reportedGpuUsageAcceptable(bytes,stage);
-            },coordinatedObjectsEnabled && coordinatedObjectCapacity.version==5 && openGlProfileVersion==13);
+            },coordinatedObjectsEnabled && coordinatedObjectCapacity.version==5 && openGlProfileVersion==13,runtime->inputChannel(),runtime->inputSelfTest());
         }
         if (SUCCEEDED(hr)) hr=compositorOutput->submit(resource,source->second.handle.get(),fence->second.get(),desc,frame);
         if (FAILED(hr)) {
@@ -2503,7 +2503,7 @@ int main(int argc, char** argv) {
         std::uint32_t fenceSlots = 0;
         bool hwQueueNoBroadcastEofTest = false;
         bool hwQueueNoBroadcastWaitEofTest = false;
-        bool asyncSubmit = false, sharedResources = false, consumeShared = false, presentShared = false, nativeMetadata = false, consumeProcess = false, coordinated = false;
+        bool asyncSubmit = false, sharedResources = false, consumeShared = false, presentShared = false, nativeMetadata = false, consumeProcess = false, coordinated = false, windowInput = false, inputSelfTest = false;
         const char* readonlyRoot = nullptr;
         while (argc > 1) {
             if (argc>2 && std::string(argv[argc-2])=="--driver-rootfs-readonly") {
@@ -2548,6 +2548,8 @@ int main(int argc, char** argv) {
             else if (option == "--driver-present-shared" && !presentShared) presentShared = true;
             else if (option == "--driver-native-metadata" && !nativeMetadata) nativeMetadata = true;
             else if (option == "--driver-coordinator" && !coordinated) coordinated = true;
+            else if (option == "--driver-window-input" && !windowInput) windowInput = true;
+            else if (option == "--driver-input-self-test" && !inputSelfTest) inputSelfTest = true;
             else if (option == "--driver-shared-resources" && !sharedResources) sharedResources = true;
             else if (option == "--driver-retirement" && !retirement) retirement = true;
             else if (option == "--driver-reservation" && !reservation) reservation = true;
@@ -2559,6 +2561,8 @@ int main(int argc, char** argv) {
         }
         if (readonlyRoot && (!gpu_diagnostic::HighResolution || argc!=7 || std::string(argv[1])!="--run-qemu"))
             throw std::runtime_error("Read-only root image requires the diagnostic build and owned QEMU runtime");
+        if(windowInput && !coordinated) throw std::runtime_error("Window input requires the owned read-only root desktop coordinator");
+        if(inputSelfTest && !windowInput) throw std::runtime_error("Input self-test requires explicit window input");
         if (readonlyRoot && (cpuStoreTest || cpuEofTest || cpuSpanEofTest || hwQueueEofTest || syncEofTest || syncNoMaxEofTest ||
             reservationEofTest || gpuStateEofTest || hwQueueNoBroadcastEofTest || hwQueueNoBroadcastWaitEofTest))
             throw std::runtime_error("Read-only root image cannot be combined with forced EOF/store controls");
@@ -2664,7 +2668,7 @@ int main(int argc, char** argv) {
         std::cout << "{\"port\":" << ntohs(address.sin_port) << ",\"transport\":\"tcp-loopback\"}\n" << std::flush;
         std::unique_ptr<driver_qemu::Runtime> runtime;
         if (ownedRuntime) runtime = std::make_unique<driver_qemu::Runtime>(ntohs(address.sin_port),
-            qemu_fence::Paths{argv[2], argv[3], argv[4], argv[5], argv[6]}, cpu, cpuStoreTest, cpuEofTest, hwQueueEofTest, cpuSlots, syncEofTest, reservationEofTest, gpuStateEofTest, cpuSpanEofTest, syncNoMaxEofTest, hwQueueNoBroadcastEofTest, hwQueueNoBroadcastWaitEofTest, fenceSlots,readonlyRoot,coordinated && fenceSlots==512);
+            qemu_fence::Paths{argv[2], argv[3], argv[4], argv[5], argv[6]}, cpu, cpuStoreTest, cpuEofTest, hwQueueEofTest, cpuSlots, syncEofTest, reservationEofTest, gpuStateEofTest, cpuSpanEofTest, syncNoMaxEofTest, hwQueueNoBroadcastEofTest, hwQueueNoBroadcastWaitEofTest, fenceSlots,readonlyRoot,coordinated && fenceSlots==512,windowInput,inputSelfTest);
         fd_set reads; FD_ZERO(&reads); FD_SET(listener.value, &reads); timeval timeout{60, 0};
         if (select(0, &reads, nullptr, nullptr, &timeout) != 1) throw std::runtime_error("Connection timed out");
         Socket client; client.value = accept(listener.value, nullptr, nullptr);

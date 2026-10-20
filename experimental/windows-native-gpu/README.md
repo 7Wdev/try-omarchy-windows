@@ -1,5 +1,11 @@
 # Native Windows GPU experiment
 
+One real 4K NVIDIA guest now renders its Alacritty PTY input confirmation through
+a dedicated bounded QEMU input channel. The fresh repeat hits the unchanged
+1 GiB GPU-usage guard during shutdown and remains rejected. Physical Windows
+input and continuous desktop presentation are still unverified.
+See [the accepted frame, failed repeat and scope](../../docs/LIVE-UWSM-QMP-INPUT-RESPONSE.md).
+
 The [native input discovery checkpoint](../../docs/LIVE-UWSM-NATIVE-INPUT-DISCOVERY.md)
 passes two fresh UWSM guests with the actual virtio keyboard and tablet enumerated
 alongside five NVIDIA application cycles, twelve 4K handoffs and complete cleanup.

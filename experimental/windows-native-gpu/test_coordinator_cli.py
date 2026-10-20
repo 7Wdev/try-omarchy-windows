@@ -8,6 +8,11 @@ def main():
     parser.add_argument('--bridge', required=True)
     args = parser.parse_args()
     cases = [
+        ['--stdio', '--driver-window-input'],
+        ['--stdio', '--driver-input-self-test'],
+        ['--stdio', '--driver-window-input', '--driver-window-input'],
+        ['--stdio', '--driver-input-self-test', '--driver-input-self-test'],
+        ['--listen', '0', '--driver-window-input'],
         ['--stdio', '--driver-coordinator'],
         ['--listen', '0', '--driver-coordinator'],
         ['--run-qemu', 'missing-qemu', 'firmware', 'kernel', 'image', 'log', '--driver-coordinator'],

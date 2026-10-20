@@ -154,6 +154,8 @@ jobs:
           python3 -m unittest discover -s experimental/windows-native-gpu -p 'test_opengl_packaging.py'
           c++ -std=c++17 -Wall -Wextra -Werror experimental/windows-native-gpu/qmp_protocol_test.cpp -o /tmp/qmp-protocol-test
           /tmp/qmp-protocol-test
+          c++ -std=c++17 -O2 -Wall -Wextra -Werror -pthread experimental/windows-native-gpu/bounded_input_channel_test.cpp -o /tmp/bounded-input-channel-test
+          /tmp/bounded-input-channel-test
           sh experimental/windows-native-gpu/build_guest.sh
           python3 -m unittest discover -s scripts/fork -p 'test_*.py'
           cc -std=c11 -Wall -Wextra -Werror experimental/qemu/fence_map_test.c -o /tmp/fence-map-test

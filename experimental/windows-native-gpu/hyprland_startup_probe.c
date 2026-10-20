@@ -2,6 +2,7 @@
 #define _GNU_SOURCE
 #include <dlfcn.h>
 #include <link.h>
+#include <fcntl.h>
 #include <errno.h>
 #include <pthread.h>
 #include <signal.h>
@@ -22,6 +23,7 @@
 #endif
 #ifdef WDDM_BRIDGE_COMPOSITOR_HOST_SCENE
 static _Atomic int scene_ready;
+static _Atomic int input_delivery_required,input_response_ready;
 static char last_control_reply[8192];
 #endif
 #ifdef WDDM_BRIDGE_COMPOSITOR_HOST_PRESENT
@@ -52,6 +54,10 @@ int wddm_bridge_compositor_commit(int fd,uint32_t width,uint32_t height,uint32_t
 #ifdef WDDM_BRIDGE_COMPOSITOR_HOST_PRESENT
 #ifdef WDDM_BRIDGE_COMPOSITOR_HOST_SCENE
     if(!atomic_load(&scene_ready)) return 0;
+    // The input diagnostic must capture the application's response after its
+    // real PTY receipt. Keep processing the compositor and input event loops
+    // while holding the bounded fixture's remaining GPU handoffs.
+    if(atomic_load(&input_delivery_required) && atomic_load(&queued_frames)>=2 && !atomic_load(&input_response_ready)) return 0;
 #endif
     if(frame>=2) return queue_output(fd,width,height,format,stride);
 #endif
@@ -115,7 +121,8 @@ static int run_ctl(char* const arguments[]) {
     clock_gettime(CLOCK_MONOTONIC,&finished);
     printf("HYPRLAND_CONTROL_TIMING timeoutSeconds=%ld elapsedMs=%lld\n",(long)timeout.tv_sec,
         (long long)(finished.tv_sec-started.tv_sec)*1000+(finished.tv_nsec-started.tv_nsec)/1000000);
-    result=(received && (json ? (reply[0]=='[' || reply[0]=='{') : !strcmp(reply,"ok"))) ? 0 : -1;
+    const char* first=reply+strspn(reply," \t\r\n");
+    result=(received && (json ? (*first=='[' || *first=='{') : !strcmp(reply,"ok"))) ? 0 : -1;
     if(result) errno=EPROTO;
 done:
     if(result) {
@@ -250,6 +257,33 @@ static int visible_gpu_terminal_with_pid(const char* text,pid_t* pid) {
 }
 static int visible_gpu_terminal(const char* text) { return visible_gpu_terminal_with_pid(text,NULL); }
 static pid_t last_gpu_terminal_pid;
+static int input_delivery_enabled(void) { return !access("/opt/wddm-root/native-input-delivery-probe",R_OK); }
+static int input_delivery_snapshot(const char* phase) {
+    char* const active[]={"/usr/bin/hyprctl","-j","activewindow",NULL};
+    char* const cursor[]={"/usr/bin/hyprctl","-j","cursorpos",NULL};
+    char label[96];
+    if(run_ctl(active)) return -1;
+    snprintf(label,sizeof label,"OMARCHY_NATIVE_INPUT_%s_ACTIVE_HEX",phase);
+    scene_hex_receipt(label,last_control_reply,strlen(last_control_reply));
+    if(run_ctl(cursor)) return -1;
+    snprintf(label,sizeof label,"OMARCHY_NATIVE_INPUT_%s_CURSOR_HEX",phase);
+    scene_hex_receipt(label,last_control_reply,strlen(last_control_reply));return 0;
+}
+static int input_delivery_result(void) {
+    for(unsigned tick=0;tick<150;++tick) {
+        const int file=open("/tmp/omarchy-native-input-received",O_RDONLY|O_CLOEXEC|O_NOFOLLOW|O_NONBLOCK);
+        if(file<0) { if(errno!=ENOENT) return -1;usleep(100000);continue; }
+        struct stat metadata;char data[1025];
+        if(fstat(file,&metadata) || !S_ISREG(metadata.st_mode) || metadata.st_uid!=getuid() || metadata.st_nlink!=1 ||
+           metadata.st_size<=0 || metadata.st_size>1024) { close(file);return -1; }
+        const ssize_t bytes=read(file,data,sizeof data-1);const int closed=close(file);
+        if(bytes<=0 || bytes!=metadata.st_size || closed) return -1;
+        data[bytes]=0;scene_hex_receipt("OMARCHY_NATIVE_INPUT_PTY_HEX",data,(size_t)bytes);
+        if(!strstr(data,"\"token\":\"omarchyinput93\"")) return -1;
+        return 0;
+    }
+    return -1;
+}
 static int wait_gpu_retirement(pid_t pid) {
     char path[96];const int count=snprintf(path,sizeof path,"/run/wddm-retired/%d",pid);
     if(pid<=0 || count<=0 || count>=(int)sizeof path) return -1;
@@ -293,6 +327,8 @@ static int close_gpu_terminal(pid_t pid,int final) {
     return -1;
 }
 static int prepare_scene(void) {
+    atomic_store(&input_delivery_required,input_delivery_enabled());
+    if(input_delivery_enabled() && unlink("/tmp/omarchy-native-input-received") && errno!=ENOENT) return -1;
     if(getenv("WDDM_BRIDGE_NORMAL_DESKTOP_PROBE")) {
         // Inspect the shipped desktop without pretending the controlled Foot
         // fixture proves the shell or a normal UWSM session.
@@ -349,6 +385,7 @@ static int prepare_scene(void) {
             }
         }
         if(scene_receipt("OMARCHY_DESKTOP_PROBE_CAPTURE normalConfig=true shellVerified=false applicationGpuVerified=false\n")) return -1;
+        if(input_delivery_enabled() && input_delivery_snapshot("BEFORE")) return -1;
         atomic_store(&scene_ready,1);
         return 0;
     }
@@ -418,8 +455,15 @@ static void* bounded_control(void* unused) {
             else scene_hex_receipt("OMARCHY_NATIVE_INPUT_DEVICES_HEX",last_control_reply,strlen(last_control_reply));
         }
         if(created || prepare_scene()) atomic_store(&queue_failed,1);
+        unsigned response_commit=0;int response_observed=0;
 #endif
         for(unsigned tick=0;tick<HYPRLAND_QUEUE_FRAMES*2+100 && atomic_load(&queued_frames)<HYPRLAND_QUEUE_FRAMES && !atomic_load(&queue_failed);++tick) {
+#ifdef WDDM_BRIDGE_COMPOSITOR_HOST_SCENE
+            if(atomic_load(&input_delivery_required) && !response_observed && atomic_load(&queued_frames)>=2) {
+                if(input_delivery_result()) { atomic_store(&queue_failed,1);break; }
+                response_commit=atomic_load(&compositor_commits);response_observed=1;
+            }
+#endif
             char* const legacy_repaint[]={"/usr/bin/hyprctl","keyword","decoration:rounding","0",NULL};
             // A Lua config assignment to an unchanged value does not damage a
             // quiet desktop. A short-lived real notification supplies bounded
@@ -435,10 +479,25 @@ static void* bounded_control(void* unused) {
             char* const* repaint=getenv("WDDM_BRIDGE_NORMAL_DESKTOP_PROBE") ? lua_repaint : legacy_repaint;
             if (run_ctl(repaint)) { atomic_store(&queue_failed,1); break; }
             usleep(50000);
+#ifdef WDDM_BRIDGE_COMPOSITOR_HOST_SCENE
+            if(response_observed && !atomic_load(&input_response_ready)) {
+                const unsigned committed=atomic_load(&compositor_commits);
+                if(committed>=response_commit && committed-response_commit>=3) {
+                    char receipt[256];const int bytes=snprintf(receipt,sizeof receipt,
+                        "OMARCHY_NATIVE_INPUT_RESPONSE_BARRIER receiptCommit=%u observedCommit=%u queuedFrames=%u gpuProof=false\n",
+                        response_commit,committed,atomic_load(&queued_frames));
+                    if(input_delivery_snapshot("AFTER") || bytes<=0 || (size_t)bytes>=sizeof receipt || scene_receipt(receipt)) {
+                        atomic_store(&queue_failed,1);break;
+                    }
+                    atomic_store(&input_response_ready,1);
+                }
+            }
+#endif
         }
         if (atomic_load(&queued_frames)!=HYPRLAND_QUEUE_FRAMES) atomic_store(&queue_failed,1);
         printf("HYPRLAND_HOST_QUEUE_END frames=%u target=%u failed=%d\n",atomic_load(&queued_frames),HYPRLAND_QUEUE_FRAMES,atomic_load(&queue_failed));
 #ifdef WDDM_BRIDGE_COMPOSITOR_HOST_SCENE
+        if(atomic_load(&input_delivery_required) && !atomic_load(&input_response_ready)) atomic_store(&queue_failed,1);
         if(close_scene()) atomic_store(&queue_failed,1);
 #endif
 #else
