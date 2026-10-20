@@ -4,7 +4,7 @@ Updated **2026-10-20**. This page tracks the experimental QEMU/WHPX Windows-nati
 NVIDIA backend. The released Try Omarchy launcher continues using the upstream
 graphics runtime.
 
-![4K NVIDIA desktop achieved; QMP input response demonstrated once; backend stages 4/8; desktop product gates 0/4](images/gpu-backend-progress-input-response-2026-10-20.svg)
+![4K NVIDIA desktop and QMP input response pass twice with idle staging reclamation; backend stages 4/8; desktop product gates 0/4](images/gpu-backend-progress-staging-reclaim-2026-10-20.svg)
 
 ## What is verified now?
 
@@ -27,6 +27,14 @@ GPU-usage guard during shutdown and requires VM termination. This is one accepte
 input-response diagnostic, not repeated stability. Physical Windows-window
 keyboard/mouse delivery remains unverified.
 This bounded repeat does not establish long-run memory stability.
+
+**The subsequent staging-reclamation change passes two fresh guests (95–96).**
+Each passes the complete QMP input-response, 4K GPU pixels and live-cleanup audit
+under the same usage guard, after actually releasing 31.875 MiB of idle staging.
+Both GPU copy fences retire before release; three-slot capacity is preserved.
+Neither run reallocates a trimmed slot during rendering. Continued hardware
+trim/reallocation and longer workloads remain required.
+[Two-run evidence, actual frame and scope](https://github.com/7Wdev/try-omarchy-windows/blob/bf60d2848f831be892f8c5e69b686bcedb98644e/docs/LIVE-UWSM-STAGING-RECLAIM.md).
 
 [Actual UWSM image, reproducible evidence and retained failures](https://github.com/7Wdev/try-omarchy-windows/blob/2abc463db5cdb8c2b62b3c0526fe60932f9acde7/docs/LIVE-UWSM-NATIVE-INPUT-DISCOVERY.md)
 bind every application and the shell to authenticated NVIDIA renderers, real
@@ -63,7 +71,7 @@ retains its original scope and failures.
 | 3. 4K guest shaders and shared GPU textures | Demonstrated in the lab | [Independent 4K shader pixels, GPU copies and fence retirement](https://github.com/7Wdev/try-omarchy-windows/blob/2290aa6209289dddfbae54b542c524927414c020/docs/LIVE-GPU-4K.md). |
 | 4. Repeated guest rendering | Demonstrated in bounded diagnostics | [64-frame guest runs](https://github.com/7Wdev/try-omarchy-windows/blob/2290aa6209289dddfbae54b542c524927414c020/docs/LIVE-GPU-GUEST-STREAM.md), safe allocator/texture reuse and explicit cleanup. This is not long-run desktop or all-frame display acceptance. |
 | 5. Guest graphics/device integration | In progress | Native render-node/GBM, EGL fences, separate GPU clients, 4K captures and five application lifecycles with live reclamation pass twice. Supported device integration, recovery and sustained work remain required. |
-| 6. Interactive Omarchy/Hyprland desktop | In progress: diagnostic 4K desktop and one QMP input-response run pass; fresh repeat fails the usage guard | Validate physical Windows input, the normal launcher session, continuous correctly displayed frames, real apps, focus, resizing, fullscreen and multiple windows. |
+| 6. Interactive Omarchy/Hyprland desktop | In progress: two bounded 4K QMP input-response runs pass after idle staging reclamation; earlier failure retained | Validate physical Windows input, the normal launcher session, continuous correctly displayed frames, real apps, focus, resizing, fullscreen and multiple windows. |
 | 7. Required APIs and NVIDIA features | Pending acceptance | OpenGL diagnostics pass; test general OpenGL, Vulkan, CUDA, video and NVIDIA capabilities in real guest applications. |
 | 8. Reliability and ≥93% native performance | Pending acceptance | Matched guest/native benchmarks through 4K, concurrent host/guest GPU workloads, long runs, bounded memory and device/VM recovery. |
 
@@ -77,13 +85,13 @@ not close the broader product requirements below.
 | --- | --- | --- |
 | Guest graphics device, buffers and synchronization | In progress: separate NVIDIA clients, native resource FDs, GPU waits and five application lifecycles pass twice; every backing mapping is reclaimed live. | A supported guest device path with correct sustained ownership, synchronization and recovery beyond the bounded diagnostic. |
 | First Hyprland frame in the Windows app | In progress: actual 4K wallpaper, bar and readable GPU application captured twice. Separate diagnostic presentation is not normal launcher acceptance. | Boot the normal guest session, independently verify a correctly displayed compositor frame in the Windows app, and publish its image in PR #2. |
-| Usable interactive desktop | In progress: one QMP keyboard/pointer and GPU-rendered application response passes; the repeat fails. Physical Windows input and continuous multi-window operation are unverified. | Continuously display real apps and multiple windows with working input, focus, resizing and fullscreen through 4K. |
+| Usable interactive desktop | In progress: two bounded QMP keyboard/pointer and GPU-rendered application responses pass after staging reclamation. Physical Windows input and continuous multi-window operation are unverified. | Continuously display real apps and multiple windows with working input, focus, resizing and fullscreen through 4K. |
 | Stable and performant product | Pending acceptance: no matched near-native result or long desktop run has passed. | Sustain workloads, recover from failures, keep memory bounded and meet ≥93% of matched native performance. |
 
 ## Remaining work
 
-1. Reduce the retained input-response repeat's GPU memory pressure without
-   relaxing the usage guard; verify physical Windows-window keyboard and pointer delivery.
+1. Extend idle staging reclamation to continued hardware trim/reallocation and
+   longer rendering without relaxing the usage guard; verify physical Windows-window input.
 2. Integrate the supported guest device path, normal first-boot session and Windows
    launcher/input, with independently verified continuous presentation.
 3. Extend the bounded live-retirement result to concurrent application windows,
@@ -101,6 +109,7 @@ duration of the remaining driver, compositor and product work.
 
 Earlier results keep their original scope and failures:
 
+- [Idle staging reclamation and two passing 4K input-response runs](https://github.com/7Wdev/try-omarchy-windows/blob/bf60d2848f831be892f8c5e69b686bcedb98644e/docs/LIVE-UWSM-STAGING-RECLAIM.md).
 - [QMP input delivery and actual 4K GPU response, including the failed repeat](https://github.com/7Wdev/try-omarchy-windows/blob/0774e40f0dd394aedb90a5d341b87cc42a00cc91/docs/LIVE-UWSM-QMP-INPUT-RESPONSE.md).
 - [Readable 4K captures and the earlier admission failure](https://github.com/7Wdev/try-omarchy-windows/blob/2290aa6209289dddfbae54b542c524927414c020/docs/LIVE-OMARCHY-4K-READABLE-GPU-DESKTOP.md).
 - [Wallpaper/application partial capture and slot-exhaustion findings](https://github.com/7Wdev/try-omarchy-windows/blob/2290aa6209289dddfbae54b542c524927414c020/docs/LIVE-OMARCHY-4K-DESKTOP-CONTENT.md).

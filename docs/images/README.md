@@ -1,7 +1,7 @@
 # README media
 
 `gpu-backend-progress.svg` is the current progress summary. The README uses a
-versioned copy, `gpu-backend-progress-input-response-2026-10-20.svg`, so GitHub's
+versioned copy, `gpu-backend-progress-staging-reclaim-2026-10-20.svg`, so GitHub's
 image cache can distinguish updates. Older versioned graphics retain their
 original checkpoint scope. The graphic describes diagnostic evidence separately
 from the broader backend and desktop product gates; its counts are not effort

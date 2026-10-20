@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="960" height="430" viewBox="0 0 960 430" role="img" aria-labelledby="title desc">
-  <title id="title">4K Omarchy desktop rendered on NVIDIA; wallpaper, bar and application verified; QMP input response demonstrated; backend 4 of 8 stages; product 0 of 4 gates</title>
-  <desc id="desc">The first correctly rendered Hyprland frame is demonstrated at 3840 by 2160 with the shipped wallpaper, Omarchy bar and readable GPU application. One complete QMP keyboard, pointer and rendered-response run passes; its fresh repeat fails the unchanged GPU usage guard. Four backend stages are demonstrated and stages five and six remain in progress. No desktop product gate is complete. Physical Windows-window input, normal launcher integration, continuous multi-window display, reliability and matched-native performance remain open. Checklist counts do not measure engineering effort. Updated October 20, 2026.</desc>
+  <title id="title">4K Omarchy desktop rendered on NVIDIA; wallpaper, bar and application verified; QMP input response and idle staging reclamation pass twice; backend 4 of 8 stages; product 0 of 4 gates</title>
+  <desc id="desc">The first correctly rendered Hyprland frame is demonstrated at 3840 by 2160 with the shipped wallpaper, Omarchy bar and readable GPU application. Two complete QMP keyboard, pointer and rendered-response runs pass with idle staging reclamation under the unchanged usage guard. The earlier failed repeat remains retained. Four backend stages are demonstrated and stages five and six remain in progress. No desktop product gate is complete. Physical Windows-window input, normal launcher integration, continuous multi-window display, reliability and matched-native performance remain open. Checklist counts do not measure engineering effort. Updated October 20, 2026.</desc>
   <rect width="960" height="430" rx="12" fill="#141b24"/>
   <g font-family="sans-serif">
     <text x="24" y="34" fill="#eef4fc" font-size="23">4K Omarchy desktop rendered on NVIDIA</text>
@@ -11,8 +11,8 @@
     <g fill="#bac7d9" font-size="14">
       <text x="24" y="120">Shipped wallpaper</text><text x="332" y="120">Omarchy bar</text><text x="640" y="120">Readable GPU application</text>
     </g>
-    <text x="24" y="156" fill="#eef4fc" font-size="16">QMP keys + cursor + rendered response: one complete run passes</text>
-    <text x="24" y="179" fill="#e0aa49" font-size="14">Fresh repeat fails the GPU-usage guard; physical Windows input remains unverified.</text>
+    <text x="24" y="156" fill="#eef4fc" font-size="16">QMP keys + cursor + GPU response + idle staging trim: two runs pass</text>
+    <text x="24" y="179" fill="#e0aa49" font-size="14">31.875 MiB reclaimed per run; 1 GiB guard unchanged. Longer runs remain open.</text>
     <text x="24" y="215" fill="#eef4fc" font-size="18">Backend verification · 4/8 stages demonstrated</text>
     <g transform="translate(24 230)">
       <rect width="103.5" height="20" rx="4" fill="#51c38b"/><rect x="115.5" width="103.5" height="20" rx="4" fill="#51c38b"/>
