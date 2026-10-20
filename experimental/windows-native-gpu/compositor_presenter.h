@@ -14,6 +14,7 @@
 #include "compositor_audit_tiles.h"
 #include "shared_texture_presenter.h"
 #include "input_delivery_diagnostic.h"
+#include "staging_reclaim.h"
 namespace driver_shared {
 class CompositorPresenter {
     using Device = Microsoft::WRL::ComPtr<ID3D12Device>;
@@ -23,7 +24,7 @@ class CompositorPresenter {
         Microsoft::WRL::ComPtr<ID3D12CommandAllocator> inputAllocator, outputAllocator;
         Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> inputCommands, outputCommands;
         bool occupied = false;
-        std::uint64_t reusedAfter = 0;
+        std::uint64_t reusedAfter = 0,bytes=0,generation=0;
     };
     struct Frame { unsigned slot, audit; std::uint64_t sequence; };
     std::array<Slot,3> slots;
@@ -34,6 +35,8 @@ class CompositorPresenter {
     bool demandStaging = false;
     unsigned stagingTexturesCreated = 0, stagingTexturesReleased = 0;
     std::uint64_t stagingTextureBytes = 0;
+    std::uint64_t liveStagingTextureBytes=0;
+    unsigned stagingTexturesTrimmed=0;
     Microsoft::WRL::ComPtr<ID3D12CommandQueue> inputQueue, outputQueue;
     Microsoft::WRL::ComPtr<ID3D12Fence> inputRetired, outputRetired, auditRetired;
     Resource auditReadback;
@@ -73,8 +76,8 @@ class CompositorPresenter {
         texture.Width=layout.width; texture.Height=layout.height; texture.DepthOrArraySize=texture.MipLevels=1;
         texture.Format=static_cast<DXGI_FORMAT>(driver_bridge::compositorDxgiFormat(layout.format)); texture.SampleDesc.Count=1;
         const auto allocation=device->GetResourceAllocationInfo(0,1,&texture);
-        if(!allocation.SizeInBytes || allocation.SizeInBytes==UINT64_MAX ||
-           allocation.SizeInBytes>UINT64_MAX-stagingTextureBytes) return E_INVALIDARG;
+        if(!allocation.SizeInBytes || allocation.SizeInBytes==UINT64_MAX || slot.generation==UINT64_MAX || stagingTexturesCreated==UINT_MAX ||
+           allocation.SizeInBytes>UINT64_MAX-stagingTextureBytes || allocation.SizeInBytes>UINT64_MAX-liveStagingTextureBytes) return E_INVALIDARG;
         if(budget && !budget("staging-before",allocation.SizeInBytes)) return E_OUTOFMEMORY;
         // Publish ownership only after both admission checks. A failed create
         // or post-create check releases this unused local resource immediately.
@@ -83,10 +86,13 @@ class CompositorPresenter {
         if(FAILED(hr)) return hr;
         if(budget && !budget("staging-after",0)) return E_OUTOFMEMORY;
         slot.texture=std::move(prepared);
+        slot.bytes=allocation.SizeInBytes;++slot.generation;slot.reusedAfter=0;
         ++stagingTexturesCreated;stagingTextureBytes+=allocation.SizeInBytes;
+        liveStagingTextureBytes+=allocation.SizeInBytes;
         std::cerr<<"{\"nativeCompositorStagingAllocated\":true,\"slot\":"<<index<<",\"bytes\":"<<allocation.SizeInBytes
             <<",\"preparedTextures\":"<<stagingTexturesCreated<<",\"preparedBytes\":"<<stagingTextureBytes
             <<",\"capacity\":3,\"onDemand\":"<<(demandStaging?"true":"false")
+            <<",\"generation\":"<<slot.generation<<",\"liveTextureBytes\":"<<liveStagingTextureBytes
             <<",\"phase\":\""<<(initializationPhase?"initialization":"serialized-submit")<<"\"}\n";
         return S_OK;
     }
@@ -266,6 +272,40 @@ class CompositorPresenter {
         }
     }
 public:
+    HRESULT reclaimStagingForResidency(std::uint64_t target,std::uint64_t& released) {
+        released=0;
+        if(!target || !demandStaging || !device || !initialized || FAILED(initialization)) return S_OK;
+        std::lock_guard<std::mutex> lock(guard);
+        if(stopping || FAILED(failure.load())) return S_OK;
+        const auto input=inputRetired->GetCompletedValue(),output=outputRetired->GetCompletedValue();
+        std::array<StagingReclaimState,3> snapshot{};
+        for(unsigned index=0;index<slots.size();++index) {
+            const auto& slot=slots[index];snapshot[index]={slot.texture.Get()!=nullptr,slot.occupied,slot.bytes,slot.reusedAfter};
+        }
+        const auto result=reclaimIdleStaging(snapshot,input,output,target,[&](unsigned index,std::uint64_t bytes) {
+            auto& slot=slots[index];
+            // Clear recorded references only after both actual copy fences
+            // retire, with this slot excluded from all queued/UI work.
+            HRESULT hr=slot.inputAllocator->Reset();
+            if(SUCCEEDED(hr)) hr=slot.inputCommands->Reset(slot.inputAllocator.Get(),nullptr);
+            if(SUCCEEDED(hr)) hr=slot.inputCommands->Close();
+            if(SUCCEEDED(hr)) hr=slot.outputAllocator->Reset();
+            if(SUCCEEDED(hr)) hr=slot.outputCommands->Reset(slot.outputAllocator.Get(),nullptr);
+            if(SUCCEEDED(hr)) hr=slot.outputCommands->Close();
+            if(FAILED(hr) || bytes>liveStagingTextureBytes || stagingTexturesReleased==UINT_MAX || stagingTexturesTrimmed==UINT_MAX) return false;
+            slot.texture.Reset();slot.bytes=0;
+            liveStagingTextureBytes-=bytes;++stagingTexturesReleased;++stagingTexturesTrimmed;
+            std::cerr<<"{\"nativeCompositorStagingTrimmed\":true,\"slot\":"<<index<<",\"bytes\":"<<bytes
+                <<",\"generation\":"<<slot.generation<<",\"reusedAfter\":"<<slot.reusedAfter
+                <<",\"inputCopyFenceObserved\":"<<input<<",\"outputCopyFenceObserved\":"<<output
+                <<",\"slotOccupied\":false,\"capacity\":3,\"liveTextureBytes\":"<<liveStagingTextureBytes
+                <<",\"serializedResidency\":true,\"commandsReset\":true}\n";
+            return true;
+        });
+        released=result.bytes;
+        if(result.failed) { failure=E_FAIL;return E_FAIL; }
+        return S_OK;
+    }
     CompositorPresenter()=default;
     ~CompositorPresenter() { stop(); }
     HRESULT initialize(LUID luid,driver_bridge::CompositorCaptureDesc desc,GpuUsageGuard usage = {},bool demand = false,
@@ -377,7 +417,7 @@ public:
         sources.clear();
         for (auto& slot:slots) {
             slot.inputCommands.Reset(); slot.outputCommands.Reset(); slot.inputAllocator.Reset(); slot.outputAllocator.Reset();
-            if(slot.texture) { slot.texture.Reset();++stagingTexturesReleased; }
+            if(slot.texture) { slot.texture.Reset();liveStagingTextureBytes-=slot.bytes;slot.bytes=0;++stagingTexturesReleased; }
         }
         auditReadback.Reset();auditRetired.Reset(); inputQueue.Reset(); outputQueue.Reset(); inputRetired.Reset(); outputRetired.Reset(); device.Reset();
         const bool closed=CloseHandle(work)!=FALSE; work=nullptr;
@@ -386,6 +426,7 @@ public:
             <<",\"completedAudits\":"<<completedAudits<<",\"peakQueued\":"<<peakQueued<<",\"peakSources\":"<<peakSources
             <<",\"onDemandStaging\":"<<(demandStaging?"true":"false")<<",\"stagingTexturesCreated\":"<<stagingTexturesCreated
             <<",\"stagingTexturesReleased\":"<<stagingTexturesReleased<<",\"stagingTextureBytes\":"<<stagingTextureBytes
+            <<",\"stagingTexturesTrimmed\":"<<stagingTexturesTrimmed<<",\"liveStagingTextureBytes\":"<<liveStagingTextureBytes
             <<",\"workHandleClosed\":"<<(closed?"true":"false")<<",\"inputEventClosed\":"<<(inputClosed?"true":"false")
             <<",\"uiThreadJoined\":true,\"liveGpuResources\":0,\"displayVerified\":false}\n";
         if (!closed || !inputClosed) ExitProcess(3);

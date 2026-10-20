@@ -380,7 +380,7 @@ class KmtDriver : public Driver {
     HRESULT lastCopyError = S_OK;
     static constexpr auto Invalid = static_cast<std::int32_t>(0xc000000du);
     static constexpr auto PagingTimeout = static_cast<std::int32_t>(0xc00000b5u);
-    bool reportedGpuUsageAcceptable(std::uint64_t additionalBytes=0,const char* presentationStage=nullptr) {
+    bool reportedGpuUsageAcceptable(std::uint64_t additionalBytes=0,const char* presentationStage=nullptr,std::uint64_t* observedUsage=nullptr) {
         std::lock_guard<std::mutex> lock(reportedUsageGuard);
         // This is a reported-usage guard, not an allocation-size decoder or
         // a pre-allocation hard quota. Nonresident allocations and transient
@@ -394,6 +394,7 @@ class KmtDriver : public Driver {
             total += info.CurrentUsage;
         }
         peakReportedGpuUsage = (std::max)(peakReportedGpuUsage, total);
+        if(observedUsage) *observedUsage=total;
         const bool fits=reportedGpuBudgetFits(total,additionalBytes,reportedGpuUsageLimit());
         if(presentationStage) std::cerr<<"{\"nativePresentationMemoryGuard\":true,\"stage\":\""<<presentationStage
             <<"\",\"usageBytes\":"<<total<<",\"additionalBytes\":"<<additionalBytes
@@ -1638,9 +1639,24 @@ public:
                 std::find(handles.begin(), handles.begin() + n, handles[n]) != handles.begin() + n ||
                 allocation->second.residencyAttempts >= MaxVendorResidencyAttempts) return {{Invalid, 0, 0}, {0, 0, 0}};
         }
-        if (!reportedGpuUsageAcceptable()) {
+        std::uint64_t usageBefore=0;
+        if (!reportedGpuUsageAcceptable(0,nullptr,&usageBefore)) {
             ++failedVendorResidency;
             return {{static_cast<std::int32_t>(0xc0000017u), 0, 0}, {0, 0, 0}};
+        }
+        const auto reclaimTarget=driver_shared::stagingPressureTarget(usageBefore,reportedGpuUsageLimit());
+        if(compositorOutput && reclaimTarget) {
+            std::uint64_t released=0,usageAfter=0;
+            if(FAILED(compositorOutput->reclaimStagingForResidency(reclaimTarget,released))) {
+                ++failedVendorResidency;
+                throw std::runtime_error("Cannot safely reclaim idle presentation staging before residency");
+            }
+            const bool fits=reportedGpuUsageAcceptable(0,nullptr,&usageAfter);
+            std::cerr<<"{\"nativeResidencyStagingPressure\":true,\"usageBefore\":"<<usageBefore
+                <<",\"usageAfter\":"<<usageAfter<<",\"targetBytes\":"<<reclaimTarget<<",\"releasedBytes\":"<<released
+                <<",\"reserveBytes\":"<<driver_shared::ResidencyStagingReserve<<",\"limitBytes\":"<<reportedGpuUsageLimit()
+                <<",\"beforeNativeResidency\":true,\"accepted\":"<<(fits?"true":"false")<<"}\n";
+            if(!fits) { ++failedVendorResidency;return {{static_cast<std::int32_t>(0xc0000017u),0,0},{0,0,0}}; }
         }
         D3DDDI_MAKERESIDENT a{}; a.hPagingQueue = queue; a.NumAllocations = desc.count;
         a.AllocationList = handles.data(); a.PriorityList = priorities.empty() ? nullptr : priorities.data();

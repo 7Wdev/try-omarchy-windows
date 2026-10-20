@@ -92,6 +92,10 @@ cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\bounded_input_channel_tes
 if not "%errorlevel%"=="0" exit /b %errorlevel%
 bounded-input-channel-test.exe
 if not "%errorlevel%"=="0" exit /b %errorlevel%
+cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\staging_reclaim_test.cpp" /Fe:staging-reclaim-test.exe
+if not "%errorlevel%"=="0" exit /b %errorlevel%
+staging-reclaim-test.exe
+if not "%errorlevel%"=="0" exit /b %errorlevel%
 cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\tcp_peer_owner_test.cpp" /Fe:tcp-peer-owner-test.exe /link ws2_32.lib iphlpapi.lib
 if not "%errorlevel%"=="0" exit /b %errorlevel%
 tcp-peer-owner-test.exe

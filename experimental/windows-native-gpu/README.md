@@ -1,10 +1,14 @@
 # Native Windows GPU experiment
 
-One real 4K NVIDIA guest now renders its Alacritty PTY input confirmation through
-a dedicated bounded QEMU input channel. The fresh repeat hits the unchanged
-1 GiB GPU-usage guard during shutdown and remains rejected. Physical Windows
-input and continuous desktop presentation are still unverified.
-See [the accepted frame, failed repeat and scope](../../docs/LIVE-UWSM-QMP-INPUT-RESPONSE.md).
+Two fresh 4K NVIDIA guests pass the complete Alacritty PTY input-response audit
+after safe reclamation of idle staging textures under residency pressure. Each
+actually releases 31.875 MiB after both copy fences retire, preserves three-slot
+capacity and passes live cleanup under the unchanged 1 GiB usage guard.
+Hardware reallocation during continued rendering, physical Windows input and
+continuous desktop presentation remain unverified.
+See [actual frames, two-run evidence and limits](../../docs/LIVE-UWSM-STAGING-RECLAIM.md).
+The [earlier input-response repeat failure](../../docs/LIVE-UWSM-QMP-INPUT-RESPONSE.md)
+retains its original rejected scope and evidence.
 
 The [native input discovery checkpoint](../../docs/LIVE-UWSM-NATIVE-INPUT-DISCOVERY.md)
 passes two fresh UWSM guests with the actual virtio keyboard and tablet enumerated
