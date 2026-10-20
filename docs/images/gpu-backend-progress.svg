@@ -1,30 +1,32 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="800" height="350" viewBox="0 0 800 350" role="img" aria-labelledby="title desc">
-  <title id="title">4K Hyprland frame captured on NVIDIA: wallpaper, bar and GPU application verified; backend 4 of 8 stages; desktop product 0 of 4 acceptance gates complete</title>
-  <desc id="desc">Two fresh UWSM-managed PAM/logind guests pass 4K wallpaper, bar and GPU application captures, five GPU application cycles, complete terminal reclamation and real guest keyboard/tablet discovery. Typed input and pointer delivery from the Windows window remain unverified. Earlier failures remain retained; long-run stability is open. Four backend stages are demonstrated; stages five and six are in progress. No desktop product gate is complete: normal first-boot/launcher/input, continuous multi-window display, reliability, recovery and performance remain open. Counts are checklists, not effort percentages. Updated October 20, 2026.</desc>
-  <rect width="800" height="350" rx="10" fill="#141b24"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="430" viewBox="0 0 960 430" role="img" aria-labelledby="title desc">
+  <title id="title">4K Omarchy desktop rendered on NVIDIA; wallpaper, bar and application verified; QMP input response demonstrated; backend 4 of 8 stages; product 0 of 4 gates</title>
+  <desc id="desc">The first correctly rendered Hyprland frame is demonstrated at 3840 by 2160 with the shipped wallpaper, Omarchy bar and readable GPU application. One complete QMP keyboard, pointer and rendered-response run passes; its fresh repeat fails the unchanged GPU usage guard. Four backend stages are demonstrated and stages five and six remain in progress. No desktop product gate is complete. Physical Windows-window input, normal launcher integration, continuous multi-window display, reliability and matched-native performance remain open. Checklist counts do not measure engineering effort. Updated October 20, 2026.</desc>
+  <rect width="960" height="430" rx="12" fill="#141b24"/>
   <g font-family="sans-serif">
-    <text x="20" y="30" fill="#eef4fc" font-size="18">4K Hyprland frame captured · NVIDIA GPU · 3/3 scene elements</text>
-    <g transform="translate(20 44)" fill="#51c38b">
-      <rect width="248" height="18" rx="4"/><rect x="256" width="248" height="18" rx="4"/><rect x="512" width="248" height="18" rx="4"/>
+    <text x="24" y="34" fill="#eef4fc" font-size="23">4K Omarchy desktop rendered on NVIDIA</text>
+    <text x="24" y="61" fill="#bac7d9" font-size="15">First Hyprland frame achieved · Actual GPU backbuffer: 3840×2160</text>
+    <g transform="translate(24 78)" fill="#51c38b">
+      <rect width="296" height="20" rx="4"/><rect x="308" width="296" height="20" rx="4"/><rect x="616" width="296" height="20" rx="4"/>
     </g>
-    <g fill="#bac7d9" font-size="13">
-      <text x="20" y="82">Shipped wallpaper</text><text x="276" y="82">Omarchy bar</text><text x="532" y="82">Readable GPU application</text>
+    <g fill="#bac7d9" font-size="14">
+      <text x="24" y="120">Shipped wallpaper</text><text x="332" y="120">Omarchy bar</text><text x="640" y="120">Readable GPU application</text>
     </g>
-    <text x="20" y="118" fill="#eef4fc" font-size="17">Backend verification · 4/8 stages demonstrated</text>
-    <g transform="translate(20 132)">
-      <rect width="88" height="18" rx="4" fill="#51c38b"/><rect x="96" width="88" height="18" rx="4" fill="#51c38b"/>
-      <rect x="192" width="88" height="18" rx="4" fill="#51c38b"/><rect x="288" width="88" height="18" rx="4" fill="#51c38b"/>
-      <rect x="384" width="88" height="18" rx="4" fill="#e0aa49"/><rect x="480" width="88" height="18" rx="4" fill="#e0aa49"/>
-      <rect x="576" width="88" height="18" rx="4" fill="#3b4657"/><rect x="672" width="88" height="18" rx="4" fill="#3b4657"/>
+    <text x="24" y="156" fill="#eef4fc" font-size="16">QMP keys + cursor + rendered response: one complete run passes</text>
+    <text x="24" y="179" fill="#e0aa49" font-size="14">Fresh repeat fails the GPU-usage guard; physical Windows input remains unverified.</text>
+    <text x="24" y="215" fill="#eef4fc" font-size="18">Backend verification · 4/8 stages demonstrated</text>
+    <g transform="translate(24 230)">
+      <rect width="103.5" height="20" rx="4" fill="#51c38b"/><rect x="115.5" width="103.5" height="20" rx="4" fill="#51c38b"/>
+      <rect x="231" width="103.5" height="20" rx="4" fill="#51c38b"/><rect x="346.5" width="103.5" height="20" rx="4" fill="#51c38b"/>
+      <rect x="462" width="103.5" height="20" rx="4" fill="#e0aa49"/><rect x="577.5" width="103.5" height="20" rx="4" fill="#e0aa49"/>
+      <rect x="693" width="103.5" height="20" rx="4" fill="#3b4657"/><rect x="808.5" width="103.5" height="20" rx="4" fill="#3b4657"/>
     </g>
-    <text x="20" y="192" fill="#eef4fc" font-size="17">Desktop product · 0/4 acceptance gates complete</text>
-    <g transform="translate(20 206)">
-      <rect width="184" height="18" rx="4" fill="#e0aa49"/><rect x="192" width="184" height="18" rx="4" fill="#e0aa49"/>
-      <rect x="384" width="184" height="18" rx="4" fill="#3b4657"/><rect x="576" width="184" height="18" rx="4" fill="#3b4657"/>
+    <text x="24" y="288" fill="#eef4fc" font-size="18">Desktop product · 0/4 acceptance gates complete</text>
+    <g transform="translate(24 303)">
+      <rect width="219" height="20" rx="4" fill="#e0aa49"/><rect x="231" width="219" height="20" rx="4" fill="#e0aa49"/>
+      <rect x="462" width="219" height="20" rx="4" fill="#e0aa49"/><rect x="693" width="219" height="20" rx="4" fill="#3b4657"/>
     </g>
-    <text x="20" y="258" fill="#eef4fc" font-size="14">UWSM + GPU app cycles pass twice · Guest keyboard/tablet discovered</text>
-    <text x="20" y="284" fill="#bac7d9" font-size="13">Next: Windows-window input + sustained multi-window display · Client: 1280×720</text>
-    <text x="20" y="310" fill="#bac7d9" font-size="12">Green: verified · Amber: in progress · Gray: pending · Updated 2026-10-20</text>
-    <text x="20" y="332" fill="#bac7d9" font-size="12">Checklist counts do not measure engineering effort or product readiness.</text>
+    <text x="24" y="359" fill="#eef4fc" font-size="15">Next: physical Windows input, normal launcher and sustained multi-window display</text>
+    <text x="24" y="386" fill="#bac7d9" font-size="13">Green: demonstrated · Amber: in progress · Gray: pending · Updated 2026-10-20</text>
+    <text x="24" y="409" fill="#bac7d9" font-size="13">Diagnostic client: 1280×720 · Checklist counts do not measure effort or product readiness.</text>
   </g>
 </svg>
