@@ -51,6 +51,7 @@ jobs:
           experimental/windows-native-gpu/build.ps1 -StreamingDiagnostic
           python experimental/windows-native-gpu/test_4k_cli.py --bridge experimental/windows-native-gpu/build-stream/driver-bridge.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          experimental/windows-native-gpu/sdl-interop/build.ps1 -OutputDirectory (Join-Path $env:RUNNER_TEMP 'sdl-d3d12-interop')
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: native-gpu-experiment

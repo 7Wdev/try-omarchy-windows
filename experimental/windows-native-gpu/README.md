@@ -5,6 +5,13 @@ cursor and reserved-key logic and QEMU SDL input path. Connect the graphics
 backend to that frontend. The fixed QMP test and separate native window remain
 diagnostics. [Verified upstream source map and integration boundary](../../docs/UPSTREAM-INPUT-GRAPHICS-INTEGRATION.md).
 
+The next graphics boundary now has two passing **host SDL/D3D12 interop controls**:
+named 4K GPU textures, distinct producer/consumer fences and independently
+verified complete source/SDL backbuffers. The window stays hidden; QEMU guest
+scanout remains unverified. A separate OpenGL-enabled QEMU build candidate
+retains all 24 official runtime patches and passes the existing input controls.
+See [frozen evidence, build instructions and scope](../../docs/LIVE-SDL-D3D12-INTEROP.md).
+
 Two fresh guests now pass **300 actual 4K NVIDIA handoffs with real application
 resizing**. The same terminal grows to 1440×960 and 1600×1000, then returns to
 1200×800 while handoffs continue. Complete first/last GPU buffers independently

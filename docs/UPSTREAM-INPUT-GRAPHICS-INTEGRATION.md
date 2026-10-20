@@ -42,8 +42,10 @@ The graphics integration must:
 4. Validate keyboard, pointer, cursor and focus through that official window,
    alongside the 4K GPU-content and cleanup checks.
 
-The GPU texture import and synchronization path still needs implementation and
-hardware validation. A CPU screenshot upload would not establish the requested
+The [host SDL/D3D12 interop component](LIVE-SDL-D3D12-INTEROP.md) now passes two
+bounded GPU controls with separate producer/consumer fences. Its connection to
+QEMU's actual console/scanout path still needs implementation and hardware
+validation. A CPU screenshot upload would not establish the requested
 GPU presentation or performance result. The existing diagnostic window and
 QMP tests do not prove integration with the official frontend.
 
