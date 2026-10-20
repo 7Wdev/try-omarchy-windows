@@ -23,7 +23,7 @@ Hyprland also enumerates QEMU's keyboard and tablet through the guest input seat
 Typed input and pointer delivery from the Windows window remain unverified.
 This bounded repeat does not establish long-run memory stability.
 
-[Actual UWSM image, reproducible evidence and retained failures](LIVE-UWSM-NATIVE-INPUT-DISCOVERY.md)
+[Actual UWSM image, reproducible evidence and retained failures](https://github.com/7Wdev/try-omarchy-windows/blob/2abc463db5cdb8c2b62b3c0526fe60932f9acde7/docs/LIVE-UWSM-NATIVE-INPUT-DISCOVERY.md)
 bind every application and the shell to authenticated NVIDIA renderers, real
 resource FDs and independent recipient NT references. The
 [earlier CPU-scan removal checkpoint](https://github.com/7Wdev/try-omarchy-windows/blob/cb505099ef461603c45ccc8b322031546966ee36/docs/LIVE-OMARCHY-GPU-LIFECYCLES.md)

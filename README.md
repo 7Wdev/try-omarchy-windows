@@ -23,9 +23,9 @@ Hyprland now also discovers QEMU's keyboard and tablet through the real guest in
 **Typed input and pointer delivery from the Windows window remain unverified.**
 Demand-allocated staging avoids preparing about **64 MiB at startup** while retaining all three ring slots.
 Both runs stay below the unchanged **1 GiB reported GPU usage guard**. Earlier failures remain retained.
-[Actual frame, reconstructable raw evidence and scope](docs/LIVE-UWSM-NATIVE-INPUT-DISCOVERY.md).
+[Actual frame, reconstructable raw evidence and scope](https://github.com/7Wdev/try-omarchy-windows/blob/2abc463db5cdb8c2b62b3c0526fe60932f9acde7/docs/LIVE-UWSM-NATIVE-INPUT-DISCOVERY.md).
 
-![Actual unedited 4K UWSM-managed NVIDIA desktop](docs/images/omarchy-4k-input-discovery-gpu-2026-10-20.png)
+![Actual unedited 4K UWSM-managed NVIDIA desktop](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/2abc463db5cdb8c2b62b3c0526fe60932f9acde7/docs/images/omarchy-4k-input-discovery-gpu-2026-10-20.png)
 
 The image is run 89, frame 12, converted directly from the GPU backbuffer. This uses a disposable
 session fixture; normal first-boot and launcher/input integration remain open. The separate Windows
