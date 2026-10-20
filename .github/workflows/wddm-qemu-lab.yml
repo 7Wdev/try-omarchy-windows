@@ -44,6 +44,10 @@ jobs:
       - name: Verify shared memory through real QEMU
         shell: pwsh
         run: python experimental/qemu/test_section.py --qemu qemu-lab/bin/qemu-system-x86_64.exe --firmware qemu-lab/share/qemu
+      - name: Verify SDL relay registration and bounded properties without a GPU
+        if: matrix.variant == 'sdl-opengl'
+        shell: pwsh
+        run: python experimental/qemu/test_sdl_relay_cli.py --qemu qemu-lab/bin/qemu-system-x86_64.exe --firmware qemu-lab/share/qemu
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         with:

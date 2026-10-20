@@ -4,6 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import shutil
 import subprocess
 
 INPUT_PATHS = ('ui/sdl2.c', 'include/ui/sdl2.h', 'ui/input.c', 'hw/input', 'include/hw/input')
@@ -35,9 +36,19 @@ def prepare(source):
         subprocess.run(['git', '-C', str(source), 'apply', '--check', str(path)], check=True)
         subprocess.run(['git', '-C', str(source), 'apply', str(path)], check=True)
         applied.append(item)
+    graphics_patch = root / 'experimental/qemu/sdl-gpu-relay.patch'
+    subprocess.run(['git', '-C', str(source), 'apply', '--check', str(graphics_patch)], check=True)
+    subprocess.run(['git', '-C', str(source), 'apply', str(graphics_patch)], check=True)
+    graphics_sources = {}
+    for name in ('wddm-sdl-relay.c', 'wddm-sdl-command.h'):
+        path = root / 'experimental/qemu' / name
+        shutil.copyfile(path, source / 'hw/display' / name)
+        graphics_sources[name] = hashlib.sha256(path.read_bytes()).hexdigest()
     value = dict(schema=1, qemuBaseCommit=lock['commit'],
                  officialRuntimeLockSha256=hashlib.sha256(lock_path.read_bytes()).hexdigest(),
                  officialRuntimePatches=applied, officialInputSourceInitiallyUnchanged=True,
+                 graphicsRelayPatchSha256=hashlib.sha256(graphics_patch.read_bytes()).hexdigest(),
+                 graphicsRelaySources=graphics_sources,
                  inputFiles={name:hashlib.sha256((source/name).read_bytes()).hexdigest()
                              for name in sorted(input_files) if (source/name).is_file()},
                  graphicsBuildCandidate=True, guestFrameVerified=False, officialFrontendIntegrationVerified=False)

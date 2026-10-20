@@ -72,6 +72,10 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - name: Check bounded SDL relay host command grammar
+        run: |
+          cc -std=c11 -O2 -Wall -Wextra -Werror experimental/qemu/sdl_command_test.c -o /tmp/sdl-command-test
+          /tmp/sdl-command-test
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           repository: microsoft/DirectX-Headers

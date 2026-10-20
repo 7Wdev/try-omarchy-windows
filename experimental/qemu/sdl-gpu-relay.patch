@@ -1,0 +1,55 @@
+--- a/include/ui/console.h
++++ b/include/ui/console.h
+@@ -374,6 +374,8 @@
+     void (*text_update)(void *opaque, console_ch_t *text);
+     void (*ui_info)(void *opaque, uint32_t head, QemuUIInfo *info);
+     void (*gl_block)(void *opaque, bool block);
++    /* Optional diagnostic hook after a GL blit, before window swap. */
++    void (*gl_scanout_audit)(void *opaque, uint32_t width, uint32_t height);
+ } GraphicHwOps;
+ 
+ QemuConsole *graphic_console_init(DeviceState *dev, uint32_t head,
+@@ -389,6 +391,7 @@
+ void graphic_hw_invalidate(QemuConsole *con);
+ void graphic_hw_text_update(QemuConsole *con, console_ch_t *chardata);
+ void graphic_hw_gl_block(QemuConsole *con, bool block);
++void graphic_hw_gl_scanout_audit(QemuConsole *con, uint32_t width, uint32_t height);
+ 
+ void qemu_console_early_init(void);
+ 
+--- a/ui/console.c
++++ b/ui/console.c
+@@ -1116,6 +1116,13 @@
+     }
+ }
+ 
++void graphic_hw_gl_scanout_audit(QemuConsole *con, uint32_t width, uint32_t height)
++{
++    if (con->hw_ops->gl_scanout_audit) {
++        con->hw_ops->gl_scanout_audit(con->hw, width, height);
++    }
++}
++
+ void dpy_gl_update(QemuConsole *con,
+                    uint32_t x, uint32_t y, uint32_t w, uint32_t h)
+ {
+--- a/ui/sdl2-gl.c
++++ b/ui/sdl2-gl.c
+@@ -256,6 +256,7 @@
+     SDL_GetWindowSize(scon->real_window, &ww, &wh);
+     egl_fb_setup_default(&scon->win_fb, ww, wh, 0, 0);
+     egl_fb_blit(&scon->win_fb, &scon->guest_fb, !scon->y0_top);
++    graphic_hw_gl_scanout_audit(dcl->con, ww, wh);
+ 
+     SDL_GL_SwapWindow(scon->real_window);
+ 
+--- a/hw/display/meson.build
++++ b/hw/display/meson.build
+@@ -142,3 +142,7 @@
+ system_ss.add(when: 'CONFIG_OMAP', if_true: files('omap_lcdc.c'))
+ 
+ modules += { 'hw-display': hw_display_modules }
++
++if host_os == 'windows' and opengl.found()
++  system_ss.add(files('wddm-sdl-relay.c'), opengl, pixman)
++endif
