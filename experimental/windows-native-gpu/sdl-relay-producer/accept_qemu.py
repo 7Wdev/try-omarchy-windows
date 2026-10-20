@@ -152,7 +152,9 @@ def accept(candidate,build,output,frames=2,tcg=False):
         for text in ('present:1:1','attach:2','attach:01'):
             result['negativeControls'].append(dict(command=text,error=qmp.command(text,error=True)))
         qmp.command('attach:1');state=qmp.state();result['states'].append(state)
-        if not state['attached'] or state['poisoned'] or state['adapterLuid']!=ready['adapterLuid'] or \
+        if not state['attached'] or state['poisoned'] or not state['rootAdapterVerified'] or \
+           state['liveImportedObjects']!=4 or not state['importContextLive'] or not state['localScanoutLive'] or \
+           state['adapterLuid']!=ready['adapterLuid'] or \
            state['vendor']!='NVIDIA Corporation' or 'NVIDIA' not in state['renderer']:
             raise ValueError('QEMU root context is not the matching hardware NVIDIA adapter')
         for text in ('attach:1','present:1:2'):
@@ -175,7 +177,9 @@ def accept(candidate,build,output,frames=2,tcg=False):
                state['auditFrames']!=(2 if frame==frames else 1):
                 raise ValueError('QEMU frame/audit ownership mismatch')
         qmp.command('detach:1');state=qmp.state();result['states'].append(state)
-        if state['attached'] or state['poisoned']:raise ValueError('GPU relay did not detach cleanly')
+        if state['attached'] or state['poisoned'] or state['liveImportedObjects'] or \
+           state['importContextLive'] or state['localScanoutLive']:
+            raise ValueError('GPU relay did not detach cleanly')
         result['negativeControls'].append(dict(command='attach:1',error=qmp.command('attach:1',error=True)))
         producer.send('close');done=producer.receive('namedProducerComplete')
         if not done['gpuObjectsReleased'] or done['frames']!=frames or done['exportsClosed']!=3:

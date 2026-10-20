@@ -4,7 +4,7 @@
 #include "qapi/error.h"
 #include "qemu/module.h"
 #include "qemu/error-report.h"
-#include "hw/core/sysbus.h"
+#include "hw/core/qdev.h"
 #include "hw/core/qdev-properties.h"
 #include "migration/blocker.h"
 #include "ui/console.h"
@@ -18,7 +18,7 @@
 OBJECT_DECLARE_SIMPLE_TYPE(WddmSdlRelay, WDDM_SDL_RELAY)
 
 struct WddmSdlRelay {
-    SysBusDevice parent_obj;
+    DeviceState parent_obj;
     QemuConsole *con;
     QEMUGLContext import_context;
     char *session, *expected_luid, *audit_directory;
@@ -28,7 +28,7 @@ struct WddmSdlRelay {
     uint64_t generation, last_frame, pending_frame, audit_frames;
     uint64_t source_fnv, window_fnv;
     GLuint memory, source_texture, scanout_texture, producer, consumer;
-    bool attached, ever_attached, poisoned, pending_audit, audit_called;
+    bool attached, ever_attached, poisoned, pending_audit, audit_called, root_verified;
     Error *migration_blocker;
 };
 
@@ -163,6 +163,7 @@ static bool relay_attach(WddmSdlRelay *s, Error **errp)
         goto fail;
     }
     s->attached = s->ever_attached = true;
+    s->root_verified = true;
     return true;
 fail:
     if (s->import_context) {
@@ -397,6 +398,10 @@ static char *relay_state(Object *object, Error **errp)
     qdict_put_bool(value, "attached", s->attached);
     qdict_put_bool(value, "poisoned", s->poisoned);
     qdict_put_bool(value, "everAttached", s->ever_attached);
+    qdict_put_bool(value, "rootAdapterVerified", s->root_verified);
+    qdict_put_bool(value, "importContextLive", s->import_context != NULL);
+    qdict_put_bool(value, "localScanoutLive", s->scanout_texture != 0);
+    qdict_put_int(value, "liveImportedObjects", !!s->memory + !!s->source_texture + !!s->producer + !!s->consumer);
     qdict_put_int(value, "generation", s->generation);
     qdict_put_int(value, "lastQueuedFrame", s->last_frame);
     qdict_put_int(value, "auditFrames", s->audit_frames);
@@ -478,13 +483,14 @@ static void relay_class_init(ObjectClass *klass, const void *data)
     device->realize = relay_realize;
     device->unrealize = relay_unrealize;
     device->hotpluggable = false;
+    device->user_creatable = true;
     device->desc = "Host-owned named D3D12 GPU texture relay to the existing SDL console";
     device_class_set_props(device, relay_properties);
     object_class_property_add_str(klass, "relay-command", NULL, relay_command);
     object_class_property_add_str(klass, "relay-state", relay_state, NULL);
 }
 static const TypeInfo relay_info = {
-    .name = TYPE_WDDM_SDL_RELAY, .parent = TYPE_SYS_BUS_DEVICE,
+    .name = TYPE_WDDM_SDL_RELAY, .parent = TYPE_DEVICE,
     .instance_size = sizeof(WddmSdlRelay), .instance_finalize = relay_finalize,
     .class_init = relay_class_init,
 };
