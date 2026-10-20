@@ -86,9 +86,25 @@ evidence. The original modified dependency checkout is preserved.
 The new [SDL/OpenGL build variant](../experimental/qemu/README.md#sdlopengl-build-candidate)
 enables the compiled GL path, reruns those controls and retains input-source
 hashes/configuration. The section-only variant remains available separately.
-At this checkpoint the Windows candidate build is running; successful patch
-controls and host interop do not establish a compiled QEMU frontend or guest
-scanout. Neither variant is selected by the released launcher.
+Both [Windows variants build and pass their memory controls](https://github.com/7Wdev/try-omarchy-windows/actions/runs/39480803808).
+The downloaded OpenGL ZIP matches GitHub's SHA-256 digest; all 209 extracted
+files have retained hashes. Its configuration enables SDL and OpenGL, its SDL
+DLL exactly matches the hardware controls above, and its four input-source
+hashes match the independently checked source worktree.
+
+A local **paused, disk-free QEMU** starts with both **TCG and WHPX**, SDL/GL enabled and the official
+virtio keyboard/tablet devices. An owned loopback QMP connection verifies VM
+identity, paused status, absolute tablet and the actual SDL display options,
+then obtains a natural zero exit. The first batched-stdin fixture timed out
+after 25 seconds; its cause remains unestablished. The retained subsequent
+socket fixture passes without relaxing the bounded startup or ownership checks.
+[Build, artifact and local startup evidence](evidence/QEMU-SDL-OPENGL-CANDIDATE-2026-10-20.json)
+also records **431 passing local milestone tests**.
+
+This startup result does not identify the QEMU window's GPU renderer. Actual
+NVIDIA adapter identity, cross-process GPU import and guest texture scanout
+through that frontend remain unverified. Neither variant is selected by the
+released launcher.
 
 Next is a graphics-only QEMU console/scanout relay with explicit session,
 buffer-generation and fence ownership. Context sharing, display dimensions,

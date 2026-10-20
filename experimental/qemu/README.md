@@ -18,6 +18,13 @@ launcher's selected runtime. Normal desktop, physical input and performance
 acceptance still require hardware verification. The graphics integration must
 retain the official SDL/launcher keyboard and cursor logic.
 
+Both Windows variants now build successfully. The digest-verified OpenGL
+artifact also passes local paused, disk-free SDL/GL startup with TCG and WHPX, owned QMP, absolute
+tablet discovery and natural shutdown. Its input-source hashes and SDL DLL
+match the independently verified controls. This does not yet identify QEMU's
+GPU renderer or prove guest GPU scanout.
+[Build, artifact and startup evidence](../../docs/evidence/QEMU-SDL-OPENGL-CANDIDATE-2026-10-20.json).
+
 ## Shared-memory and aperture diagnostics
 
 The fence hub now accepts an explicit `slot-count=512` layout for upcoming
