@@ -9,6 +9,10 @@ permissions:
   contents: read
 jobs:
   windows-qemu:
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [sections, sdl-opengl]
     runs-on: windows-2025
     timeout-minutes: 45
     steps:
@@ -23,6 +27,7 @@ jobs:
             mingw-w64-ucrt-x86_64-dtc
             mingw-w64-ucrt-x86_64-gcc
             mingw-w64-ucrt-x86_64-glib2
+            mingw-w64-ucrt-x86_64-libepoxy
             mingw-w64-ucrt-x86_64-meson
             mingw-w64-ucrt-x86_64-ninja
             mingw-w64-ucrt-x86_64-pixman
@@ -33,6 +38,8 @@ jobs:
       - name: Build pinned QEMU with section backend
         id: build
         shell: msys2 {0}
+        env:
+          QEMU_SDL_OPENGL_CANDIDATE: ${{ matrix.variant == 'sdl-opengl' && '1' || '0' }}
         run: bash experimental/qemu/build_qemu.sh qemu-lab
       - name: Verify shared memory through real QEMU
         shell: pwsh
@@ -40,7 +47,7 @@ jobs:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         with:
-          name: qemu-win32-section-lab
+          name: ${{ matrix.variant == 'sdl-opengl' && 'qemu-sdl-opengl-candidate' || 'qemu-win32-section-lab' }}
           path: |
             qemu-lab/bin
             qemu-lab/share
@@ -48,3 +55,6 @@ jobs:
             qemu-lab/build-packages.txt
             qemu-lab/dll-sources.txt
             qemu-lab/config-host.mak
+            qemu-lab/config-host.h
+            qemu-lab/sdl-candidate-provenance.json
+            qemu-lab/sdl-input-controls.log

@@ -1,5 +1,25 @@
 # QEMU Windows section memory lab
 
+## SDL/OpenGL build candidate
+
+The separate `sdl-opengl` CI variant enables OpenGL and applies all 24 official
+QEMU runtime patches, unchanged, after the shared-memory lab patches. It runs
+the existing SDL pointer, cursor, keyboard-hook and scanout controls and retains
+their log, compiled configuration and input-source hashes in the artifact.
+The `sections` variant keeps its existing configuration and artifact name.
+
+```sh
+QEMU_SDL_OPENGL_CANDIDATE=1 bash experimental/qemu/build_qemu.sh qemu-sdl-lab
+```
+
+This prepares the existing SDL frontend for the NVIDIA graphics handoff. It
+does not yet connect guest GPU textures to that frontend or change the
+launcher's selected runtime. Normal desktop, physical input and performance
+acceptance still require hardware verification. The graphics integration must
+retain the official SDL/launcher keyboard and cursor logic.
+
+## Shared-memory and aperture diagnostics
+
 The fence hub now accepts an explicit `slot-count=512` layout for upcoming
 concurrent desktop-client tests. Its BAR uses the requested count; existing
 64/128/256 layouts keep their extents, bounds and generation checks. This is
