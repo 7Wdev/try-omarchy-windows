@@ -10,49 +10,48 @@ The experimental QEMU/WHPX bridge now captures a real **3840×2160 Omarchy deskt
 the shipped wallpaper, Omarchy bar and readable Alacritty application appear together.
 Full integration into the Windows launcher and a stable interactive desktop remain in development.
 
-![4K NVIDIA desktop and QMP input response pass twice with idle staging reclamation; backend 4/8 stages; desktop product 0/4 gates](docs/images/gpu-backend-progress-staging-reclaim-2026-10-20.svg)
+![Two 300-frame NVIDIA application-resize runs pass; official input code retained; backend 4/8 stages; desktop product 0/4 gates](docs/images/gpu-backend-progress-sustained-resize-2026-10-20.svg)
 
-**Verified progress — October 20, 2026:** two input-discovery guests (runs 88–89) run Hyprland through **UWSM in
-a real PAM/logind session**, with an independently verified active compositor service and graphical target.
-Each passes **five GPU application
-launch/close cycles**, twelve 4K handoffs, exact first/last backbuffer audits and natural shutdown.
-Every client actor, including the primary compositor, is reclaimed **before native disconnect**;
-all backing mappings and native children are reclaimed **before VM exit**.
-Hyprland, Quickshell and every Alacritty application use NVIDIA.
-Hyprland now also discovers QEMU's keyboard and tablet through the real guest input seat.
-**Two later fresh guests (runs 95–96) pass the complete QMP keyboard, pointer and
-GPU-rendered application response audit after safe staging reclamation.**
-Each releases **31.875 MiB** of idle staging after both copy fences retire and
-passes live cleanup under the unchanged usage guard. This is a bounded repeat;
-hardware reallocation during rendering and long-run stability remain unverified.
-Physical Windows-window input remains unverified.
-Demand-allocated staging avoids preparing about **64 MiB at startup** while retaining all three ring slots.
-Those two discovery runs stay below the unchanged **1 GiB reported GPU usage guard**.
-The earlier input-response repeat's failure remains retained.
-[Actual frame, two-run reclamation evidence and limits](https://github.com/7Wdev/try-omarchy-windows/blob/bf60d2848f831be892f8c5e69b686bcedb98644e/docs/LIVE-UWSM-STAGING-RECLAIM.md).
+**Latest verified checkpoint — October 20, 2026:** two fresh guests (runs 99–100)
+pass **300 actual 4K GPU handoffs** while the same NVIDIA application grows from
+1440×960 to 1600×1000 and returns to 1200×800. Complete first/last backbuffers
+independently verify the enlarged panel and restored wallpaper. Each also passes
+five GPU application launch/close cycles, the QMP input-response diagnostic and
+natural shutdown with no mappings or native children deferred to VM exit.
 
-![Actual unedited 4K NVIDIA desktop with wallpaper, bar and the application's green input confirmation](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/bf60d2848f831be892f8c5e69b686bcedb98644e/docs/images/omarchy-4k-staging-reclaim-gpu-2026-10-20.png)
+**Product priority: retain the official keyboard/cursor code and QEMU SDL input
+path, including the launcher's reserved-key routing.** Forty input-related source,
+patch and control files are unchanged from the inspected official commit.
+The new graphics backend still needs integration with that frontend.
+[Verified upstream source map and integration boundary](https://github.com/7Wdev/try-omarchy-windows/blob/c6b554458583d14ea9fc6ef432b75d2a0aacc2a4/docs/UPSTREAM-INPUT-GRAPHICS-INTEGRATION.md).
 
-The image is run 96, frame 12, converted directly from the GPU backbuffer. This uses a disposable
-session fixture; normal first-boot and launcher/input integration remain open. The separate Windows
-diagnostic client area is 1280×720; physical 4K scanout and all-frame display remain unverified.
-The released launcher still uses the upstream graphics runtime.
+![Actual unedited 4K NVIDIA desktop after application resizing and input response](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/c6b554458583d14ea9fc6ef432b75d2a0aacc2a4/docs/images/omarchy-4k-restored-application-gpu-2026-10-20.png)
+
+This is run 100, frame 300, converted directly from the complete GPU backbuffer.
+[Enlarged/restored images, four-run raw evidence and scope](https://github.com/7Wdev/try-omarchy-windows/blob/c6b554458583d14ea9fc6ef432b75d2a0aacc2a4/docs/LIVE-UWSM-SUSTAINED-RESIZE.md).
+Hyprland and the applications run through UWSM in a verified PAM/logind session,
+using a disposable seeded account and RAM overlay. The source disk is read-only.
+The separate diagnostic Windows client is 1280×720; physical 4K scanout and
+every-frame display remain unverified. The released launcher uses the upstream
+graphics runtime.
 
 | Progress measure | Verified status | What remains |
 | --- | --- | --- |
-| 4K diagnostic scene elements | **3/3:** shipped wallpaper, Omarchy bar, readable GPU application; repeated direct-start captures and two passing UWSM runs | This counts captured scene content, not interactive desktop acceptance. |
-| Backend verification stages | **4/8 demonstrated; stages 5–6 in progress** | Sustained device/buffer integration, API coverage and product validation. |
-| QMP input-response diagnostic | **Two complete runs pass with idle staging reclamation:** real PTY text, expected cursor motion, GPU-rendered confirmation | Earlier repeat failure retained. Hardware reallocation, physical Windows input and sustained interaction remain unverified. |
-| Desktop product acceptance | **0/4 complete; first three gates in progress** | Normal account setup/launcher/input, continuous multi-window display, longer workloads, recovery and matched-native performance. |
+| 4K diagnostic scene | **3/3:** shipped wallpaper, Omarchy bar, readable GPU application | Normal launcher presentation and usable desktop acceptance. |
+| Bounded rendering/input response | **Two 300-frame resize runs pass**, plus two separate 300-frame input-response baselines | Long runs, physical input through the official frontend and simultaneous application windows. |
+| Backend stages | **4/8 demonstrated; stages 5–6 in progress** | Supported device integration, broader APIs, recovery and performance. |
+| Desktop product gates | **0/4 complete; first three in progress** | Normal account/launcher integration, continuous multi-window display, reliability and matched-native performance. |
 
-**UWSM startup, live resource reuse and terminal cleanup pass twice in bounded diagnostics.** Longer-run
-stability remains open. The earlier
-[CPU-scan removal checkpoint](https://github.com/7Wdev/try-omarchy-windows/blob/cb505099ef461603c45ccc8b322031546966ee36/docs/LIVE-OMARCHY-GPU-LIFECYCLES.md)
-retains its measured 0.28–0.53-second application retirement result. Complete frame-byte audits remain enabled.
-**First 4K desktop frame: achieved. Next:** test longer rendering and staging reallocation, verify physical Windows-window
-key/pointer delivery, integrate the normal launcher and sustain multi-window presentation.
-The checklist counts are not percentages of engineering effort.
-[Current roadmap, gate definitions and evidence](docs/GPU-BACKEND-PROGRESS.md).
+The **1 GiB reported GPU usage guard is unchanged**. Idle staging reclamation
+passes, but the trims still occur after the streams; hardware reallocation of a
+trimmed slot during continued rendering remains unverified. Earlier failures
+and their original evidence remain retained.
+
+**First 4K desktop frame: achieved. Next:** connect GPU presentation to the
+official QEMU SDL frontend while preserving input, and exercise sustained
+resource churn and simultaneous windows.
+The checklist counts do not measure engineering effort.
+[Gate definitions and evidence](docs/GPU-BACKEND-PROGRESS.md).
 
 Vulkan, CUDA, video acceleration, broader NVIDIA features, concurrent Windows/guest workloads
 and **≥93% matched-native performance** each still require real-application acceptance tests.

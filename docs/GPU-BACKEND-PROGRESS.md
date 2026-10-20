@@ -4,9 +4,20 @@ Updated **2026-10-20**. This page tracks the experimental QEMU/WHPX Windows-nati
 NVIDIA backend. The released Try Omarchy launcher continues using the upstream
 graphics runtime.
 
-![4K NVIDIA desktop and QMP input response pass twice with idle staging reclamation; backend stages 4/8; desktop product gates 0/4](images/gpu-backend-progress-staging-reclaim-2026-10-20.svg)
+![Two 300-frame NVIDIA resize runs pass; official input retained; backend stages 4/8; desktop gates 0/4](images/gpu-backend-progress-sustained-resize-2026-10-20.svg)
 
 ## What is verified now?
+
+**Latest follow-up:** two fresh guests pass **300 GPU handoffs with real
+application resizing**, independently verified enlarged/restored scene pixels,
+QMP input response and live cleanup. Two earlier 300-frame input-response
+baselines remain separate. [Images, raw evidence and scope](https://github.com/7Wdev/try-omarchy-windows/blob/c6b554458583d14ea9fc6ef432b75d2a0aacc2a4/docs/LIVE-UWSM-SUSTAINED-RESIZE.md).
+The product should preserve the official keyboard/cursor code and QEMU SDL
+input path. Forty input-related files are unchanged; graphics still needs
+integration with that frontend. [Source-preservation record and integration boundary](https://github.com/7Wdev/try-omarchy-windows/blob/c6b554458583d14ea9fc6ef432b75d2a0aacc2a4/docs/UPSTREAM-INPUT-GRAPHICS-INTEGRATION.md).
+The staging trims still occur after the streams; hardware reallocation while
+rendering remains open. The earlier results below keep their own scope.
+
 
 Two fresh guests pass **UWSM in a real PAM/logind session**.
 Independent supervisor queries verify the active compositor service, exact
@@ -71,7 +82,7 @@ retains its original scope and failures.
 | 3. 4K guest shaders and shared GPU textures | Demonstrated in the lab | [Independent 4K shader pixels, GPU copies and fence retirement](https://github.com/7Wdev/try-omarchy-windows/blob/2290aa6209289dddfbae54b542c524927414c020/docs/LIVE-GPU-4K.md). |
 | 4. Repeated guest rendering | Demonstrated in bounded diagnostics | [64-frame guest runs](https://github.com/7Wdev/try-omarchy-windows/blob/2290aa6209289dddfbae54b542c524927414c020/docs/LIVE-GPU-GUEST-STREAM.md), safe allocator/texture reuse and explicit cleanup. This is not long-run desktop or all-frame display acceptance. |
 | 5. Guest graphics/device integration | In progress | Native render-node/GBM, EGL fences, separate GPU clients, 4K captures and five application lifecycles with live reclamation pass twice. Supported device integration, recovery and sustained work remain required. |
-| 6. Interactive Omarchy/Hyprland desktop | In progress: two bounded 4K QMP input-response runs pass after idle staging reclamation; earlier failure retained | Validate physical Windows input, the normal launcher session, continuous correctly displayed frames, real apps, focus, resizing, fullscreen and multiple windows. |
+| 6. Interactive Omarchy/Hyprland desktop | In progress: two 300-frame 4K application-resize/input-response runs pass; earlier failures retained | Integrate graphics with the official SDL frontend and retained input, then validate normal launcher sessions, continuous display, focus, fullscreen and multiple windows. |
 | 7. Required APIs and NVIDIA features | Pending acceptance | OpenGL diagnostics pass; test general OpenGL, Vulkan, CUDA, video and NVIDIA capabilities in real guest applications. |
 | 8. Reliability and ≥93% native performance | Pending acceptance | Matched guest/native benchmarks through 4K, concurrent host/guest GPU workloads, long runs, bounded memory and device/VM recovery. |
 
@@ -90,8 +101,9 @@ not close the broader product requirements below.
 
 ## Remaining work
 
-1. Extend idle staging reclamation to continued hardware trim/reallocation and
-   longer rendering without relaxing the usage guard; verify physical Windows-window input.
+1. Integrate graphics with the official QEMU SDL frontend while retaining its
+   keyboard/cursor logic; extend hardware trim/reallocation and longer rendering
+   without relaxing the usage guard.
 2. Integrate the supported guest device path, normal first-boot session and Windows
    launcher/input, with independently verified continuous presentation.
 3. Extend the bounded live-retirement result to concurrent application windows,
