@@ -2234,6 +2234,7 @@ public:
     void finishCompositorOutput() {
         if (compositorOutput) { if (!compositorOutput->stop()) ++cleanupFailures; compositorOutput.reset(); }
     }
+    std::uint64_t compositorFrameCount() const { return completedCompositorFrames; }
     void releaseGuestMemory() {
         finishCompositorOutput();
         compositorPresenter.reset();
@@ -2451,9 +2452,17 @@ public:
     }
 };
 static void serve(Stream& stream, const std::string& sectionName = {}, std::uint32_t sectionBytes = 0,
-                  bool contexts = false, bool queries = false, driver_qemu::Runtime* runtime = nullptr, bool allocations = false, bool gpuVa = false, bool residency = false, bool cpu = false, bool cpuStoreTest = false, bool translation = false, bool hwQueues = false, bool sync = false, bool submit = false, bool retirement = false, bool reservation = false, bool gpuState = false, bool asyncSubmit = false, bool sharedResources = false, bool consumeShared = false, bool presentShared = false, bool nativeMetadata = false, bool consumeProcess = false, bool coordinated = false) {
+                  bool contexts = false, bool queries = false, driver_qemu::Runtime* runtime = nullptr, bool allocations = false, bool gpuVa = false, bool residency = false, bool cpu = false, bool cpuStoreTest = false, bool translation = false, bool hwQueues = false, bool sync = false, bool submit = false, bool retirement = false, bool reservation = false, bool gpuState = false, bool asyncSubmit = false, bool sharedResources = false, bool consumeShared = false, bool presentShared = false, bool nativeMetadata = false, bool consumeProcess = false, bool coordinated = false, unsigned sdlFailureTest = 0) {
     KmtDriver driver(sectionName, sectionBytes, contexts, queries, runtime, allocations, gpuVa, residency, cpu, cpuStoreTest, translation, hwQueues, sync, submit, retirement, reservation, gpuState, asyncSubmit, sharedResources, consumeShared, presentShared, nativeMetadata,consumeProcess);
     std::exception_ptr failure;
+    if(sdlFailureTest==2) {
+        const auto control=runtime->sdlControl();
+        const auto original=control->command;
+        control->command=[original](const std::string& instruction) {
+            if(instruction=="detach:1") throw std::runtime_error("Injected SDL detach failure; diagnostic only");
+            return original(instruction);
+        };
+    }
     if(coordinated) {
         {
             coordinator::Runtime owner(driver);
@@ -2470,6 +2479,12 @@ static void serve(Stream& stream, const std::string& sectionName = {}, std::uint
                     const auto reply=owner.dispatch(packet);
                     peakObjects=(std::max)(peakObjects,owner.objectCount());peakActors=(std::max)(peakActors,owner.actorCount());++count;
                     if(owner.failed() || reply.empty()) throw std::runtime_error("Coordinated controller protocol failure");
+                    if(sdlFailureTest && driver.compositorFrameCount()>=64) {
+                        std::cerr<<driver_qmp::Json{{"nativeSdlFailureProbe",true},{"afterAcceptedFrames",64},
+                            {"retirementFailureRequested",sdlFailureTest==2},{"syntheticFailure",true},
+                            {"gpuDeviceRemoved",false},{"beforeGuestReply",true}}.dump()<<'\n';
+                        throw std::runtime_error("Injected SDL coordinator failure after frame 64; diagnostic only");
+                    }
                     stream.writeFrame(reply);
                 }
             } catch(const std::exception& error) {
@@ -2486,8 +2501,10 @@ static void serve(Stream& stream, const std::string& sectionName = {}, std::uint
                      <<",\"peakLiveObjects\":"<<peakObjects<<",\"retainedActors\":"<<owner.actorCount()
                      <<",\"liveObjectsBeforeDisconnect\":"<<owner.objectCount()<<",\"liveRetiredActors\":"<<owner.liveRetiredActorCount()
                      <<",\"liveRetiredWireObjects\":"<<owner.liveRetiredObjectCount()<<",\"nativeDriverCount\":1,\"memoryBudgetsMultiplied\":false}\n";
-            // Live actor Sessions retain backing pages until QEMU is reaped.
-            if(!failure && runtime->sdlControl()) driver.finishCompositorOutput();
+            // SDL imports and queued copies must retire while its owning
+            // process is alive, including after a controller/transport error.
+            // Keep actor Sessions/backing pages until the VM is reaped below.
+            if(runtime->sdlControl()) driver.finishCompositorOutput();
             runtime->stop(failure ? 0 : 5000);
             const auto emptied=owner.teardownAfterVmExit(runtime->hasStopped());
             std::cerr<<"{\"nativeCoordinatorTeardown\":true,\"vmReaped\":true,\"globalPhases\":4,\"allWireObjectsReleased\":"<<(emptied ? "true" : "false")<<"}\n";
@@ -2548,6 +2565,7 @@ int main(int argc, char** argv) {
         bool hwQueueNoBroadcastEofTest = false;
         bool hwQueueNoBroadcastWaitEofTest = false;
         bool asyncSubmit = false, sharedResources = false, consumeShared = false, presentShared = false, nativeMetadata = false, consumeProcess = false, coordinated = false, windowInput = false, inputSelfTest = false, sdlRelay = false;
+        unsigned sdlFailureTest=0;
         const char* readonlyRoot = nullptr;
         while (argc > 1) {
             if (argc>2 && std::string(argv[argc-2])=="--driver-rootfs-readonly") {
@@ -2595,6 +2613,8 @@ int main(int argc, char** argv) {
             else if (option == "--driver-window-input" && !windowInput) windowInput = true;
             else if (option == "--driver-input-self-test" && !inputSelfTest) inputSelfTest = true;
             else if (option == "--driver-sdl-relay" && !sdlRelay) sdlRelay = true;
+            else if (option == "--driver-sdl-failure-test" && !sdlFailureTest) sdlFailureTest = 1;
+            else if (option == "--driver-sdl-retirement-failure-test" && !sdlFailureTest) sdlFailureTest = 2;
             else if (option == "--driver-shared-resources" && !sharedResources) sharedResources = true;
             else if (option == "--driver-retirement" && !retirement) retirement = true;
             else if (option == "--driver-reservation" && !reservation) reservation = true;
@@ -2610,6 +2630,8 @@ int main(int argc, char** argv) {
         if(inputSelfTest && !windowInput) throw std::runtime_error("Input self-test requires explicit window input");
         if(sdlRelay && (!coordinated || (windowInput && !inputSelfTest)))
             throw std::runtime_error("SDL graphics requires the owned coordinator; optional QMP input must be the isolated self-test");
+        if(sdlFailureTest && (!gpu_diagnostic::HighResolution || !sdlRelay || !coordinated || !readonlyRoot))
+            throw std::runtime_error("SDL failure tests require the explicit high-resolution owned SDL coordinator and read-only root");
         if (readonlyRoot && (cpuStoreTest || cpuEofTest || cpuSpanEofTest || hwQueueEofTest || syncEofTest || syncNoMaxEofTest ||
             reservationEofTest || gpuStateEofTest || hwQueueNoBroadcastEofTest || hwQueueNoBroadcastWaitEofTest))
             throw std::runtime_error("Read-only root image cannot be combined with forced EOF/store controls");
@@ -2731,7 +2753,7 @@ int main(int argc, char** argv) {
             throw std::runtime_error("Cannot configure low-latency GPU RPC socket");
         std::cerr<<"{\"nativeGpuTransportConfigured\":true,\"tcpNoDelay\":true,\"tcpNoDelayOptionBytes\":"<<optionBytes
             <<",\"framedReplyScatterGather\":true,\"inputPathChanged\":false}\n";
-        Stream stream(client.value); serve(stream, sectionName, sectionBytes, contexts, queries, runtime.get(), allocations, gpuVa, residency, cpu, cpuStoreTest, translation, hwQueues, sync, submit, retirement, reservation, gpuState, asyncSubmit, sharedResources, consumeShared, presentShared, nativeMetadata,consumeProcess,coordinated);
+        Stream stream(client.value); serve(stream, sectionName, sectionBytes, contexts, queries, runtime.get(), allocations, gpuVa, residency, cpu, cpuStoreTest, translation, hwQueues, sync, submit, retirement, reservation, gpuState, asyncSubmit, sharedResources, consumeShared, presentShared, nativeMetadata,consumeProcess,coordinated,sdlFailureTest);
         if (runtime) {
             runtime->report();
             if (!runtime->cleanExit()) throw std::runtime_error("Owned QEMU runtime did not exit cleanly");

@@ -16,6 +16,7 @@
 #include <array>
 #include <memory>
 #include <optional>
+#include <mutex>
 
 namespace driver_qemu {
 struct Handle {
@@ -31,11 +32,13 @@ struct Socket {
     ~Socket() { if (value != INVALID_SOCKET) closesocket(value); }
 };
 struct OwnedProcess {
+    std::mutex stopGuard;
     Handle handle;
     DWORD exit = STILL_ACTIVE;
     bool forced = false, reaped = false;
     bool exited() const { return handle.value && WaitForSingleObject(handle.value, 0) == WAIT_OBJECT_0; }
     void stop(DWORD grace = 5000) noexcept {
+        std::lock_guard<std::mutex> lock(stopGuard);
         if (!handle.value || reaped) return;
         if (WaitForSingleObject(handle.value, grace) != WAIT_OBJECT_0) {
             forced = true;
@@ -309,6 +312,19 @@ public:
                     {"property","relay-state"}}).get<std::string>());
                 std::cerr<<"{\"nativeSdlGraphicsCommand\":true,\"command\":\""<<instruction<<"\",\"state\":"<<state.dump()<<"}\n";
                 return state;
+            };
+            sdlGraphics->beforeFatalExit=[this]() noexcept {
+                // Leave every QMP connection, lease and native object alive.
+                // The process will fail closed immediately after this proof.
+                process.stop(0);
+                try {
+                    std::cerr<<driver_qmp::Json{{"nativeSdlFatalOwnerReaped",true},
+                        {"ownedQemuReaped",process.reaped},{"qemuExit",process.exit},
+                        {"qemuForcedStop",process.forced},{"beforeHostFatalExit",true},
+                        {"driverObjectsRetained",true},{"inputImplementationChanged",false}}.dump()<<'\n';
+                } catch(...) {
+                    std::fprintf(stderr,"SDL_FATAL_OWNER_REAPED beforeHostFatalExit=true driverObjectsRetained=true\n");
+                }
             };
             std::cerr<<"{\"nativeSdlGraphicsChannelOpened\":true,\"ownedQemuPid\":"<<child.dwProcessId
                 <<",\"session\":\""<<sdlGraphics->session<<"\",\"adapterLuid\":\""<<sdlGraphics->adapterLuid

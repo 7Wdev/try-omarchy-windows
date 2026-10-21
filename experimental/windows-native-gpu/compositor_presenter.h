@@ -64,10 +64,14 @@ class CompositorPresenter {
         result.Transition.pResource=object; result.Transition.Subresource=D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
         result.Transition.StateBefore=from; result.Transition.StateAfter=to; return result;
     }
-    static void retire(ID3D12Fence* fence,std::uint64_t value) {
+    [[noreturn]] void fatalExit() const noexcept {
+        if(sdlControl && sdlControl->beforeFatalExit) sdlControl->beforeFatalExit();
+        ExitProcess(3);
+    }
+    void retire(ID3D12Fence* fence,std::uint64_t value) {
         const auto deadline=GetTickCount64()+5000; UINT64 observed=0;
         while ((observed=fence->GetCompletedValue())<value && GetTickCount64()<deadline) Sleep(1);
-        if (observed==UINT64_MAX || observed<value) ExitProcess(3);
+        if (observed==UINT64_MAX || observed<value) fatalExit();
     }
     HRESULT prepareStaging(unsigned index,bool initializationPhase) {
         if(index>=slots.size()) return E_INVALIDARG;
@@ -166,7 +170,7 @@ class CompositorPresenter {
             if(FAILED(hr)) return hr;
             ID3D12CommandList* lists[]{slot.outputCommands.Get()};outputQueue->ExecuteCommandLists(1,lists);
             const auto target=++auditSequence;
-            if(FAILED(outputQueue->Signal(auditRetired.Get(),target))) ExitProcess(3);
+            if(FAILED(outputQueue->Signal(auditRetired.Get(),target))) fatalExit();
             retire(auditRetired.Get(),target);
             void* mapped=nullptr;
             const D3D12_RANGE range{0,static_cast<SIZE_T>(std::uint64_t(rows-1)*auditPlan.pitch+layout.stride)};
@@ -196,7 +200,7 @@ class CompositorPresenter {
         slot.outputCommands->ResourceBarrier(1,&after);
         hr=slot.outputCommands->Close(); if (FAILED(hr)) return hr;
         ID3D12CommandList* lists[]{slot.outputCommands.Get()}; outputQueue->ExecuteCommandLists(1,lists);
-        hr=outputQueue->Signal(outputRetired.Get(),frame.sequence); if (FAILED(hr)) ExitProcess(3);
+        hr=outputQueue->Signal(outputRetired.Get(),frame.sequence); if (FAILED(hr)) fatalExit();
         outputSubmitted=frame.sequence;
         if (frame.audit) {
             retire(outputRetired.Get(),frame.sequence);
@@ -228,7 +232,7 @@ class CompositorPresenter {
             CompositorOutput window(sdlControl);
             struct Drain {
                 CompositorPresenter& owner; CompositorOutput& window;
-                ~Drain() { window.drainQueued(); if (owner.outputSubmitted) retire(owner.outputRetired.Get(),owner.outputSubmitted); }
+                ~Drain() { window.drainQueued(); if (owner.outputSubmitted) owner.retire(owner.outputRetired.Get(),owner.outputSubmitted); }
             } drain{*this,window};
             if (SUCCEEDED(status)) {
                 Microsoft::WRL::ComPtr<IDXGIFactory4> factory;
@@ -328,11 +332,11 @@ public:
         if(inputDiagnostic && !windowInput) return E_INVALIDARG;
         work=CreateEventW(nullptr,FALSE,FALSE,nullptr); if (!work) return HRESULT_FROM_WIN32(GetLastError());
         inputEvent=CreateEventW(nullptr,FALSE,FALSE,nullptr);
-        if (!inputEvent) { const auto error=GetLastError(); if (!CloseHandle(work)) ExitProcess(3); work=nullptr; return HRESULT_FROM_WIN32(error); }
+        if (!inputEvent) { const auto error=GetLastError(); if (!CloseHandle(work)) fatalExit(); work=nullptr; return HRESULT_FROM_WIN32(error); }
         try { ui=std::thread([this]{run();}); }
         catch (...) { failure=E_OUTOFMEMORY; return E_OUTOFMEMORY; }
         std::unique_lock<std::mutex> lock(guard);
-        if (!ready.wait_for(lock,std::chrono::seconds(10),[this]{return initialized;})) ExitProcess(3);
+        if (!ready.wait_for(lock,std::chrono::seconds(10),[this]{return initialized;})) fatalExit();
         return initialization;
     }
     HRESULT submit(std::uint32_t resourceId,HANDLE resource,HANDLE sync,driver_bridge::CompositorCaptureDesc desc,std::uint64_t& value) {
@@ -349,13 +353,13 @@ public:
           if (index==slots.size()) return HRESULT_FROM_WIN32(ERROR_RETRY);
           slots[index].occupied=true; }
         auto& slot=slots[index]; bool inputSubmitted=false, inputCompleted=false, published=false;
-        struct Rollback { Slot& slot; std::mutex& guard; std::atomic<HRESULT>& failure; bool& submitted; bool& completed; bool& published;
+        struct Rollback { CompositorPresenter& owner; Slot& slot; std::mutex& guard; std::atomic<HRESULT>& failure; bool& submitted; bool& completed; bool& published;
             ~Rollback() {
-                if (submitted && !completed) ExitProcess(3);
+                if (submitted && !completed) owner.fatalExit();
                 if (submitted && !published) failure=E_FAIL;
                 std::lock_guard<std::mutex> lock(guard); if (!published) slot.occupied=false;
             }
-        } rollback{slot,guard,failure,inputSubmitted,inputCompleted,published};
+        } rollback{*this,slot,guard,failure,inputSubmitted,inputCompleted,published};
         // Native calls are serialized; do not allocate a new texture on the UI
         // thread while a guest residency operation is admitted elsewhere.
         auto staging=prepareStaging(index,false);
@@ -393,16 +397,16 @@ public:
         if (desc.flags & driver_bridge::CompositorFrameAudit) { if (auditAttempts>=2) return E_INVALIDARG; audit=++auditAttempts; }
         hr=inputQueue->Wait(producer.Get(),desc.fence); if (FAILED(hr)) return hr;
         inputSubmitted=true;
-        if (slot.reusedAfter) { hr=inputQueue->Wait(outputRetired.Get(),slot.reusedAfter); if (FAILED(hr)) ExitProcess(3); }
+        if (slot.reusedAfter) { hr=inputQueue->Wait(outputRetired.Get(),slot.reusedAfter); if (FAILED(hr)) fatalExit(); }
         ID3D12CommandList* lists[]{slot.inputCommands.Get()}; inputQueue->ExecuteCommandLists(1,lists);
         const auto frame=submitted+1;
-        hr=inputQueue->Signal(inputRetired.Get(),frame); if (FAILED(hr)) ExitProcess(3);
+        hr=inputQueue->Signal(inputRetired.Get(),frame); if (FAILED(hr)) fatalExit();
         if (inputRetired->GetCompletedValue()<frame) {
             hr=inputRetired->SetEventOnCompletion(frame,inputEvent);
-            if (FAILED(hr) || WaitForSingleObject(inputEvent,5000)!=WAIT_OBJECT_0) ExitProcess(3);
+            if (FAILED(hr) || WaitForSingleObject(inputEvent,5000)!=WAIT_OBJECT_0) fatalExit();
         }
         const auto copied=inputRetired->GetCompletedValue();
-        if (copied==UINT64_MAX || copied<frame) ExitProcess(3);
+        if (copied==UINT64_MAX || copied<frame) fatalExit();
         inputCompleted=true;
         if (producer->GetCompletedValue()<desc.fence || producer->GetCompletedValue()==UINT64_MAX) return E_FAIL;
         std::cerr<<"{\"nativeCompositorRingInput\":true,\"frame\":"<<frame<<",\"slot\":"<<index<<",\"sourceTicket\":"<<resourceId
@@ -412,7 +416,7 @@ public:
         { std::lock_guard<std::mutex> lock(guard); frames.push_back({index,audit,frame,final});ending=final;
           peakQueued=(std::max)(peakQueued,static_cast<unsigned>(frames.size())); }
         submitted=frame; value=frame; published=true;
-        if (!SetEvent(work)) ExitProcess(3);
+        if (!SetEvent(work)) fatalExit();
         if(final) {
             std::unique_lock<std::mutex> lock(guard);
             if(!ready.wait_for(lock,std::chrono::seconds(15),[this]{return finalized || FAILED(failure.load());}) ||
@@ -425,13 +429,13 @@ public:
     void releaseSource(std::uint32_t resource) { sources.erase(resource); }
     bool stop() {
         if (!ui.joinable()) {
-            if (work && !CloseHandle(work)) ExitProcess(3);
-            if (inputEvent && !CloseHandle(inputEvent)) ExitProcess(3);
+            if (work && !CloseHandle(work)) fatalExit();
+            if (inputEvent && !CloseHandle(inputEvent)) fatalExit();
             work=inputEvent=nullptr;
             return SUCCEEDED(failure.load());
         }
         { std::lock_guard<std::mutex> lock(guard); stopping=true; }
-        if (!SetEvent(work)) ExitProcess(3);
+        if (!SetEvent(work)) fatalExit();
         ui.join();
         const bool clean=SUCCEEDED(failure.load()) && presented==submitted && frames.empty() &&
             std::none_of(slots.begin(),slots.end(),[](const Slot& slot){return slot.occupied;});
@@ -450,7 +454,7 @@ public:
             <<",\"stagingTexturesTrimmed\":"<<stagingTexturesTrimmed<<",\"liveStagingTextureBytes\":"<<liveStagingTextureBytes
             <<",\"workHandleClosed\":"<<(closed?"true":"false")<<",\"inputEventClosed\":"<<(inputClosed?"true":"false")
             <<",\"uiThreadJoined\":true,\"liveGpuResources\":0,\"displayVerified\":false}\n";
-        if (!closed || !inputClosed) ExitProcess(3);
+        if (!closed || !inputClosed) fatalExit();
         return clean;
     }
 };

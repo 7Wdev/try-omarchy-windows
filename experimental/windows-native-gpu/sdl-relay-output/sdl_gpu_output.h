@@ -20,6 +20,10 @@ class GpuOutput {
     std::uint64_t submitted=0;
     unsigned audits=0;
     bool opened=false,healthy=true,prepared=false;
+    [[noreturn]] void fatalExit() const noexcept {
+        if(control && control->beforeFatalExit) control->beforeFatalExit();
+        ExitProcess(3);
+    }
     void reportFailure(const char* phase,const char* message) const noexcept {
         // Record the device state before teardown can replace the first fault.
         // UINT64_MAX fence observations are retained verbatim, never retirement.
@@ -44,7 +48,7 @@ class GpuOutput {
     }
     void closeExports() {
         for(auto& handle:exports) {
-            if(handle && !CloseHandle(handle)) ExitProcess(3);
+            if(handle && !CloseHandle(handle)) fatalExit();
             handle=nullptr;
         }
     }
@@ -63,12 +67,12 @@ public:
     explicit GpuOutput(std::shared_ptr<Control> value):control(std::move(value)) {}
     ~GpuOutput() {
         drainQueued();closeExports();
-        if(event && !CloseHandle(event)) ExitProcess(3);
+        if(event && !CloseHandle(event)) fatalExit();
     }
     HRESULT initialize(ID3D12Device* selected,ID3D12CommandQueue* output,
                        UINT width,UINT height,DXGI_FORMAT format,driver_shared::GpuUsageGuard budget) noexcept {
         try {
-            if(opened || !selected || !output || !control || !control->command ||
+            if(opened || !selected || !output || !control || !control->command || !control->beforeFatalExit ||
                !canonicalHex(control->session,32) || !canonicalHex(control->adapterLuid,16) ||
                width!=3840 || height!=2160 || format!=DXGI_FORMAT_B8G8R8A8_UNORM)
                 return E_INVALIDARG;
@@ -175,7 +179,7 @@ public:
             opened=false;texture.Reset();producer.Reset();consumer.Reset();queue.Reset();device.Reset();
         } catch(const std::exception& error) {
             reportFailure("retirement",error.what());
-            std::cerr<<"SDL compositor retirement failed: "<<error.what()<<'\n';ExitProcess(3);
+            std::cerr<<"SDL compositor retirement failed: "<<error.what()<<'\n';fatalExit();
         }
     }
     void reportQueuedDisplay() const {

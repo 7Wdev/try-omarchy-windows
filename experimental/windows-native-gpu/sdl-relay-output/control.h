@@ -10,6 +10,9 @@ struct Control {
     std::string session,adapterLuid;
     // A dedicated, owned graphics QMP connection. Never share the input socket.
     std::function<driver_qmp::Json(const std::string&)> command;
+    // A fatal GPU exit must first reap the owned VM while driver pages remain
+    // alive. This callback never frees guest objects or touches input code.
+    std::function<void()> beforeFatalExit;
 };
 inline bool canonicalHex(const std::string& value,std::size_t size) {
     return value.size()==size && value.find_first_not_of("0123456789abcdef")==std::string::npos;

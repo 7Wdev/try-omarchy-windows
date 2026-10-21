@@ -4,7 +4,7 @@
 
 static void require(bool value) { if(!value) throw std::runtime_error("SDL output control regression failed"); }
 int main() {
-    driver_sdl::Control control{"00112233445566778899aabbccddeeff","c61e010000000000",{}};
+    driver_sdl::Control control{"00112233445566778899aabbccddeeff","c61e010000000000",{},{}};
     require(driver_sdl::canonicalHex(control.session,32));
     require(!driver_sdl::canonicalHex("A0112233445566778899aabbccddeeff",32));
     const unsigned char luid[]{0xc6,0x1e,1,0,0,0,0,0};require(driver_sdl::luidText(luid)==control.adapterLuid);
