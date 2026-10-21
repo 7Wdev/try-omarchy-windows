@@ -1,0 +1,28 @@
+From 4fdfb75745504014d7843610738834f2ff74a74d Mon Sep 17 00:00:00 2001
+From: Tyler South <tsouth2@gmail.com>
+Date: Wed, 21 Oct 2026 18:39:32 -0400
+Subject: [PATCH] Give the factory image room for the October packages
+
+The October 21 lock refresh grows the staged root to 6.0 GiB, past the
+85% fill limit of the 7168 MiB image. New disks are still expanded to their
+full size when they are created, so this only changes the factory image.
+---
+ guest/spec.json | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/guest/spec.json b/guest/spec.json
+index b8825db..5e6be7c 100644
+--- a/guest/spec.json
++++ b/guest/spec.json
+@@ -5,7 +5,7 @@
+     "filesystem": "ext4",
+     "filesystemLabel": "omarchy-factory",
+     "filesystemUuid": "89054943-1f4e-4f14-b934-d6db3fba4254",
+-    "sizeMiB": 7168,
++    "sizeMiB": 8192,
+     "sourceDateEpoch": 1787652758
+   },
+   "guest": {
+-- 
+2.43.0
+
