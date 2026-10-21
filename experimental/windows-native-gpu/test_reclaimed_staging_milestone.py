@@ -8,6 +8,7 @@ import re
 import struct
 import unittest
 import zlib
+from native68_source_archive import native68_sources
 
 from verify_reclaimed_staging_input_response import (
     delivery_metadata, reclaimed_staging_admission, validate_reclaimed_staging_input_response,
@@ -77,12 +78,8 @@ class ReclaimedStagingMilestone(unittest.TestCase):
             self.assertEqual(source['sourceImageSha256Before'], source['sourceImageSha256After'])
             receipt = source['nativeBuildReceipt']
             self.assertEqual(receipt['bridgeSha256'], report['driverBridgeSha256'])
-            for name, digest in receipt['sources'].items():
-                raw = (self.repo / name).read_bytes()
-                # Older unchanged files use Git's platform checkout endings.
-                # Accept only the exact LF/CRLF translation of the build bytes.
-                candidates = (raw, raw.replace(b'\r\n', b'\n').replace(b'\n', b'\r\n'))
-                self.assertIn(digest, [hashlib.sha256(value).hexdigest() for value in candidates])
+            for name, raw in native68_sources(self.repo, receipt).items():
+                self.assertEqual(hashlib.sha256(raw).hexdigest(), receipt['sources'][name])
             for name, digest in source['manifest']['sources'].items():
                 if name.endswith(('.h', '.cpp')):
                     self.assertEqual(receipt['sources']['experimental/windows-native-gpu/' + name], digest)

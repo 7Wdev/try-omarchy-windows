@@ -706,6 +706,7 @@ class Session {
     bool openglDesktopLargeMapNegotiated = false;
     unsigned compositorCaptureAttempts = 0;
     bool compositorQueueUsed = false;
+    bool compositorQueueEnded = false;
     std::uint64_t compositorQueuedFrames = 0;
     unsigned compositorQueueAudits = 0;
     std::size_t wireObjectLimit = MaxObjects;
@@ -1671,6 +1672,7 @@ public:
             return reply(h, 0, h.handle, &result);
         }
         if (op == Op::QueueCompositorFrame) {
+            if(compositorQueueEnded) return reply(h,-108);
             if (!negotiated || !openglRenderNegotiated || !resourceSharingNegotiated || !syncSharingNegotiated) return reply(h,-71);
             if (!(driver.capabilities().flags & SharedTextureConsumeCapability)) return reply(h,-95);
             if (packet.size()!=sizeof h+sizeof(CompositorCaptureDesc)) return reply(h,-22);
@@ -1689,7 +1691,10 @@ public:
             if (result.nativeHandle || result.ntstatus>0 ||
                 (result.ntstatus<0 ? result.value!=0 : result.value!=compositorQueuedFrames+1)) return reply(h,-5);
             if ((desc.flags&CompositorFrameAudit) && result.ntstatus==static_cast<std::int32_t>(0xc000022du)) --compositorQueueAudits;
-            if (!result.ntstatus) ++compositorQueuedFrames;
+            if (!result.ntstatus) {
+                ++compositorQueuedFrames;
+                if(desc.flags&CompositorFrameFinal) compositorQueueEnded=true;
+            }
             return reply(h,0,h.handle,&result);
         }
         if (op == Op::ConsumeSharedTexture || op == Op::ConsumeStreamingTexture) {

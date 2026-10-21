@@ -4,24 +4,26 @@ Updated **2026-10-21**. This page tracks the experimental QEMU/WHPX Windows-nati
 NVIDIA backend. The released Try Omarchy launcher continues using the upstream
 graphics runtime.
 
-![4K Omarchy frame achieved; QEMU SDL host GPU relay verified; backend stages 4/8; desktop gates 0/4](images/gpu-backend-progress-qemu-sdl-2026-10-21.svg)
+![4K Omarchy frame achieved; QEMU SDL host GPU relay verified; backend stages 4/8; desktop gates 0/4](images/gpu-backend-progress-real-sdl-2026-10-21.svg)
 
 ## What is verified now?
 
-**Latest display follow-up:** QEMU's actual NVIDIA SDL root context now imports
-a 4K texture from a separate D3D12 producer. Complete source and pre-swap SDL
-pixels pass for RGBA and GPU-converted BGRA, including a 300-handoff BGRA run.
-The earlier swapped-channel BGRA failure remains retained and rejected. These
-are paused, disk-free host controls; real guest compositor scanout through this
-relay is still open. [Builds, reconstructable buffers and limits](https://github.com/7Wdev/try-omarchy-windows/blob/6db01ffa69db405f9c76fb51da335bcf0513e8f6/docs/LIVE-QEMU-SDL-GPU-RELAY.md).
+**Latest display follow-up:** real Omarchy guest buffers now reach QEMU SDL on
+NVIDIA. Run 102 passes 300 handoffs, exact complete 4K source pixels, independently
+scaled full SDL window pixels and live cross-process GPU cleanup. The actual SDL
+backbuffer is 2560×1566. **The repeat fails at frame 207 with device loss.** Median
+log-observed frame delivery is 69.15 ms, while ingress-to-SDL receipt is 5.07 ms;
+physical scanout/input latency and near-native performance remain unmeasured.
+[Actual image, reconstructable evidence and retained failures](LIVE-OMARCHY-QEMU-SDL.md).
 
 **Latest guest follow-up:** two fresh guests pass **300 GPU handoffs with real
 application resizing**, independently verified enlarged/restored scene pixels,
 QMP input response and live cleanup. Two earlier 300-frame input-response
 baselines remain separate. [Images, raw evidence and scope](https://github.com/7Wdev/try-omarchy-windows/blob/c6b554458583d14ea9fc6ef432b75d2a0aacc2a4/docs/LIVE-UWSM-SUSTAINED-RESIZE.md).
 The product should preserve the official keyboard/cursor code and QEMU SDL
-input path. Forty input-related files are unchanged; the tested SDL host relay
-still needs the real guest compositor connected. [Source-preservation record and integration boundary](https://github.com/7Wdev/try-omarchy-windows/blob/c6b554458583d14ea9fc6ef432b75d2a0aacc2a4/docs/UPSTREAM-INPUT-GRAPHICS-INTEGRATION.md).
+input path. Forty input-related files are unchanged; the real guest is now
+connected to SDL. The user reports cursor movement, with automated full-input
+and normal-launcher acceptance still open. [Source-preservation record and integration boundary](https://github.com/7Wdev/try-omarchy-windows/blob/c6b554458583d14ea9fc6ef432b75d2a0aacc2a4/docs/UPSTREAM-INPUT-GRAPHICS-INTEGRATION.md).
 The staging trims still occur after the streams; hardware reallocation while
 rendering remains open. The earlier results below keep their own scope.
 
@@ -30,7 +32,7 @@ Two fresh guests pass **UWSM in a real PAM/logind session**.
 Independent supervisor queries verify the active compositor service, exact
 MainPID/cgroup and active graphical session target. Each passes **five NVIDIA application launch/close cycles**
 while the same Hyprland compositor keeps running. The real Omarchy 4.0.4
-desktop is captured at **3840×2160** with shipped wallpaper, Quickshell bar
+desktop is captured at **3840Ã—2160** with shipped wallpaper, Quickshell bar
 and a readable GPU application. Every actor, including the primary compositor,
 is reclaimed before native disconnect; every backing mapping is reclaimed before VM exit.
 Twelve GPU handoffs, complete first/last
@@ -46,7 +48,7 @@ input-response diagnostic, not repeated stability. Physical Windows-window
 keyboard/mouse delivery remains unverified.
 This bounded repeat does not establish long-run memory stability.
 
-**The subsequent staging-reclamation change passes two fresh guests (95–96).**
+**The subsequent staging-reclamation change passes two fresh guests (95â€“96).**
 Each passes the complete QMP input-response, 4K GPU pixels and live-cleanup audit
 under the same usage guard, after actually releasing 31.875 MiB of idle staging.
 Both GPU copy fences retire before release; three-slot capacity is preserved.
@@ -58,7 +60,7 @@ trim/reallocation and longer workloads remain required.
 bind every application and the shell to authenticated NVIDIA renderers, real
 resource FDs and independent recipient NT references. The
 [earlier CPU-scan removal checkpoint](https://github.com/7Wdev/try-omarchy-windows/blob/cb505099ef461603c45ccc8b322031546966ee36/docs/LIVE-OMARCHY-GPU-LIFECYCLES.md)
-measures 0.28–0.53-second application retirement while keeping complete frame audits. The 192 MiB CPU mapped-data
+measures 0.28â€“0.53-second application retirement while keeping complete frame audits. The 192 MiB CPU mapped-data
 and 1 GiB GPU-VA/reported-usage guards are unchanged. Ten ordinary frames per
 run avoid CPU upload/readback; two use diagnostic GPU readback.
 
@@ -72,7 +74,7 @@ application are present in the accepted 4K captures. **4/8 backend stages** and
 These are different checklists, not engineering-effort percentages. Capturing
 the desktop does not establish normal launcher presentation or interactive use.
 
-The Windows diagnostic client area is 1280×720. Physical 4K scanout, all-frame
+The Windows diagnostic client area is 1280Ã—720. Physical 4K scanout, all-frame
 display, normal first-boot/launcher/input, long-run stability and performance are
 unverified. Both passing UWSM runs have **zero mappings or native children deferred to VM exit**.
 Earlier usage-guard and primary-reservation failures remain retained and rejected.
@@ -91,7 +93,7 @@ retains its original scope and failures.
 | 5. Guest graphics/device integration | In progress | Native render-node/GBM, EGL fences, separate GPU clients, 4K captures and five application lifecycles with live reclamation pass twice. Supported device integration, recovery and sustained work remain required. |
 | 6. Interactive Omarchy/Hyprland desktop | In progress: two 300-frame 4K application-resize/input-response runs pass; separate QEMU SDL host GPU import/BGRA controls pass | Connect the real guest compositor to the tested SDL relay with retained input, then validate normal launcher sessions, continuous display, focus, fullscreen and multiple windows. |
 | 7. Required APIs and NVIDIA features | Pending acceptance | OpenGL diagnostics pass; test general OpenGL, Vulkan, CUDA, video and NVIDIA capabilities in real guest applications. |
-| 8. Reliability and ≥93% native performance | Pending acceptance | Matched guest/native benchmarks through 4K, concurrent host/guest GPU workloads, long runs, bounded memory and device/VM recovery. |
+| 8. Reliability and â‰¥93% native performance | Pending acceptance | Matched guest/native benchmarks through 4K, concurrent host/guest GPU workloads, long runs, bounded memory and device/VM recovery. |
 
 ## Desktop product acceptance gates
 
@@ -104,7 +106,7 @@ not close the broader product requirements below.
 | Guest graphics device, buffers and synchronization | In progress: separate NVIDIA clients, native resource FDs, GPU waits and five application lifecycles pass twice; every backing mapping is reclaimed live. | A supported guest device path with correct sustained ownership, synchronization and recovery beyond the bounded diagnostic. |
 | First Hyprland frame in the Windows app | In progress: actual 4K wallpaper, bar and readable GPU application captured twice. Separate diagnostic presentation is not normal launcher acceptance. | Boot the normal guest session, independently verify a correctly displayed compositor frame in the Windows app, and publish its image in PR #2. |
 | Usable interactive desktop | In progress: two bounded QMP keyboard/pointer and GPU-rendered application responses pass after staging reclamation. Physical Windows input and continuous multi-window operation are unverified. | Continuously display real apps and multiple windows with working input, focus, resizing and fullscreen through 4K. |
-| Stable and performant product | Pending acceptance: no matched near-native result or long desktop run has passed. | Sustain workloads, recover from failures, keep memory bounded and meet ≥93% of matched native performance. |
+| Stable and performant product | Pending acceptance: no matched near-native result or long desktop run has passed. | Sustain workloads, recover from failures, keep memory bounded and meet â‰¥93% of matched native performance. |
 
 ## Remaining work
 

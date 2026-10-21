@@ -4,25 +4,30 @@
 
 <h1 align="center">Try Omarchy for Windows</h1>
 
-**7Wdev development fork:** [build and upstream sync](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/FORK.md) ·
+**7Wdev development fork:** [build and upstream sync](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/FORK.md) Â·
 [NVIDIA development PR #2](https://github.com/7Wdev/try-omarchy-windows/pull/2).
-The experimental QEMU/WHPX bridge now captures a real **3840×2160 Omarchy desktop on NVIDIA**:
+The experimental QEMU/WHPX bridge now captures a real **3840Ã—2160 Omarchy desktop on NVIDIA**:
 the shipped wallpaper, Omarchy bar and readable Alacritty application appear together.
 Full integration into the Windows launcher and a stable interactive desktop remain in development.
 
-![First 4K Omarchy frame achieved; QEMU SDL host GPU import and BGRA conversion verified; backend 4/8 stages; desktop product 0/4 gates](docs/images/gpu-backend-progress-qemu-sdl-2026-10-21.svg)
+![Real 4K guest GPU frame reaches QEMU SDL; stability repeat fails; backend 4/8 stages; desktop product 0/4 gates](docs/images/gpu-backend-progress-real-sdl-2026-10-21.svg)
 
-**Latest display checkpoint — October 21, 2026:** the actual QEMU SDL frontend
-now imports a shared **4K NVIDIA GPU texture from a separate Windows process**.
-RGBA and GPU-converted BGRA pass independent complete source/window pixel
-audits, including a **300-handoff BGRA run** with 298 ordinary GPU-only handoffs.
-This paused, disk-free host control is the next display building block; the real
-guest compositor still needs connection to it.
-[Hardware evidence, retained BGRA failure and scope](https://github.com/7Wdev/try-omarchy-windows/blob/6db01ffa69db405f9c76fb51da335bcf0513e8f6/docs/LIVE-QEMU-SDL-GPU-RELAY.md).
+**Latest display checkpoint — October 21, 2026:** the real guest compositor now
+reaches **QEMU SDL on NVIDIA**. Run 102 passes 300 GPU handoffs, full first/last
+pixel audits and live GPU-reference cleanup. Both complete 4K SDL source captures
+match the guest GPU buffers exactly; the scaled 2560×1566 SDL window differs by
+at most one colour value from an independent reference. The official SDL input
+implementation is retained, and the user reports moving the cursor.
 
-**Latest guest desktop checkpoint — October 20, 2026:** two fresh guests (runs 99–100)
+**Stability and lag remain open:** the repeat stops after frame 207 with device
+loss. Its observed median frame interval is 69.15 ms (about 14.5 updates/s), versus
+5.07 ms from host ingress receipt to SDL receipt. These log timings suggest an
+earlier render/bridge bottleneck; they are not scanout or native-performance
+measurements. [Actual SDL frame, raw evidence, failures and limits](docs/LIVE-OMARCHY-QEMU-SDL.md).
+
+**Latest guest desktop checkpoint â€” October 20, 2026:** two fresh guests (runs 99â€“100)
 pass **300 actual 4K GPU handoffs** while the same NVIDIA application grows from
-1440×960 to 1600×1000 and returns to 1200×800. Complete first/last backbuffers
+1440Ã—960 to 1600Ã—1000 and returns to 1200Ã—800. Complete first/last backbuffers
 independently verify the enlarged panel and restored wallpaper. Each also passes
 five GPU application launch/close cycles, the QMP input-response diagnostic and
 natural shutdown with no mappings or native children deferred to VM exit.
@@ -30,26 +35,24 @@ natural shutdown with no mappings or native children deferred to VM exit.
 **Product priority: retain the official keyboard/cursor code and QEMU SDL input
 path, including the launcher's reserved-key routing.** Forty input-related source,
 patch and control files are unchanged from the inspected official commit.
-The new host GPU relay retains that frontend's input implementation; real guest
-graphics and normal launcher integration remain open.
+The real guest GPU relay uses that frontend's input implementation; automated
+physical-input acceptance and normal launcher integration remain open.
 [Verified upstream source map and integration boundary](https://github.com/7Wdev/try-omarchy-windows/blob/c6b554458583d14ea9fc6ef432b75d2a0aacc2a4/docs/UPSTREAM-INPUT-GRAPHICS-INTEGRATION.md).
 
-![Actual unedited 4K NVIDIA desktop after application resizing and input response](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/c6b554458583d14ea9fc6ef432b75d2a0aacc2a4/docs/images/omarchy-4k-restored-application-gpu-2026-10-20.png)
+![Actual QEMU SDL backbuffer showing the NVIDIA Omarchy desktop and application](docs/images/omarchy-qemu-sdl-frame-300-2026-10-21.png)
 
-This is run 100, frame 300, converted directly from the complete GPU backbuffer.
-[Enlarged/restored images, four-run raw evidence and scope](https://github.com/7Wdev/try-omarchy-windows/blob/c6b554458583d14ea9fc6ef432b75d2a0aacc2a4/docs/LIVE-UWSM-SUSTAINED-RESIZE.md).
-Hyprland and the applications run through UWSM in a verified PAM/logind session,
-using a disposable seeded account and RAM overlay. The source disk is read-only.
-The separate diagnostic Windows client is 1280×720; physical 4K scanout and
-every-frame display remain unverified. The released launcher uses the upstream
-graphics runtime.
+This is run 102, frame 300, converted directly from the actual **2560×1566 SDL
+pre-swap backbuffer**. Its GPU source is 3840×2160; physical 4K scanout remains
+unverified. The guest runs through UWSM/PAM with a disposable account and RAM
+overlay. The source disk is read-only. The released launcher uses the upstream
+graphics runtime. [Earlier two-run resize milestone](https://github.com/7Wdev/try-omarchy-windows/blob/c6b554458583d14ea9fc6ef432b75d2a0aacc2a4/docs/LIVE-UWSM-SUSTAINED-RESIZE.md).
 
 | Progress measure | Verified status | What remains |
 | --- | --- | --- |
 | 4K diagnostic scene | **3/3:** shipped wallpaper, Omarchy bar, readable GPU application | Normal launcher presentation and usable desktop acceptance. |
 | Bounded rendering/input response | **Two 300-frame resize runs pass**, plus two separate 300-frame input-response baselines | Long runs, physical input through the official frontend and simultaneous application windows. |
-| QEMU SDL GPU display building block | **4K cross-process RGBA/BGRA host controls pass**, including 300 GPU handoffs | Connect real guest compositor buffers and validate the normal launcher/input path. |
-| Backend stages | **4/8 demonstrated; stages 5–6 in progress** | Supported device integration, broader APIs, recovery and performance. |
+| Real guest GPU display through QEMU SDL | **One 300-frame run and full pixel audits pass; repeat fails at 207** | Diagnose device loss/lag, then validate sustained display and normal launcher/input use. |
+| Backend stages | **4/8 demonstrated; stages 5â€“6 in progress** | Supported device integration, broader APIs, recovery and performance. |
 | Desktop product gates | **0/4 complete; first three in progress** | Normal account/launcher integration, continuous multi-window display, reliability and matched-native performance. |
 
 The **1 GiB reported GPU usage guard is unchanged**. Idle staging reclamation
@@ -57,14 +60,14 @@ passes, but the trims still occur after the streams; hardware reallocation of a
 trimmed slot during continued rendering remains unverified. Earlier failures
 and their original evidence remain retained.
 
-**First 4K desktop frame: achieved. Next:** connect real guest GPU buffers to the
-tested QEMU SDL relay while preserving official input, and exercise sustained
-resource churn and simultaneous windows.
+**First 4K desktop frame and guest-to-SDL connection: achieved. Next:** diagnose
+device loss and slow frame delivery, retain official input, and repeat sustained
+resource churn and simultaneous-window acceptance.
 The checklist counts do not measure engineering effort.
 [Gate definitions and evidence](docs/GPU-BACKEND-PROGRESS.md).
 
 Vulkan, CUDA, video acceleration, broader NVIDIA features, concurrent Windows/guest workloads
-and **≥93% matched-native performance** each still require real-application acceptance tests.
+and **â‰¥93% matched-native performance** each still require real-application acceptance tests.
 
 Download links below refer to official upstream releases.
 
@@ -72,11 +75,11 @@ Download links below refer to official upstream releases.
 
 <p align="center">
   <strong><a href="https://github.com/omacom/try-omarchy-windows/releases/latest/download/TryOmarchy.exe">Download TryOmarchy.exe</a></strong>
-  &nbsp;·&nbsp; <a href="https://github.com/omacom/try-omarchy-windows/releases/latest/download/TryOmarchy.exe.sha256">SHA256</a>
-  &nbsp;·&nbsp; <a href="https://github.com/omacom/try-omarchy-windows/releases/latest">Latest release</a>
+  &nbsp;Â·&nbsp; <a href="https://github.com/omacom/try-omarchy-windows/releases/latest/download/TryOmarchy.exe.sha256">SHA256</a>
+  &nbsp;Â·&nbsp; <a href="https://github.com/omacom/try-omarchy-windows/releases/latest">Latest release</a>
 </p>
 
-<p align="center">Windows 10 or 11 · x86_64 · Hardware virtualization required</p>
+<p align="center">Windows 10 or 11 Â· x86_64 Â· Hardware virtualization required</p>
 
 <picture>
   <source media="(prefers-reduced-motion: reduce)" srcset="docs/images/try-omarchy-windows-still.jpg">

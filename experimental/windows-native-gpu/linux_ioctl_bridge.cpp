@@ -236,6 +236,7 @@ class Bridge {
     std::set<std::uint32_t> exportedSyncTickets, importedShareableSyncs;
     std::uint64_t queuedCompositorFrames = 0;
     bool compositorQueueUsed = false;
+    bool compositorQueueEnded = false;
     std::map<std::uint32_t,std::uint32_t> exportedSyncSources;
     bool sharedResourcesNegotiated = false;
     std::set<std::uint32_t> exportedResourceTickets;
@@ -1755,6 +1756,7 @@ public:
     }
     std::uint64_t queueCompositorBuffer(int bufferFd,int syncFileFd,std::uint32_t width,std::uint32_t height,
                                        std::uint32_t format,std::uint32_t stride,std::uint32_t flags) {
+        if(compositorQueueEnded) throw Error(ESHUTDOWN);
         if (!openglRenderNegotiated || !(caps.flags&SharedTextureConsumeCapability) || queuedCompositorFrames==UINT64_MAX-1) throw Error(ENOSYS);
         std::uint64_t bytes=0,target=0;
         if (nativeBufferInfo(bufferFd,bytes)) throw Error(errno);
@@ -1774,6 +1776,7 @@ public:
         }
         checkNt(result.result.ntstatus);
         ++queuedCompositorFrames;
+        if(flags&CompositorFrameFinal) compositorQueueEnded=true;
         std::fprintf(stderr,"LINUX_BRIDGE compositorQueued=true frame=%llu sourceCopyRetired=true cpuUpload=false\n",
             static_cast<unsigned long long>(queuedCompositorFrames));
         return queuedCompositorFrames;

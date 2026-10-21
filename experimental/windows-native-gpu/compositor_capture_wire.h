@@ -18,8 +18,10 @@ inline std::uint32_t compositorDxgiFormat(std::uint32_t fourcc) {
            fourcc == 0x34324241u || fourcc == 0x34324258u ? 28u : 0u;
 }
 constexpr std::uint32_t CompositorFrameAudit = 1;
+// The final reply acknowledges output-consumer retirement and live detach.
+constexpr std::uint32_t CompositorFrameFinal = 2;
 inline bool validCompositorFrame(CompositorCaptureDesc d) {
     const auto flags = d.flags; d.flags = 0;
-    return !(flags & ~CompositorFrameAudit) && validCompositorCapture(d);
+    return !(flags & ~(CompositorFrameAudit|CompositorFrameFinal)) && validCompositorCapture(d);
 }
 }

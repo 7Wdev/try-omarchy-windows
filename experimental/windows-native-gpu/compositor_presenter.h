@@ -12,7 +12,7 @@
 #include "binary_capture.h"
 #include "compositor_capture_wire.h"
 #include "compositor_audit_tiles.h"
-#include "shared_texture_presenter.h"
+#include "sdl-relay-output/compositor_output.h"
 #include "input_delivery_diagnostic.h"
 #include "staging_reclaim.h"
 namespace driver_shared {
@@ -26,11 +26,12 @@ class CompositorPresenter {
         bool occupied = false;
         std::uint64_t reusedAfter = 0,bytes=0,generation=0;
     };
-    struct Frame { unsigned slot, audit; std::uint64_t sequence; };
+    struct Frame { unsigned slot, audit; std::uint64_t sequence; bool final; };
     std::array<Slot,3> slots;
     Device device;
     GpuUsageGuard budget;
     std::shared_ptr<driver_input::Channel> windowInput;
+    std::shared_ptr<driver_sdl::Control> sdlControl;
     bool inputDiagnostic=false;
     bool demandStaging = false;
     unsigned stagingTexturesCreated = 0, stagingTexturesReleased = 0;
@@ -52,6 +53,7 @@ class CompositorPresenter {
     HANDLE work = nullptr, inputEvent = nullptr;
     std::atomic<HRESULT> failure{S_OK};
     bool initialized = false, stopping = false;
+    bool ending = false, finalized = false;
     HRESULT initialization = E_PENDING;
     LUID selected{};
     driver_bridge::CompositorCaptureDesc layout{};
@@ -147,7 +149,7 @@ class CompositorPresenter {
         if(SUCCEEDED(hr) && budget && !budget("readback-after",0)) { auditReadback.Reset(); return E_OUTOFMEMORY; }
         return hr;
     }
-    HRESULT auditBackbuffer(TexturePresenter& window,Slot& slot,Frame frame,std::uint64_t& hash) {
+    HRESULT auditBackbuffer(CompositorOutput& window,Slot& slot,Frame frame,std::uint64_t& hash) {
         // The slot remains occupied until all tile copies retire. A separate
         // fence sequence prevents an already completed frame fence from
         // falsely satisfying a later tile copy before allocator reset/Map.
@@ -176,7 +178,7 @@ class CompositorPresenter {
         }
         return driver_capture::writeCompositor(frame.audit,layout.width,layout.height,layout.format,pixels.data(),auditPlan.pitch,hash);
     }
-    HRESULT draw(TexturePresenter& window,Frame frame) {
+    HRESULT draw(CompositorOutput& window,Frame frame) {
         auto& slot=slots[frame.slot];
         // Input acknowledges retirement before publishing a ready frame. Its
         // wait on outputRetired also proves the previous output allocator is idle.
@@ -212,7 +214,7 @@ class CompositorPresenter {
             std::lock_guard<std::mutex> lock(guard);
             slot.reusedAfter=frame.sequence; slot.occupied=false;
         }
-        hr=window.presentQueued(outputQueue.Get(),frame.sequence);
+        hr=window.presentQueued(outputQueue.Get(),frame.sequence,frame.audit!=0);
         if (SUCCEEDED(hr)) {
             presented=frame.sequence;
             std::cerr<<"{\"nativeCompositorRingFrame\":true,\"frame\":"<<frame.sequence<<",\"slot\":"<<frame.slot
@@ -223,9 +225,9 @@ class CompositorPresenter {
     void run() noexcept {
         try {
             auto status=create();
-            TexturePresenter window;
+            CompositorOutput window(sdlControl);
             struct Drain {
-                CompositorPresenter& owner; TexturePresenter& window;
+                CompositorPresenter& owner; CompositorOutput& window;
                 ~Drain() { window.drainQueued(); if (owner.outputSubmitted) retire(owner.outputRetired.Get(),owner.outputSubmitted); }
             } drain{*this,window};
             if (SUCCEEDED(status)) {
@@ -249,6 +251,14 @@ class CompositorPresenter {
                   else if (stopping) break; }
                 if (have) {
                     status=draw(window,frame); if (FAILED(status)) { failure=status; break; }
+                    if(frame.final) {
+                        window.drainQueued();
+                        { std::lock_guard<std::mutex> lock(guard);finalized=true;stopping=true; }
+                        ready.notify_all();
+                        std::cerr<<"{\"nativeCompositorEndRetired\":true,\"frame\":"<<frame.sequence
+                            <<",\"beforeFinalGuestReply\":true,\"beforeOwnedVmStop\":true}\n";
+                        break;
+                    }
                     if(inputDiagnostic && frame.sequence==1) {
                         if(!windowInput || !driver_input::deliveryDiagnostic(*windowInput)) { failure=E_FAIL;break; }
                         std::cerr<<"{\"nativeInputDeliveryDiagnosticQueued\":true,\"afterGpuFrame\":1,\"syntheticAtChannel\":true,\"windowsMessagesVerified\":false}\n";
@@ -258,6 +268,7 @@ class CompositorPresenter {
                 const auto wake=MsgWaitForMultipleObjectsEx(1,&work,1000,QS_ALLINPUT,MWMO_INPUTAVAILABLE);
                 if (wake!=WAIT_OBJECT_0 && wake!=WAIT_OBJECT_0+1 && wake!=WAIT_TIMEOUT) { failure=E_FAIL; break; }
             }
+            ready.notify_all();
             window.drainQueued();
             if (outputSubmitted) retire(outputRetired.Get(),outputSubmitted);
             if (completedAudits && SUCCEEDED(failure.load())) {
@@ -309,10 +320,12 @@ public:
     CompositorPresenter()=default;
     ~CompositorPresenter() { stop(); }
     HRESULT initialize(LUID luid,driver_bridge::CompositorCaptureDesc desc,GpuUsageGuard usage = {},bool demand = false,
-                       std::shared_ptr<driver_input::Channel> input = {},bool diagnostic = false) {
+                       std::shared_ptr<driver_input::Channel> input = {},bool diagnostic = false,
+                       std::shared_ptr<driver_sdl::Control> graphics = {}) {
         if (ui.joinable() || !driver_bridge::validCompositorFrame(desc)) return E_INVALIDARG;
         selected=luid; layout=desc; layout.flags=0; budget=std::move(usage); demandStaging=demand;windowInput=std::move(input);
-        inputDiagnostic=diagnostic;if(inputDiagnostic && !windowInput) return E_INVALIDARG;
+        inputDiagnostic=diagnostic;sdlControl=std::move(graphics);
+        if(inputDiagnostic && !windowInput) return E_INVALIDARG;
         work=CreateEventW(nullptr,FALSE,FALSE,nullptr); if (!work) return HRESULT_FROM_WIN32(GetLastError());
         inputEvent=CreateEventW(nullptr,FALSE,FALSE,nullptr);
         if (!inputEvent) { const auto error=GetLastError(); if (!CloseHandle(work)) ExitProcess(3); work=nullptr; return HRESULT_FROM_WIN32(error); }
@@ -331,7 +344,7 @@ public:
         if(budget && !budget("frame-before",0)) return E_OUTOFMEMORY;
         unsigned index=0;
         { std::lock_guard<std::mutex> lock(guard);
-          if (stopping) return E_FAIL;
+          if (stopping || ending) return E_FAIL;
           while (index<slots.size() && slots[index].occupied) ++index;
           if (index==slots.size()) return HRESULT_FROM_WIN32(ERROR_RETRY);
           slots[index].occupied=true; }
@@ -395,10 +408,18 @@ public:
         std::cerr<<"{\"nativeCompositorRingInput\":true,\"frame\":"<<frame<<",\"slot\":"<<index<<",\"sourceTicket\":"<<resourceId
             <<",\"producerFenceTarget\":"<<desc.fence<<",\"producerFenceObserved\":"<<producer->GetCompletedValue()
             <<",\"inputCopyFenceObserved\":"<<inputRetired->GetCompletedValue()<<",\"sourceReturnedToCommon\":true,\"sourceCopyRetired\":true,\"cpuReadback\":false,\"cpuUpload\":false}\n";
-        { std::lock_guard<std::mutex> lock(guard); frames.push_back({index,audit,frame});
+        const bool final=(desc.flags&driver_bridge::CompositorFrameFinal)!=0;
+        { std::lock_guard<std::mutex> lock(guard); frames.push_back({index,audit,frame,final});ending=final;
           peakQueued=(std::max)(peakQueued,static_cast<unsigned>(frames.size())); }
         submitted=frame; value=frame; published=true;
         if (!SetEvent(work)) ExitProcess(3);
+        if(final) {
+            std::unique_lock<std::mutex> lock(guard);
+            if(!ready.wait_for(lock,std::chrono::seconds(15),[this]{return finalized || FAILED(failure.load());}) ||
+               !finalized || FAILED(failure.load())) {
+                value=0;failure=E_FAIL;return E_FAIL;
+            }
+        }
         return S_OK;
     }
     void releaseSource(std::uint32_t resource) { sources.erase(resource); }

@@ -3012,7 +3012,7 @@ int main() {
             if(field==3) bad.width=4097;
             if(field==4) bad.stride=524;
             if(field==5) bad.format=0;
-            if(field==6) bad.flags=queued?2u:1u;
+            if(field==6) bad.flags=queued?4u:1u;
             if(field==7) bad.fence=0;
             if(field==8) bad.fence=UINT64_MAX;
             require(header(capture.dispatch(request(operation,ticket,bad))).status==-22);
@@ -3048,9 +3048,17 @@ int main() {
                 require(header(capture.dispatch(request(operation,ticket,audit))).status==-24);
                 require(!header(capture.dispatch(request(operation,ticket,valid))).status && f.frames==13);
                 require(header(capture.dispatch(request(Op::CaptureCompositorResource,ticket,valid))).status==-16);
+                auto final=valid;final.flags=CompositorFrameFinal;
+                const auto ended=capture.dispatch(request(operation,ticket,final));Reply endReply{};
+                std::memcpy(&endReply,ended.data()+sizeof(Header),sizeof endReply);
+                require(!header(ended).status && !endReply.ntstatus && endReply.value==14 && f.frames==14);
+                const auto endCalls=f.calls;
+                require(header(capture.dispatch(request(operation,ticket,valid))).status==-108 && f.calls==endCalls);
+                require(header(capture.dispatch(request(operation,ticket,final))).status==-108 && f.calls==endCalls);
                 require(!header(capture.dispatch(request(Op::CloseSharedResource,ticket))).status);
                 const auto calls=f.calls;
-                require(header(capture.dispatch(request(operation,ticket,valid))).status==-9 && f.calls==calls);
+                require(header(capture.dispatch(request(operation,ticket,valid))).status==-108 && f.calls==calls);
+                std::cout<<"COMPOSITOR_STREAM_END finalFrame=14 acknowledged=true lateFramesRejected=true gpu=false\n";
             } else {
                 for (unsigned attempt=0;attempt<2;++attempt) {
                     const auto out=capture.dispatch(request(operation,ticket,audit));

@@ -213,6 +213,7 @@ def main():
     parser.add_argument('--driver-coordinator', action='store_true', help='Use the explicit privileged multi-client native coordinator in the owned 4K root lab')
     parser.add_argument('--driver-window-input', action='store_true', help='Enable the dedicated bounded input channel for the owned desktop window')
     parser.add_argument('--driver-input-self-test', action='store_true', help='Send the fixed disposable-guest PTY test sequence after its first GPU frame; does not prove physical Windows input')
+    parser.add_argument('--driver-sdl-relay', action='store_true', help='Opt in to the NVIDIA compositor output through the existing QEMU SDL frontend')
     parser.add_argument('--driver-rootfs-readonly',type=pathlib.Path,help='Opt-in real-root boot through two read-only block nodes; private image, no persistent writes')
     parser.add_argument('--driver-present-shared', action='store_true', help='Present consumed guest frames in an owned diagnostic Windows window')
     parser.add_argument('--driver-shared-resources', action='store_true', help='Opt into bounded shareable NVIDIA resource creation and native import probing')
@@ -381,6 +382,7 @@ def main():
                              (['--driver-coordinator'] if args.driver_coordinator else []) +
                              (['--driver-window-input'] if args.driver_window_input else []) +
                              (['--driver-input-self-test'] if args.driver_input_self_test else []) +
+                             (['--driver-sdl-relay'] if args.driver_sdl_relay else []) +
                              (['--cpu-store-test'] if args.cpu_store_test else []) + (['--cpu-eof-test'] if args.cpu_eof_test else []) +
                              (['--cpu-span-eof-test'] if args.cpu_span_eof_test else []) +
                              (['--hwqueue-eof-test'] if args.hwqueue_eof_test else []) +
