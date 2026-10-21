@@ -1,5 +1,9 @@
 # NVIDIA D3D12 textures in an SDL OpenGL context
 
+**Subsequent checkpoint, 2026-10-21:** [actual QEMU SDL cross-process GPU import,
+RGBA/BGRA pixels and two 300-handoff controls now pass](LIVE-QEMU-SDL-GPU-RELAY.md).
+The host-component and startup results below retain their original scope.
+
 Two fresh host controls pass on the RTX 5090 Laptop GPU with NVIDIA 617.14,
 using the same SDL 2.32.10 DLL as the pinned QEMU lab runtime. Each imports a
 named **3840×2160 D3D12 GPU texture**, verifies all its pixels, blits it on the

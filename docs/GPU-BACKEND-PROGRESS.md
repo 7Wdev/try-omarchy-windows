@@ -1,20 +1,27 @@
 # NVIDIA backend progress
 
-Updated **2026-10-20**. This page tracks the experimental QEMU/WHPX Windows-native
+Updated **2026-10-21**. This page tracks the experimental QEMU/WHPX Windows-native
 NVIDIA backend. The released Try Omarchy launcher continues using the upstream
 graphics runtime.
 
-![Two 300-frame NVIDIA resize runs pass; official input retained; backend stages 4/8; desktop gates 0/4](images/gpu-backend-progress-sustained-resize-2026-10-20.svg)
+![4K Omarchy frame achieved; QEMU SDL host GPU relay verified; backend stages 4/8; desktop gates 0/4](images/gpu-backend-progress-qemu-sdl-2026-10-21.svg)
 
 ## What is verified now?
 
-**Latest follow-up:** two fresh guests pass **300 GPU handoffs with real
+**Latest display follow-up:** QEMU's actual NVIDIA SDL root context now imports
+a 4K texture from a separate D3D12 producer. Complete source and pre-swap SDL
+pixels pass for RGBA and GPU-converted BGRA, including a 300-handoff BGRA run.
+The earlier swapped-channel BGRA failure remains retained and rejected. These
+are paused, disk-free host controls; real guest compositor scanout through this
+relay is still open. [Builds, reconstructable buffers and limits](LIVE-QEMU-SDL-GPU-RELAY.md).
+
+**Latest guest follow-up:** two fresh guests pass **300 GPU handoffs with real
 application resizing**, independently verified enlarged/restored scene pixels,
 QMP input response and live cleanup. Two earlier 300-frame input-response
 baselines remain separate. [Images, raw evidence and scope](https://github.com/7Wdev/try-omarchy-windows/blob/c6b554458583d14ea9fc6ef432b75d2a0aacc2a4/docs/LIVE-UWSM-SUSTAINED-RESIZE.md).
 The product should preserve the official keyboard/cursor code and QEMU SDL
-input path. Forty input-related files are unchanged; graphics still needs
-integration with that frontend. [Source-preservation record and integration boundary](https://github.com/7Wdev/try-omarchy-windows/blob/c6b554458583d14ea9fc6ef432b75d2a0aacc2a4/docs/UPSTREAM-INPUT-GRAPHICS-INTEGRATION.md).
+input path. Forty input-related files are unchanged; the tested SDL host relay
+still needs the real guest compositor connected. [Source-preservation record and integration boundary](https://github.com/7Wdev/try-omarchy-windows/blob/c6b554458583d14ea9fc6ef432b75d2a0aacc2a4/docs/UPSTREAM-INPUT-GRAPHICS-INTEGRATION.md).
 The staging trims still occur after the streams; hardware reallocation while
 rendering remains open. The earlier results below keep their own scope.
 
@@ -82,7 +89,7 @@ retains its original scope and failures.
 | 3. 4K guest shaders and shared GPU textures | Demonstrated in the lab | [Independent 4K shader pixels, GPU copies and fence retirement](https://github.com/7Wdev/try-omarchy-windows/blob/2290aa6209289dddfbae54b542c524927414c020/docs/LIVE-GPU-4K.md). |
 | 4. Repeated guest rendering | Demonstrated in bounded diagnostics | [64-frame guest runs](https://github.com/7Wdev/try-omarchy-windows/blob/2290aa6209289dddfbae54b542c524927414c020/docs/LIVE-GPU-GUEST-STREAM.md), safe allocator/texture reuse and explicit cleanup. This is not long-run desktop or all-frame display acceptance. |
 | 5. Guest graphics/device integration | In progress | Native render-node/GBM, EGL fences, separate GPU clients, 4K captures and five application lifecycles with live reclamation pass twice. Supported device integration, recovery and sustained work remain required. |
-| 6. Interactive Omarchy/Hyprland desktop | In progress: two 300-frame 4K application-resize/input-response runs pass; earlier failures retained | Integrate graphics with the official SDL frontend and retained input, then validate normal launcher sessions, continuous display, focus, fullscreen and multiple windows. |
+| 6. Interactive Omarchy/Hyprland desktop | In progress: two 300-frame 4K application-resize/input-response runs pass; separate QEMU SDL host GPU import/BGRA controls pass | Connect the real guest compositor to the tested SDL relay with retained input, then validate normal launcher sessions, continuous display, focus, fullscreen and multiple windows. |
 | 7. Required APIs and NVIDIA features | Pending acceptance | OpenGL diagnostics pass; test general OpenGL, Vulkan, CUDA, video and NVIDIA capabilities in real guest applications. |
 | 8. Reliability and ≥93% native performance | Pending acceptance | Matched guest/native benchmarks through 4K, concurrent host/guest GPU workloads, long runs, bounded memory and device/VM recovery. |
 
@@ -101,7 +108,7 @@ not close the broader product requirements below.
 
 ## Remaining work
 
-1. Integrate graphics with the official QEMU SDL frontend while retaining its
+1. Connect real guest compositor buffers to the tested QEMU SDL relay, retaining its
    keyboard/cursor logic; extend hardware trim/reallocation and longer rendering
    without relaxing the usage guard.
 2. Integrate the supported guest device path, normal first-boot session and Windows
@@ -121,6 +128,7 @@ duration of the remaining driver, compositor and product work.
 
 Earlier results keep their original scope and failures:
 
+- [Actual QEMU SDL NVIDIA host relay, BGRA correction and retained pixel failure](LIVE-QEMU-SDL-GPU-RELAY.md).
 - [Idle staging reclamation and two passing 4K input-response runs](https://github.com/7Wdev/try-omarchy-windows/blob/bf60d2848f831be892f8c5e69b686bcedb98644e/docs/LIVE-UWSM-STAGING-RECLAIM.md).
 - [QMP input delivery and actual 4K GPU response, including the failed repeat](https://github.com/7Wdev/try-omarchy-windows/blob/0774e40f0dd394aedb90a5d341b87cc42a00cc91/docs/LIVE-UWSM-QMP-INPUT-RESPONSE.md).
 - [Readable 4K captures and the earlier admission failure](https://github.com/7Wdev/try-omarchy-windows/blob/2290aa6209289dddfbae54b542c524927414c020/docs/LIVE-OMARCHY-4K-READABLE-GPU-DESKTOP.md).
