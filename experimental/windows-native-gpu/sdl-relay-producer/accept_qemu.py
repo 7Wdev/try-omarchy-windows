@@ -8,6 +8,7 @@ import queue
 import re
 import socket
 import subprocess
+import tarfile
 import threading
 
 
@@ -16,11 +17,11 @@ def sha(path):
 
 
 class Producer:
-    def __init__(self,binary,session,generation,output):
+    def __init__(self,binary,session,generation,output,bgra=False):
         self.records=[];self.messages=queue.Queue()
         self.log=(output/'producer.stdout.log').open('x',encoding='utf-8')
         self.errors=(output/'producer.stderr.log').open('x',encoding='utf-8')
-        self.command=[str(binary),session,str(generation)]
+        self.command=[str(binary),session,str(generation)]+(['--bgra'] if bgra else [])
         self.process=subprocess.Popen(self.command,stdin=subprocess.PIPE,stdout=subprocess.PIPE,
                                       stderr=self.errors,text=True,creationflags=subprocess.CREATE_NO_WINDOW)
         self.reader=threading.Thread(target=self.read,daemon=True);self.reader.start()
@@ -83,7 +84,7 @@ class Qmp:
         self.stream.close();self.connection.close()
 
 
-def accept(candidate,build,output,frames=2,tcg=False):
+def accept(candidate,build,output,artifact_receipt,frames=2,tcg=False,bgra=False):
     candidate,build,output=(path.resolve() for path in (candidate,build,output))
     if not 2<=frames<=300:raise ValueError('Control frame count must be in 2..300')
     output.mkdir()
@@ -91,27 +92,36 @@ def accept(candidate,build,output,frames=2,tcg=False):
     repo=Path(__file__).resolve().parents[3]
     binary=candidate/'bin/qemu-system-x86_64.exe'
     producer_binary=build/'d3d12-named-producer.exe'
+    artifact=json.loads(artifact_receipt.read_text())
+    for name,digest in artifact['files'].items():
+        if sha(candidate/name)!=digest:raise ValueError('Candidate differs from its verified artifact receipt')
     receipt=json.loads((build/'receipt.json').read_text(encoding='utf-8-sig'))
     if sha(Path(__file__).with_name('d3d12_named_producer.cpp'))!=receipt['sourceSha256'] or \
        sha(Path(__file__).with_name('build.ps1'))!=receipt['buildScriptSha256'] or \
        sha(producer_binary)!=receipt['binarySha256']:
         raise ValueError('Producer build/source changed')
     provenance=json.loads((candidate/'sdl-candidate-provenance.json').read_text())
-    for name,digest in provenance['graphicsRelaySources'].items():
-        if sha(repo/'experimental/qemu'/name)!=digest:raise ValueError('Mixed QEMU relay source')
-    if sha(repo/'experimental/qemu/sdl-gpu-relay.patch')!=provenance['graphicsRelayPatchSha256']:
-        raise ValueError('Mixed QEMU graphics boundary')
+    archive=candidate/'qemu-corresponding-source.tar.gz'
+    compiled={}
+    with tarfile.open(archive,'r:gz') as bundle:
+        for name in [*('hw/display/'+name for name in provenance['graphicsRelaySources']),
+                     'include/ui/console.h','ui/console.c','ui/sdl2-gl.c']:
+            raw=bundle.extractfile('source/'+name).read()
+            digest=hashlib.sha256(raw).hexdigest()
+            if name.startswith('hw/display/') and digest!=provenance['graphicsRelaySources'][Path(name).name]:
+                raise ValueError('Relay source differs from its compiled artifact manifest')
+            compiled[name]=dict(sha256=digest,utf8=raw.decode())
     header=(candidate/'config-host.h').read_text()
     if not all(re.search(r'^#define '+key+r'\s*$',header,re.M) for key in ('CONFIG_OPENGL','CONFIG_SDL')):
         raise ValueError('QEMU lacks SDL/OpenGL')
-    frozen_paths=[repo/'experimental/qemu'/name for name in provenance['graphicsRelaySources']]
-    frozen_paths+=[repo/'experimental/qemu/sdl-gpu-relay.patch',Path(__file__),
+    frozen_paths=[Path(__file__),
                   Path(__file__).with_name('d3d12_named_producer.cpp'),Path(__file__).with_name('build.ps1')]
     frozen={str(path.relative_to(repo)).replace('\\','/'):sha(path) for path in frozen_paths}
     qemu_hash=sha(binary);session=os.urandom(16).hex();generation=1
     source=dict(schema=1,session=session,generation=generation,frames=frames,
-                qemuSha256=qemu_hash,producerReceipt=receipt,sourceImageUsed=False,
+                qemuSha256=qemu_hash,producerReceipt=receipt,sourceImageUsed=False,requestedFormat='BGRA8' if bgra else 'RGBA8',
                 qemuProvenance=provenance,runnerSha256=sha(Path(__file__)),frozenSources=frozen,
+                artifactReceipt=artifact,compiledSources=compiled,
                 physicalInputVerified=False,physicalScanoutVerified=False,guestGpuScanoutVerified=False,
                 nearNativePerformanceVerified=False)
     result=dict(schema=1,passed=False,naturalQemuExit=False,naturalProducerExit=False,
@@ -119,16 +129,19 @@ def accept(candidate,build,output,frames=2,tcg=False):
                 physicalScanoutVerified=False,guestGpuScanoutVerified=False,nearNativePerformanceVerified=False)
     producer=None;process=None;qmp=None;listener=None
     try:
-        producer=Producer(producer_binary,session,generation,output)
+        producer=Producer(producer_binary,session,generation,output,bgra)
         ready=producer.receive('namedProducerReady')
         if ready['vendorId']!=0x10de or not ready['independentFences'] or \
-           not ready['nonInheritableExports'] or (ready['width'],ready['height'])!=(3840,2160):
+           not ready['nonInheritableExports'] or (ready['width'],ready['height'])!=(3840,2160) or \
+           ready['format']!=source['requestedFormat']:
             raise ValueError('Wrong NVIDIA resource topology')
         source['producerReady']=ready
         listener=socket.socket();listener.bind(('127.0.0.1',0));listener.listen(1);listener.settimeout(15)
         name='Try-Omarchy-SDL-Relay-'+session
         device=('wddm-sdl-relay,id=relay,session='+session+',generation=1,adapter-luid='+ready['adapterLuid']+
                 ',audit-directory='+str(audit).replace(',',',,'))
+        if provenance.get('graphicsRelayProtocolVersion',1)>=2:
+            device+=',source-format='+('bgra8' if bgra else 'rgba8')
         command=[str(binary),'-L',str(candidate/'share/qemu'),'-name',name,
                  '-machine','q35,accel='+('tcg' if tcg else 'whpx,kernel-irqchip=off'),
                  '-m','256','-S','-nodefaults','-vga','none','-device',device,
@@ -157,6 +170,9 @@ def accept(candidate,build,output,frames=2,tcg=False):
            state['adapterLuid']!=ready['adapterLuid'] or \
            state['vendor']!='NVIDIA Corporation' or 'NVIDIA' not in state['renderer']:
             raise ValueError('QEMU root context is not the matching hardware NVIDIA adapter')
+        if provenance.get('graphicsRelayProtocolVersion',1)>=2 and (
+                state['sourceFormat']!=source['requestedFormat'].lower() or state['channelProgramLive'] is not bgra):
+            raise ValueError('Wrong GPU channel-conversion path')
         for text in ('attach:1','present:1:2'):
             result['negativeControls'].append(dict(command=text,error=qmp.command(text,error=True)))
         producer.send('close-handles')
@@ -176,10 +192,14 @@ def accept(candidate,build,output,frames=2,tcg=False):
             if state['lastQueuedFrame']!=frame or state['poisoned'] or \
                state['auditFrames']!=(2 if frame==frames else 1):
                 raise ValueError('QEMU frame/audit ownership mismatch')
+            if provenance.get('graphicsRelayProtocolVersion',1)>=2 and state['convertedFrames']!=(frame if bgra else 0):
+                raise ValueError('Missing/extra GPU channel-conversion dispatch')
         qmp.command('detach:1');state=qmp.state();result['states'].append(state)
         if state['attached'] or state['poisoned'] or state['liveImportedObjects'] or \
            state['importContextLive'] or state['localScanoutLive']:
             raise ValueError('GPU relay did not detach cleanly')
+        if provenance.get('graphicsRelayProtocolVersion',1)>=2 and state['channelProgramLive']:
+            raise ValueError('GPU conversion program remains live after detach')
         result['negativeControls'].append(dict(command='attach:1',error=qmp.command('attach:1',error=True)))
         producer.send('close');done=producer.receive('namedProducerComplete')
         if not done['gpuObjectsReleased'] or done['frames']!=frames or done['exportsClosed']!=3:
@@ -204,9 +224,10 @@ def accept(candidate,build,output,frames=2,tcg=False):
         if producer:
             producer.close();result['producerExitCode']=producer.process.returncode
             result['producerRecords']=producer.records
+        source['artifactUnchanged']=all(sha(candidate/name)==digest for name,digest in artifact['files'].items())
         source['binariesUnchanged']=sha(binary)==qemu_hash and sha(producer_binary)==receipt['binarySha256']
         source['sourcesUnchanged']=all(sha(repo/name)==digest for name,digest in frozen.items())
-        if not source['binariesUnchanged'] or not source['sourcesUnchanged']:
+        if not source['artifactUnchanged'] or not source['binariesUnchanged'] or not source['sourcesUnchanged']:
             result['passed']=False
             result['error']='Source or binary changed during the owned GPU control'
         for name,value in (('source.json',source),('result.json',result)):
@@ -222,7 +243,9 @@ if __name__=='__main__':
     parser.add_argument('--candidate',type=Path,required=True)
     parser.add_argument('--producer-build',type=Path,required=True)
     parser.add_argument('--output',type=Path,required=True)
+    parser.add_argument('--artifact-receipt',type=Path,required=True,help='Receipt from the digest-verified artifact download')
     parser.add_argument('--frames',type=int,default=2)
     parser.add_argument('--tcg',action='store_true')
+    parser.add_argument('--bgra',action='store_true',help='Probe the BGRA format used by real compositor buffers; independent pixels must still pass')
     args=parser.parse_args()
-    accept(args.candidate,args.producer_build,args.output,args.frames,args.tcg)
+    accept(args.candidate,args.producer_build,args.output,args.artifact_receipt,args.frames,args.tcg,args.bgra)

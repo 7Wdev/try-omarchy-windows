@@ -21,14 +21,14 @@ struct WddmSdlRelay {
     DeviceState parent_obj;
     QemuConsole *con;
     QEMUGLContext import_context;
-    char *session, *expected_luid, *audit_directory;
+    char *session, *expected_luid, *audit_directory, *source_format;
     char vendor[128], renderer[256], version[128], luid[17];
     char *audit_error;
     uint32_t width, height, audit_width, audit_height;
-    uint64_t generation, last_frame, pending_frame, audit_frames;
+    uint64_t generation, last_frame, pending_frame, audit_frames, converted_frames;
     uint64_t source_fnv, window_fnv;
-    GLuint memory, source_texture, scanout_texture, producer, consumer;
-    bool attached, ever_attached, poisoned, pending_audit, audit_called, root_verified;
+    GLuint memory, source_texture, scanout_texture, producer, consumer, channel_program;
+    bool attached, ever_attached, poisoned, pending_audit, audit_called, root_verified, bgra;
     Error *migration_blocker;
 };
 
@@ -79,6 +79,10 @@ static bool relay_adapter(WddmSdlRelay *s, Error **errp)
 
 static void relay_delete_objects(WddmSdlRelay *s)
 {
+    if (s->channel_program) {
+        glDeleteProgram(s->channel_program);
+        s->channel_program = 0;
+    }
     if (s->source_texture) {
         glDeleteTextures(1, &s->source_texture);
     }
@@ -98,11 +102,63 @@ static void relay_delete_objects(WddmSdlRelay *s)
     s->producer = s->consumer = 0;
 }
 
+static bool relay_channel_program(WddmSdlRelay *s, Error **errp)
+{
+    const GLchar *text =
+        "#version 430 core\n"
+        "layout(local_size_x=16,local_size_y=16) in;\n"
+        "layout(rgba8,binding=0) readonly uniform image2D sourceImage;\n"
+        "layout(rgba8,binding=1) writeonly uniform image2D targetImage;\n"
+        "void main() {\n"
+        "  ivec2 p=ivec2(gl_GlobalInvocationID.xy);\n"
+        "  if(any(greaterThanEqual(p,imageSize(targetImage)))) return;\n"
+        "  imageStore(targetImage,p,imageLoad(sourceImage,p).bgra);\n"
+        "}\n";
+    GLuint shader;
+    GLint status = GL_FALSE;
+    char log[1024] = {0};
+    if (!s->bgra) {
+        return true;
+    }
+    shader = glCreateShader(GL_COMPUTE_SHADER);
+    if (!shader) {
+        error_setg(errp, "Cannot create the fixed GPU channel-conversion shader");
+        return false;
+    }
+    glShaderSource(shader, 1, &text, NULL);
+    glCompileShader(shader);
+    glGetShaderiv(shader, GL_COMPILE_STATUS, &status);
+    if (!status) {
+        glGetShaderInfoLog(shader, sizeof log, NULL, log);
+        glDeleteShader(shader);
+        error_setg(errp, "GPU channel-conversion compilation failed: %s", log);
+        return false;
+    }
+    s->channel_program = glCreateProgram();
+    if (!s->channel_program) {
+        glDeleteShader(shader);
+        error_setg(errp, "Cannot create the GPU channel-conversion program");
+        return false;
+    }
+    glAttachShader(s->channel_program, shader);
+    glLinkProgram(s->channel_program);
+    glDeleteShader(shader);
+    status = GL_FALSE;
+    glGetProgramiv(s->channel_program, GL_LINK_STATUS, &status);
+    if (!status) {
+        glGetProgramInfoLog(s->channel_program, sizeof log, NULL, log);
+        error_setg(errp, "GPU channel-conversion link failed: %s", log);
+        return false;
+    }
+    return relay_gl_ok(errp, "GPU channel-conversion program");
+}
+
 static bool relay_attach(WddmSdlRelay *s, Error **errp)
 {
     QEMUGLParams params = { .major_ver = 4, .minor_ver = 5 };
     GLint dedicated = GL_TRUE;
     const unsigned char black[4] = {0, 0, 0, 255};
+    GLsync initialized = NULL;
     g_autofree char *prefix = NULL;
     g_autofree char *name = NULL;
     g_autofree gunichar2 *memory_name = NULL;
@@ -151,13 +207,24 @@ static bool relay_attach(WddmSdlRelay *s, Error **errp)
     glGenTextures(1, &s->scanout_texture);
     glBindTexture(GL_TEXTURE_2D, s->scanout_texture);
     glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, s->width, s->height);
+    if (!relay_channel_program(s, errp)) {
+        goto fail;
+    }
     glClearTexImage(s->scanout_texture, 0, GL_RGBA, GL_UNSIGNED_BYTE, black);
+    initialized = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
     glFlush();
-    if (!relay_gl_ok(errp, "persistent GPU scanout allocation")) {
+    if (!initialized || !relay_gl_ok(errp, "persistent GPU scanout allocation")) {
+        if (!errp || !*errp) {
+            error_setg(errp, "Cannot fence the initial SDL GPU clear");
+        }
         goto fail;
     }
     dpy_gl_scanout_texture(s->con, s->scanout_texture, false, s->width, s->height,
                           0, 0, s->width, s->height, NULL);
+    glWaitSync(initialized, 0, GL_TIMEOUT_IGNORED);
+    glDeleteSync(initialized);
+    initialized = NULL;
+    glMemoryBarrier(GL_FRAMEBUFFER_BARRIER_BIT | GL_TEXTURE_UPDATE_BARRIER_BIT);
     if (!relay_adapter(s, errp) || !relay_gl_ok(errp, "SDL root texture binding")) {
         dpy_gl_scanout_disable(s->con);
         goto fail;
@@ -168,6 +235,9 @@ static bool relay_attach(WddmSdlRelay *s, Error **errp)
 fail:
     if (s->import_context) {
         if (!dpy_gl_ctx_make_current(s->con, s->import_context)) {
+            if (initialized) {
+                glDeleteSync(initialized);
+            }
             relay_delete_objects(s);
         }
         dpy_gl_ctx_destroy(s->con, s->import_context);
@@ -294,9 +364,21 @@ static bool relay_present(WddmSdlRelay *s, uint64_t frame, bool audit, Error **e
     glDeleteSync(root_retired);
     glSemaphoreParameterui64vEXT(s->producer, GL_D3D12_FENCE_VALUE_EXT, &target);
     glWaitSemaphoreEXT(s->producer, 0, NULL, 1, &s->source_texture, &layout);
-    glCopyImageSubData(s->source_texture, GL_TEXTURE_2D, 0, 0, 0, 0,
-                       s->scanout_texture, GL_TEXTURE_2D, 0, 0, 0, 0,
-                       s->width, s->height, 1);
+    if (s->bgra) {
+        glUseProgram(s->channel_program);
+        glBindImageTexture(0, s->source_texture, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA8);
+        glBindImageTexture(1, s->scanout_texture, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
+        glDispatchCompute((s->width + 15) / 16, (s->height + 15) / 16, 1);
+        glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT |
+                        GL_TEXTURE_UPDATE_BARRIER_BIT | GL_FRAMEBUFFER_BARRIER_BIT);
+        glBindImageTexture(0, 0, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA8);
+        glBindImageTexture(1, 0, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
+        glUseProgram(0);
+    } else {
+        glCopyImageSubData(s->source_texture, GL_TEXTURE_2D, 0, 0, 0, 0,
+                           s->scanout_texture, GL_TEXTURE_2D, 0, 0, 0, 0,
+                           s->width, s->height, 1);
+    }
     glSemaphoreParameterui64vEXT(s->consumer, GL_D3D12_FENCE_VALUE_EXT, &target);
     glSignalSemaphoreEXT(s->consumer, 0, NULL, 1, &s->source_texture, &layout);
     copy_complete = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
@@ -330,6 +412,9 @@ static bool relay_present(WddmSdlRelay *s, uint64_t frame, bool audit, Error **e
         return false;
     }
     s->last_frame = frame;
+    if (s->bgra) {
+        ++s->converted_frames;
+    }
     return true;
 }
 
@@ -401,6 +486,9 @@ static char *relay_state(Object *object, Error **errp)
     qdict_put_bool(value, "rootAdapterVerified", s->root_verified);
     qdict_put_bool(value, "importContextLive", s->import_context != NULL);
     qdict_put_bool(value, "localScanoutLive", s->scanout_texture != 0);
+    qdict_put_bool(value, "channelProgramLive", s->channel_program != 0);
+    qdict_put_str(value, "sourceFormat", s->bgra ? "bgra8" : "rgba8");
+    qdict_put_int(value, "convertedFrames", s->converted_frames);
     qdict_put_int(value, "liveImportedObjects", !!s->memory + !!s->source_texture + !!s->producer + !!s->consumer);
     qdict_put_int(value, "generation", s->generation);
     qdict_put_int(value, "lastQueuedFrame", s->last_frame);
@@ -441,6 +529,11 @@ static void relay_realize(DeviceState *device, Error **errp)
         error_setg(errp, "SDL GPU relay needs a fresh 128-bit session, adapter LUID, generation and bounded 4K extent");
         return;
     }
+    if (s->source_format && strcmp(s->source_format, "rgba8") && strcmp(s->source_format, "bgra8")) {
+        error_setg(errp, "SDL GPU relay needs rgba8 or bgra8 source-format");
+        return;
+    }
+    s->bgra = s->source_format && !strcmp(s->source_format, "bgra8");
     error_setg(&s->migration_blocker, "SDL GPU relay's native resource ownership is not migratable");
     if (migrate_add_blocker(&s->migration_blocker, errp)) {
         return;
@@ -473,6 +566,7 @@ static const Property relay_properties[] = {
     DEFINE_PROP_STRING("session", WddmSdlRelay, session),
     DEFINE_PROP_STRING("adapter-luid", WddmSdlRelay, expected_luid),
     DEFINE_PROP_STRING("audit-directory", WddmSdlRelay, audit_directory),
+    DEFINE_PROP_STRING("source-format", WddmSdlRelay, source_format),
     DEFINE_PROP_UINT32("width", WddmSdlRelay, width, 3840),
     DEFINE_PROP_UINT32("height", WddmSdlRelay, height, 2160),
     DEFINE_PROP_UINT64("generation", WddmSdlRelay, generation, 1),

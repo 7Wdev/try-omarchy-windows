@@ -7,7 +7,8 @@ import subprocess
 def verify(producer):
     valid='00112233445566778899aabbccddeeff'
     for arguments in ([],[valid],[valid,'0'],[valid,'01'],[valid,'-1'],[valid,'281474976710656'],
-                      [valid,'18446744073709551616'],['X'*32,'1'],[valid+'x','1'],[valid,'1x']):
+                      [valid,'18446744073709551616'],['X'*32,'1'],[valid+'x','1'],[valid,'1x'],
+                      [valid,'1','--unknown'],[valid,'0','--bgra']):
         result=subprocess.run([str(producer.resolve()),*arguments],capture_output=True,text=True,timeout=10)
         assert result.returncode==1 and 'namedProducerRejected' in result.stderr, result
         assert 'namedProducerReady' not in result.stdout

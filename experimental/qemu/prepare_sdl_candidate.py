@@ -49,6 +49,7 @@ def prepare(source):
                  officialRuntimePatches=applied, officialInputSourceInitiallyUnchanged=True,
                  graphicsRelayPatchSha256=hashlib.sha256(graphics_patch.read_bytes()).hexdigest(),
                  graphicsRelaySources=graphics_sources,
+                 graphicsRelayProtocolVersion=2,
                  inputFiles={name:hashlib.sha256((source/name).read_bytes()).hexdigest()
                              for name in sorted(input_files) if (source/name).is_file()},
                  graphicsBuildCandidate=True, guestFrameVerified=False, officialFrontendIntegrationVerified=False)

@@ -64,7 +64,7 @@ static void wait(ID3D12Fence* fence,std::uint64_t target,HANDLE event) {
     }
     require(observed!=UINT64_MAX && observed>=target,"Consumer fence target did not retire");
 }
-static void run(const wchar_t* session,const wchar_t* generationText) {
+static void run(const wchar_t* session,const wchar_t* generationText,bool bgra) {
     require(std::wcslen(session)==32,"Session must contain exactly 32 lowercase hex digits");
     std::string sessionAscii;
     for(unsigned i=0;i<32;++i) {
@@ -104,7 +104,8 @@ static void run(const wchar_t* session,const wchar_t* generationText) {
     ComPtr<ID3D12Device> device;check(D3D12CreateDevice(adapter.Get(),D3D_FEATURE_LEVEL_11_0,IID_PPV_ARGS(&device)),"Cannot create NVIDIA D3D12 device");
     D3D12_HEAP_PROPERTIES heap{};heap.Type=D3D12_HEAP_TYPE_DEFAULT;heap.CreationNodeMask=heap.VisibleNodeMask=1;
     D3D12_RESOURCE_DESC desc{};desc.Dimension=D3D12_RESOURCE_DIMENSION_TEXTURE2D;desc.Width=Width;desc.Height=Height;
-    desc.DepthOrArraySize=desc.MipLevels=1;desc.Format=DXGI_FORMAT_R8G8B8A8_UNORM;desc.SampleDesc.Count=1;desc.Flags=D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+    desc.DepthOrArraySize=desc.MipLevels=1;desc.Format=bgra?DXGI_FORMAT_B8G8R8A8_UNORM:DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.SampleDesc.Count=1;desc.Flags=D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
     ComPtr<ID3D12Resource> texture;check(device->CreateCommittedResource(&heap,D3D12_HEAP_FLAG_SHARED,&desc,
         D3D12_RESOURCE_STATE_COMMON,nullptr,IID_PPV_ARGS(&texture)),"Cannot create named GPU texture");
     ComPtr<ID3D12Fence> producer,consumer;
@@ -130,7 +131,7 @@ static void run(const wchar_t* session,const wchar_t* generationText) {
     const auto view=rtv->GetCPUDescriptorHandleForHeapStart();device->CreateRenderTargetView(texture.Get(),nullptr,view);
     const auto initialUsage=budget(adapter.Get());
     std::cout<<"{\"namedProducerReady\":true,\"session\":"<<quote(sessionAscii)<<",\"generation\":"<<generation
-        <<",\"width\":"<<Width<<",\"height\":"<<Height<<",\"format\":\"RGBA8\",\"vendorId\":"<<description.VendorId
+        <<",\"width\":"<<Width<<",\"height\":"<<Height<<",\"format\":\""<<(bgra?"BGRA8":"RGBA8")<<"\",\"vendorId\":"<<description.VendorId
         <<",\"adapter\":"<<quote(utf8(description.Description))<<",\"adapterLuid\":"<<quote(luid.str())
         <<",\"independentFences\":true,\"nonInheritableExports\":true,\"gpuUsageBytes\":"<<initialUsage<<"}\n";
     bool exportsClosed=false;unsigned frames=0;
@@ -180,8 +181,9 @@ static void run(const wchar_t* session,const wchar_t* generationText) {
 int wmain(int argc,wchar_t** argv) {
     std::cout.setf(std::ios::unitbuf);
     try {
-        require(argc==3,"Usage: d3d12-named-producer SESSION32 GENERATION");
-        run(argv[1],argv[2]);return 0;
+        const bool bgra=argc==4 && !std::wcscmp(argv[3],L"--bgra");
+        require(argc==3 || bgra,"Usage: d3d12-named-producer SESSION32 GENERATION [--bgra]");
+        run(argv[1],argv[2],bgra);return 0;
     } catch(const std::exception& error) {
         std::cerr<<"{\"namedProducerRejected\":true,\"error\":"<<quote(error.what())<<"}\n";return 1;
     }

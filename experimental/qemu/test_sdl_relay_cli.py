@@ -11,7 +11,7 @@ def verify(qemu, firmware):
     help_result = run(['-device', 'wddm-sdl-relay,help'])
     assert help_result.returncode == 0, help_result.stderr
     help_text = help_result.stdout + help_result.stderr
-    for name in ('adapter-luid', 'audit-directory', 'session', 'generation', 'width', 'height'):
+    for name in ('adapter-luid', 'audit-directory', 'source-format', 'session', 'generation', 'width', 'height'):
         assert name in help_text, (name, help_text)
     for extra in (
         'session=x,adapter-luid=0011223344556677',
@@ -19,6 +19,7 @@ def verify(qemu, firmware):
         'session=00112233445566778899aabbccddeeff,adapter-luid=0011223344556677,width=3841',
         'session=00112233445566778899aabbccddeeff,adapter-luid=0011223344556677,height=2161',
         'session=00112233445566778899aabbccddeeff,adapter-luid=0011223344556677,generation=0',
+        'session=00112233445566778899aabbccddeeff,adapter-luid=0011223344556677,source-format=unknown',
     ):
         result = run(['-L', str(firmware.resolve()), '-machine', 'q35,accel=tcg', '-m', '16M',
                       '-display', 'none', '-nodefaults', '-vga', 'none', '-S',

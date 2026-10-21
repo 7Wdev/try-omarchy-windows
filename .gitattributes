@@ -44,6 +44,7 @@ experimental/windows-native-gpu/sdl-relay-producer/test_cli.py text eol=lf
 experimental/windows-native-gpu/verify_sdl_interop.py text eol=lf
 experimental/windows-native-gpu/test_sdl_interop_milestone.py text eol=lf
 experimental/windows-native-gpu/verify_sdl_shared_context.py text eol=lf
+experimental/windows-native-gpu/verify_qemu_sdl_relay.py text eol=lf
 experimental/windows-native-gpu/test_sdl_shared_context_milestone.py text eol=lf
 docs/evidence/SDL-SHARED-CONTEXT-2026-10-20.json text eol=lf
 docs/evidence/QEMU-SDL-OPENGL-CANDIDATE-2026-10-20.json text eol=lf
