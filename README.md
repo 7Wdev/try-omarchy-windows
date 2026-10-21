@@ -10,9 +10,17 @@ The experimental QEMU/WHPX bridge now captures a real **3840×2160 Omarchy deskt
 the shipped wallpaper, Omarchy bar and readable Alacritty application appear together.
 Full integration into the Windows launcher and a stable interactive desktop remain in development.
 
-![Two 300-frame NVIDIA application-resize runs pass; official input code retained; backend 4/8 stages; desktop product 0/4 gates](docs/images/gpu-backend-progress-sustained-resize-2026-10-20.svg)
+![First 4K Omarchy frame achieved; QEMU SDL host GPU import and BGRA conversion verified; backend 4/8 stages; desktop product 0/4 gates](docs/images/gpu-backend-progress-qemu-sdl-2026-10-21.svg)
 
-**Latest verified checkpoint — October 20, 2026:** two fresh guests (runs 99–100)
+**Latest display checkpoint — October 21, 2026:** the actual QEMU SDL frontend
+now imports a shared **4K NVIDIA GPU texture from a separate Windows process**.
+RGBA and GPU-converted BGRA pass independent complete source/window pixel
+audits, including a **300-handoff BGRA run** with 298 ordinary GPU-only handoffs.
+This paused, disk-free host control is the next display building block; the real
+guest compositor still needs connection to it.
+[Hardware evidence, retained BGRA failure and scope](https://github.com/7Wdev/try-omarchy-windows/blob/6db01ffa69db405f9c76fb51da335bcf0513e8f6/docs/LIVE-QEMU-SDL-GPU-RELAY.md).
+
+**Latest guest desktop checkpoint — October 20, 2026:** two fresh guests (runs 99–100)
 pass **300 actual 4K GPU handoffs** while the same NVIDIA application grows from
 1440×960 to 1600×1000 and returns to 1200×800. Complete first/last backbuffers
 independently verify the enlarged panel and restored wallpaper. Each also passes
@@ -22,7 +30,8 @@ natural shutdown with no mappings or native children deferred to VM exit.
 **Product priority: retain the official keyboard/cursor code and QEMU SDL input
 path, including the launcher's reserved-key routing.** Forty input-related source,
 patch and control files are unchanged from the inspected official commit.
-The new graphics backend still needs integration with that frontend.
+The new host GPU relay retains that frontend's input implementation; real guest
+graphics and normal launcher integration remain open.
 [Verified upstream source map and integration boundary](https://github.com/7Wdev/try-omarchy-windows/blob/c6b554458583d14ea9fc6ef432b75d2a0aacc2a4/docs/UPSTREAM-INPUT-GRAPHICS-INTEGRATION.md).
 
 ![Actual unedited 4K NVIDIA desktop after application resizing and input response](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/c6b554458583d14ea9fc6ef432b75d2a0aacc2a4/docs/images/omarchy-4k-restored-application-gpu-2026-10-20.png)
@@ -39,6 +48,7 @@ graphics runtime.
 | --- | --- | --- |
 | 4K diagnostic scene | **3/3:** shipped wallpaper, Omarchy bar, readable GPU application | Normal launcher presentation and usable desktop acceptance. |
 | Bounded rendering/input response | **Two 300-frame resize runs pass**, plus two separate 300-frame input-response baselines | Long runs, physical input through the official frontend and simultaneous application windows. |
+| QEMU SDL GPU display building block | **4K cross-process RGBA/BGRA host controls pass**, including 300 GPU handoffs | Connect real guest compositor buffers and validate the normal launcher/input path. |
 | Backend stages | **4/8 demonstrated; stages 5–6 in progress** | Supported device integration, broader APIs, recovery and performance. |
 | Desktop product gates | **0/4 complete; first three in progress** | Normal account/launcher integration, continuous multi-window display, reliability and matched-native performance. |
 
@@ -47,8 +57,8 @@ passes, but the trims still occur after the streams; hardware reallocation of a
 trimmed slot during continued rendering remains unverified. Earlier failures
 and their original evidence remain retained.
 
-**First 4K desktop frame: achieved. Next:** connect GPU presentation to the
-official QEMU SDL frontend while preserving input, and exercise sustained
+**First 4K desktop frame: achieved. Next:** connect real guest GPU buffers to the
+tested QEMU SDL relay while preserving official input, and exercise sustained
 resource churn and simultaneous windows.
 The checklist counts do not measure engineering effort.
 [Gate definitions and evidence](docs/GPU-BACKEND-PROGRESS.md).
