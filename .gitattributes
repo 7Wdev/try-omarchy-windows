@@ -2,6 +2,9 @@ app/testdata/SHA256SUMS.* text eol=lf
 
 # Runtime patches are digest-pinned and must be byte-identical on Windows.
 runtime-build/patches/**/*.patch text eol=lf whitespace=-blank-at-eol,-blank-at-eof
+# Frozen audit source and evidence hashes use the committed LF bytes.
+experimental/windows-native-gpu/**/*.py text eol=lf
+docs/evidence/*.json text eol=lf
 experimental/windows-native-gpu/mesa/*.patch text eol=lf whitespace=-blank-at-eol,-blank-at-eof
 experimental/windows-native-gpu/aquamarine-*.patch text eol=lf whitespace=-blank-at-eol,-blank-at-eof
 # Keep the published evidence JSON byte-identical across platform checkouts.
