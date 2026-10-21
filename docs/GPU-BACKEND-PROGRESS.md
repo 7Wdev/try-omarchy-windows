@@ -4,24 +4,26 @@ Updated **2026-10-21**. This page tracks the experimental QEMU/WHPX Windows-nati
 NVIDIA backend. The released Try Omarchy launcher continues using the upstream
 graphics runtime.
 
-![4K Omarchy frame achieved; QEMU SDL host GPU relay verified; backend stages 4/8; desktop gates 0/4](images/gpu-backend-progress-qemu-sdl-2026-10-21.svg)
+![4K Omarchy frame achieved; QEMU SDL host GPU relay verified; backend stages 4/8; desktop gates 0/4](images/gpu-backend-progress-real-sdl-2026-10-21.svg)
 
 ## What is verified now?
 
-**Latest display follow-up:** QEMU's actual NVIDIA SDL root context now imports
-a 4K texture from a separate D3D12 producer. Complete source and pre-swap SDL
-pixels pass for RGBA and GPU-converted BGRA, including a 300-handoff BGRA run.
-The earlier swapped-channel BGRA failure remains retained and rejected. These
-are paused, disk-free host controls; real guest compositor scanout through this
-relay is still open. [Builds, reconstructable buffers and limits](https://github.com/7Wdev/try-omarchy-windows/blob/6db01ffa69db405f9c76fb51da335bcf0513e8f6/docs/LIVE-QEMU-SDL-GPU-RELAY.md).
+**Latest display follow-up:** real Omarchy guest buffers now reach QEMU SDL on
+NVIDIA. Run 102 passes 300 handoffs, exact complete 4K source pixels, independently
+scaled full SDL window pixels and live cross-process GPU cleanup. The actual SDL
+backbuffer is 2560×1566. **The repeat fails at frame 207 with device loss.** Median
+log-observed frame delivery is 69.15 ms, while ingress-to-SDL receipt is 5.07 ms;
+physical scanout/input latency and near-native performance remain unmeasured.
+[Actual image, reconstructable evidence and retained failures](https://github.com/7Wdev/try-omarchy-windows/blob/a803f6b3d1b24ab482ed381cacab68c99fdf61d7/docs/LIVE-OMARCHY-QEMU-SDL.md).
 
 **Latest guest follow-up:** two fresh guests pass **300 GPU handoffs with real
 application resizing**, independently verified enlarged/restored scene pixels,
 QMP input response and live cleanup. Two earlier 300-frame input-response
 baselines remain separate. [Images, raw evidence and scope](https://github.com/7Wdev/try-omarchy-windows/blob/c6b554458583d14ea9fc6ef432b75d2a0aacc2a4/docs/LIVE-UWSM-SUSTAINED-RESIZE.md).
 The product should preserve the official keyboard/cursor code and QEMU SDL
-input path. Forty input-related files are unchanged; the tested SDL host relay
-still needs the real guest compositor connected. [Source-preservation record and integration boundary](https://github.com/7Wdev/try-omarchy-windows/blob/c6b554458583d14ea9fc6ef432b75d2a0aacc2a4/docs/UPSTREAM-INPUT-GRAPHICS-INTEGRATION.md).
+input path. Forty input-related files are unchanged; the real guest is now
+connected to SDL. The user reports cursor movement, with automated full-input
+and normal-launcher acceptance still open. [Source-preservation record and integration boundary](https://github.com/7Wdev/try-omarchy-windows/blob/c6b554458583d14ea9fc6ef432b75d2a0aacc2a4/docs/UPSTREAM-INPUT-GRAPHICS-INTEGRATION.md).
 The staging trims still occur after the streams; hardware reallocation while
 rendering remains open. The earlier results below keep their own scope.
 
@@ -72,7 +74,8 @@ application are present in the accepted 4K captures. **4/8 backend stages** and
 These are different checklists, not engineering-effort percentages. Capturing
 the desktop does not establish normal launcher presentation or interactive use.
 
-The Windows diagnostic client area is 1280×720. Physical 4K scanout, all-frame
+The earlier Windows diagnostic client area is 1280×720; the new real-guest SDL
+backbuffer is 2560×1566 with a 3840×2160 GPU source. Physical 4K scanout, all-frame
 display, normal first-boot/launcher/input, long-run stability and performance are
 unverified. Both passing UWSM runs have **zero mappings or native children deferred to VM exit**.
 Earlier usage-guard and primary-reservation failures remain retained and rejected.
