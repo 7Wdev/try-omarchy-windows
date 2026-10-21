@@ -24,6 +24,7 @@ struct WddmSdlRelay {
     char *session, *expected_luid, *audit_directory, *source_format;
     char vendor[128], renderer[256], version[128], luid[17];
     char *audit_error;
+    QDict *audit_window_state;
     uint32_t width, height, audit_width, audit_height;
     uint64_t generation, last_frame, pending_frame, audit_frames, converted_frames;
     uint64_t source_fnv, window_fnv;
@@ -269,23 +270,78 @@ static bool relay_save(WddmSdlRelay *s, const char *kind, const void *bytes, siz
 }
 
 /* Called by SDL after its actual blit and before SwapWindow, in the root GL context. */
-static void relay_scanout_audit(void *opaque, uint32_t width, uint32_t height)
+static bool relay_scanout_audit_requested(void *opaque)
+{
+    WddmSdlRelay *s = opaque;
+    return s->pending_audit && !s->audit_called;
+}
+
+static void relay_audit_int4(QDict *state, const char *name, const GLint values[4])
+{
+    QDict *rect = qdict_new();
+    qdict_put_int(rect, "x", values[0]);
+    qdict_put_int(rect, "y", values[1]);
+    qdict_put_int(rect, "width", values[2]);
+    qdict_put_int(rect, "height", values[3]);
+    qdict_put_obj(state, name, QOBJECT(rect));
+}
+
+static bool relay_save_window_state(WddmSdlRelay *s)
+{
+    g_autofree char *base = g_strdup_printf("relay-window-state-%016" PRIu64 ".json", s->pending_frame);
+    g_autofree char *path = g_build_filename(s->audit_directory, base, NULL);
+    GString *json = qobject_to_json(QOBJECT(s->audit_window_state));
+    FILE *file = g_fopen(path, "wbx");
+    bool ok = file && fwrite(json->str, 1, json->len, file) == json->len;
+    if (file && fclose(file) != 0) {
+        ok = false;
+    }
+    g_string_free(json, true);
+    return ok;
+}
+
+static void relay_scanout_audit(void *opaque, uint32_t width, uint32_t height,
+                                const GraphicScanoutWindowInfo *window_info)
 {
     WddmSdlRelay *s = opaque;
     GLint read_fb, read_buffer, texture, pack_buffer;
     GLint packing[4];
+    GLint viewport[4], scissor[4], draw_fb, draw_buffer;
+    GLboolean color_mask[4], double_buffer;
+    QDict *state;
+    GLenum capture_error;
     const GLenum parameters[] = {GL_PACK_ALIGNMENT, GL_PACK_ROW_LENGTH, GL_PACK_SKIP_PIXELS, GL_PACK_SKIP_ROWS};
     size_t source_bytes = (size_t)s->width * s->height * 4;
     size_t window_bytes = (size_t)width * height * 4;
     g_autofree unsigned char *source = NULL;
     g_autofree unsigned char *window = NULL;
-    bool saved_source, saved_window;
+    bool saved_source, saved_window, saved_state;
+    bool all_zero = true;
+    size_t opaque_pixels = 0, zero_alpha_pixels = 0;
     if (!s->pending_audit || s->audit_called) {
         return;
     }
     s->audit_called = true;
+    qobject_unref(s->audit_window_state);
+    state = s->audit_window_state = qdict_new();
+    qdict_put_int(state, "schema", 1);
+    qdict_put_int(state, "frame", s->pending_frame);
+    qdict_put_int(state, "logicalWidth", window_info->logical_width);
+    qdict_put_int(state, "logicalHeight", window_info->logical_height);
+    qdict_put_int(state, "drawableWidth", window_info->drawable_width);
+    qdict_put_int(state, "drawableHeight", window_info->drawable_height);
+    qdict_put_int(state, "sdlWindowFlags", window_info->flags);
+    qdict_put_bool(state, "shown", window_info->shown);
+    qdict_put_bool(state, "hidden", window_info->hidden);
+    qdict_put_bool(state, "minimized", window_info->minimized);
+    qdict_put_bool(state, "maximized", window_info->maximized);
+    qdict_put_bool(state, "inputFocus", window_info->input_focus);
+    qdict_put_bool(state, "mouseFocus", window_info->mouse_focus);
+    qdict_put_bool(state, "visibilityProvesPixelOwnership", false);
+    qdict_put_bool(state, "physicalScanoutVerified", false);
     if (!width || !height || width > 3840 || height > 2160) {
         s->audit_error = g_strdup("SDL audit drawable is outside the bounded 4K extent");
+        relay_save_window_state(s);
         return;
     }
     source = g_malloc0(source_bytes);
@@ -294,6 +350,23 @@ static void relay_scanout_audit(void *opaque, uint32_t width, uint32_t height)
     glGetIntegerv(GL_READ_BUFFER, &read_buffer);
     glGetIntegerv(GL_TEXTURE_BINDING_2D, &texture);
     glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &pack_buffer);
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &draw_fb);
+    glGetIntegerv(GL_DRAW_BUFFER, &draw_buffer);
+    glGetIntegerv(GL_VIEWPORT, viewport);
+    glGetIntegerv(GL_SCISSOR_BOX, scissor);
+    glGetBooleanv(GL_COLOR_WRITEMASK, color_mask);
+    glGetBooleanv(GL_DOUBLEBUFFER, &double_buffer);
+    relay_audit_int4(state, "viewport", viewport);
+    relay_audit_int4(state, "scissor", scissor);
+    qdict_put_bool(state, "scissorEnabled", glIsEnabled(GL_SCISSOR_TEST));
+    qdict_put_bool(state, "rasterizerDiscardEnabled", glIsEnabled(GL_RASTERIZER_DISCARD));
+    qdict_put_bool(state, "doubleBuffered", double_buffer);
+    qdict_put_int(state, "readFramebufferBeforeCapture", read_fb);
+    qdict_put_int(state, "readBufferBeforeCapture", read_buffer);
+    qdict_put_int(state, "drawFramebuffer", draw_fb);
+    qdict_put_int(state, "drawBuffer", draw_buffer);
+    qdict_put_int(state, "colorWriteMask", !!color_mask[0] | (!!color_mask[1] << 1) |
+                                        (!!color_mask[2] << 2) | (!!color_mask[3] << 3));
     for (unsigned i = 0; i < G_N_ELEMENTS(parameters); ++i) {
         glGetIntegerv(parameters[i], &packing[i]);
         glPixelStorei(parameters[i], i ? 0 : 1);
@@ -311,10 +384,26 @@ static void relay_scanout_audit(void *opaque, uint32_t width, uint32_t height)
     for (unsigned i = 0; i < G_N_ELEMENTS(parameters); ++i) {
         glPixelStorei(parameters[i], packing[i]);
     }
+    capture_error = glGetError();
+    for (size_t i = 0; i < window_bytes; ++i) {
+        all_zero = all_zero && window[i] == 0;
+        if (i % 4 == 3) {
+            opaque_pixels += window[i] == 255;
+            zero_alpha_pixels += window[i] == 0;
+        }
+    }
+    qdict_put_int(state, "captureWidth", width);
+    qdict_put_int(state, "captureHeight", height);
+    qdict_put_int(state, "capturePixels", window_bytes / 4);
+    qdict_put_int(state, "opaqueAlphaPixels", opaque_pixels);
+    qdict_put_int(state, "zeroAlphaPixels", zero_alpha_pixels);
+    qdict_put_bool(state, "allBytesZero", all_zero);
+    qdict_put_int(state, "glError", capture_error);
     /* Retain even rejected pixels; a failed capture must never be overwritten. */
     saved_source = relay_save(s, "source", source, source_bytes);
     saved_window = relay_save(s, "window", window, window_bytes);
-    if (glGetError() != GL_NO_ERROR || !saved_source || !saved_window) {
+    saved_state = relay_save_window_state(s);
+    if (capture_error != GL_NO_ERROR || !saved_source || !saved_window || !saved_state) {
         s->audit_error = g_strdup("SDL complete GPU readback/write failed");
         return;
     }
@@ -503,6 +592,9 @@ static char *relay_state(Object *object, Error **errp)
     qdict_put_str(value, "adapterLuid", s->luid);
     qdict_put_str(value, "sourceFnv1a", source);
     qdict_put_str(value, "windowFnv1a", window);
+    if (s->audit_window_state) {
+        qdict_put_obj(value, "windowAudit", QOBJECT(qobject_ref(s->audit_window_state)));
+    }
     qdict_put_bool(value, "independentFences", true);
     qdict_put_bool(value, "cpuTextureUpload", false);
     qdict_put_bool(value, "physicalInputVerified", false);
@@ -516,6 +608,7 @@ static char *relay_state(Object *object, Error **errp)
 
 static int relay_flags(void *opaque) { return GRAPHIC_FLAGS_GL; }
 static const GraphicHwOps relay_hw_ops = {
+    .gl_scanout_audit_requested = relay_scanout_audit_requested,
     .get_flags = relay_flags,
     .gl_scanout_audit = relay_scanout_audit,
 };
@@ -561,6 +654,7 @@ static void relay_finalize(Object *object)
         migrate_del_blocker(&s->migration_blocker);
     }
     g_free(s->audit_error);
+    qobject_unref(s->audit_window_state);
 }
 static const Property relay_properties[] = {
     DEFINE_PROP_STRING("session", WddmSdlRelay, session),

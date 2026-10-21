@@ -1,32 +1,57 @@
 --- a/include/ui/console.h
 +++ b/include/ui/console.h
-@@ -374,6 +374,8 @@
+@@ -366,6 +366,13 @@
+     GRAPHIC_FLAGS_DMABUF   = 1 << 1,
+ };
+ 
++/* A diagnostic snapshot; visibility flags do not prove pixel ownership. */
++typedef struct GraphicScanoutWindowInfo {
++    int logical_width, logical_height, drawable_width, drawable_height;
++    uint32_t flags;
++    bool shown, hidden, minimized, maximized, input_focus, mouse_focus;
++} GraphicScanoutWindowInfo;
++
+ typedef struct GraphicHwOps {
+     int (*get_flags)(void *opaque); /* optional, default 0 */
+     void (*invalidate)(void *opaque);
+@@ -374,6 +381,10 @@
      void (*text_update)(void *opaque, console_ch_t *text);
      void (*ui_info)(void *opaque, uint32_t head, QemuUIInfo *info);
      void (*gl_block)(void *opaque, bool block);
-+    /* Optional diagnostic hook after a GL blit, before window swap. */
-+    void (*gl_scanout_audit)(void *opaque, uint32_t width, uint32_t height);
++    /* Optional diagnostic hooks after a GL blit, before window swap. */
++    bool (*gl_scanout_audit_requested)(void *opaque);
++    void (*gl_scanout_audit)(void *opaque, uint32_t width, uint32_t height,
++                             const GraphicScanoutWindowInfo *window);
  } GraphicHwOps;
  
  QemuConsole *graphic_console_init(DeviceState *dev, uint32_t head,
-@@ -389,6 +391,7 @@
+@@ -389,6 +400,9 @@
  void graphic_hw_invalidate(QemuConsole *con);
  void graphic_hw_text_update(QemuConsole *con, console_ch_t *chardata);
  void graphic_hw_gl_block(QemuConsole *con, bool block);
-+void graphic_hw_gl_scanout_audit(QemuConsole *con, uint32_t width, uint32_t height);
++bool graphic_hw_gl_scanout_audit_requested(QemuConsole *con);
++void graphic_hw_gl_scanout_audit(QemuConsole *con, uint32_t width, uint32_t height,
++                                const GraphicScanoutWindowInfo *window);
  
  void qemu_console_early_init(void);
  
 --- a/ui/console.c
 +++ b/ui/console.c
-@@ -1116,6 +1116,13 @@
+@@ -1116,6 +1116,20 @@
      }
  }
  
-+void graphic_hw_gl_scanout_audit(QemuConsole *con, uint32_t width, uint32_t height)
++bool graphic_hw_gl_scanout_audit_requested(QemuConsole *con)
++{
++    return con->hw_ops->gl_scanout_audit_requested &&
++           con->hw_ops->gl_scanout_audit_requested(con->hw);
++}
++
++void graphic_hw_gl_scanout_audit(QemuConsole *con, uint32_t width, uint32_t height,
++                                const GraphicScanoutWindowInfo *window)
 +{
 +    if (con->hw_ops->gl_scanout_audit) {
-+        con->hw_ops->gl_scanout_audit(con->hw, width, height);
++        con->hw_ops->gl_scanout_audit(con->hw, width, height, window);
 +    }
 +}
 +
@@ -35,11 +60,24 @@
  {
 --- a/ui/sdl2-gl.c
 +++ b/ui/sdl2-gl.c
-@@ -256,6 +256,7 @@
+@@ -256,6 +256,20 @@
      SDL_GetWindowSize(scon->real_window, &ww, &wh);
      egl_fb_setup_default(&scon->win_fb, ww, wh, 0, 0);
      egl_fb_blit(&scon->win_fb, &scon->guest_fb, !scon->y0_top);
-+    graphic_hw_gl_scanout_audit(dcl->con, ww, wh);
++    if (graphic_hw_gl_scanout_audit_requested(dcl->con)) {
++        GraphicScanoutWindowInfo window = { .logical_width = ww,
++                                            .logical_height = wh };
++        SDL_GL_GetDrawableSize(scon->real_window, &window.drawable_width,
++                               &window.drawable_height);
++        window.flags = SDL_GetWindowFlags(scon->real_window);
++        window.shown = !!(window.flags & SDL_WINDOW_SHOWN);
++        window.hidden = !!(window.flags & SDL_WINDOW_HIDDEN);
++        window.minimized = !!(window.flags & SDL_WINDOW_MINIMIZED);
++        window.maximized = !!(window.flags & SDL_WINDOW_MAXIMIZED);
++        window.input_focus = !!(window.flags & SDL_WINDOW_INPUT_FOCUS);
++        window.mouse_focus = !!(window.flags & SDL_WINDOW_MOUSE_FOCUS);
++        graphic_hw_gl_scanout_audit(dcl->con, ww, wh, &window);
++    }
  
      SDL_GL_SwapWindow(scon->real_window);
  
