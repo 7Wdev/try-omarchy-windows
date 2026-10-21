@@ -18,7 +18,7 @@ RGBA and GPU-converted BGRA pass independent complete source/window pixel
 audits, including a **300-handoff BGRA run** with 298 ordinary GPU-only handoffs.
 This paused, disk-free host control is the next display building block; the real
 guest compositor still needs connection to it.
-[Hardware evidence, retained BGRA failure and scope](docs/LIVE-QEMU-SDL-GPU-RELAY.md).
+[Hardware evidence, retained BGRA failure and scope](https://github.com/7Wdev/try-omarchy-windows/blob/6db01ffa69db405f9c76fb51da335bcf0513e8f6/docs/LIVE-QEMU-SDL-GPU-RELAY.md).
 
 **Latest guest desktop checkpoint — October 20, 2026:** two fresh guests (runs 99–100)
 pass **300 actual 4K GPU handoffs** while the same NVIDIA application grows from

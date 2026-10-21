@@ -13,7 +13,7 @@ a 4K texture from a separate D3D12 producer. Complete source and pre-swap SDL
 pixels pass for RGBA and GPU-converted BGRA, including a 300-handoff BGRA run.
 The earlier swapped-channel BGRA failure remains retained and rejected. These
 are paused, disk-free host controls; real guest compositor scanout through this
-relay is still open. [Builds, reconstructable buffers and limits](LIVE-QEMU-SDL-GPU-RELAY.md).
+relay is still open. [Builds, reconstructable buffers and limits](https://github.com/7Wdev/try-omarchy-windows/blob/6db01ffa69db405f9c76fb51da335bcf0513e8f6/docs/LIVE-QEMU-SDL-GPU-RELAY.md).
 
 **Latest guest follow-up:** two fresh guests pass **300 GPU handoffs with real
 application resizing**, independently verified enlarged/restored scene pixels,
@@ -128,7 +128,7 @@ duration of the remaining driver, compositor and product work.
 
 Earlier results keep their original scope and failures:
 
-- [Actual QEMU SDL NVIDIA host relay, BGRA correction and retained pixel failure](LIVE-QEMU-SDL-GPU-RELAY.md).
+- [Actual QEMU SDL NVIDIA host relay, BGRA correction and retained pixel failure](https://github.com/7Wdev/try-omarchy-windows/blob/6db01ffa69db405f9c76fb51da335bcf0513e8f6/docs/LIVE-QEMU-SDL-GPU-RELAY.md).
 - [Idle staging reclamation and two passing 4K input-response runs](https://github.com/7Wdev/try-omarchy-windows/blob/bf60d2848f831be892f8c5e69b686bcedb98644e/docs/LIVE-UWSM-STAGING-RECLAIM.md).
 - [QMP input delivery and actual 4K GPU response, including the failed repeat](https://github.com/7Wdev/try-omarchy-windows/blob/0774e40f0dd394aedb90a5d341b87cc42a00cc91/docs/LIVE-UWSM-QMP-INPUT-RESPONSE.md).
 - [Readable 4K captures and the earlier admission failure](https://github.com/7Wdev/try-omarchy-windows/blob/2290aa6209289dddfbae54b542c524927414c020/docs/LIVE-OMARCHY-4K-READABLE-GPU-DESKTOP.md).
