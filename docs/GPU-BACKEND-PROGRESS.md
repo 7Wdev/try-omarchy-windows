@@ -4,17 +4,19 @@ Updated **2026-10-21**. This page tracks the experimental QEMU/WHPX Windows-nati
 NVIDIA backend. The released Try Omarchy launcher continues using the upstream
 graphics runtime.
 
-![4K Omarchy frame achieved; QEMU SDL host GPU relay verified; backend stages 4/8; desktop gates 0/4](images/gpu-backend-progress-real-sdl-2026-10-21.svg)
+![4K Omarchy frame achieved; QEMU SDL host GPU relay verified; backend stages 4/8; desktop gates 0/4](images/gpu-backend-progress-active-sdl-2026-10-21.svg)
 
 ## What is verified now?
 
-**Latest display follow-up:** real Omarchy guest buffers now reach QEMU SDL on
-NVIDIA. Run 102 passes 300 handoffs, exact complete 4K source pixels, independently
-scaled full SDL window pixels and live cross-process GPU cleanup. The actual SDL
-backbuffer is 2560×1566. **The repeat fails at frame 207 with device loss.** Median
-log-observed frame delivery is 69.15 ms, while ingress-to-SDL receipt is 5.07 ms;
-physical scanout/input latency and near-native performance remain unmeasured.
-[Actual image, reconstructable evidence and retained failures](https://github.com/7Wdev/try-omarchy-windows/blob/a803f6b3d1b24ab482ed381cacab68c99fdf61d7/docs/LIVE-OMARCHY-QEMU-SDL.md).
+**Latest display follow-up:** four active-workload runs pass 300 handoffs,
+exact complete 4K source pixels, independently scaled full SDL window pixels and
+live GPU cleanup. Two use the original bridge; two use gathered GPU replies and
+TCP_NODELAY, including the separate instrumented QEMU run. The timing comparison establishes no performance gain. A setup-guard
+failure and an all-zero SDL window capture remain rejected; the next window
+capture passes. The cause of the zero buffer and earlier frame-207 device loss
+remain unconfirmed. Earlier frame intervals include a 50 ms repaint sleep.
+Physical scanout/input latency and near-native performance remain unmeasured.
+[Actual image, reconstructable repeats and limits](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-ACTIVE-SDL-TRANSPORT.md).
 
 **Latest guest follow-up:** two fresh guests pass **300 GPU handoffs with real
 application resizing**, independently verified enlarged/restored scene pixels,

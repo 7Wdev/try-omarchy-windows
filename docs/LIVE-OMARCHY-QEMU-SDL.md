@@ -1,5 +1,11 @@
 # Real NVIDIA Omarchy frames in QEMU SDL
 
+**Follow-up:** the separate [active application and transport experiment](LIVE-ACTIVE-SDL-TRANSPORT.md)
+retains three accepted 300-frame repeats and both rejected attempts. The original
+fixture below deliberately sleeps 50 ms between notification repaint requests;
+its inter-frame timings must not be interpreted as desktop FPS or a clean
+throughput benchmark. The original device-loss failure remains retained.
+
 On October 21, 2026, **run 102 delivered a real 3840×2160 Omarchy/Hyprland GPU
 scene to QEMU's SDL frontend**, preserving the official SDL input implementation.
 The shipped wallpaper, Quickshell bar and NVIDIA-rendered Alacritty window are
@@ -49,7 +55,7 @@ run and one failed repeat**, not repeated stability.
 The failed repeat includes an observer that timestamps host log receipt without
 changing compiled bridge, guest or input code. Excluding the held first two
 diagnostic frames, the median inter-frame receipt interval is **69.15425 ms**
-(about 14.5 updates/s); the median observed ingress-to-SDL receipt interval is
+under this intentionally paced fixture; the median observed ingress-to-SDL receipt interval is
 **5.0674 ms**. These observations suggest most delay occurs before the SDL relay,
 but include pipe/log scheduling and do not measure physical scanout, end-to-end
 input latency or matched-native performance. Resize/barrier waits and diagnostic

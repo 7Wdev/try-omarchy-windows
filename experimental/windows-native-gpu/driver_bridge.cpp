@@ -31,6 +31,7 @@
 #include "compositor_readback.h"
 #include "compositor_presenter.h"
 #include "atomic_line_log.h"
+#include "framed_write.h"
 using Microsoft::WRL::ComPtr;
 using namespace driver_bridge;
 class KmtDriver : public Driver {
@@ -2433,6 +2434,21 @@ public:
         }
         if (socket == INVALID_SOCKET && std::fflush(stdout)) throw std::runtime_error("Flush failed");
     }
+    void writeFrame(const std::vector<std::uint8_t>& reply) {
+        driver_transport::writeFrame(reply.data(),reply.size(),[&](const driver_transport::WriteBuffer* views,std::size_t count) {
+            if(socket==INVALID_SOCKET) return std::fwrite(views[0].bytes,1,views[0].size,stdout);
+            std::array<WSABUF,2> buffers{};
+            for(std::size_t index=0;index<count;++index) {
+                buffers[index].buf=const_cast<char*>(views[index].bytes);
+                buffers[index].len=static_cast<ULONG>(views[index].size);
+            }
+            DWORD sent=0;
+            if(WSASend(socket,buffers.data(),static_cast<DWORD>(count),&sent,0,nullptr,nullptr)==SOCKET_ERROR)
+                throw std::runtime_error("Framed socket write failed");
+            return static_cast<std::size_t>(sent);
+        });
+        if(socket==INVALID_SOCKET && std::fflush(stdout)) throw std::runtime_error("Framed flush failed");
+    }
 };
 static void serve(Stream& stream, const std::string& sectionName = {}, std::uint32_t sectionBytes = 0,
                   bool contexts = false, bool queries = false, driver_qemu::Runtime* runtime = nullptr, bool allocations = false, bool gpuVa = false, bool residency = false, bool cpu = false, bool cpuStoreTest = false, bool translation = false, bool hwQueues = false, bool sync = false, bool submit = false, bool retirement = false, bool reservation = false, bool gpuState = false, bool asyncSubmit = false, bool sharedResources = false, bool consumeShared = false, bool presentShared = false, bool nativeMetadata = false, bool consumeProcess = false, bool coordinated = false) {
@@ -2454,7 +2470,7 @@ static void serve(Stream& stream, const std::string& sectionName = {}, std::uint
                     const auto reply=owner.dispatch(packet);
                     peakObjects=(std::max)(peakObjects,owner.objectCount());peakActors=(std::max)(peakActors,owner.actorCount());++count;
                     if(owner.failed() || reply.empty()) throw std::runtime_error("Coordinated controller protocol failure");
-                    size=static_cast<std::uint32_t>(reply.size());stream.write(&size,sizeof size);stream.write(reply.data(),reply.size());
+                    stream.writeFrame(reply);
                 }
             } catch(const std::exception& error) {
                 failure=std::current_exception();
@@ -2504,8 +2520,7 @@ static void serve(Stream& stream, const std::string& sectionName = {}, std::uint
                           << ",\"liveObjects\":" << session.objectCount()
                           << ",\"objectLimit\":" << session.objectLimit() << "}\n";
         }
-        size = static_cast<std::uint32_t>(reply.size()); stream.write(&size, sizeof size);
-        stream.write(reply.data(), reply.size());
+        stream.writeFrame(reply);
       }
       if (!lifetimeBudgetAvailable(count,session.requestLimit())) throw std::runtime_error("Session request quota exceeded");
       } catch (...) { failure = std::current_exception(); }
@@ -2709,6 +2724,13 @@ int main(int argc, char** argv) {
         if (setsockopt(client.value, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&milliseconds), sizeof milliseconds) ||
             setsockopt(client.value, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&milliseconds), sizeof milliseconds))
             throw std::runtime_error("Cannot set socket timeouts");
+        const DWORD noDelay=1;DWORD observedNoDelay=0;int optionBytes=sizeof observedNoDelay;
+        if(setsockopt(client.value,IPPROTO_TCP,TCP_NODELAY,reinterpret_cast<const char*>(&noDelay),sizeof noDelay) ||
+           getsockopt(client.value,IPPROTO_TCP,TCP_NODELAY,reinterpret_cast<char*>(&observedNoDelay),&optionBytes) ||
+           !driver_transport::tcpNoDelayEnabled(observedNoDelay,optionBytes))
+            throw std::runtime_error("Cannot configure low-latency GPU RPC socket");
+        std::cerr<<"{\"nativeGpuTransportConfigured\":true,\"tcpNoDelay\":true,\"tcpNoDelayOptionBytes\":"<<optionBytes
+            <<",\"framedReplyScatterGather\":true,\"inputPathChanged\":false}\n";
         Stream stream(client.value); serve(stream, sectionName, sectionBytes, contexts, queries, runtime.get(), allocations, gpuVa, residency, cpu, cpuStoreTest, translation, hwQueues, sync, submit, retirement, reservation, gpuState, asyncSubmit, sharedResources, consumeShared, presentShared, nativeMetadata,consumeProcess,coordinated);
         if (runtime) {
             runtime->report();

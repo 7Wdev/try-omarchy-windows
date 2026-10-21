@@ -251,7 +251,7 @@ public:
             L"-device", L"wddm-fence-hub,id=wddm-fences,source-process=" + std::to_wstring(reinterpret_cast<std::uintptr_t>(source.value)) +
                 (fenceSlots == driver_bridge::DefaultFenceSlots ? L"" : L",slot-count=" + std::to_wstring(fenceSlots)),
             L"-device", L"virtio-serial-pci,id=bridge-serial", L"-chardev",
-            L"socket,id=wddm,host=127.0.0.1,port=" + std::to_wstring(driverPort), L"-device",
+            L"socket,id=wddm,host=127.0.0.1,nodelay=on,port=" + std::to_wstring(driverPort), L"-device",
             L"virtserialport,bus=bridge-serial.0,chardev=wddm,name=org.7wdev.wddm"};
         args.insert(args.end(),rootArguments.begin(),rootArguments.end());
         if(enableSdl) {
