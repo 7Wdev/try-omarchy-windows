@@ -4,9 +4,19 @@ Updated **2026-10-21**. This page tracks the experimental QEMU/WHPX Windows-nati
 NVIDIA backend. The released Try Omarchy launcher continues using the upstream
 graphics runtime.
 
-![4K Omarchy frame achieved; QEMU SDL host GPU relay verified; backend stages 4/8; desktop gates 0/4](images/gpu-backend-progress-active-sdl-2026-10-21.svg)
+![4K Omarchy frame achieved; QEMU SDL host GPU relay verified; backend stages 4/8; desktop gates 0/4](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/windows-nvgpu-lab/docs/images/gpu-backend-progress-virtio-trace-2026-10-21.svg)
 
 ## What is verified now?
+
+**Live trace follow-up:** moving the complete graphics diagnostics from the
+emulated UART to a dedicated virtio-serial port reduces median steady GPU handoff
+intervals from **43–44 ms to 16.6–16.7 ms** in this bounded workload. Two virtio
+runs and two UART baselines pass 300 handoffs, full 4K source/SDL pixel audits,
+input-response checks and live cleanup. A separate UART input-response failure
+remains rejected. Official input and the GPU protocol are unchanged. These CPU
+intervals do not establish displayed FPS, physical input latency or 93% native
+performance.
+[Actual SDL frame, complete traces and comparison limits](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-VIRTIO-GRAPHICS-TRACE.md).
 
 **Latest display follow-up:** four active-workload runs pass 300 handoffs,
 exact complete 4K source pixels, independently scaled full SDL window pixels and
