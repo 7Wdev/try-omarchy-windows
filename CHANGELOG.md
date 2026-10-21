@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.12.1 - 2026-10-22
+
+- Setup and update downloads work on networks where Windows finds a proxy
+  setup server that doesn't serve a proxy script, as some home routers and
+  ISPs do (Fritz!Box, SK Broadband). Before, setup stopped with "winapi error
+  #12167" (#356).
+- The Korean interface covers Links from Windows and installing updates from
+  downloaded files (#357).
+
 ## v0.12.0 - 2026-10-14
 
 - Links clicked in Windows can open in Omarchy. Allow a link type that an
