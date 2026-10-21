@@ -28,6 +28,13 @@ established** by the transport comparison. Earlier timings include an intentiona
 50 ms repaint sleep and do not measure desktop FPS.
 [Actual animated application, raw repeats, timings and limits](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-ACTIVE-SDL-TRANSPORT.md).
 
+**Failure teardown follow-up:** a controlled frame-64 interruption reproduced a
+secondary SDL consumer-loss error. Draining the SDL output before stopping QEMU
+now retires all accepted frames and releases native objects while preserving the
+original error. A separate fatal control verifies owned-VM exit before host abort.
+The corrected bridge also passes a normal 300-frame full-pixel regression.
+[Before/after evidence, actual rendering and remaining limits](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-SDL-FAILURE-TEARDOWN.md).
+
 **Latest guest desktop checkpoint — October 20, 2026:** two fresh guests (runs 99–100)
 pass **300 actual 4K GPU handoffs** while the same NVIDIA application grows from
 1440×960 to 1600×1000 and returns to 1200×800. Complete first/last backbuffers

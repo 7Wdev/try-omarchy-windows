@@ -18,6 +18,13 @@ remain unconfirmed. Earlier frame intervals include a 50 ms repaint sleep.
 Physical scanout/input latency and near-native performance remain unmeasured.
 [Actual image, reconstructable repeats and limits](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-ACTIVE-SDL-TRANSPORT.md).
 
+**Failure teardown follow-up:** a controlled frame-64 interruption reproduced a
+secondary SDL consumer-loss error. Draining the SDL output before stopping QEMU
+now retires all accepted frames and releases native objects while preserving the
+original error. A separate fatal control verifies owned-VM exit before host abort.
+The corrected bridge also passes a normal 300-frame full-pixel regression.
+[Before/after evidence, actual rendering and remaining limits](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-SDL-FAILURE-TEARDOWN.md).
+
 **Latest guest follow-up:** two fresh guests pass **300 GPU handoffs with real
 application resizing**, independently verified enlarged/restored scene pixels,
 QMP input response and live cleanup. Two earlier 300-frame input-response
