@@ -10,7 +10,7 @@ The experimental QEMU/WHPX bridge now captures a real **3840×2160 Omarchy deskt
 the shipped wallpaper, Omarchy bar and readable Alacritty application appear together.
 Full integration into the Windows launcher and a stable interactive desktop remain in development.
 
-![Real 4K guest GPU frame reaches QEMU SDL; stability repeat fails; backend 4/8 stages; desktop product 0/4 gates](docs/images/gpu-backend-progress-real-sdl-2026-10-21.svg)
+![Real 4K guest GPU frame reaches QEMU SDL; active repeats pass and failures retained; backend 4/8 stages; desktop product 0/4 gates](docs/images/gpu-backend-progress-active-sdl-2026-10-21.svg)
 
 **Latest display checkpoint — October 21, 2026:** the real guest compositor now
 reaches **QEMU SDL on NVIDIA**. Run 102 passes 300 GPU handoffs, full first/last
@@ -19,11 +19,14 @@ match the guest GPU buffers exactly; the scaled 2560×1566 SDL window differs by
 at most one colour value from an independent reference. The official SDL input
 implementation is retained, and the user reports moving the cursor.
 
-**Stability and lag remain open:** the repeat stops after frame 207 with device
-loss. Its observed median frame interval is 69.15 ms (about 14.5 updates/s), versus
-5.07 ms from host ingress receipt to SDL receipt. These log timings suggest an
-earlier render/bridge bottleneck; they are not scanout or native-performance
-measurements. [Actual SDL frame, raw evidence, failures and limits](https://github.com/7Wdev/try-omarchy-windows/blob/a803f6b3d1b24ab482ed381cacab68c99fdf61d7/docs/LIVE-OMARCHY-QEMU-SDL.md).
+**Active-workload follow-up:** four fresh 300-frame runs pass complete source
+and SDL window pixel audits with live GPU cleanup. Both rejected attempts remain
+retained: a corrected Winsock configuration guard and an intermittent all-zero
+SDL window capture. Its cause is unconfirmed; the next repeat passes.
+The original device-loss failure remains unresolved. **No performance gain is
+established** by the transport comparison. Earlier timings include an intentional
+50 ms repaint sleep and do not measure desktop FPS.
+[Actual animated application, raw repeats, timings and limits](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-ACTIVE-SDL-TRANSPORT.md).
 
 **Latest guest desktop checkpoint — October 20, 2026:** two fresh guests (runs 99–100)
 pass **300 actual 4K GPU handoffs** while the same NVIDIA application grows from
@@ -51,7 +54,7 @@ graphics runtime. [Earlier two-run resize milestone](https://github.com/7Wdev/tr
 | --- | --- | --- |
 | 4K diagnostic scene | **3/3:** shipped wallpaper, Omarchy bar, readable GPU application | Normal launcher presentation and usable desktop acceptance. |
 | Bounded rendering/input response | **Two 300-frame resize runs pass**, plus two separate 300-frame input-response baselines | Long runs, physical input through the official frontend and simultaneous application windows. |
-| Real guest GPU display through QEMU SDL | **One 300-frame run and full pixel audits pass; repeat fails at 207** | Diagnose device loss/lag, then validate sustained display and normal launcher/input use. |
+| Real guest GPU display through QEMU SDL | **Three active 300-frame repeats pass; device loss and one zero-buffer capture retained** | Diagnose device loss/lag, then validate sustained display and normal launcher/input use. |
 | Backend stages | **4/8 demonstrated; stages 5–6 in progress** | Supported device integration, broader APIs, recovery and performance. |
 | Desktop product gates | **0/4 complete; first three in progress** | Normal account/launcher integration, continuous multi-window display, reliability and matched-native performance. |
 
