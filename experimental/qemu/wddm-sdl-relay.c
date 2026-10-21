@@ -365,8 +365,10 @@ static void relay_scanout_audit(void *opaque, uint32_t width, uint32_t height,
     qdict_put_int(state, "readBufferBeforeCapture", read_buffer);
     qdict_put_int(state, "drawFramebuffer", draw_fb);
     qdict_put_int(state, "drawBuffer", draw_buffer);
-    qdict_put_int(state, "colorWriteMask", !!color_mask[0] | (!!color_mask[1] << 1) |
-                                        (!!color_mask[2] << 2) | (!!color_mask[3] << 3));
+    qdict_put_int(state, "colorWriteMask", (color_mask[0] ? 1u : 0u) |
+                                        (color_mask[1] ? 2u : 0u) |
+                                        (color_mask[2] ? 4u : 0u) |
+                                        (color_mask[3] ? 8u : 0u));
     for (unsigned i = 0; i < G_N_ELEMENTS(parameters); ++i) {
         glGetIntegerv(parameters[i], &packing[i]);
         glPixelStorei(parameters[i], i ? 0 : 1);
