@@ -2456,7 +2456,16 @@ static void serve(Stream& stream, const std::string& sectionName = {}, std::uint
                     if(owner.failed() || reply.empty()) throw std::runtime_error("Coordinated controller protocol failure");
                     size=static_cast<std::uint32_t>(reply.size());stream.write(&size,sizeof size);stream.write(reply.data(),reply.size());
                 }
-            } catch(...) { failure=std::current_exception(); }
+            } catch(const std::exception& error) {
+                failure=std::current_exception();
+                try {
+                    std::cerr<<driver_qmp::Json{{"nativeCoordinatorFailure",true},{"message",error.what()},
+                        {"requestsHandled",count},{"beforeOwnedVmStop",true},{"beforeGlobalTeardown",true}}.dump()<<'\n';
+                } catch(...) { std::fprintf(stderr,"COORDINATOR_FIRST_FAILURE original=%s\n",error.what()); }
+            } catch(...) {
+                failure=std::current_exception();
+                std::fprintf(stderr,"COORDINATOR_FIRST_FAILURE nonStandardException=true beforeOwnedVmStop=true\n");
+            }
             std::cerr<<"{\"nativeCoordinatorSummary\":true,\"requestsHandled\":"<<count<<",\"peakActors\":"<<peakActors
                      <<",\"peakLiveObjects\":"<<peakObjects<<",\"retainedActors\":"<<owner.actorCount()
                      <<",\"liveObjectsBeforeDisconnect\":"<<owner.objectCount()<<",\"liveRetiredActors\":"<<owner.liveRetiredActorCount()

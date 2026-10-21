@@ -20,6 +20,20 @@ class GpuOutput {
     std::uint64_t submitted=0;
     unsigned audits=0;
     bool opened=false,healthy=true,prepared=false;
+    void reportFailure(const char* phase,const char* message) const noexcept {
+        // Record the device state before teardown can replace the first fault.
+        // UINT64_MAX fence observations are retained verbatim, never retirement.
+        try {
+            const auto removal=device.Get()?device->GetDeviceRemovedReason():E_POINTER;
+            std::cerr<<driver_qmp::Json{{"nativeSdlCompositorFailure",true},{"phase",phase},{"message",message},
+                {"submitted",submitted},{"audits",audits},{"deviceRemovalHresult",static_cast<std::int64_t>(removal)},
+                {"producerFenceObserved",producer.Get()?producer->GetCompletedValue():0},
+                {"consumerFenceObserved",consumer.Get()?consumer->GetCompletedValue():0},
+                {"outputAttached",opened},{"healthyBeforeFailure",healthy},{"performanceAccepted",false}}.dump()<<'\n';
+        } catch(...) {
+            std::fprintf(stderr,"SDL_FAILURE_RECEIPT_UNAVAILABLE phase=%s original=%s\n",phase,message);
+        }
+    }
     static D3D12_RESOURCE_BARRIER transition(ID3D12Resource* resource,D3D12_RESOURCE_STATES from,D3D12_RESOURCE_STATES to) {
         D3D12_RESOURCE_BARRIER value{};value.Type=D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
         value.Transition.pResource=resource;value.Transition.Subresource=D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
@@ -93,6 +107,7 @@ public:
                 <<",\"sharedTextureBytes\":"<<allocation.SizeInBytes<<",\"qemuState\":"<<state.dump()<<"}\n";
             return S_OK;
         } catch(const std::exception& error) {
+            reportFailure("initialization",error.what());
             healthy=false;std::cerr<<"SDL compositor initialization failed: "<<error.what()<<'\n';return E_FAIL;
         }
     }
@@ -144,6 +159,7 @@ public:
                 <<",\"qemuState\":"<<state.dump()<<"}\n";
             return S_OK;
         } catch(const std::exception& error) {
+            reportFailure("submission",error.what());
             healthy=false;std::cerr<<"SDL compositor submission failed: "<<error.what()<<'\n';return E_FAIL;
         }
     }
@@ -158,6 +174,7 @@ public:
                 <<",\"qemuState\":"<<state.dump()<<",\"physicalScanoutVerified\":false}\n";
             opened=false;texture.Reset();producer.Reset();consumer.Reset();queue.Reset();device.Reset();
         } catch(const std::exception& error) {
+            reportFailure("retirement",error.what());
             std::cerr<<"SDL compositor retirement failed: "<<error.what()<<'\n';ExitProcess(3);
         }
     }
