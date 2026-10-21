@@ -184,7 +184,7 @@ class Runtime {
         throw std::runtime_error("SDL relay requires a hardware NVIDIA adapter");
     }
 public:
-    Runtime(unsigned short driverPort, const qemu_fence::Paths& paths, bool enableCpu = false, bool cpuStoreTest = false, bool cpuEofTest = false, bool hwQueueEofTest = false, std::size_t cpuSlots = driver_bridge::DefaultVendorCpuSlots, bool syncEofTest = false, bool reservationEofTest = false, bool gpuStateEofTest = false, bool cpuSpanEofTest = false, bool syncNoMaxEofTest = false, bool hwQueueNoBroadcastEofTest = false, bool hwQueueNoBroadcastWaitEofTest = false, std::uint32_t configuredFenceSlots = 0, const char* readonlyRoot = nullptr, bool desktopFences = false, bool enableWindowInput = false, bool inputSelfTest = false, bool enableSdl = false)
+    Runtime(unsigned short driverPort, const qemu_fence::Paths& paths, bool enableCpu = false, bool cpuStoreTest = false, bool cpuEofTest = false, bool hwQueueEofTest = false, std::size_t cpuSlots = driver_bridge::DefaultVendorCpuSlots, bool syncEofTest = false, bool reservationEofTest = false, bool gpuStateEofTest = false, bool cpuSpanEofTest = false, bool syncNoMaxEofTest = false, bool hwQueueNoBroadcastEofTest = false, bool hwQueueNoBroadcastWaitEofTest = false, std::uint32_t configuredFenceSlots = 0, const char* readonlyRoot = nullptr, bool desktopFences = false, bool enableWindowInput = false, bool inputSelfTest = false, bool enableSdl = false, bool virtioTrace = false)
         : fenceSlots(configuredFenceSlots ? configuredFenceSlots : cpuSlots >= driver_bridge::ExpandedVendorCpuSlots ? driver_bridge::ExpandedFenceSlots : driver_bridge::DefaultFenceSlots),
           allocationSlots(cpuSlots), allocationAperture(cpuSlots,desktopFences), allocationsEnabled(enableCpu), logfile(std::filesystem::absolute(paths.log)) {
         if (!driver_bridge::validFenceSlots(fenceSlots,desktopFences) || !driver_bridge::validVendorCpuSlots(cpuSlots,gpu_diagnostic::HighResolution,desktopFences) || (cpuSlots==driver_bridge::SparseVendorCpuSlots && fenceSlots!=(desktopFences ? 512u : 256u)) || (cpuSlots==driver_bridge::DesktopVendorCpuSlots && (!desktopFences || fenceSlots!=512)) || (!enableCpu && cpuSlots != driver_bridge::DefaultVendorCpuSlots))
@@ -194,6 +194,8 @@ public:
         if(enableWindowInput && (!readonlyRoot || !desktopFences)) throw std::runtime_error("Window input requires the owned desktop root runtime");
         if(enableSdl && (!readonlyRoot || !desktopFences || (enableWindowInput && !inputSelfTest)))
             throw std::runtime_error("SDL graphics requires the owned desktop root; optional input is isolated QMP diagnostic only");
+        if(virtioTrace && (!enableSdl || !readonlyRoot || !desktopFences))
+            throw std::runtime_error("Virtio graphics trace requires the owned SDL root runtime");
         if (readonlyRoot) {
             const auto root=std::filesystem::path(readonlyRoot);
             if (!root.is_absolute() || !std::filesystem::is_regular_file(root))
@@ -257,6 +259,18 @@ public:
             L"socket,id=wddm,host=127.0.0.1,nodelay=on,port=" + std::to_wstring(driverPort), L"-device",
             L"virtserialport,bus=bridge-serial.0,chardev=wddm,name=org.7wdev.wddm"};
         args.insert(args.end(),rootArguments.begin(),rootArguments.end());
+        if(virtioTrace) {
+            const auto trace=driver_capture::directory()/"graphics-virtio.trace";
+            const auto file=CreateFileW(trace.c_str(),GENERIC_WRITE,FILE_SHARE_READ,nullptr,CREATE_NEW,FILE_ATTRIBUTE_NORMAL,nullptr);
+            if(file==INVALID_HANDLE_VALUE) throw std::runtime_error("Cannot reserve exclusive graphics trace file");
+            if(!CloseHandle(file)) throw std::runtime_error("Cannot close reserved graphics trace file");
+            std::wstring escaped;
+            for(const auto c:trace.wstring()) { escaped+=c;if(c==L',') escaped+=c; }
+            args.insert(args.end(),{L"-chardev",L"file,id=graphics-trace,path="+escaped+L",append=on",
+                L"-device",L"virtserialport,bus=bridge-serial.0,nr=2,chardev=graphics-trace,name=org.7wdev.graphics.trace"});
+            std::cerr<<"{\"nativeGraphicsTraceConfigured\":true,\"carrier\":\"virtio-serial\",\"file\":\"graphics-virtio.trace\""
+                <<",\"port\":2,\"liveHostCapture\":true,\"inputImplementationChanged\":false,\"gpuProtocolChanged\":false}\n";
+        }
         if(enableSdl) {
             std::wstring audit;
             for(const auto c:driver_capture::directory().wstring()) { audit+=c;if(c==L',') audit+=c; }

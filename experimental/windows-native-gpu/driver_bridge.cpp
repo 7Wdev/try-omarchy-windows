@@ -2566,6 +2566,7 @@ int main(int argc, char** argv) {
         bool hwQueueNoBroadcastWaitEofTest = false;
         bool asyncSubmit = false, sharedResources = false, consumeShared = false, presentShared = false, nativeMetadata = false, consumeProcess = false, coordinated = false, windowInput = false, inputSelfTest = false, sdlRelay = false;
         unsigned sdlFailureTest=0;
+        bool virtioTrace=false;
         const char* readonlyRoot = nullptr;
         while (argc > 1) {
             if (argc>2 && std::string(argv[argc-2])=="--driver-rootfs-readonly") {
@@ -2613,6 +2614,7 @@ int main(int argc, char** argv) {
             else if (option == "--driver-window-input" && !windowInput) windowInput = true;
             else if (option == "--driver-input-self-test" && !inputSelfTest) inputSelfTest = true;
             else if (option == "--driver-sdl-relay" && !sdlRelay) sdlRelay = true;
+            else if (option == "--driver-virtio-trace" && !virtioTrace) virtioTrace = true;
             else if (option == "--driver-sdl-failure-test" && !sdlFailureTest) sdlFailureTest = 1;
             else if (option == "--driver-sdl-retirement-failure-test" && !sdlFailureTest) sdlFailureTest = 2;
             else if (option == "--driver-shared-resources" && !sharedResources) sharedResources = true;
@@ -2632,6 +2634,8 @@ int main(int argc, char** argv) {
             throw std::runtime_error("SDL graphics requires the owned coordinator; optional QMP input must be the isolated self-test");
         if(sdlFailureTest && (!gpu_diagnostic::HighResolution || !sdlRelay || !coordinated || !readonlyRoot))
             throw std::runtime_error("SDL failure tests require the explicit high-resolution owned SDL coordinator and read-only root");
+        if(virtioTrace && (!gpu_diagnostic::HighResolution || !sdlRelay || !coordinated || !readonlyRoot))
+            throw std::runtime_error("Virtio trace requires the explicit high-resolution owned SDL coordinator and read-only root");
         if (readonlyRoot && (cpuStoreTest || cpuEofTest || cpuSpanEofTest || hwQueueEofTest || syncEofTest || syncNoMaxEofTest ||
             reservationEofTest || gpuStateEofTest || hwQueueNoBroadcastEofTest || hwQueueNoBroadcastWaitEofTest))
             throw std::runtime_error("Read-only root image cannot be combined with forced EOF/store controls");
@@ -2737,7 +2741,7 @@ int main(int argc, char** argv) {
         std::cout << "{\"port\":" << ntohs(address.sin_port) << ",\"transport\":\"tcp-loopback\"}\n" << std::flush;
         std::unique_ptr<driver_qemu::Runtime> runtime;
         if (ownedRuntime) runtime = std::make_unique<driver_qemu::Runtime>(ntohs(address.sin_port),
-            qemu_fence::Paths{argv[2], argv[3], argv[4], argv[5], argv[6]}, cpu, cpuStoreTest, cpuEofTest, hwQueueEofTest, cpuSlots, syncEofTest, reservationEofTest, gpuStateEofTest, cpuSpanEofTest, syncNoMaxEofTest, hwQueueNoBroadcastEofTest, hwQueueNoBroadcastWaitEofTest, fenceSlots,readonlyRoot,coordinated && fenceSlots==512,windowInput,inputSelfTest,sdlRelay);
+            qemu_fence::Paths{argv[2], argv[3], argv[4], argv[5], argv[6]}, cpu, cpuStoreTest, cpuEofTest, hwQueueEofTest, cpuSlots, syncEofTest, reservationEofTest, gpuStateEofTest, cpuSpanEofTest, syncNoMaxEofTest, hwQueueNoBroadcastEofTest, hwQueueNoBroadcastWaitEofTest, fenceSlots,readonlyRoot,coordinated && fenceSlots==512,windowInput,inputSelfTest,sdlRelay,virtioTrace);
         fd_set reads; FD_ZERO(&reads); FD_SET(listener.value, &reads); timeval timeout{60, 0};
         if (select(0, &reads, nullptr, nullptr, &timeout) != 1) throw std::runtime_error("Connection timed out");
         Socket client; client.value = accept(listener.value, nullptr, nullptr);

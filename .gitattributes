@@ -114,6 +114,11 @@ docs/evidence/OMARCHY-4K-READABLE-GPU-DESKTOP-2026-10-19.json text eol=lf
 docs/evidence/OMARCHY-4K-REFERENCE-FIX-GPU-DESKTOP-2026-10-19.json text eol=lf
 docs/evidence/OMARCHY-4K-LIVE-GPU-LIFECYCLES-2026-10-19.json text eol=lf
 
+docs/evidence/OMARCHY-VIRTIO-TRACE-DESKTOP-2026-10-21.json text eol=lf
+experimental/windows-native-gpu/virtio-trace-probe/** text eol=lf
+experimental/windows-native-gpu/virtio_trace.py text eol=lf
+experimental/windows-native-gpu/verify_virtio_trace_desktop.py text eol=lf
+
 # Unified-diff context lines and format-patch trailers carry intentional spaces.
 guest-build/*.patch text eol=lf whitespace=-blank-at-eol,-blank-at-eof
 scripts/gpu/blender/*.sh text eol=lf
