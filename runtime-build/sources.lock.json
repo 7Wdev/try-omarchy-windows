@@ -127,6 +127,10 @@
       {
         "file": "patches/virglrenderer/0003-preserve-device-local-resources-until-memory-binding.patch",
         "sha256": "7dbf0722d095de28c7ff2efdab57dbe2af63217b54f9b5c363ae1ffd49e4519d"
+      },
+      {
+        "file": "patches/virglrenderer/0004-avoid-intel-windows-mutable-buffer-mapping.patch",
+        "sha256": "3e7eece1f5fcdac6df16fc462315a4776364e41ca851963d3c020a67b9cb5d00"
       }
     ]
   }
