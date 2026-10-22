@@ -1,0 +1,48 @@
+--- a/src/vrend/vrend_renderer.c
++++ b/src/vrend/vrend_renderer.c
+@@ -9004,6 +9004,34 @@
+    glBufferSubData(d->target, d->box->x + doff, len, src);
+ }
+ 
++/* One glBufferSubData per guest page is slow, so send the range in one call.
++ * Returns false if the staging copy could not be allocated. */
++static bool iov_buffer_upload_once(GLenum target, const struct iovec *iov,
++                                   int num_iovs, size_t offset,
++                                   const struct pipe_box *box)
++{
++   size_t size = box->width;
++   void *staging;
++
++   while (num_iovs > 0 && iov->iov_len <= offset) {
++      offset -= iov->iov_len;
++      iov++;
++      num_iovs--;
++   }
++   if (num_iovs > 0 && iov->iov_len - offset >= size) {
++      glBufferSubData(target, box->x, size, (char *)iov->iov_base + offset);
++      return true;
++   }
++
++   staging = malloc(size);
++   if (!staging)
++      return false;
++   size = vrend_read_from_iovec(iov, num_iovs, offset, staging, size);
++   glBufferSubData(target, box->x, size, staging);
++   free(staging);
++   return true;
++}
++
+ static void vrend_scale_depth(void *ptr, int size, float scale_val)
+ {
+    GLuint *ival = ptr;
+@@ -9367,7 +9395,9 @@
+       if (data == NULL) {
+          if (!use_sub_data)
+             virgl_error("Map failed for element buffer\n");
+-         vrend_read_from_iovec_cb(iov, num_iovs, info->offset, info->box->width, &iov_buffer_upload, &d);
++         if (!use_sub_data ||
++             !iov_buffer_upload_once(res->target, iov, num_iovs, info->offset, info->box))
++            vrend_read_from_iovec_cb(iov, num_iovs, info->offset, info->box->width, &iov_buffer_upload, &d);
+       } else {
+          vrend_read_from_iovec(iov, num_iovs, info->offset, data, info->box->width);
+          glUnmapBuffer(res->target);
