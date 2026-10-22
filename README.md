@@ -10,9 +10,20 @@ The experimental QEMU/WHPX bridge now captures a real **3840×2160 Omarchy deskt
 the shipped wallpaper, Omarchy bar and readable Alacritty application appear together.
 Full integration into the Windows launcher and a stable interactive desktop remain in development.
 
-![Real 4K guest GPU frame reaches QEMU SDL; active repeats pass and failures retained; backend 4/8 stages; desktop product 0/4 gates](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/windows-nvgpu-lab/docs/images/gpu-backend-progress-virtio-trace-2026-10-21.svg)
+![Real 4K guest GPU frame reaches QEMU SDL; active repeats pass and failures retained; backend 4/8 stages; desktop product 0/4 gates](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/windows-nvgpu-lab/docs/images/gpu-backend-progress-sustained-sdl-2026-10-22.svg)
 
-**Live trace follow-up:** moving the complete graphics diagnostics from the
+**Latest sustained rendering checkpoint — October 22, 2026:** two fresh guests
+pass **1,800 GPU handoffs over 33.5 and 33.8 seconds**, complete 4K source/SDL
+pixel audits, rendered input response, application lifecycles, resizing and live
+cleanup. Matching private libraries from the signed installed NVIDIA **621.01**
+driver restore graphics initialization after a host driver update. The official
+input implementation is preserved. A shared-budget prototype failed an eviction
+path and remains rejected; the verified host source is retained. Displayed cadence,
+physical input latency, normal launcher integration and ≥93% native performance
+remain unverified.
+[Actual frame, all attempts and limits](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-SUSTAINED-NVIDIA-DESKTOP.md).
+
+**Earlier live trace comparison:** moving the complete graphics diagnostics from the
 emulated UART to a dedicated virtio-serial port reduces median steady GPU handoff
 intervals from **43–44 ms to 16.6–16.7 ms** in this bounded workload. Two virtio
 runs and two UART baselines pass 300 handoffs, full 4K source/SDL pixel audits,
@@ -59,19 +70,18 @@ The real guest GPU relay uses that frontend's input implementation; automated
 physical-input acceptance and normal launcher integration remain open.
 [Verified upstream source map and integration boundary](https://github.com/7Wdev/try-omarchy-windows/blob/c6b554458583d14ea9fc6ef432b75d2a0aacc2a4/docs/UPSTREAM-INPUT-GRAPHICS-INTEGRATION.md).
 
-![Actual QEMU SDL backbuffer showing the NVIDIA Omarchy desktop and application](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/a803f6b3d1b24ab482ed381cacab68c99fdf61d7/docs/images/omarchy-qemu-sdl-frame-300-2026-10-21.png)
+![Actual NVIDIA 621.01 SDL backbuffer at handoff 1800](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/windows-nvgpu-lab/docs/images/omarchy-nvidia-62101-frame-1800-2026-10-22.png)
 
-This is run 102, frame 300, converted directly from the actual **2560×1566 SDL
-pre-swap backbuffer**. Its GPU source is 3840×2160; physical 4K scanout remains
-unverified. The guest runs through UWSM/PAM with a disposable account and RAM
-overlay. The source disk is read-only. The released launcher uses the upstream
-graphics runtime. [Earlier two-run resize milestone](https://github.com/7Wdev/try-omarchy-windows/blob/c6b554458583d14ea9fc6ef432b75d2a0aacc2a4/docs/LIVE-UWSM-SUSTAINED-RESIZE.md).
+Run 125, frame 1,800: the actual **2560×1566 SDL pre-swap backbuffer**. Its GPU
+source is 3840×2160; physical 4K scanout remains unverified. The guest uses a
+disposable UWSM/PAM account and RAM overlay over the read-only source disk.
+The released launcher continues using the upstream graphics runtime.
 
 | Progress measure | Verified status | What remains |
 | --- | --- | --- |
 | 4K diagnostic scene | **3/3:** shipped wallpaper, Omarchy bar, readable GPU application | Normal launcher presentation and usable desktop acceptance. |
 | Bounded rendering/input response | **Two 300-frame resize runs pass**, plus two separate 300-frame input-response baselines | Long runs, physical input through the official frontend and simultaneous application windows. |
-| Real guest GPU display through QEMU SDL | **Four carrier-comparison runs pass 300 handoffs; median virtio intervals 16.6–16.7 ms** | Validate displayed cadence and physical input; resolve retained device-loss, zero-buffer and input-response failures. |
+| Real guest GPU display through QEMU SDL | **Two 1,800-handoff runs pass complete pixels and cleanup over 33.5–33.8 s** | Validate displayed cadence and physical input; resolve retained device-loss, zero-buffer and input-response failures. |
 | Backend stages | **4/8 demonstrated; stages 5–6 in progress** | Supported device integration, broader APIs, recovery and performance. |
 | Desktop product gates | **0/4 complete; first three in progress** | Normal account/launcher integration, continuous multi-window display, reliability and matched-native performance. |
 

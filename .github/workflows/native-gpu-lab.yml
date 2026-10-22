@@ -173,6 +173,8 @@ jobs:
           python3 -m unittest discover -s experimental/windows-native-gpu -p 'test_*milestone.py'
           cc -std=c11 -O2 -Wall -Wextra -Werror experimental/windows-native-gpu/virtio-trace-probe/trace_control.c -o /tmp/virtio-trace-control
           /tmp/virtio-trace-control
+          c++ -std=c++17 -O2 -Wall -Wextra -Werror experimental/windows-native-gpu/aggregate_gpu_budget_test.cpp -o /tmp/aggregate-gpu-budget-test
+          /tmp/aggregate-gpu-budget-test
           python3 -m unittest discover -s experimental/windows-native-gpu -p 'test_opengl_packaging.py'
           c++ -std=c++17 -Wall -Wextra -Werror experimental/windows-native-gpu/qmp_protocol_test.cpp -o /tmp/qmp-protocol-test
           /tmp/qmp-protocol-test

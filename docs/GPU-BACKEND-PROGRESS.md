@@ -1,14 +1,25 @@
 # NVIDIA backend progress
 
-Updated **2026-10-21**. This page tracks the experimental QEMU/WHPX Windows-native
+Updated **2026-10-22**. This page tracks the experimental QEMU/WHPX Windows-native
 NVIDIA backend. The released Try Omarchy launcher continues using the upstream
 graphics runtime.
 
-![4K Omarchy frame achieved; QEMU SDL host GPU relay verified; backend stages 4/8; desktop gates 0/4](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/windows-nvgpu-lab/docs/images/gpu-backend-progress-virtio-trace-2026-10-21.svg)
+![4K Omarchy frame achieved; QEMU SDL host GPU relay verified; backend stages 4/8; desktop gates 0/4](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/windows-nvgpu-lab/docs/images/gpu-backend-progress-sustained-sdl-2026-10-22.svg)
 
 ## What is verified now?
 
-**Live trace follow-up:** moving the complete graphics diagnostics from the
+**Latest sustained rendering checkpoint — October 22, 2026:** two fresh guests
+pass **1,800 GPU handoffs over 33.5 and 33.8 seconds**, complete 4K source/SDL
+pixel audits, rendered input response, application lifecycles, resizing and live
+cleanup. Matching private libraries from the signed installed NVIDIA **621.01**
+driver restore graphics initialization after a host driver update. The official
+input implementation is preserved. A shared-budget prototype failed an eviction
+path and remains rejected; the verified host source is retained. Displayed cadence,
+physical input latency, normal launcher integration and ≥93% native performance
+remain unverified.
+[Actual frame, all attempts and limits](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-SUSTAINED-NVIDIA-DESKTOP.md).
+
+**Earlier live trace comparison:** moving the complete graphics diagnostics from the
 emulated UART to a dedicated virtio-serial port reduces median steady GPU handoff
 intervals from **43–44 ms to 16.6–16.7 ms** in this bounded workload. Two virtio
 runs and two UART baselines pass 300 handoffs, full 4K source/SDL pixel audits,
@@ -111,9 +122,13 @@ retains its original scope and failures.
 | 3. 4K guest shaders and shared GPU textures | Demonstrated in the lab | [Independent 4K shader pixels, GPU copies and fence retirement](https://github.com/7Wdev/try-omarchy-windows/blob/2290aa6209289dddfbae54b542c524927414c020/docs/LIVE-GPU-4K.md). |
 | 4. Repeated guest rendering | Demonstrated in bounded diagnostics | [64-frame guest runs](https://github.com/7Wdev/try-omarchy-windows/blob/2290aa6209289dddfbae54b542c524927414c020/docs/LIVE-GPU-GUEST-STREAM.md), safe allocator/texture reuse and explicit cleanup. This is not long-run desktop or all-frame display acceptance. |
 | 5. Guest graphics/device integration | In progress | Native render-node/GBM, EGL fences, separate GPU clients, 4K captures and five application lifecycles with live reclamation pass twice. Supported device integration, recovery and sustained work remain required. |
-| 6. Interactive Omarchy/Hyprland desktop | In progress: two 300-frame 4K application-resize/input-response runs pass; separate QEMU SDL host GPU import/BGRA controls pass | Connect the real guest compositor to the tested SDL relay with retained input, then validate normal launcher sessions, continuous display, focus, fullscreen and multiple windows. |
-| 7. Required APIs and NVIDIA features | Pending acceptance | OpenGL diagnostics pass; test general OpenGL, Vulkan, CUDA, video and NVIDIA capabilities in real guest applications. |
+| 6. Interactive Omarchy/Hyprland desktop | In progress: real guest → QEMU SDL, two 1,800-handoff 4K repeats with input response, resizing and live cleanup | Validate normal launcher sessions, displayed cadence, official physical input, focus, fullscreen and simultaneous windows. |
+| 7. Required APIs and NVIDIA features | Pending acceptance | OpenGL diagnostics pass; test general OpenGL, Vulkan, CUDA, video, NVIDIA DLSS and hardware ray tracing in real guest applications. |
 | 8. Reliability and ≥93% native performance | Pending acceptance | Matched guest/native benchmarks through 4K, concurrent host/guest GPU workloads, long runs, bounded memory and device/VM recovery. |
+
+NVIDIA **DLSS** and **hardware ray tracing** are required, unverified targets.
+Their acceptance requires actual guest applications or SDK workloads with
+verified NVIDIA hardware execution, correct output and measured performance.
 
 ## Desktop product acceptance gates
 
