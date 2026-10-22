@@ -19,6 +19,8 @@ func guestBootStarted() {
 	bootAnnouncedReady.Store(false)
 	guestFollowsWindow.Store(false)
 	updateCurtainTimes(func(t *bootCurtainTimes) { *t = bootCurtainTimes{boot: time.Now()} })
+	desktopSeen.Store(false)
+	desktopLooks.Store(0)
 }
 
 func guestDesktopReady() {

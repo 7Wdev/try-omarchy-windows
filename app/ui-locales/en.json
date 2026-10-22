@@ -695,6 +695,8 @@
   "recovery.gpu.cpu_always": "Always use CPU rendering",
   "recovery.gpu.settings_failed": "Could not save CPU rendering in Settings: {error}",
   "recovery.display.body": "The virtual machine has stopped answering. It is still running. You can keep this session or restart it. Restarting may lose unsaved work.",
+  "recovery.blank.title": "Omarchy’s window isn’t showing the desktop",
+  "recovery.blank.body": "Omarchy is running, but its window has not shown the desktop for two minutes. With some graphics drivers, GPU rendering works inside Omarchy but never reaches the screen. If the window is black or still shows boot text, restart with CPU rendering. If you can see your desktop, keep this session.",
   "recovery.compositor.body": "Omarchy’s desktop has not answered health checks for about a minute, while the virtual machine still responds. You can keep this session or restart it. Restarting may lose unsaved work.",
   "recovery.cpu.restart": "Restart",
   "tray.menu.resume": "Resume Omarchy",

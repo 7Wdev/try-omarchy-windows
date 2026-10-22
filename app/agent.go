@@ -16,7 +16,8 @@ import (
 //   host -> guest: "time <unix seconds>"   set the guest clock when it drifts
 //   host -> guest: "zero-fill <MiB>"       write up to MiB of zeros over free space, then delete them
 //   guest -> host: "hello <version>"       the agent connected
-//   guest -> host: "compositor ok|unresponsive|inactive" bounded Hyprland IPC probe
+//   guest -> host: "compositor ok|unresponsive|busy|inactive" bounded Hyprland IPC probe;
+//                  busy means unresponsive while a package update runs
 //   guest -> host: "zero-fill done|failed" the fill finished
 //   host -> guest: "url-approved <base64 JSON>" the link types allowed in Settings
 //   guest -> host: "url-schemes <base64 JSON>" link types the guest can open, after each url-approved
@@ -275,6 +276,13 @@ func (a *guestAgent) read(c net.Conn, r *bufio.Reader) {
 				a.health.inactive()
 			}
 			a.mu.Unlock()
+		case line == "compositor busy\n":
+			a.mu.Lock()
+			started := a.conn == c && a.health != nil && a.health.packageUpdate(a.now())
+			a.mu.Unlock()
+			if started {
+				logf("display health: compositor is slow during a package update; waiting for it to finish")
+			}
 		case line == "compositor ok\n" || line == "compositor unresponsive\n":
 			a.mu.Lock()
 			if a.conn == c && a.health != nil {

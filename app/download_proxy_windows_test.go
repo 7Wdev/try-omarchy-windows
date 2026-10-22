@@ -65,3 +65,22 @@ func TestWindowsProxyLookupCancellationDoesNotAccumulate(t *testing.T) {
 		t.Fatalf("second lookup: %v", err)
 	}
 }
+
+func TestWPADWithoutScriptFallsBackToSystemSettings(t *testing.T) {
+	pac, _ := syscall.UTF16PtrFromString("http://proxy.example/proxy.pac")
+	for _, tc := range []struct {
+		name string
+		cfg  ieProxyConfig
+		err  error
+		want bool
+	}{
+		{"detection found nothing", ieProxyConfig{autoDetect: 1}, syscall.Errno(12180), true},
+		{"detected script could not be downloaded", ieProxyConfig{autoDetect: 1}, syscall.Errno(12167), true},
+		{"explicit PAC could not be downloaded", ieProxyConfig{autoURL: pac}, syscall.Errno(12167), false},
+		{"detection hit another error", ieProxyConfig{autoDetect: 1}, syscall.Errno(12166), false},
+	} {
+		if got := wpadFoundNoProxy(&tc.cfg, tc.err); got != tc.want {
+			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}

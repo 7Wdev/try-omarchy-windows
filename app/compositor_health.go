@@ -15,10 +15,11 @@ const (
 // A heartbeat proves only that Hyprland processes IPC, not physical rendering.
 // Old guests stay unarmed. Failure reports and missing replies both count once
 // this boot has sent a heartbeat. Shutdown and host suspension suppress alerts.
+// A guest reports busy instead of unresponsive while pacman holds its lock.
 type compositorHealth struct {
-	mu                                                     sync.Mutex
-	armed, connected, ready, suspended, stopping, reported bool
-	grace, lastOK, lastTick                                time.Time
+	mu                                                           sync.Mutex
+	armed, connected, ready, suspended, stopping, reported, busy bool
+	grace, lastOK, lastTick                                      time.Time
 }
 
 var guestCompositorHealth compositorHealth
@@ -26,7 +27,7 @@ var guestCompositorHealth compositorHealth
 func (h *compositorHealth) boot(now time.Time) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.armed, h.connected, h.ready, h.stopping, h.reported = false, false, false, false, false
+	h.armed, h.connected, h.ready, h.stopping, h.reported, h.busy = false, false, false, false, false, false
 	h.grace, h.lastOK, h.lastTick = now.Add(compositorBootGrace), now, now
 }
 func (h *compositorHealth) userspaceReady() { h.mu.Lock(); h.ready = true; h.mu.Unlock() }
@@ -53,10 +54,28 @@ func (h *compositorHealth) heartbeat(now time.Time, ok bool) {
 		h.lastOK = now
 	}
 	h.armed = true
+	h.busy = false
 	if ok {
 		h.lastOK = now
 		h.reported = false
 	}
+}
+
+// packageUpdate records a compositor too slow to answer while a package
+// transaction runs. Offering a restart then would cut pacman off, so it counts
+// as alive until the transaction ends. It reports whether a busy period began.
+func (h *compositorHealth) packageUpdate(now time.Time) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if !h.connected {
+		return false
+	}
+	h.armed = true
+	h.lastOK = now
+	h.reported = false
+	started := !h.busy
+	h.busy = true
+	return started
 }
 func (h *compositorHealth) inactive() {
 	h.mu.Lock()
