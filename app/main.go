@@ -1342,7 +1342,8 @@ func watch(cfg *config, qmp *qmpConn, exited <-chan error) bool {
 		}
 		logf("display health: %s stopped responding; preserving session while offering recovery", trigger)
 		suggest := false
-		if cfg.useGpu {
+		// A window that never showed the desktop is not a freeze.
+		if cfg.useGpu && trigger != "blank" {
 			var err error
 			suggest, err = recordGPUFreeze(cfg.dir, cfg.renderMode, true, postReady, cfg.runtimeID, cfg.displayDriver)
 			if err != nil {
@@ -1379,6 +1380,9 @@ func watch(cfg *config, qmp *qmpConn, exited <-chan error) bool {
 			result <- chooseFreezeRecovery(dialogContext.Done(), snapshotCfg.useGpu, trigger, bundle, err, suggest)
 		}()
 	}
+	// GPU rendering is recorded as working only once Windows has shown the
+	// desktop in the Omarchy window; blankOffered asks once per boot.
+	gpuRecordPending, blankOffered := false, false
 	tick := 0
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
@@ -1413,7 +1417,10 @@ func watch(cfg *config, qmp *qmpConn, exited <-chan error) bool {
 				pruneCommittedUpdatePayloads(cfg)
 			}
 			startReadyUpdateCheck()
-			recordRenderResult(cfg)
+			gpuRecordPending, blankOffered = cfg.useGpu, false
+			if !cfg.useGpu {
+				recordRenderResult(cfg)
+			}
 			movedBootPending = true
 		}
 		if movedBootPending && markMovedGuestReady(cfg.dir) {
@@ -1527,6 +1534,18 @@ func watch(cfg *config, qmp *qmpConn, exited <-chan error) bool {
 			lastTick = now
 			if stopDeadline == nil && !pendingReboot.Load() && !setupCancelled() && guestCompositorHealth.stalled(now, qmpRunning && now.Sub(lastReply) < 15*time.Second) {
 				offerRecovery("compositor")
+			}
+			if gpuRecordPending && desktopSeen.Load() {
+				gpuRecordPending = false
+				recordRenderResult(cfg)
+			}
+			if gpuRecordPending && !blankOffered && recovery == nil && stopDeadline == nil && !pendingReboot.Load() && !setupCancelled() &&
+				curtainTimes().blankDesktopDue(now, desktopLooks.Load()) {
+				blankOffered = true
+				if probe, _ := loadRenderProbe(cfg.dir); !gpuDesktopConfirmed(probe, cfg.runtimeID, cfg.displayDriver) {
+					logf("display health: GPU rendering has not shown the desktop in the Omarchy window")
+					offerRecovery("blank")
+				}
 			}
 			tick++
 			if tick%5 == 0 {
@@ -1712,7 +1731,8 @@ func recordRenderResult(cfg *config) {
 	if cfg.useGpu {
 		result = renderGPU
 	}
-	probe := renderProbe{Result: result, RuntimeID: cfg.runtimeID, DisplayDriver: cfg.displayDriver, RecordedAt: time.Now()}
+	// The supervisor records GPU only after the window showed the desktop.
+	probe := renderProbe{Result: result, RuntimeID: cfg.runtimeID, DisplayDriver: cfg.displayDriver, RecordedAt: time.Now(), DesktopSeen: cfg.useGpu}
 	if err := saveRenderProbe(cfg.dir, probe); err != nil {
 		logf("could not record the rendering result: %v", err)
 	}
