@@ -657,3 +657,25 @@ func TestReplacedConnectionCannotOverwriteANewerReport(t *testing.T) {
 		t.Fatalf("stored reports %v", stored)
 	}
 }
+
+func TestAgentBusyReportKeepsCompositorAlive(t *testing.T) {
+	host, guest := net.Pipe()
+	now := time.Unix(2000, 0)
+	health := &compositorHealth{}
+	health.boot(now)
+	health.userspaceReady()
+	health.connect(now)
+	a := &guestAgent{conn: host, now: func() time.Time { return now }, health: health}
+	done := make(chan struct{})
+	go func() { a.read(host, bufio.NewReader(host)); close(done) }()
+	if _, err := guest.Write([]byte("compositor unresponsive\ncompositor busy\n")); err != nil {
+		t.Fatal(err)
+	}
+	guest.Close()
+	<-done
+	health.mu.Lock()
+	defer health.mu.Unlock()
+	if !health.armed || !health.busy || !health.lastOK.Equal(now) {
+		t.Fatalf("busy report not recorded: armed=%v busy=%v lastOK=%v", health.armed, health.busy, health.lastOK)
+	}
+}

@@ -134,3 +134,45 @@ func TestCompositorInactiveAndRebootDoNotAlert(t *testing.T) {
 		t.Fatal("new boot inherited shutdown")
 	}
 }
+
+func TestCompositorHealthWaitsForPackageUpdate(t *testing.T) {
+	now := time.Unix(1000, 0)
+	h := &compositorHealth{}
+	h.boot(now)
+	h.userspaceReady()
+	h.connect(now)
+	h.heartbeat(now, true)
+	now = now.Add(compositorBootGrace)
+	stalled := func(seconds int, report func()) bool {
+		result := false
+		for i := 0; i < seconds; i++ {
+			now = now.Add(time.Second)
+			if i%5 == 0 && report != nil {
+				report()
+			}
+			if h.stalled(now, true) {
+				result = true
+			}
+		}
+		return result
+	}
+	if !h.packageUpdate(now) || h.packageUpdate(now) {
+		t.Fatal("expected only the first busy report to start a busy period")
+	}
+	if stalled(600, func() { h.packageUpdate(now) }) {
+		t.Fatal("offered recovery while a package update kept the compositor busy")
+	}
+	// The last busy report arrives as the update finishes, but the compositor
+	// still does not answer afterwards.
+	h.packageUpdate(now)
+	if stalled(59, func() { h.heartbeat(now, false) }) || !stalled(1, nil) {
+		t.Fatal("expected a stall one minute after the package update ended")
+	}
+	if !h.packageUpdate(now) {
+		t.Fatal("a later package update should start a new busy period")
+	}
+	h.disconnect(now)
+	if h.packageUpdate(now) {
+		t.Fatal("busy report counted without an agent connection")
+	}
+}
