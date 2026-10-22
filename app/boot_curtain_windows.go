@@ -234,7 +234,8 @@ func curtainTick(primary uintptr) {
 }
 
 // watchDesktop keeps looking at a shown window every few seconds until it
-// shows the desktop once in this boot. A minimized window is not looked at.
+// shows the desktop once in this boot. A minimized or hidden window is not
+// looked at.
 func watchDesktop(primary uintptr) {
 	times := curtainTimes()
 	if !times.boot.Equal(desktopBoot) {
@@ -244,7 +245,8 @@ func watchDesktop(primary uintptr) {
 	if desktopSeen.Load() || primary == 0 || !times.checkPaint() || time.Since(desktopCheckedAt) < desktopCheckInterval {
 		return
 	}
-	if iconic, _, _ := procIsIconic.Call(primary); iconic != 0 {
+	visible, _, _ := procIsWindowVisible.Call(primary)
+	if iconic, _, _ := procIsIconic.Call(primary); iconic != 0 || visible == 0 {
 		desktopPainted.Store(0)
 		return
 	}
