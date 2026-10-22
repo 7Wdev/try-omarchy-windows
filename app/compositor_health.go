@@ -27,7 +27,7 @@ var guestCompositorHealth compositorHealth
 func (h *compositorHealth) boot(now time.Time) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.armed, h.connected, h.ready, h.stopping, h.reported = false, false, false, false, false
+	h.armed, h.connected, h.ready, h.stopping, h.reported, h.busy = false, false, false, false, false, false
 	h.grace, h.lastOK, h.lastTick = now.Add(compositorBootGrace), now, now
 }
 func (h *compositorHealth) userspaceReady() { h.mu.Lock(); h.ready = true; h.mu.Unlock() }
