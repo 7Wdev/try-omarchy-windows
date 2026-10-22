@@ -134,9 +134,7 @@ func windowsProxyForConfig(target *url.URL, cfg *ieProxyConfig) (*url.URL, error
 	var info winHTTPProxyInfo
 	ok, _, err := procWinHTTPGetProxy.Call(session, uintptr(unsafe.Pointer(source)), uintptr(unsafe.Pointer(&options)), uintptr(unsafe.Pointer(&info)))
 	if ok == 0 {
-		// WPAD finding no configuration is normal on a direct network. A failed
-		// explicit PAC configuration must not silently bypass the user's policy.
-		if cfg.autoURL == nil && err == syscall.Errno(12180) {
+		if wpadFoundNoProxy(cfg, err) {
 			return systemProxyURL(target, proxyString(cfg.proxy), proxyString(cfg.bypass))
 		}
 		return nil, fmt.Errorf("resolving Windows automatic proxy: %w", err)
@@ -146,4 +144,16 @@ func windowsProxyForConfig(target *url.URL, cfg *ieProxyConfig) (*url.URL, error
 		return nil, nil
 	}
 	return systemProxyURL(target, proxyString(info.proxy), proxyString(info.bypass))
+}
+
+// wpadFoundNoProxy reports whether a failed lookup leaves no proxy to follow.
+// WPAD finding no configuration (12180) is normal on a direct network. It can
+// also find a wpad host that serves no script (12167), as when an ISP's DNS
+// answers wpad.<suffix>. A failed explicit PAC configuration must not silently
+// bypass the user's policy.
+func wpadFoundNoProxy(cfg *ieProxyConfig, err error) bool {
+	if cfg.autoURL != nil {
+		return false
+	}
+	return err == syscall.Errno(12180) || err == syscall.Errno(12167)
 }

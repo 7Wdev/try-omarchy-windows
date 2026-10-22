@@ -137,3 +137,28 @@ func TestFramePaintedRejectsShortBuffers(t *testing.T) {
 	// Wide and short: the sample blocks must stay inside the frame.
 	framePainted(make([]byte, 3840*20*4), 3840, 20, 3840*4)
 }
+
+func TestBlankDesktopDue(t *testing.T) {
+	start := time.Unix(1000, 0)
+	if (bootCurtainTimes{}).blankDesktopDue(start.Add(time.Hour), blankDesktopLooks) {
+		t.Fatal("asked before Omarchy reported ready")
+	}
+	ready := bootCurtainTimes{boot: start, ready: start}
+	if ready.blankDesktopDue(start.Add(blankDesktopWait-time.Second), blankDesktopLooks) {
+		t.Fatal("asked before the wait")
+	}
+	if !ready.blankDesktopDue(start.Add(blankDesktopWait), blankDesktopLooks) {
+		t.Fatal("no session: the wait counts from ready")
+	}
+	session := bootCurtainTimes{boot: start, ready: start, session: start.Add(time.Minute)}
+	if session.blankDesktopDue(start.Add(blankDesktopWait), blankDesktopLooks) {
+		t.Fatal("the wait counts from the session start")
+	}
+	if !session.blankDesktopDue(start.Add(time.Minute+blankDesktopWait), blankDesktopLooks) {
+		t.Fatal("expected to ask after the session wait")
+	}
+	// A window kept minimized was never looked at, so it is not blank.
+	if session.blankDesktopDue(start.Add(time.Hour), blankDesktopLooks-1) {
+		t.Fatal("asked without enough looks at the visible window")
+	}
+}
