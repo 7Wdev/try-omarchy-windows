@@ -1340,7 +1340,9 @@ func watch(cfg *config, qmp *qmpConn, exited <-chan error) bool {
 		if recovery != nil || !postReady || setupCancelled() || pendingReboot.Load() || guestCompositorHealth.suppressRecovery() {
 			return
 		}
-		logf("display health: %s stopped responding; preserving session while offering recovery", trigger)
+		if trigger != "blank" {
+			logf("display health: %s stopped responding; preserving session while offering recovery", trigger)
+		}
 		suggest := false
 		// A window that never showed the desktop is not a freeze.
 		if cfg.useGpu && trigger != "blank" {
