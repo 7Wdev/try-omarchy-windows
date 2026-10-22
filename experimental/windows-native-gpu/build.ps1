@@ -56,6 +56,14 @@ cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\bounded_gpu_retirement_wa
 if not "%errorlevel%"=="0" exit /b %errorlevel%
 bounded-gpu-retirement-wait-test.exe
 if not "%errorlevel%"=="0" exit /b %errorlevel%
+cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\deferred_residency_test.cpp" /Fe:deferred-residency-test.exe
+if not "%errorlevel%"=="0" exit /b %errorlevel%
+deferred-residency-test.exe
+if not "%errorlevel%"=="0" exit /b %errorlevel%
+cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\gpu_mapping_accounting_test.cpp" /Fe:gpu-mapping-accounting-test.exe
+if not "%errorlevel%"=="0" exit /b %errorlevel%
+gpu-mapping-accounting-test.exe
+if not "%errorlevel%"=="0" exit /b %errorlevel%
 cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\fair_rpc_mutex_test.cpp" /Fe:fair-rpc-mutex-test.exe
 if not "%errorlevel%"=="0" exit /b %errorlevel%
 fair-rpc-mutex-test.exe

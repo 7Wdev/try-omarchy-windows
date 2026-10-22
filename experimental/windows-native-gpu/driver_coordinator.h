@@ -165,7 +165,7 @@ public:
             LiveRetirementProfile wanted{};
             if(liveRetirement || !sessions.empty()) return response(h,-16);
             if(!payload(packet,wanted) || !validLiveRetirementProfile(wanted)) return response(h,-22);
-            if(capacity.mapping.aperture.version!=13 || objectCapacity.version!=5 || !driver.supportsLiveRetirement()) return response(h,-95);
+            if(capacity.mapping.aperture.version!=13 || objectCapacity.version<5 || !driver.supportsLiveRetirement()) return response(h,-95);
             liveRetirement=true;
             std::cerr<<"{\"nativeLiveRetirementEnabled\":true,\"version\":1,\"batch\":16,\"phases\":4,\"ordinaryClientOpcode\":false}\n";
             return response(h,0,encoded(wanted));

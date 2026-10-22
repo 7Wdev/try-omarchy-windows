@@ -41,6 +41,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python experimental/windows-native-gpu/test_graphics_trace_cli.py --bridge experimental/windows-native-gpu/build/driver-bridge.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python experimental/windows-native-gpu/test_deferred_residency_cli.py --bridge experimental/windows-native-gpu/build/driver-bridge.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python experimental/windows-native-gpu/test_coordinator_cli.py --bridge experimental/windows-native-gpu/build/driver-bridge.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python experimental/windows-native-gpu/test_native_stream_cli.py --probe experimental/windows-native-gpu/build/native-stream-probe.exe
@@ -51,6 +53,8 @@ jobs:
           python experimental/windows-native-gpu/test_sdl_failure_cli.py --bridge experimental/windows-native-gpu/build-4k/driver-bridge.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python experimental/windows-native-gpu/test_graphics_trace_cli.py --bridge experimental/windows-native-gpu/build-4k/driver-bridge.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python experimental/windows-native-gpu/test_deferred_residency_cli.py --bridge experimental/windows-native-gpu/build-4k/driver-bridge.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python experimental/windows-native-gpu/test_coordinator_cli.py --bridge experimental/windows-native-gpu/build-4k/driver-bridge.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -163,6 +167,10 @@ jobs:
           /tmp/guest-broker-receipts-test
           c++ -std=c++17 -O2 -Wall -Wextra -Werror experimental/windows-native-gpu/bounded_gpu_retirement_wait_test.cpp -o /tmp/bounded-gpu-retirement-wait-test
           /tmp/bounded-gpu-retirement-wait-test
+          c++ -std=c++17 -O2 -Wall -Wextra -Werror experimental/windows-native-gpu/deferred_residency_test.cpp -o /tmp/deferred-residency-test
+          /tmp/deferred-residency-test
+          c++ -std=c++17 -O2 -Wall -Wextra -Werror experimental/windows-native-gpu/gpu_mapping_accounting_test.cpp -o /tmp/gpu-mapping-accounting-test
+          /tmp/gpu-mapping-accounting-test
           c++ -std=c++17 -O2 -Wall -Wextra -Werror -pthread experimental/windows-native-gpu/fair_rpc_mutex_test.cpp -o /tmp/fair-rpc-mutex-test
           /tmp/fair-rpc-mutex-test
           c++ -std=c++17 -O2 -Wall -Wextra -Werror experimental/windows-native-gpu/diagnostic_profile_test.cpp -o /tmp/profile-test

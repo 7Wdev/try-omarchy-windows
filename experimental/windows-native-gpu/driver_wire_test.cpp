@@ -28,6 +28,8 @@ struct Fake : Driver {
     bool gpuVaEnabled = false;
     bool residencyEnabled = false;
     bool memoryManagementEnabled = false, evictAttempted = true;
+    bool mappedResidencyRetained = false;
+    bool retainsMappedResidencyOnEvict() const override { return mappedResidencyRetained; }
     int badMemoryBudgetReply = 0, badEvictReply = 0;
     unsigned memoryBudgetCalls = 0, evictionCalls = 0;
     MemoryBudgetResult queryMemoryBudget(std::uint32_t adapter, MemoryBudgetDesc desc) override {
@@ -585,6 +587,21 @@ int main() {
         require(!header(partial).status && result.ntstatus==-123 && !result.value);
         f.fail=false; before=f.calls;
         require(header(evict({1,0},{allocation},device)).status==-16 && f.calls==before);
+        f.mappedResidencyRetained=true;
+        const auto protectedEviction=evict({1,0},{allocation},device);
+        require(!header(protectedEviction).status && f.calls==before+1);
+        // Transfers may repeat without exhausting the legacy lifetime attempt
+        // limit. The count of simultaneously live guest references stays bounded.
+        for(unsigned n=0;n<1000;++n) {
+            require(!header(s.dispatch(resident)).status);
+            require(!header(evict({1,0},{allocation},device)).status);
+        }
+        for(unsigned n=0;n<MaxVendorResidencyAttempts;++n) require(!header(s.dispatch(resident)).status);
+        before=f.calls;require(header(s.dispatch(resident)).status==-24 && f.calls==before);
+        for(unsigned n=0;n<MaxVendorResidencyAttempts;++n) require(!header(evict({1,0},{allocation},device)).status);
+        f.mappedResidencyRetained=false;
+        require(!header(s.dispatch(resident)).status);
+        before=f.calls;require(header(evict({1,0},{allocation},device)).status==-16 && f.calls==before);
         require(!header(s.dispatch(unlock)).status);
         for (const auto flags:{0u,1u,2u,3u}) require(!header(evict({1,flags},{allocation},device)).status);
         for (unsigned n=1;n<=2;++n) { f.badEvictReply=n; require(header(evict({1,0},{allocation},device)).status==-5); }

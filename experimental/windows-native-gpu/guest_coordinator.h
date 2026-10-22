@@ -51,15 +51,22 @@ public:
             !driver_bridge::validCoordinatedPresentationCapacity(wanted) ||
             (wide && (!wddm_aperture_valid_desktop_fences(fences) || !fences.enabled || fences.slots!=layout.fence_slots || fences.bytes!=layout.fence_bytes)) ||
             (expanded && (!wddm_aperture_valid_desktop_slots(slots) || !slots.enabled || slots.slots!=layout.allocation_slots || slots.bytes!=layout.allocation_bytes))) reject("Coordinator kernel capacity mismatch");
-        const auto objects=references ? driver_bridge::GuestCoordinatedReferenceObjects : wide ? driver_bridge::GuestCoordinatedDesktopObjects : driver_bridge::CoordinatedObjectCapacity{};
+#if defined(WDDM_BRIDGE_MANAGED_GPUVA) && WDDM_BRIDGE_MANAGED_GPUVA
+        const auto referenceObjects=driver_bridge::GuestCoordinatedManagedObjects;
+#else
+        const auto referenceObjects=driver_bridge::GuestCoordinatedReferenceObjects;
+#endif
+        const auto objects=references ? referenceObjects : wide ? driver_bridge::GuestCoordinatedDesktopObjects : driver_bridge::CoordinatedObjectCapacity{};
         if(!control(cg::Operation::Initialize,encode(cg::Initialization{wanted,objects})).empty()) reject("Coordinator initialization payload");
         agreement=decode<cg::Info>(control(cg::Operation::Info));
-        if(!cg::validInfo(agreement) || std::memcmp(&wanted,&agreement.capacity,sizeof wanted)) reject("Coordinator agreement mismatch");
+        if(!cg::validInfo(agreement) || std::memcmp(&wanted,&agreement.capacity,sizeof wanted) ||
+            std::memcmp(&objects,&agreement.objects,sizeof objects)) reject("Coordinator agreement mismatch");
         receipt("BROKER_COORDINATOR_KERNEL_CAPACITY verified=true leaseLimit=%u cpuBytes=%llu flags=%u actualIoctl=true\n",
             leases.lease_limit,static_cast<unsigned long long>(caps.cpu_byte_limit),caps.flags);
         if(wide) receipt("BROKER_COORDINATOR_FENCE_CAPACITY profile=%u slots=%u bytes=%llu actualIoctl=true\n",wanted.mapping.aperture.version,fences.slots,static_cast<unsigned long long>(fences.bytes));
         if(expanded) receipt("BROKER_COORDINATOR_SLOT_CAPACITY profile=%u slots=%u bytes=%llu cpuByteLimit=%llu actualIoctl=true\n",wanted.mapping.aperture.version,slots.slots,static_cast<unsigned long long>(slots.bytes),static_cast<unsigned long long>(caps.cpu_byte_limit));
-        if(references) receipt("BROKER_COORDINATOR_REFERENCE_CAPACITY profile=13 objectsVersion=5 resources=64 syncs=64 perActor=16 byteBudgetsMultiplied=false\n");
+        if(references) receipt("BROKER_COORDINATOR_REFERENCE_CAPACITY profile=13 objectsVersion=%u resources=64 syncs=64 perActor=16 byteBudgetsMultiplied=false\n",objects.version);
+        if(objects.version==6) receipt("BROKER_COORDINATOR_MANAGED_MAPPING_CAPACITY version=6 reservedAddressBytes=68719476736 standaloneMappingBytes=1073741824 residentUsageBytes=1073741824 cpuBytes=201326592\n");
     }
     cg::Info info() const { return agreement; }
     void beginLiveRetirement() {

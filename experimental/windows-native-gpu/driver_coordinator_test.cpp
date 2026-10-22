@@ -11,6 +11,9 @@ struct NativeMock : Driver {
     std::uint32_t next=100;std::set<std::uint32_t> live,devices;
     std::uint64_t fenceOffset=0;
     bool vmStopped=false,requireVmStop=false;
+    bool managedGpuMappings=false;
+    bool allowsReservationBackedMappings() const override { return managedGpuMappings; }
+    bool retainsMappedResidencyOnEvict() const override { return managedGpuMappings; }
     bool globalDevicePhase=false;
     bool liveSupported=true,liveReady=true;
     std::uint32_t blockedHandle=0;
@@ -294,6 +297,20 @@ int main() {
     CHECK(validCoordinatedAgreement(GuestOpenGlDesktopFenceCapacity,GuestCoordinatedDesktopObjects));
     CHECK(validCoordinatedAgreement(GuestOpenGlDesktopSlotCapacity,GuestCoordinatedDesktopObjects));
     CHECK(validCoordinatedAgreement(GuestOpenGlDesktopReferenceCapacity,GuestCoordinatedReferenceObjects));
+    CHECK(validCoordinatedAgreement(GuestOpenGlDesktopReferenceCapacity,GuestCoordinatedManagedObjects));
+    CHECK(!validCoordinatedAgreement(GuestOpenGlDesktopSlotCapacity,GuestCoordinatedManagedObjects));
+    for(const bool supported:{false,true}) {
+        NativeMock managed;managed.managedGpuMappings=supported;
+        cg::Runtime owner(managed);Control client{owner};bool rejected=false;
+        try {
+            const auto reply=client.control(cg::Operation::Initialize,encoded(cg::Initialization{GuestOpenGlDesktopReferenceCapacity,GuestCoordinatedManagedObjects}));
+            CHECK(!at<cg::Frame>(reply).status);
+            const auto info=at<cg::Info>(client.control(cg::Operation::Info),sizeof(cg::Frame));
+            CHECK(info.objects.version==6 && cg::validInfo(info));
+        } catch(const std::runtime_error&) { rejected=true; }
+        CHECK(rejected==!supported);
+        CHECK(owner.failed()==!supported);
+    }
     CHECK(!validCoordinatedAgreement(GuestOpenGlDesktopReferenceCapacity,GuestCoordinatedDesktopObjects));
     CHECK(!validCoordinatedAgreement(GuestOpenGlDesktopSlotCapacity,GuestCoordinatedReferenceObjects));
     CHECK(!validCoordinatedAgreement(GuestOpenGlDesktopFenceCapacity,GuestCoordinatedReferenceObjects));

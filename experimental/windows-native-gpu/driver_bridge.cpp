@@ -32,6 +32,8 @@
 #include "compositor_presenter.h"
 #include "atomic_line_log.h"
 #include "framed_write.h"
+#include "aggregate_gpu_budget.h"
+#include "deferred_residency.h"
 using Microsoft::WRL::ComPtr;
 using namespace driver_bridge;
 class KmtDriver : public Driver {
@@ -59,8 +61,8 @@ class KmtDriver : public Driver {
     bool openglEnabled = false;
     std::uint32_t openGlProfileVersion=0;
     std::size_t peakSharedResourceHandles=0,peakSharedSyncHandles=0;
-    std::size_t sharedResourceLimit() const { return coordinatedObjectsEnabled && coordinatedObjectCapacity.version==5 ? MaxCoordinatedSharedReferences : MaxSharedResourceHandles; }
-    std::size_t sharedSyncLimit() const { return coordinatedObjectsEnabled && coordinatedObjectCapacity.version==5 ? MaxCoordinatedSharedReferences : MaxSharedSyncHandles; }
+    std::size_t sharedResourceLimit() const { return coordinatedObjectsEnabled && coordinatedObjectCapacity.version>=5 ? MaxCoordinatedSharedReferences : MaxSharedResourceHandles; }
+    std::size_t sharedSyncLimit() const { return coordinatedObjectsEnabled && coordinatedObjectCapacity.version>=5 ? MaxCoordinatedSharedReferences : MaxSharedSyncHandles; }
     bool openglFencesEnabled = false;
     bool openglCompositorEnabled = false;
     bool openglRenderEnabled = false;
@@ -250,12 +252,13 @@ class KmtDriver : public Driver {
         std::uint32_t device;
         std::uint32_t resource = 0;
         std::uint64_t address = 0, pages = 0;
+        bool reservationBackedMapping = false;
         std::uint32_t residencyAttempts = 0;
         std::uint64_t offsetPages = 0;
         bool locked = false;
         bool resident = false;
         void* cpuData = nullptr;
-        std::uint32_t residentReferences = 0;
+        driver_residency::References residency;
         std::uint32_t cpuBytes = 0;
         std::uint64_t initialCpuFingerprint = 0;
         std::uint64_t firstWord = 0, lastWord = 0;
@@ -312,6 +315,10 @@ class KmtDriver : public Driver {
     bool allocationsEnabled = false;
     bool gpuVaEnabled = false;
     bool residencyEnabled = false;
+    bool deferredResidencyEnabled = false;
+    std::uint64_t retainedResidencyReferences=0,peakRetainedResidencyReferences=0;
+    std::uint64_t deferredEvictionRequests=0,reusedResidencyReferences=0,reclaimedResidencyReferences=0;
+    std::uint64_t destroyedRetainedResidencyReferences=0,gpuVaQuotaRejections=0;
     bool cpuEnabled = false;
     std::uint32_t vendorCpuBytes = 0, peakVendorCpuBytes = 0;
     unsigned vendorCpuByteQuotaRejections=0,gpuStateRetirementWaits=0,gpuStateRetirementTimeouts=0;
@@ -337,6 +344,7 @@ class KmtDriver : public Driver {
     unsigned attemptedVendorEvictions = 0, completedVendorEvictions = 0, failedVendorEvictions = 0;
     std::uint64_t vendorAllocationsMadeResident = 0;
     std::uint32_t vendorMappedPages = 0, peakVendorMappedPages = 0;
+    std::uint32_t peakStandaloneMappedPages=0;
     unsigned completedVendorMaps = 0, failedVendorMaps = 0, completedVendorMapWaits = 0;
     unsigned completedVendorAllocations = 0, destroyedVendorAllocations = 0, failedVendorAllocations = 0, uninitializedSourceAllocations = 0;
     std::size_t peakVendorAllocationObjects = 0;
@@ -666,7 +674,7 @@ public:
         return submitNativeHwCommand(handle,desc,data,true);
     }
     bool supportsLiveRetirement() const override {
-        return coordinatedObjectsEnabled && coordinatedObjectCapacity.version==5 && openGlProfileVersion==13 &&
+        return coordinatedObjectsEnabled && coordinatedObjectCapacity.version>=5 && openGlProfileVersion==13 &&
             runtime && !runtime->hasStopped() && retirementEnabled && asyncSubmitEnabled;
     }
     bool prepareLiveRetirement() override {
@@ -693,12 +701,13 @@ public:
     bool beginCoordinatedObjects(CoordinatedObjectCapacity value) override {
         if(!validCoordinatedObjectCapacity(value) || coordinatedObjectsEnabled || !openglDesktopPresentationEnabled || !runtime || runtime->hasStopped() ||
             !ownedAdapters.empty() || !deviceAdapters.empty() || !hwQueues.empty() || !syncObjects.empty()) return false;
-        if(value.version!=(openGlProfileVersion==13 ? 5u : runtime->fenceSlotLimit()==512 ? 4u : 3u)) return false;
+        const auto expected=openGlProfileVersion==13 ? 5u : runtime->fenceSlotLimit()==512 ? 4u : 3u;
+        if(value.version!=expected && !(value.version==6 && expected==5 && deferredResidencyEnabled)) return false;
         coordinatedObjectCapacity=value;coordinatedObjectsEnabled=true;
         std::cerr<<"{\"nativeCoordinatedObjectCapacity\":true,\"version\":"<<value.version<<",\"vendorAllocationObjects\":"<<vendorObjectLimit()<<",\"hwQueues\":"<<hwQueueLimit()<<",\"syncObjects\":"<<syncObjectLimit()
                  <<",\"reservedAddressBytes\":"<<reservationByteLimit()<<",\"reservationCount\":"<<reservationLimit()
                  <<",\"sharedResourceReferences\":"<<sharedResourceLimit()<<",\"sharedSyncReferences\":"<<sharedSyncLimit()
-                 <<",\"kernelLeaseLimit\":768,\"fenceSlots\":"<<runtime->fenceSlotLimit()<<",\"cpuBytes\":201326592,\"gpuVaBytes\":1073741824,\"reportedGpuBytes\":1073741824,\"memoryBudgetsMultiplied\":false}\n";
+                 <<",\"kernelLeaseLimit\":768,\"fenceSlots\":"<<runtime->fenceSlotLimit()<<",\"cpuBytes\":201326592,\"gpuVaBytes\":1073741824,\"reportedGpuBytes\":1073741824,\"memoryBudgetsMultiplied\":false,\"reservationMappingsSeparated\":"<<(value.version==6?"true":"false")<<"}\n";
         return true;
     }
     StreamProfile beginStreaming() override {
@@ -1481,6 +1490,14 @@ public:
             for (const auto handle : handles) {
                 vendorMappedPages -= static_cast<std::uint32_t>(vendorAllocations.at(handle).pages);
                 vendorResidencyAttempts -= vendorAllocations.at(handle).residencyAttempts;
+                if(deferredResidencyEnabled && vendorAllocations.at(handle).residency.retained) {
+                    const auto references=vendorAllocations.at(handle).residency.retained;
+                    std::cerr<<"{\"nativeDeferredResidencyDestroyed\":true,\"references\":"<<references
+                             <<",\"retainedBefore\":"<<retainedResidencyReferences<<",\"retainedAfter\":"<<(retainedResidencyReferences-references)
+                             <<",\"synchronousNativeDestroy\":true}\n";
+                    destroyedRetainedResidencyReferences+=references;
+                }
+                retainedResidencyReferences -= vendorAllocations.at(handle).residency.retained;
                 translatedAllocations.erase(handle);
                 vendorAllocations.erase(handle);
             }
@@ -1525,7 +1542,7 @@ public:
             compositorOutput=std::make_unique<driver_shared::CompositorPresenter>();
             hr=compositorOutput->initialize(luid,desc,[this](const char* stage,std::uint64_t bytes) {
                 return reportedGpuUsageAcceptable(bytes,stage);
-            },coordinatedObjectsEnabled && coordinatedObjectCapacity.version==5 && openGlProfileVersion==13,runtime->inputChannel(),runtime->inputSelfTest(),runtime->sdlControl());
+            },coordinatedObjectsEnabled && coordinatedObjectCapacity.version>=5 && openGlProfileVersion==13,runtime->inputChannel(),runtime->inputSelfTest(),runtime->sdlControl());
         }
         if (SUCCEEDED(hr)) hr=compositorOutput->submit(resource,source->second.handle.get(),fence->second.get(),desc,frame);
         if (FAILED(hr)) {
@@ -1585,8 +1602,113 @@ public:
                   << ",\"nativeSignalAccepted\":true,\"sourceState\":\"COMMON\",\"returnedState\":\"COMMON\",\"pendingGuestCommands\":0}\n";
         return {0,0,hash};
     }
+    void configureDeferredResidency(bool enabled) {
+        if(enabled && (!runtime || !residencyEnabled || !retirementEnabled || !asyncSubmitEnabled))
+            throw std::runtime_error("Deferred residency native prerequisites absent");
+        deferredResidencyEnabled=enabled;
+    }
+    bool retainsMappedResidencyOnEvict() const override { return deferredResidencyEnabled; }
+    bool allowsReservationBackedMappings() const override {
+        return deferredResidencyEnabled && coordinatedObjectsEnabled && coordinatedObjectCapacity.version==6;
+    }
+    void reclaimDeferredResidency(const std::vector<std::uint32_t>& keep={}) {
+        if(!deferredResidencyEnabled || !retainedResidencyReferences) return;
+        if(!collectRetiredSubmissions()) throw std::runtime_error("Deferred residency cannot establish GPU retirement");
+        if(!pendingSubmissions.empty() || !pendingHwSignals.empty() || !pendingHwWaits.empty() || !pendingContextSignals.empty()) return;
+        for(;;) {
+            std::vector<std::uint32_t> handles;
+            std::uint32_t device=0;
+            for(const auto& item:vendorAllocations) {
+                const auto& allocation=item.second;
+                if(!allocation.residency.canRelease(allocation.locked || allocation.cpuLease.has_value() || allocation.cpuBytes,true) ||
+                    std::find(keep.begin(),keep.end(),item.first)!=keep.end() || (device && device!=allocation.device)) continue;
+                device=allocation.device;handles.push_back(item.first);
+                if(handles.size()==MaxVendorAllocations) break;
+            }
+            if(handles.empty()) return;
+            D3DKMT_EVICT value{};value.hDevice=device;value.NumAllocations=static_cast<UINT>(handles.size());
+            value.AllocationList=handles.data(); // Unconditional reclamation of already relinquished guest references.
+            ++attemptedVendorEvictions;
+            const auto status=D3DKMTEvict(&value);
+            std::cerr<<"{\"nativeDeferredResidencyReclaimed\":true,\"count\":"<<handles.size()<<",\"ntstatus\":"<<status
+                     <<",\"cpuMapped\":false,\"allGpuWorkRetired\":true,\"nativeCall\":true"
+                     <<",\"retainedBefore\":"<<retainedResidencyReferences
+                     <<",\"retainedAfter\":"<<(status==0?retainedResidencyReferences-handles.size():retainedResidencyReferences)<<"}\n";
+            if(status!=0) {
+                ++failedVendorEvictions;
+                for(const auto handle:handles) vendorAllocations.at(handle).residency.uncertain();
+                throw std::runtime_error("Deferred native eviction has uncertain ownership; retain until VM exit");
+            }
+            ++completedVendorEvictions;
+            for(const auto handle:handles) {
+                if(!vendorAllocations.at(handle).residency.release(false,true) || !retainedResidencyReferences)
+                    throw std::runtime_error("Deferred residency ownership accounting mismatch");
+                --retainedResidencyReferences;++reclaimedResidencyReferences;
+                auto& allocation=vendorAllocations.at(handle);
+                if(!allocation.residencyAttempts || !vendorResidencyAttempts)
+                    throw std::runtime_error("Deferred residency native reference charge mismatch");
+                --allocation.residencyAttempts;--vendorResidencyAttempts;
+            }
+        }
+    }
+    ResidentResult makeDeferredVendorResident(std::uint32_t queue,ResidentDesc desc,
+            const std::vector<std::uint32_t>& handles,const std::vector<std::uint32_t>& priorities) {
+        std::vector<std::uint32_t> native,nativePriorities;
+        for(std::size_t n=0;n<handles.size();++n) {
+            const auto& refs=vendorAllocations.at(handles[n]).residency;
+            if(!refs.known || (!refs.canReuse() && (!refs.canAdmit() || refs.native()>=MaxVendorResidencyAttempts)))
+                return {{Invalid,0,0},{0,0,0}};
+            if(!refs.canReuse()) {
+                native.push_back(handles[n]);
+                if(!priorities.empty()) nativePriorities.push_back(priorities[n]);
+            }
+        }
+        // Preserve requested retained references so repeated MakeResident can
+        // transfer them back without adding a native reference or paging work.
+        reclaimDeferredResidency(handles);
+        std::uint64_t usageBefore=0;
+        if(!reportedGpuUsageAcceptable(0,nullptr,&usageBefore)) return {{static_cast<std::int32_t>(0xc0000017u),0,0},{0,0,0}};
+        const auto reclaimTarget=driver_shared::stagingPressureTarget(usageBefore,reportedGpuUsageLimit());
+        if(compositorOutput && reclaimTarget) {
+            std::uint64_t released=0;
+            if(FAILED(compositorOutput->reclaimStagingForResidency(reclaimTarget,released)))
+                throw std::runtime_error("Cannot reclaim presentation staging before deferred residency");
+        }
+        D3DDDI_MAKERESIDENT value{};std::int32_t status=0;
+        if(!native.empty()) {
+            value.hPagingQueue=queue;value.NumAllocations=static_cast<UINT>(native.size());
+            value.AllocationList=native.data();value.PriorityList=nativePriorities.empty()?nullptr:nativePriorities.data();value.Flags.Value=desc.flags;
+            for(const auto handle:native) ++vendorAllocations.at(handle).residencyAttempts;
+            vendorResidencyAttempts+=static_cast<std::uint32_t>(native.size());
+            peakVendorResidencyAttempts=(std::max)(peakVendorResidencyAttempts,vendorResidencyAttempts);
+            status=D3DKMTMakeResident(&value);
+            if((status!=0 && status!=0x103) || value.NumAllocations!=native.size()) {
+                ++failedVendorResidency;
+                for(const auto handle:native) vendorAllocations.at(handle).residency.uncertain();
+                std::cerr<<"{\"nativeDeferredResidencyAdmissionRejected\":true,\"requested\":"<<native.size()
+                         <<",\"returned\":"<<value.NumAllocations<<",\"ntstatus\":"<<status<<",\"ownershipUncertain\":true}\n";
+                throw std::runtime_error("Deferred residency native list did not complete; retain until VM exit");
+            }
+            if(!waitPaging(queue,value.PagingFenceValue)) throw std::runtime_error("Deferred residency paging deadline exceeded");
+            ++completedVendorResidencyWaits;
+        }
+        if(!reportedGpuUsageAcceptable()) throw std::runtime_error("Reported GPU usage limit after deferred residency");
+        for(const auto handle:handles) {
+            auto& allocation=vendorAllocations.at(handle);
+            if(allocation.residency.canReuse()) {
+                if(!allocation.residency.reuse() || !retainedResidencyReferences) throw std::runtime_error("Deferred residency reuse mismatch");
+                --retainedResidencyReferences;++reusedResidencyReferences;
+            } else if(!allocation.residency.admit()) throw std::runtime_error("Deferred residency admission mismatch");
+            allocation.resident=true;
+        }
+        ++completedVendorResidency;vendorAllocationsMadeResident+=handles.size();
+        std::cerr<<"{\"nativeDeferredResidencyAdmitted\":true,\"requested\":"<<handles.size()<<",\"nativeCount\":"<<native.size()
+                 <<",\"reusedCount\":"<<(handles.size()-native.size())<<",\"retainedReferences\":"<<retainedResidencyReferences<<"}\n";
+        return {{status,0,value.PagingFenceValue},{desc.count,0,0}};
+    }
     MemoryBudgetResult queryMemoryBudget(std::uint32_t adapter, MemoryBudgetDesc desc) override {
         if (!residencyEnabled || !ownedAdapters.count(adapter) || !validMemoryBudget(desc)) return {{Invalid,0,0},{}};
+        reclaimDeferredResidency();
         D3DKMT_QUERYVIDEOMEMORYINFO value{}; value.hAdapter=adapter;
         value.MemorySegmentGroup=static_cast<D3DKMT_MEMORY_SEGMENT_GROUP>(desc.group);
         value.PhysicalAdapterIndex=desc.physicalAdapter;
@@ -1594,13 +1716,26 @@ public:
         // or process identifier is forwarded across the boundary.
         const auto status=D3DKMTQueryVideoMemoryInfo(&value);
         if (status!=0) { ++failedMemoryBudgetQueries; return {{status>0?Invalid:status,0,0},{}}; }
-        const auto budget=(std::min)(value.Budget,reportedGpuUsageLimit());
+        auto segmentLimit=reportedGpuUsageLimit();
+        driver_budget::Partition shares{};
+        if(deferredResidencyEnabled) {
+            shares=driver_budget::partition(description.DedicatedVideoMemory,description.SharedSystemMemory,
+                reportedGpuUsageLimit(),driver_shared::ResidencyStagingReserve);
+            if(!shares.valid) return {{Invalid,0,0},{}};
+            segmentLimit=shares.bytes[desc.group];
+        }
+        const auto budget=(std::min)(value.Budget,segmentLimit);
         const MemoryBudgetReply info{budget,value.CurrentUsage,value.CurrentReservation,
             (std::min)(value.AvailableForReservation,budget)};
         ++completedMemoryBudgetQueries;
         std::cerr<<"{\"nativeMemoryBudgetQueried\":true,\"group\":"<<desc.group<<",\"nativeBudget\":"<<value.Budget
                  <<",\"budget\":"<<info.budget<<",\"usage\":"<<info.usage<<",\"reservation\":"<<info.reservation
-                 <<",\"available\":"<<info.available<<",\"currentProcessOnly\":true,\"physicalAdapter\":0}\n";
+                 <<",\"available\":"<<info.available<<",\"currentProcessOnly\":true,\"physicalAdapter\":0"
+                 <<",\"sharedAggregateBudget\":"<<(deferredResidencyEnabled?"true":"false");
+        if(deferredResidencyEnabled) std::cerr<<",\"aggregateLimitBytes\":"<<reportedGpuUsageLimit()
+                 <<",\"presentationReserveBytes\":"<<driver_shared::ResidencyStagingReserve
+                 <<",\"localBudgetShareBytes\":"<<shares.bytes[0]<<",\"nonlocalBudgetShareBytes\":"<<shares.bytes[1];
+        std::cerr<<"}\n";
         return {{0,0,0},info};
     }
     EvictResult evictVendorAllocations(std::uint32_t device, EvictDesc desc, const std::vector<std::uint32_t>& handles) override {
@@ -1610,7 +1745,22 @@ public:
             const auto found=vendorAllocations.find(handles[n]);
             if (found==vendorAllocations.end() || found->second.device!=device ||
                 std::find(handles.begin(),handles.begin()+n,handles[n])!=handles.begin()+n ||
-                (found->second.locked && found->second.residentReferences<=1)) return {{Invalid,0,0},false};
+                (!deferredResidencyEnabled && found->second.locked && found->second.residency.guest<=1) ||
+                (deferredResidencyEnabled && !found->second.residency.canDefer())) return {{Invalid,0,0},false};
+        }
+        if(deferredResidencyEnabled) {
+            for(const auto handle:handles) {
+                auto& allocation=vendorAllocations.at(handle);
+                if(!allocation.residency.defer()) throw std::runtime_error("Deferred eviction ownership mismatch");
+                allocation.resident=allocation.residency.guest!=0;
+                ++retainedResidencyReferences;
+            }
+            peakRetainedResidencyReferences=(std::max)(peakRetainedResidencyReferences,retainedResidencyReferences);
+            ++deferredEvictionRequests;
+            std::cerr<<"{\"nativeGuestEvictionDeferred\":true,\"count\":"<<desc.count<<",\"flags\":"<<desc.flags
+                     <<",\"retainedReferences\":"<<retainedResidencyReferences<<",\"nativeCall\":false,\"cpuLeasePreserved\":true}\n";
+            reclaimDeferredResidency();
+            return {{0,0,0},true};
         }
         if (!collectRetiredSubmissions() || !pendingSubmissions.empty() || !pendingHwSignals.empty() || !pendingHwWaits.empty())
             return {{static_cast<std::int32_t>(0x80000011u),0,0},false};
@@ -1620,8 +1770,8 @@ public:
         const auto status=D3DKMTEvict(&value);
         for (const auto handle:handles) {
             auto& allocation=vendorAllocations.at(handle);
-            if (allocation.residentReferences) --allocation.residentReferences;
-            allocation.resident=allocation.residentReferences!=0;
+            if (allocation.residency.guest) --allocation.residency.guest;
+            allocation.resident=allocation.residency.guest!=0;
         }
         if (status==0) ++completedVendorEvictions; else ++failedVendorEvictions;
         std::cerr<<"{\"nativeVendorEviction\":true,\"count\":"<<desc.count<<",\"flags\":"<<desc.flags
@@ -1638,8 +1788,10 @@ public:
             const auto allocation = vendorAllocations.find(handles[n]);
             if (allocation == vendorAllocations.end() || allocation->second.device != paging->second.device ||
                 std::find(handles.begin(), handles.begin() + n, handles[n]) != handles.begin() + n ||
-                allocation->second.residencyAttempts >= MaxVendorResidencyAttempts) return {{Invalid, 0, 0}, {0, 0, 0}};
+                (!deferredResidencyEnabled && allocation->second.residencyAttempts >= MaxVendorResidencyAttempts))
+                return {{Invalid, 0, 0}, {0, 0, 0}};
         }
+        if(deferredResidencyEnabled) return makeDeferredVendorResident(queue,desc,handles,priorities);
         std::uint64_t usageBefore=0;
         if (!reportedGpuUsageAcceptable(0,nullptr,&usageBefore)) {
             ++failedVendorResidency;
@@ -1684,7 +1836,7 @@ public:
             ++completedVendorResidency; ++completedVendorResidencyWaits;
             vendorAllocationsMadeResident += a.NumAllocations;
             if (a.NumAllocations == desc.count)
-                for (const auto handle : handles) { auto& allocation=vendorAllocations.at(handle); allocation.resident=true; ++allocation.residentReferences; }
+                for (const auto handle : handles) { auto& allocation=vendorAllocations.at(handle); allocation.resident=true; ++allocation.residency.guest; }
         } else ++failedVendorResidency;
         return {{status, 0, a.PagingFenceValue}, {a.NumAllocations, 0, a.NumBytesToTrim}};
     }
@@ -1692,9 +1844,29 @@ public:
         const auto entry = vendorAllocations.find(allocation);
         if (!gpuVaEnabled || !validGpuVa(desc) || entry == vendorAllocations.end() || !pagingFences.count(queue) ||
             entry->second.device != pagingFences.at(queue).device ||
-            (desc.driverProtection && !entry->second.resource) ||
-            entry->second.pages || entry->second.address || !vendorGpuBudgetFits(vendorMappedPages, desc.sizePages, capabilities().flags,openglDesktop4kEnabled,openglDesktopLargeMapEnabled))
-            return {{Invalid, 0, 0}, 0};
+            (desc.driverProtection && !entry->second.resource) || entry->second.pages || entry->second.address)
+            return {{Invalid,0,0},0};
+        const bool managed=allowsReservationBackedMappings();
+        bool covered=false;std::uint32_t reservedPages=0;
+        if(managed) {
+            const auto adapter=deviceAdapters.at(entry->second.device);
+            covered=desc.base && std::any_of(gpuReservations.begin(),gpuReservations.end(),[&](const auto& item) {
+                return item.second.adapter==adapter && gpuRangeContains(item.second.address,item.second.bytes,desc.base,desc.sizePages*4096);
+            });
+            for(const auto& item:vendorAllocations) if(item.second.reservationBackedMapping)
+                reservedPages+=static_cast<std::uint32_t>(item.second.pages);
+        }
+        const auto standaloneLimit=vendorGpuPageLimit(capabilities().flags,openglDesktop4kEnabled,openglDesktopLargeMapEnabled);
+        const bool fits=managed ? driver_mapping::fits(vendorMappedPages,reservedPages,desc.sizePages,standaloneLimit,
+            reservationByteLimit()/4096,covered) : vendorGpuBudgetFits(vendorMappedPages,desc.sizePages,capabilities().flags,openglDesktop4kEnabled,openglDesktopLargeMapEnabled);
+        if(!fits) {
+            ++gpuVaQuotaRejections;
+            std::cerr<<"{\"nativeGpuVaAdmissionRejected\":true,\"reason\":\"aggregate mapped address budget\",\"usedPages\":"<<vendorMappedPages
+                     <<",\"requestedPages\":"<<desc.sizePages<<",\"limitPages\":"<<vendorGpuPageLimit(capabilities().flags,openglDesktop4kEnabled,openglDesktopLargeMapEnabled)
+                     <<",\"nativeCall\":false,\"memoryGuardRaised\":false,\"reservationAccountingSeparated\":"<<(managed?"true":"false")<<"}\n";
+            return {{managed?static_cast<std::int32_t>(0xc0000017u):Invalid,0,0},0};
+        }
+        if(managed && !reportedGpuUsageAcceptable()) return {{static_cast<std::int32_t>(0xc0000017u),0,0},0};
         if (desc.base) {
             const auto overlaps = [&](std::uint64_t address, std::uint64_t bytes) {
                 return address && bytes && desc.base < address + bytes && address < desc.base + desc.sizePages * 4096;
@@ -1715,9 +1887,16 @@ public:
         // Record ownership before any validation/wait can throw. Destruction
         // releases this VA even if paging fails; retries cannot create a leak.
         entry->second.address = a.VirtualAddress; entry->second.pages = desc.sizePages;
+        entry->second.reservationBackedMapping=covered;
         entry->second.offsetPages = desc.offsetPages;
         vendorMappedPages += static_cast<std::uint32_t>(desc.sizePages);
         peakVendorMappedPages = (std::max)(peakVendorMappedPages, vendorMappedPages);
+        const auto standalonePages=vendorMappedPages-reservedPages-(covered?static_cast<std::uint32_t>(desc.sizePages):0u);
+        peakStandaloneMappedPages=(std::max)(peakStandaloneMappedPages,standalonePages);
+        if(managed) std::cerr<<"{\"nativeGpuMappingAccounted\":true,\"reservationBacked\":"<<(covered?"true":"false")
+            <<",\"totalPages\":"<<vendorMappedPages<<",\"standalonePages\":"<<standalonePages
+            <<",\"standaloneLimitPages\":"<<standaloneLimit<<",\"reservationLimitPages\":"<<reservationByteLimit()/4096
+            <<",\"residentUsageGuardBytes\":"<<reportedGpuUsageLimit()<<",\"ownedReservationChecked\":true}\n";
         if ((status != 0 && status != 0x103) || !validGpuVaOutput(desc, a.VirtualAddress))
             throw std::runtime_error("Unexpected native GPU-address mapping output");
         if (!desc.base && !gpuStates.prepareRemove(a.VirtualAddress, desc.sizePages * 4096, statePlan))
@@ -1734,6 +1913,7 @@ public:
             throw std::runtime_error("Reported GPU usage limit after address mapping");
         }
         ++completedVendorMapWaits; ++completedVendorMaps;
+        if(managed && !reportedGpuUsageAcceptable()) throw std::runtime_error("Reported GPU usage limit after reservation-backed mapping");
         if (desc.driverProtection) {
             ++completedVendorDriverProtectionMaps;
             std::cerr << "{\"nativeVendorDriverProtectionMap\":true,\"driverProtection\":" << desc.driverProtection
@@ -1848,6 +2028,7 @@ public:
         if (changed) ++vendorCpuContentsChanged;
         vendorCpuBytes -= owned.cpuBytes; owned.cpuBytes = 0;
         owned.cpuData = nullptr; owned.locked = false; ++completedVendorUnlocks;
+        if(!runtime->hasStopped()) reclaimDeferredResidency();
         return {status, 0, 0};
     }
     Result translateVendorAllocation(std::uint32_t allocation, std::uint32_t device, std::uint32_t adapter) override {
@@ -2255,7 +2436,7 @@ public:
     }
     bool clean() const {
         return !asyncRetirementFailed && pendingSubmissions.empty() && pendingHwSignals.empty() && pendingHwWaits.empty() && pendingContextSignals.empty() && !activeAdapters && !activeDevices && !activeContexts && pagingFences.empty() && allocations.empty() && vendorAllocations.empty() &&
-               !vendorMappedPages && !vendorResidencyAttempts && !vendorCpuBytes && deviceAdapters.empty() && translatedAllocations.empty() &&
+               !vendorMappedPages && !vendorResidencyAttempts && !retainedResidencyReferences && !vendorCpuBytes && deviceAdapters.empty() && translatedAllocations.empty() &&
                sharedResourceIds.empty() && resourceGuestRuntime.empty() && sharedResourceHandles.empty() && textureConsumers.empty() && contextOwners.empty() && hwQueues.empty() && syncObjects.empty() && sharedSyncHandles.empty() && gpuReservations.empty() && !gpuReservedBytes && gpuStates.empty() && ownedAdapters.empty() &&
                !compositorOutput && !compositorPresenter && !guestMemory && !guestSection && !copyDevice && !copyHeap && !copyQueue && !copyFence && !copyEvent && !cleanupFailures &&
                nativeWorkers.started==nativeWorkers.exited && !nativeWorkers.failed && !nativeWorkers.forced;
@@ -2362,10 +2543,21 @@ public:
                   << ",\"completedVendorGpuVaWaits\":" << completedVendorMapWaits
                   << ",\"liveVendorMappedPages\":" << vendorMappedPages
                   << ",\"peakVendorMappedPages\":" << peakVendorMappedPages
-                  << ",\"vendorGpuMappedByteLimit\":" << vendorGpuPageLimit(capabilities().flags,openglDesktop4kEnabled,openglDesktopLargeMapEnabled) * 4096
+                  << ",\"peakStandaloneMappedPages\":" << peakStandaloneMappedPages
+                  << ",\"reservationMappingAccountingSeparated\":" << (allowsReservationBackedMappings()?"true":"false")
+                  << ",\"vendorGpuMappedByteLimit\":" << (std::uint64_t{vendorGpuPageLimit(capabilities().flags,openglDesktop4kEnabled,openglDesktopLargeMapEnabled)}*4096+(allowsReservationBackedMappings()?reservationByteLimit():0))
+                  << ",\"standaloneGpuMappedByteLimit\":" << std::uint64_t{vendorGpuPageLimit(capabilities().flags,openglDesktop4kEnabled,openglDesktopLargeMapEnabled)}*4096
                   << ",\"completedVendorResidencyRequests\":" << completedVendorResidency
                   << ",\"completedMemoryBudgetQueries\":" << completedMemoryBudgetQueries
                   << ",\"failedMemoryBudgetQueries\":" << failedMemoryBudgetQueries
+                  << ",\"deferredResidencyOptIn\":" << (deferredResidencyEnabled?"true":"false")
+                  << ",\"deferredEvictionRequests\":" << deferredEvictionRequests
+                  << ",\"liveRetainedResidencyReferences\":" << retainedResidencyReferences
+                  << ",\"peakRetainedResidencyReferences\":" << peakRetainedResidencyReferences
+                  << ",\"reusedResidencyReferences\":" << reusedResidencyReferences
+                  << ",\"reclaimedResidencyReferences\":" << reclaimedResidencyReferences
+                  << ",\"destroyedRetainedResidencyReferences\":" << destroyedRetainedResidencyReferences
+                  << ",\"gpuVaQuotaRejections\":" << gpuVaQuotaRejections
                   << ",\"attemptedVendorEvictions\":" << attemptedVendorEvictions
                   << ",\"completedVendorEvictions\":" << completedVendorEvictions
                   << ",\"failedVendorEvictions\":" << failedVendorEvictions
@@ -2452,8 +2644,9 @@ public:
     }
 };
 static void serve(Stream& stream, const std::string& sectionName = {}, std::uint32_t sectionBytes = 0,
-                  bool contexts = false, bool queries = false, driver_qemu::Runtime* runtime = nullptr, bool allocations = false, bool gpuVa = false, bool residency = false, bool cpu = false, bool cpuStoreTest = false, bool translation = false, bool hwQueues = false, bool sync = false, bool submit = false, bool retirement = false, bool reservation = false, bool gpuState = false, bool asyncSubmit = false, bool sharedResources = false, bool consumeShared = false, bool presentShared = false, bool nativeMetadata = false, bool consumeProcess = false, bool coordinated = false, unsigned sdlFailureTest = 0) {
+                  bool contexts = false, bool queries = false, driver_qemu::Runtime* runtime = nullptr, bool allocations = false, bool gpuVa = false, bool residency = false, bool cpu = false, bool cpuStoreTest = false, bool translation = false, bool hwQueues = false, bool sync = false, bool submit = false, bool retirement = false, bool reservation = false, bool gpuState = false, bool asyncSubmit = false, bool sharedResources = false, bool consumeShared = false, bool presentShared = false, bool nativeMetadata = false, bool consumeProcess = false, bool coordinated = false, unsigned sdlFailureTest = 0, bool deferredResidency = false) {
     KmtDriver driver(sectionName, sectionBytes, contexts, queries, runtime, allocations, gpuVa, residency, cpu, cpuStoreTest, translation, hwQueues, sync, submit, retirement, reservation, gpuState, asyncSubmit, sharedResources, consumeShared, presentShared, nativeMetadata,consumeProcess);
+    driver.configureDeferredResidency(deferredResidency);
     std::exception_ptr failure;
     if(sdlFailureTest==2) {
         const auto control=runtime->sdlControl();
@@ -2566,7 +2759,7 @@ int main(int argc, char** argv) {
         bool hwQueueNoBroadcastWaitEofTest = false;
         bool asyncSubmit = false, sharedResources = false, consumeShared = false, presentShared = false, nativeMetadata = false, consumeProcess = false, coordinated = false, windowInput = false, inputSelfTest = false, sdlRelay = false;
         unsigned sdlFailureTest=0;
-        bool virtioTrace=false;
+        bool virtioTrace=false,deferredResidency=false;
         const char* readonlyRoot = nullptr;
         while (argc > 1) {
             if (argc>2 && std::string(argv[argc-2])=="--driver-rootfs-readonly") {
@@ -2615,6 +2808,7 @@ int main(int argc, char** argv) {
             else if (option == "--driver-input-self-test" && !inputSelfTest) inputSelfTest = true;
             else if (option == "--driver-sdl-relay" && !sdlRelay) sdlRelay = true;
             else if (option == "--driver-virtio-trace" && !virtioTrace) virtioTrace = true;
+            else if (option == "--driver-deferred-residency" && !deferredResidency) deferredResidency = true;
             else if (option == "--driver-sdl-failure-test" && !sdlFailureTest) sdlFailureTest = 1;
             else if (option == "--driver-sdl-retirement-failure-test" && !sdlFailureTest) sdlFailureTest = 2;
             else if (option == "--driver-shared-resources" && !sharedResources) sharedResources = true;
@@ -2636,6 +2830,8 @@ int main(int argc, char** argv) {
             throw std::runtime_error("SDL failure tests require the explicit high-resolution owned SDL coordinator and read-only root");
         if(virtioTrace && (!gpu_diagnostic::HighResolution || !sdlRelay || !coordinated || !readonlyRoot))
             throw std::runtime_error("Virtio trace requires the explicit high-resolution owned SDL coordinator and read-only root");
+        if(deferredResidency && (!gpu_diagnostic::HighResolution || !sdlRelay || !coordinated || !readonlyRoot || !residency || !retirement))
+            throw std::runtime_error("Deferred residency requires the explicit high-resolution owned SDL coordinator, residency, retirement and read-only root");
         if (readonlyRoot && (cpuStoreTest || cpuEofTest || cpuSpanEofTest || hwQueueEofTest || syncEofTest || syncNoMaxEofTest ||
             reservationEofTest || gpuStateEofTest || hwQueueNoBroadcastEofTest || hwQueueNoBroadcastWaitEofTest))
             throw std::runtime_error("Read-only root image cannot be combined with forced EOF/store controls");
@@ -2757,7 +2953,7 @@ int main(int argc, char** argv) {
             throw std::runtime_error("Cannot configure low-latency GPU RPC socket");
         std::cerr<<"{\"nativeGpuTransportConfigured\":true,\"tcpNoDelay\":true,\"tcpNoDelayOptionBytes\":"<<optionBytes
             <<",\"framedReplyScatterGather\":true,\"inputPathChanged\":false}\n";
-        Stream stream(client.value); serve(stream, sectionName, sectionBytes, contexts, queries, runtime.get(), allocations, gpuVa, residency, cpu, cpuStoreTest, translation, hwQueues, sync, submit, retirement, reservation, gpuState, asyncSubmit, sharedResources, consumeShared, presentShared, nativeMetadata,consumeProcess,coordinated,sdlFailureTest);
+        Stream stream(client.value); serve(stream, sectionName, sectionBytes, contexts, queries, runtime.get(), allocations, gpuVa, residency, cpu, cpuStoreTest, translation, hwQueues, sync, submit, retirement, reservation, gpuState, asyncSubmit, sharedResources, consumeShared, presentShared, nativeMetadata,consumeProcess,coordinated,sdlFailureTest,deferredResidency);
         if (runtime) {
             runtime->report();
             if (!runtime->cleanExit()) throw std::runtime_error("Owned QEMU runtime did not exit cleanly");

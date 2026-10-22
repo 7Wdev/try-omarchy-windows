@@ -4,11 +4,21 @@ Updated **2026-10-22**. This page tracks the experimental QEMU/WHPX Windows-nati
 NVIDIA backend. The released Try Omarchy launcher continues using the upstream
 graphics runtime.
 
-![4K Omarchy frame achieved; QEMU SDL host GPU relay verified; backend stages 4/8; desktop gates 0/4](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/windows-nvgpu-lab/docs/images/gpu-backend-progress-sustained-sdl-2026-10-22.svg)
+![4K Omarchy frame achieved; QEMU SDL host GPU relay verified; backend stages 4/8; desktop gates 0/4](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/windows-nvgpu-lab/docs/images/gpu-backend-progress-managed-residency-2026-10-22.svg)
 
 ## What is verified now?
 
-**Latest sustained rendering checkpoint — October 22, 2026:** two fresh guests
+**Latest managed-residency checkpoint — October 22, 2026:** two fresh guests
+pass 1,800 GPU handoffs each over **32.9 and 32.2 seconds**, complete pixels,
+input response, lifecycles, resizing and live cleanup. The ownership ledger
+accounts for all 47/45 deferred references with no retained references left.
+A new explicit address-accounting agreement separates owned GPU reservations
+from the unchanged resident-memory guard. Its extended virtual boundary is not
+exercised by these successful runs and remains a required stress gate. Default
+behavior and earlier failed attempts are retained.
+[Actual frame, all attempts and scope](LIVE-MANAGED-GPU-RESIDENCY.md).
+
+**Earlier sustained rendering checkpoint — October 22, 2026:** two fresh guests
 pass **1,800 GPU handoffs over 33.5 and 33.8 seconds**, complete 4K source/SDL
 pixel audits, rendered input response, application lifecycles, resizing and live
 cleanup. Matching private libraries from the signed installed NVIDIA **621.01**
@@ -145,9 +155,9 @@ not close the broader product requirements below.
 
 ## Remaining work
 
-1. Connect real guest compositor buffers to the tested QEMU SDL relay, retaining its
-   keyboard/cursor logic; extend hardware trim/reallocation and longer rendering
-   without relaxing the usage guard.
+1. Extend the verified guest-to-SDL path to controlled memory-pressure and
+   extended-address stress, hardware staging reallocation and longer rendering,
+   retaining official input and the independent physical-memory guards.
 2. Integrate the supported guest device path, normal first-boot session and Windows
    launcher/input, with independently verified continuous presentation.
 3. Extend the bounded live-retirement result to concurrent application windows,

@@ -7,6 +7,7 @@
 #include "wire.h"
 #include "diagnostic_profile.h"
 #include "gpu_state_ranges.h"
+#include "gpu_mapping_accounting.h"
 #include "compositor_capture_wire.h"
 #include <algorithm>
 #include <iostream>
@@ -477,15 +478,19 @@ struct CoordinatedObjectCapacity {
 constexpr std::size_t MaxCoordinatedSharedReferences=64;
 static_assert(sizeof(CoordinatedObjectCapacity)==32,"Fixed coordinated object/address-space capacity");
 inline bool validCoordinatedObjectCapacity(CoordinatedObjectCapacity value) {
-    return ((value.version==3 && !value.vendorAllocations) || ((value.version==4 || value.version==5) && value.vendorAllocations==1024)) &&
+    return ((value.version==3 && !value.vendorAllocations) || ((value.version==4 || value.version==5 || value.version==6) && value.vendorAllocations==1024)) &&
         value.hwQueues==32 && value.syncObjects==384 && value.leaseLimit==768 &&
         value.reservedGpuBytes==64ull*1024*1024*1024 && value.reservations==256;
 }
 constexpr CoordinatedObjectCapacity GuestCoordinatedDesktopObjects{4,32,384,768,64ull*1024*1024*1024,256,1024};
 constexpr CoordinatedObjectCapacity GuestCoordinatedReferenceObjects{5,32,384,768,64ull*1024*1024*1024,256,1024};
+// v6 explicitly separates owned reservation mappings from the standalone
+// mapping quota. It requires a retaining native residency backend.
+constexpr CoordinatedObjectCapacity GuestCoordinatedManagedObjects{6,32,384,768,64ull*1024*1024*1024,256,1024};
 inline bool validCoordinatedAgreement(OpenGlDesktopPresentationCapacity capacity,CoordinatedObjectCapacity objects) {
     return validCoordinatedPresentationCapacity(capacity) && validCoordinatedObjectCapacity(objects) &&
-        objects.version==(capacity.mapping.aperture.version==13 ? 5u : capacity.mapping.aperture.version>=11 ? 4u : 3u);
+        (capacity.mapping.aperture.version==13 ? (objects.version==5 || objects.version==6) :
+            objects.version==(capacity.mapping.aperture.version>=11 ? 4u : 3u));
 }
 class Driver {
 public:
@@ -571,6 +576,11 @@ public:
     }
     virtual ResourceSharingProfile beginResourceSharing() { return {}; }
     virtual MemoryBudgetResult queryMemoryBudget(std::uint32_t, MemoryBudgetDesc) { return {{-95,0,0},{}}; }
+    // Only a backend that retains a real native residency reference may accept
+    // logical eviction while a VM CPU lease remains active. Legacy backends
+    // keep the last-reference rejection below.
+    virtual bool retainsMappedResidencyOnEvict() const { return false; }
+    virtual bool allowsReservationBackedMappings() const { return false; }
     virtual EvictResult evictVendorAllocations(std::uint32_t, EvictDesc, const std::vector<std::uint32_t>&) { return {{-95,0,0},false}; }
     virtual Result querySharedResourceInfo(std::uint32_t, std::uint32_t, SharedResourceInfo&, std::vector<std::uint8_t>&) { return {-95, 0, 0}; }
     virtual SharedResourceOpenResult importResource(std::uint32_t, SharedResourceOpenDesc, std::vector<std::uint8_t>&) { return {{-95, 0, 0}, {}}; }
@@ -626,6 +636,7 @@ class CoordinatedProfiles {
     OpenGlProfile gl{};
     SyncSharingProfile sync{};
     ResourceSharingProfile resource{};
+    bool managedMappings=false;
 public:
     CoordinatedProfiles(Driver& driver,OpenGlDesktopPresentationCapacity capacity,CoordinatedObjectCapacity objectCapacity={}) : owner(&driver) {
         constexpr auto required=AsyncHwSubmitCapability|SyncCapability|GpuReservationCapability|VendorMemoryManagementCapability|
@@ -636,6 +647,9 @@ public:
         gl=driver.beginOpenGl(capacity.mapping.aperture.version);
         if(gl.version!=capacity.mapping.aperture.version || !validCoordinatedPresentationProfile(gl)) throw std::runtime_error("Coordinated native OpenGL agreement failed");
         if(!driver.beginCoordinatedObjects(objectCapacity)) throw std::runtime_error("Coordinated native object agreement failed");
+        managedMappings=objectCapacity.version==6;
+        if(managedMappings && (!driver.allowsReservationBackedMappings() || !driver.retainsMappedResidencyOnEvict()))
+            throw std::runtime_error("Managed GPU mapping backend absent");
         sync=driver.beginSyncSharing();
         if(!validSyncSharingProfile(sync)) throw std::runtime_error("Coordinated native fence agreement failed");
         resource=driver.beginResourceSharing();
@@ -655,6 +669,7 @@ class Session {
         Kind kind; std::uint32_t parent; std::uint32_t nativeHandle; std::uint32_t size;
         std::uint64_t guestOffset; bool shared;
         std::uint32_t gpuPages = 0;
+        bool reservationBackedMapping = false;
         std::uint64_t gpuAddress = 0;
         std::uint32_t residencyAttempts = 0;
         std::uint64_t gpuOffsetPages = 0;
@@ -1911,7 +1926,8 @@ public:
                 const auto entry=objects.find(ids[n]);
                 if (entry==objects.end() || entry->second.kind!=Kind::VendorAllocation || entry->second.parent!=h.handle) return reply(h,-9);
                 if (std::find(ids.begin(),ids.begin()+n,ids[n])!=ids.begin()+n) return reply(h,-22);
-                if (entry->second.cpuBytes && entry->second.residentReferences<=1) return reply(h,-16);
+                if (entry->second.cpuBytes && entry->second.residentReferences<=1 &&
+                    !driver.retainsMappedResidencyOnEvict()) return reply(h,-16);
                 native[n]=entry->second.nativeHandle;
             }
             const auto eviction=driver.evictVendorAllocations(device->second.nativeHandle,desc,native);
@@ -1944,12 +1960,15 @@ public:
                 if (entry == objects.end() || entry->second.kind != Kind::VendorAllocation || entry->second.parent != queue->second.parent)
                     return reply(h, -9);
                 if (std::find(ids.begin(), ids.begin() + n, ids[n]) != ids.begin() + n) return reply(h, -22);
-                if (entry->second.residencyAttempts >= MaxVendorResidencyAttempts) return reply(h, -24);
+                if (driver.retainsMappedResidencyOnEvict() ? entry->second.residentReferences>=MaxVendorResidencyAttempts :
+                    entry->second.residencyAttempts>=MaxVendorResidencyAttempts) return reply(h, -24);
                 native[n] = entry->second.nativeHandle;
             }
             // Conservatively bound all native attempts, including failure
             // that may have made only part of the list resident.
-            for (const auto id : ids) ++objects.at(id).residencyAttempts;
+            // The retaining backend bounds real live references itself. Its
+            // logical eviction/reuse transfers do not create native attempts.
+            if(!driver.retainsMappedResidencyOnEvict()) for (const auto id : ids) ++objects.at(id).residencyAttempts;
             const auto result = driver.makeVendorResident(queue->second.nativeHandle, desc, native, priorities);
             if (result.residency.nativeHandle || result.output.reserved || result.output.count > desc.count ||
                 (result.residency.ntstatus >= 0 && result.residency.ntstatus != 0 && result.residency.ntstatus != 0x103))
@@ -1974,7 +1993,19 @@ public:
             auto& object = allocation->second;
             if (desc.driverProtection && !object.vendorResource) return reply(h, -22);
             if (object.gpuPages) return reply(h, -16);
-            if (!vendorGpuBudgetFits(vendorMappedPages, desc.sizePages, driver.capabilities().flags,openglDesktop4kNegotiated,openglDesktopLargeMapNegotiated)) return reply(h, -24);
+            bool reservationBacked=false;std::uint32_t reservedPages=0;
+            const bool managed=coordinated && coordinated->managedMappings && driver.allowsReservationBackedMappings();
+            if(managed) {
+                const auto adapter=objects.at(queue->second.parent).parent;
+                reservationBacked=desc.base && std::any_of(objects.begin(),objects.end(),[&](const auto& item) {
+                    return item.second.kind==Kind::GpuReservation && item.second.parent==adapter &&
+                        gpuRangeContains(item.second.gpuAddress,item.second.reservedGpuBytes,desc.base,desc.sizePages*4096);
+                });
+                for(const auto& item:objects) if(item.second.reservationBackedMapping) reservedPages+=item.second.gpuPages;
+            }
+            const auto standaloneLimit=vendorGpuPageLimit(driver.capabilities().flags,openglDesktop4kNegotiated,openglDesktopLargeMapNegotiated);
+            if(managed ? !driver_mapping::fits(vendorMappedPages,reservedPages,desc.sizePages,standaloneLimit,coordinated->gl.reservedBytes/4096,reservationBacked) :
+                !vendorGpuBudgetFits(vendorMappedPages,desc.sizePages,driver.capabilities().flags,openglDesktop4kNegotiated,openglDesktopLargeMapNegotiated)) return reply(h,-24);
             if (desc.base) for (const auto& item : objects) {
                 const auto& mapped = item.second;
                 if (mapped.kind == Kind::VendorAllocation && mapped.gpuPages &&
@@ -1990,6 +2021,7 @@ public:
                 (result.map.ntstatus < 0 && (result.map.value || result.fence))) return reply(h, -5);
             if (result.map.ntstatus >= 0) {
                 object.gpuPages = static_cast<std::uint32_t>(desc.sizePages); object.gpuAddress = result.map.value;
+                object.reservationBackedMapping=reservationBacked;
                 object.gpuOffsetPages = desc.offsetPages;
                 vendorMappedPages += object.gpuPages;
                 if (!desc.base && !gpuStates.prepareRemove(result.map.value, desc.sizePages * 4096, plan))
