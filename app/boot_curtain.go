@@ -3,6 +3,7 @@ package main
 import (
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -25,6 +26,26 @@ const (
 	curtainSlowNotice = 60 * time.Second
 )
 
+// After the curtain lifts, a GPU boot keeps looking at the window until it
+// shows the desktop. Some drivers run the guest but never present its frames
+// on Windows (#358), and that boot must not count as working GPU rendering.
+const (
+	desktopCheckInterval = 5 * time.Second
+	// From the start of the desktop session until the user is asked about a
+	// window that has not shown the desktop.
+	blankDesktopWait = 2 * time.Minute
+	// Looks at the visible window needed before asking, so a window kept
+	// minimized is never taken for a blank one.
+	blankDesktopLooks = 6
+)
+
+var (
+	// desktopSeen is set once this boot's window has shown the desktop.
+	desktopSeen atomic.Bool
+	// desktopLooks counts this boot's looks at the visible window.
+	desktopLooks atomic.Int32
+)
+
 type bootCurtainTimes struct {
 	boot, ready, session time.Time
 }
@@ -43,6 +64,16 @@ func (t bootCurtainTimes) liftReason(now time.Time, painted bool) string {
 		return "the boot is taking too long"
 	}
 	return ""
+}
+
+// blankDesktopDue reports whether a window that never showed the desktop has
+// been watched long enough to ask the user about it.
+func (t bootCurtainTimes) blankDesktopDue(now time.Time, looks int32) bool {
+	start := t.session
+	if start.IsZero() {
+		start = t.ready
+	}
+	return !start.IsZero() && now.Sub(start) >= blankDesktopWait && looks >= blankDesktopLooks
 }
 
 // checkPaint is true once the screen can show something other than boot

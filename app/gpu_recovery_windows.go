@@ -5,9 +5,12 @@ package main
 // The VM stays alive while the user chooses. Dismissing this dialog preserves
 // the session, including a slow compositor that recovers while it is open.
 func chooseFreezeRecovery(cancel <-chan struct{}, gpu bool, trigger, bundle string, snapshotErr error, suggest bool) gpuRecoveryDecision {
-	body := uiText("recovery.display.body")
-	if trigger == "compositor" {
+	title, body := uiText("recovery.gpu.title"), uiText("recovery.display.body")
+	switch trigger {
+	case "compositor":
 		body = uiText("recovery.compositor.body")
+	case "blank":
+		title, body = uiText("recovery.blank.title"), uiText("recovery.blank.body")
 	}
 	if gpu {
 		body += "\n\n" + uiText("recovery.gpu.body")
@@ -23,10 +26,10 @@ func chooseFreezeRecovery(cancel <-chan struct{}, gpu bool, trigger, bundle stri
 	var action int
 	var err error
 	if gpu {
-		action, err = chooseActionCancelable(cancel, uiText("recovery.gpu.title"), body, 260,
+		action, err = chooseActionCancelable(cancel, title, body, 260,
 			uiText("recovery.gpu.cpu_once"), uiText("recovery.gpu.gpu"), uiText("recovery.gpu.close"), uiText("recovery.gpu.cpu_always"))
 	} else {
-		action, err = chooseActionCancelable(cancel, uiText("recovery.gpu.title"), body, 260, uiText("recovery.cpu.restart"), uiText("recovery.gpu.close"))
+		action, err = chooseActionCancelable(cancel, title, body, 260, uiText("recovery.cpu.restart"), uiText("recovery.gpu.close"))
 		if action != 1 {
 			action = gpuRecoveryClose
 		}

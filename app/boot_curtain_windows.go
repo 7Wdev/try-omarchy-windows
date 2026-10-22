@@ -48,6 +48,10 @@ var (
 	curtainCapturing atomic.Bool
 	curtainBoot      time.Time
 	curtainStatus    string
+	// The same look after the curtain lifted, for watchDesktop.
+	desktopPainted   atomic.Int32
+	desktopBoot      time.Time
+	desktopCheckedAt time.Time
 )
 
 type curtainWindow struct {
@@ -184,6 +188,7 @@ func curtainTaskbar(hwnd uintptr) {
 // primary is the window of the guest's first display, or 0.
 func curtainTick(primary uintptr) {
 	if !curtainUp.Load() {
+		watchDesktop(primary)
 		return
 	}
 	times := curtainTimes()
@@ -193,6 +198,9 @@ func curtainTick(primary uintptr) {
 	}
 	now := time.Now()
 	if reason := times.liftReason(now, curtainPainted.Load() >= 2); reason != "" {
+		if curtainPainted.Load() >= 2 {
+			desktopSeen.Store(true)
+		}
 		liftCurtain(reason)
 		return
 	}
@@ -223,6 +231,39 @@ func curtainTick(primary uintptr) {
 			wakeTitleEnforcer()
 		}()
 	}
+}
+
+// watchDesktop keeps looking at a shown window every few seconds until it
+// shows the desktop once in this boot. A minimized or hidden window is not
+// looked at.
+func watchDesktop(primary uintptr) {
+	times := curtainTimes()
+	if !times.boot.Equal(desktopBoot) {
+		desktopBoot = times.boot
+		desktopPainted.Store(0)
+	}
+	if desktopSeen.Load() || primary == 0 || !times.checkPaint() || time.Since(desktopCheckedAt) < desktopCheckInterval {
+		return
+	}
+	visible, _, _ := procIsWindowVisible.Call(primary)
+	if iconic, _, _ := procIsIconic.Call(primary); iconic != 0 || visible == 0 {
+		desktopPainted.Store(0)
+		return
+	}
+	if !curtainCapturing.CompareAndSwap(false, true) {
+		return
+	}
+	desktopCheckedAt = time.Now()
+	go func() {
+		defer curtainCapturing.Store(false)
+		painted := windowShowsDesktop(primary)
+		desktopLooks.Add(1)
+		if !painted {
+			desktopPainted.Store(0)
+		} else if desktopPainted.Add(1) >= 2 {
+			desktopSeen.Store(true)
+		}
+	}()
 }
 
 // curtainPolling makes the title enforcer look more often while the

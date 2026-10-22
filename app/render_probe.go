@@ -38,6 +38,10 @@ type renderProbe struct {
 	// DisplayDriver identifies the Windows display drivers at the time.
 	DisplayDriver string    `json:"displayDriver"`
 	RecordedAt    time.Time `json:"recordedAt"`
+	// DesktopSeen is true when a GPU result was recorded only after the
+	// Omarchy window showed the desktop. Older launchers recorded GPU as soon
+	// as the guest reached userspace, even if Windows never drew it (#358).
+	DesktopSeen bool `json:"desktopSeen,omitempty"`
 }
 
 func loadRenderProbe(dir string) (*renderProbe, error) {
@@ -103,6 +107,14 @@ func startWithGPU(mode string, probe *renderProbe, runtimeID, displayDriver stri
 			probe.RecordedAt.Local().Format("2006-01-02"))
 	}
 	return true, ""
+}
+
+// gpuDesktopConfirmed reports whether GPU rendering has already shown the
+// desktop on screen with this runtime and driver set. A wallpaper that looks
+// like an empty screen then never brings up the blank window question.
+func gpuDesktopConfirmed(probe *renderProbe, runtimeID, displayDriver string) bool {
+	return probe != nil && probe.Result == renderGPU && probe.DesktopSeen &&
+		probe.RuntimeID != "" && probe.RuntimeID == runtimeID && probe.DisplayDriver == displayDriver
 }
 
 // keepUpdatedRuntimeOnCPU decides what a GPU startup failure means while a

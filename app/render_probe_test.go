@@ -107,3 +107,30 @@ func TestRuntimeIdentityPrefersTheReceiptHash(t *testing.T) {
 		t.Fatalf("receipt hash expected, got %q", id)
 	}
 }
+
+func TestGPUDesktopConfirmed(t *testing.T) {
+	seen := &renderProbe{Result: renderGPU, RuntimeID: "sha256:a", DisplayDriver: "AMD 1", DesktopSeen: true}
+	if !gpuDesktopConfirmed(seen, "sha256:a", "AMD 1") {
+		t.Fatal("a GPU result seen on screen should confirm this runtime and driver")
+	}
+	for name, probe := range map[string]*renderProbe{
+		"none":                 nil,
+		"recorded at ready":    {Result: renderGPU, RuntimeID: "sha256:a", DisplayDriver: "AMD 1"},
+		"cpu":                  {Result: renderCPU, RuntimeID: "sha256:a", DisplayDriver: "AMD 1", DesktopSeen: true},
+		"other runtime":        {Result: renderGPU, RuntimeID: "sha256:b", DisplayDriver: "AMD 1", DesktopSeen: true},
+		"other driver":         {Result: renderGPU, RuntimeID: "sha256:a", DisplayDriver: "AMD 2", DesktopSeen: true},
+		"unidentified runtime": {Result: renderGPU, DisplayDriver: "AMD 1", DesktopSeen: true},
+	} {
+		if gpuDesktopConfirmed(probe, "sha256:a", "AMD 1") {
+			t.Errorf("%s: confirmed GPU rendering", name)
+		}
+	}
+	dir := t.TempDir()
+	if err := saveRenderProbe(dir, *seen); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := loadRenderProbe(dir)
+	if err != nil || !loaded.DesktopSeen {
+		t.Fatalf("DesktopSeen did not survive a save: %+v %v", loaded, err)
+	}
+}
