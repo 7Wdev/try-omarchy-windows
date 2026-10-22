@@ -4,17 +4,26 @@ Updated **2026-10-22**. This page tracks the experimental QEMU/WHPX Windows-nati
 NVIDIA backend. The released Try Omarchy launcher continues using the upstream
 graphics runtime.
 
-![4K Omarchy frame achieved; QEMU SDL host GPU relay verified; backend stages 4/8; desktop gates 0/4](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/windows-nvgpu-lab/docs/images/gpu-backend-progress-managed-residency-2026-10-22.svg)
+![4K Omarchy frame achieved; QEMU SDL host GPU relay verified; backend stages 4/8; desktop gates 0/4](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/windows-nvgpu-lab/docs/images/gpu-backend-progress-gpu-va-pressure-2026-10-22.svg)
 
 ## What is verified now?
 
-**Latest managed-residency checkpoint — October 22, 2026:** two fresh guests
+**Latest GPU address-pressure checkpoint — October 22, 2026:** two fresh guests
+exceed **2 GiB of virtual GPU mappings** before frame one, verify 56 GPU copy/evict
+cycles and retained contents, then pass **1,800 desktop handoffs each over 35.3
+and 34.5 seconds**. Complete 4K source/SDL pixels, rendered input response,
+lifecycles, resizing and live cleanup pass. The reported resident and CPU
+mapping guards are unchanged. This closes the bounded extended-address check;
+longer memory-pressure recovery, simultaneous windows and normal launcher/input
+acceptance remain open. [Actual frame, exact evidence and scope](LIVE-GPU-VA-PRESSURE.md).
+
+**Earlier managed-residency checkpoint — October 22, 2026:** two fresh guests
 pass 1,800 GPU handoffs each over **32.9 and 32.2 seconds**, complete pixels,
 input response, lifecycles, resizing and live cleanup. The ownership ledger
 accounts for all 47/45 deferred references with no retained references left.
 A new explicit address-accounting agreement separates owned GPU reservations
-from the unchanged resident-memory guard. Its extended virtual boundary is not
-exercised by these successful runs and remains a required stress gate. Default
+from the unchanged resident-memory guard. Those earlier successful runs do not
+exercise the extended virtual boundary; the new bounded follow-up above does. Default
 behavior and earlier failed attempts are retained.
 [Actual frame, all attempts and scope](LIVE-MANAGED-GPU-RESIDENCY.md).
 
@@ -155,8 +164,8 @@ not close the broader product requirements below.
 
 ## Remaining work
 
-1. Extend the verified guest-to-SDL path to controlled memory-pressure and
-   extended-address stress, hardware staging reallocation and longer rendering,
+1. Extend the bounded pre-stream address-pressure result to memory pressure
+   while rendering, hardware staging reallocation and longer workloads,
    retaining official input and the independent physical-memory guards.
 2. Integrate the supported guest device path, normal first-boot session and Windows
    launcher/input, with independently verified continuous presentation.

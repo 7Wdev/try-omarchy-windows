@@ -10,22 +10,22 @@ The experimental QEMU/WHPX bridge renders the shipped Omarchy wallpaper, bar
 and a readable application on NVIDIA at **3840×2160**, through QEMU SDL.
 Normal launcher integration and a stable interactive desktop remain in development.
 
-![4K NVIDIA desktop and managed residency repeats verified; backend 4/8; desktop product 0/4](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/windows-nvgpu-lab/docs/images/gpu-backend-progress-managed-residency-2026-10-22.svg)
+![4K NVIDIA desktop and bounded GPU address pressure repeats verified; backend 4/8; desktop product 0/4](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/windows-nvgpu-lab/docs/images/gpu-backend-progress-gpu-va-pressure-2026-10-22.svg)
 
-**Latest checkpoint — October 22, 2026:** two fresh guests using opt-in managed
-residency pass **1,800 GPU handoffs each over 32.9 and 32.2 seconds**, complete
-4K source/SDL pixel audits, rendered input response, application lifecycles,
-resizing and live cleanup. Every deferred reference is accounted for and retired.
-The reported resident-memory and CPU mapping guards are unchanged. Earlier
-failed attempts are retained; controlled extended-address pressure remains open.
-[Actual frame, implementation and verification limits](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-MANAGED-GPU-RESIDENCY.md).
+**Latest checkpoint — October 22, 2026:** two fresh guests exceed **2 GiB of
+GPU virtual mappings**, verify 56 GPU copy/evict cycles and retained contents,
+then each pass **1,800 desktop handoffs over 35.3 and 34.5 seconds**. Complete
+4K source/SDL pixels, rendered input response, lifecycles, resizing and live
+cleanup pass. The reported resident-memory and CPU mapping guards are unchanged.
+Longer pressure while rendering and simultaneous windows remain open.
+[Actual frame, diagnostic scope and verification limits](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-GPU-VA-PRESSURE.md).
 
 **Product priority: preserve the official keyboard/cursor code and QEMU SDL
 input path, including the launcher's reserved-key routing.** The GPU relay uses
 that frontend's input implementation. Physical-input acceptance and normal
 launcher integration remain open. [Verified source map](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/UPSTREAM-INPUT-GRAPHICS-INTEGRATION.md).
 
-![Actual NVIDIA SDL backbuffer, run 132 handoff 1800](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/windows-nvgpu-lab/docs/images/omarchy-managed-residency-frame-1800-2026-10-22.png)
+![Actual NVIDIA SDL backbuffer, run 136 handoff 1800](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/windows-nvgpu-lab/docs/images/omarchy-gpu-va-pressure-frame-1800-2026-10-22.png)
 
 Actual **2560×1566 SDL pre-swap backbuffer** from a complete 3840×2160 GPU source.
 Physical 4K scanout remains unverified. The test uses a disposable UWSM/PAM
@@ -35,14 +35,15 @@ continues using the upstream graphics runtime.
 | Progress measure | Verified status | What remains |
 | --- | --- | --- |
 | 4K diagnostic scene | **3/3:** shipped wallpaper, Omarchy bar, readable GPU application | Normal launcher and usable desktop acceptance. |
-| Bounded NVIDIA rendering through QEMU SDL | **Two managed-residency repeats:** 1,800 handoffs, complete pixels/input response and cleanup | Long-run pressure, displayed cadence, official physical input and simultaneous windows. |
+| Bounded NVIDIA rendering through QEMU SDL | **Two address-pressure repeats:** 56 GPU copy/evict cycles, then 1,800 handoffs with complete pixels/input response and cleanup | Long-run pressure, displayed cadence, official physical input and simultaneous windows. |
 | Backend verification | **4/8 stages demonstrated** | Supported device integration, broader APIs, recovery and performance. |
 | Desktop product acceptance | **0/4 gates complete** | Normal account/launcher, continuous multi-window use, reliability and matched-native performance. |
 
-The new address-accounting agreement separates owned reservation mappings from
-resident memory. The successful desktop runs do not exercise its extended
-virtual boundary, so that stress gate stays open. The default residency path
-and all earlier failed controls remain retained.
+The address-accounting agreement separates owned reservation mappings from
+resident memory. The new bounded diagnostic exercises the extended virtual
+boundary before the desktop stream, with an independent retained-content
+oracle. It adds explicit diagnostic upload/readback and no shader or performance
+acceptance. The default residency path and earlier failed controls are retained.
 
 Required targets include broad **OpenGL, Vulkan, CUDA, video acceleration, DLSS,
 hardware ray tracing** and **≥93% matched-native performance**, including concurrent

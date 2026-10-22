@@ -1,5 +1,9 @@
 # Managed residency and GPU address accounting
 
+**Follow-up:** the [new GPU address-pressure checkpoint](LIVE-GPU-VA-PRESSURE.md)
+exercises the extended virtual boundary in two fresh guests before their desktop
+streams. The original runs below retain their narrower scope and evidence.
+
 Two fresh Omarchy guests using an opt-in residency backend complete **1,800 GPU
 handoffs each**, with full first/final 4K source and SDL pixel checks, rendered
 input response, five application lifecycles, three resize phases and live
