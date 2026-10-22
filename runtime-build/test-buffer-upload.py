@@ -28,6 +28,8 @@ def function(text, signature):
     return text[start:opening] + body(text, opening)
 
 
+init = function(renderer, 'int vrend_renderer_init(')
+assert 'vrend_state.intel_windows_buffer_uploads = vrend_intel_windows_buffer_uploads();' in init
 transfer = renderer.index('static int vrend_renderer_transfer_write_iov(')
 buffer = renderer.index('if (has_bit(res->storage_bits, VREND_STORAGE_GL_BUFFER))', transfer)
 harness = r'''
@@ -62,10 +64,11 @@ struct vrend_resource { unsigned storage_bits; GLuint gl_id; GLenum target; };
 struct virgl_sub_upload_data { GLenum target; struct pipe_box *box; };
 static const char *vendor;
 static unsigned char storage[64];
-static unsigned bound, maps, uploads, unmaps, failures, access_flags;
+static unsigned bound, maps, uploads, unmaps, failures, access_flags, vendor_reads;
 static bool fail_map;
+static struct { bool intel_windows_buffer_uploads; } vrend_state;
 static const unsigned char *glGetString(GLenum key) {
-    assert(key == GL_VENDOR); return (const unsigned char *)vendor;
+    assert(key == GL_VENDOR); vendor_reads++; return (const unsigned char *)vendor;
 }
 static void glBindBufferARB(GLenum target, GLuint id) {
     assert(target == GL_ELEMENT_ARRAY_BUFFER || target == GL_ARRAY_BUFFER);
@@ -86,6 +89,7 @@ static void glUnmapBuffer(GLenum target) { (void)target; unmaps++; }
 harness += function(iov, 'size_t vrend_read_from_iovec(')
 harness += function(iov, 'size_t vrend_read_from_iovec_cb(')
 harness += function(renderer, 'static void iov_buffer_upload(')
+harness += function(renderer, 'static bool vrend_intel_windows_buffer_uploads(')
 harness += '''
 static void upload(struct vrend_resource *res, const struct iovec *iov,
                    int num_iovs, const struct vrend_transfer_info *info) {
@@ -101,8 +105,11 @@ static void check(const char *driver, GLenum target, bool immutable, bool synchr
     struct vrend_transfer_info info = {.offset = 2, .box = &box, .synchronized = synchronized};
     struct vrend_resource resource = {VREND_STORAGE_GL_BUFFER |
         (immutable ? VREND_STORAGE_GL_IMMUTABLE : 0), 50, target};
-    vendor = driver; fail_map = failed;
-    bound = maps = uploads = unmaps = failures = access_flags = 0;
+    /* Renderer init reads the vendor once; uploads only read the flag. */
+    vendor = driver; vendor_reads = 0;
+    vrend_state.intel_windows_buffer_uploads = TEST_WINDOWS && vrend_intel_windows_buffer_uploads();
+    fail_map = failed;
+    bound = maps = uploads = unmaps = failures = access_flags = vendor_reads = 0;
     memset(storage, 0x7e, sizeof(storage));
     upload(&resource, vectors, 3, &info);
     assert(maps == expected_maps);
@@ -117,6 +124,7 @@ static void check(const char *driver, GLenum target, bool immutable, bool synchr
                                 (synchronized ? 0 : GL_MAP_UNSYNCHRONIZED_BIT)));
     }
     assert(failures == (failed && expected_maps ? 1u : 0u));
+    assert(vendor_reads == 0);
 }
 int main(void) {
     /* Captured Intel Windows index and vertex uploads must avoid the map call. */

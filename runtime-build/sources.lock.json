@@ -130,7 +130,7 @@
       },
       {
         "file": "patches/virglrenderer/0004-avoid-intel-windows-mutable-buffer-mapping.patch",
-        "sha256": "3e7eece1f5fcdac6df16fc462315a4776364e41ca851963d3c020a67b9cb5d00"
+        "sha256": "87f52cd0cbe0f3cec3bb30e94f718c3df622b9a34cfccab8f21ca61f3c98cab1"
       }
     ]
   }

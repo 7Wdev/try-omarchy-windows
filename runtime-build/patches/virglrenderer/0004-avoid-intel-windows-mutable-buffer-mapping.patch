@@ -1,21 +1,55 @@
 --- a/src/vrend/vrend_renderer.c
 +++ b/src/vrend/vrend_renderer.c
-@@ -9333,6 +9333,14 @@
+@@ -400,6 +400,8 @@
+    bool use_core_profile : 1;
+    bool use_external_blob : 1;
+    bool use_integer : 1;
++   /* Upload mutable buffers without mapping them (see below). */
++   bool intel_windows_buffer_uploads : 1;
+    /* these appeared broken on at least one driver */
+    bool use_explicit_locations : 1;
+    /* threaded sync */
+@@ -7619,6 +7621,16 @@
+ #endif
+ }
+ 
++#ifdef _WIN32
++/* Some Intel Windows drivers stall on CPU buffer mappings, even
++ * unsynchronized ones. Read the vendor once, not on every upload. */
++static bool vrend_intel_windows_buffer_uploads(void)
++{
++   const char *vendor = (const char *)glGetString(GL_VENDOR);
++   return vendor && strstr(vendor, "Intel");
++}
++#endif
++
+ int vrend_renderer_init(const struct vrend_if_cbs *cbs, uint32_t flags)
+ {
+    bool gles;
+@@ -7687,6 +7699,9 @@
+    }
+ 
+    vrend_state.use_integer = use_integer();
++#ifdef _WIN32
++   vrend_state.intel_windows_buffer_uploads = vrend_intel_windows_buffer_uploads();
++#endif
+ 
+    init_features(gles ? 0 : gl_ver,
+                  gles ? gl_ver : 0);
+@@ -9333,6 +9348,12 @@
  
     if (has_bit(res->storage_bits, VREND_STORAGE_GL_BUFFER)) {
        GLuint map_flags = GL_MAP_INVALIDATE_RANGE_BIT | GL_MAP_WRITE_BIT;
 +      bool use_sub_data = false;
 +#ifdef _WIN32
-+      const char *vendor = (const char *)glGetString(GL_VENDOR);
-+      /* Some Intel Windows drivers stall on CPU buffer mappings, even
-+       * unsynchronized. Immutable storage must keep the mapping path. */
-+      use_sub_data = !has_bit(res->storage_bits, VREND_STORAGE_GL_IMMUTABLE) &&
-+                     vendor && strstr(vendor, "Intel");
++      /* Immutable storage must keep the mapping path. */
++      use_sub_data = vrend_state.intel_windows_buffer_uploads &&
++                     !has_bit(res->storage_bits, VREND_STORAGE_GL_IMMUTABLE);
 +#endif
        struct virgl_sub_upload_data d;
        d.box = info->box;
        d.target = res->target;
-@@ -9341,9 +9349,11 @@
+@@ -9341,9 +9362,11 @@
           map_flags |= GL_MAP_UNSYNCHRONIZED_BIT;
  
        glBindBufferARB(res->target, res->gl_id);
