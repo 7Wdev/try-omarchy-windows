@@ -44,6 +44,9 @@ static_assert(sizeof(Registration)==8 && sizeof(Alias)==32 && sizeof(Reference)=
 constexpr std::size_t MaxPacket=actors::MaxEnvelopeBytes;
 static_assert(MaxCoordinatedSharedReferences==actors::MaxActors*MaxSharedResourceHandles &&
               MaxCoordinatedSharedReferences==actors::MaxActors*MaxSharedSyncHandles,"Fixed v5 group and per-actor reference bounds");
+static_assert(GuestCoordinatedActorObjects.hwQueues==actors::MaxActors*OpenGlFenceHwQueues &&
+              GuestCoordinatedActorObjects.syncObjects==actors::MaxActors*OpenGlCompositorSyncObjects,
+              "v8 object metadata covers the existing per-actor quotas");
 inline bool validInfo(const Info& value) {
     return validCoordinatedAgreement(value.capacity,value.objects) && validCoordinatedPresentationProfile(value.gl) &&
         value.gl.version==value.capacity.mapping.aperture.version &&

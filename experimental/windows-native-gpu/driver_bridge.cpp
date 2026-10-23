@@ -75,7 +75,7 @@ class KmtDriver : public Driver {
     CoordinatedObjectCapacity coordinatedObjectCapacity{};
     std::size_t peakHwQueues=0,peakSyncObjects=0;
     std::uint64_t hwQueueQuotaRejections=0,syncQuotaRejections=0;
-    std::size_t hwQueueLimit() const { return coordinatedObjectsEnabled ? CoordinatedObjectCapacity{}.hwQueues : openglFencesEnabled ? OpenGlFenceHwQueues : MaxHwQueues; }
+    std::size_t hwQueueLimit() const { return coordinatedObjectsEnabled ? coordinatedObjectCapacity.hwQueues : openglFencesEnabled ? OpenGlFenceHwQueues : MaxHwQueues; }
     unsigned compositorCaptureAttempts = 0, completedCompositorCaptures = 0, failedCompositorCaptures = 0;
     std::unique_ptr<driver_shared::CompositorReadback> compositorPresenter;
     std::unique_ptr<driver_shared::CompositorPresenter> compositorOutput;
@@ -84,7 +84,7 @@ class KmtDriver : public Driver {
     std::uint64_t reservationByteLimit() const { return coordinatedObjectsEnabled ? CoordinatedObjectCapacity{}.reservedGpuBytes : MaxGpuReservedBytes; }
     std::uint64_t reservationQuotaRejections=0;
     std::size_t peakReservations=0;
-    std::size_t syncObjectLimit() const { return coordinatedObjectsEnabled ? CoordinatedObjectCapacity{}.syncObjects : openglCompositorEnabled ? OpenGlCompositorSyncObjects : MaxSyncObjects; }
+    std::size_t syncObjectLimit() const { return coordinatedObjectsEnabled ? coordinatedObjectCapacity.syncObjects : openglCompositorEnabled ? OpenGlCompositorSyncObjects : MaxSyncObjects; }
     std::size_t vendorObjectLimit() const { return coordinatedObjectsEnabled && coordinatedObjectCapacity.version>=4 ? coordinatedObjectCapacity.vendorAllocations : openglDesktopEnabled ? OpenGlDesktopVendorAllocations : openglCompositorEnabled ? OpenGlCompositorVendorAllocations : openglFencesEnabled ? OpenGlFenceVendorAllocations : vendorAllocationObjectLimit(capabilities().flags); }
     bool vendorObjectAdmission() const {
         const bool allowed=vendorAllocations.size()<vendorObjectLimit();
@@ -702,12 +702,12 @@ public:
         if(!validCoordinatedObjectCapacity(value) || coordinatedObjectsEnabled || !openglDesktopPresentationEnabled || !runtime || runtime->hasStopped() ||
             !ownedAdapters.empty() || !deviceAdapters.empty() || !hwQueues.empty() || !syncObjects.empty()) return false;
         const auto expected=openGlProfileVersion==13 ? 5u : runtime->fenceSlotLimit()==512 ? 4u : 3u;
-        if(value.version!=expected && !(value.version==6 && expected==5 && deferredResidencyEnabled)) return false;
+        if(value.version!=expected && !((value.version>=6 && value.version<=8) && expected==5 && deferredResidencyEnabled)) return false;
         coordinatedObjectCapacity=value;coordinatedObjectsEnabled=true;
         std::cerr<<"{\"nativeCoordinatedObjectCapacity\":true,\"version\":"<<value.version<<",\"vendorAllocationObjects\":"<<vendorObjectLimit()<<",\"hwQueues\":"<<hwQueueLimit()<<",\"syncObjects\":"<<syncObjectLimit()
                  <<",\"reservedAddressBytes\":"<<reservationByteLimit()<<",\"reservationCount\":"<<reservationLimit()
                  <<",\"sharedResourceReferences\":"<<sharedResourceLimit()<<",\"sharedSyncReferences\":"<<sharedSyncLimit()
-                 <<",\"kernelLeaseLimit\":768,\"fenceSlots\":"<<runtime->fenceSlotLimit()<<",\"cpuBytes\":201326592,\"gpuVaBytes\":1073741824,\"reportedGpuBytes\":1073741824,\"memoryBudgetsMultiplied\":false,\"reservationMappingsSeparated\":"<<(value.version==6?"true":"false")<<"}\n";
+                 <<",\"kernelLeaseLimit\":"<<value.leaseLimit<<",\"fenceSlots\":"<<runtime->fenceSlotLimit()<<",\"cpuBytes\":201326592,\"gpuVaBytes\":1073741824,\"reportedGpuBytes\":1073741824,\"memoryBudgetsMultiplied\":false,\"reservationMappingsSeparated\":"<<(value.version>=6?"true":"false")<<"}\n";
         return true;
     }
     StreamProfile beginStreaming() override {
@@ -1609,7 +1609,7 @@ public:
     }
     bool retainsMappedResidencyOnEvict() const override { return deferredResidencyEnabled; }
     bool allowsReservationBackedMappings() const override {
-        return deferredResidencyEnabled && coordinatedObjectsEnabled && coordinatedObjectCapacity.version==6;
+        return deferredResidencyEnabled && coordinatedObjectsEnabled && coordinatedObjectCapacity.version>=6;
     }
     void reclaimDeferredResidency(const std::vector<std::uint32_t>& keep={}) {
         if(!deferredResidencyEnabled || !retainedResidencyReferences) return;

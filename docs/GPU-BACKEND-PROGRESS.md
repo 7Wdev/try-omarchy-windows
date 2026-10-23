@@ -1,12 +1,22 @@
 # NVIDIA backend progress
 
-Updated **2026-10-22**. This page tracks the experimental QEMU/WHPX Windows-native
+Updated **2026-10-23**. This page tracks the experimental QEMU/WHPX Windows-native
 NVIDIA backend. The released Try Omarchy launcher continues using the upstream
 graphics runtime.
 
-![4K Omarchy frame achieved; QEMU SDL host GPU relay verified; backend stages 4/8; desktop gates 0/4](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/windows-nvgpu-lab/docs/images/gpu-backend-progress-gpu-va-pressure-2026-10-22.svg)
+![4K Omarchy frame achieved; multi-window admission and recovery in progress; backend stages 4/8; desktop gates 0/4](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/windows-nvgpu-lab/docs/images/gpu-backend-progress-multiwindow-2026-10-23.svg)
 
 ## What is verified now?
+
+**Latest multi-window investigation — October 23, 2026:** a second real
+application initializes its NVIDIA OpenGL renderer. The simultaneous workload
+then reaches the unchanged 192 MiB CPU mapping guard and fails native cleanup
+verification, before a desktop frame completes. It is **rejected**. New opt-in
+lease/object agreements retain older limits, and the candidate separately passes
+the frozen v6 **1,800-frame 4K desktop regression**, complete pixels, QMP input
+response, resizing and live cleanup. Multi-window rendering and admission-failure
+recovery remain open; the progress counts are unchanged.
+[Actual compatibility frame, precise failures and source evidence](LIVE-MULTIWINDOW-ADMISSION.md).
 
 **Latest GPU address-pressure checkpoint — October 22, 2026:** two fresh guests
 exceed **2 GiB of virtual GPU mappings** before frame one, verify 56 GPU copy/evict

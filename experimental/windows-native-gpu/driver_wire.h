@@ -478,8 +478,9 @@ struct CoordinatedObjectCapacity {
 constexpr std::size_t MaxCoordinatedSharedReferences=64;
 static_assert(sizeof(CoordinatedObjectCapacity)==32,"Fixed coordinated object/address-space capacity");
 inline bool validCoordinatedObjectCapacity(CoordinatedObjectCapacity value) {
-    return ((value.version==3 && !value.vendorAllocations) || ((value.version==4 || value.version==5 || value.version==6) && value.vendorAllocations==1024)) &&
-        value.hwQueues==32 && value.syncObjects==384 && value.leaseLimit==768 &&
+    return ((value.version==3 && !value.vendorAllocations) || ((value.version>=4 && value.version<=8) && value.vendorAllocations==1024)) &&
+        value.hwQueues==(value.version==8 ? 64u : 32u) && value.syncObjects==(value.version==8 ? 768u : 384u) &&
+        value.leaseLimit==(value.version>=7 ? 1536u : 768u) &&
         value.reservedGpuBytes==64ull*1024*1024*1024 && value.reservations==256;
 }
 constexpr CoordinatedObjectCapacity GuestCoordinatedDesktopObjects{4,32,384,768,64ull*1024*1024*1024,256,1024};
@@ -487,9 +488,15 @@ constexpr CoordinatedObjectCapacity GuestCoordinatedReferenceObjects{5,32,384,76
 // v6 explicitly separates owned reservation mappings from the standalone
 // mapping quota. It requires a retaining native residency backend.
 constexpr CoordinatedObjectCapacity GuestCoordinatedManagedObjects{6,32,384,768,64ull*1024*1024*1024,256,1024};
+// v7 explicitly negotiates metadata for all slots of the existing desktop
+// apertures. Physical memory, object quotas and older agreements stay fixed.
+constexpr CoordinatedObjectCapacity GuestCoordinatedLeaseObjects{7,32,384,1536,64ull*1024*1024*1024,256,1024};
+// v8 supplies object records for all four supported actors at their existing
+// per-actor bounds. Fence aperture slots and physical byte guards are separate.
+constexpr CoordinatedObjectCapacity GuestCoordinatedActorObjects{8,4*OpenGlFenceHwQueues,4*OpenGlCompositorSyncObjects,1536,64ull*1024*1024*1024,256,1024};
 inline bool validCoordinatedAgreement(OpenGlDesktopPresentationCapacity capacity,CoordinatedObjectCapacity objects) {
     return validCoordinatedPresentationCapacity(capacity) && validCoordinatedObjectCapacity(objects) &&
-        (capacity.mapping.aperture.version==13 ? (objects.version==5 || objects.version==6) :
+        (capacity.mapping.aperture.version==13 ? (objects.version>=5 && objects.version<=8) :
             objects.version==(capacity.mapping.aperture.version>=11 ? 4u : 3u));
 }
 class Driver {
@@ -647,7 +654,7 @@ public:
         gl=driver.beginOpenGl(capacity.mapping.aperture.version);
         if(gl.version!=capacity.mapping.aperture.version || !validCoordinatedPresentationProfile(gl)) throw std::runtime_error("Coordinated native OpenGL agreement failed");
         if(!driver.beginCoordinatedObjects(objectCapacity)) throw std::runtime_error("Coordinated native object agreement failed");
-        managedMappings=objectCapacity.version==6;
+        managedMappings=objectCapacity.version>=6;
         if(managedMappings && (!driver.allowsReservationBackedMappings() || !driver.retainsMappedResidencyOnEvict()))
             throw std::runtime_error("Managed GPU mapping backend absent");
         sync=driver.beginSyncSharing();

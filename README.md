@@ -10,9 +10,17 @@ The experimental QEMU/WHPX bridge renders the shipped Omarchy wallpaper, bar
 and a readable application on NVIDIA at **3840×2160**, through QEMU SDL.
 Normal launcher integration and a stable interactive desktop remain in development.
 
-![4K NVIDIA desktop and bounded GPU address pressure repeats verified; backend 4/8; desktop product 0/4](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/windows-nvgpu-lab/docs/images/gpu-backend-progress-gpu-va-pressure-2026-10-22.svg)
+![4K NVIDIA desktop verified; multi-window admission and recovery in progress; backend 4/8; desktop product 0/4](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/windows-nvgpu-lab/docs/images/gpu-backend-progress-multiwindow-2026-10-23.svg)
 
-**Latest checkpoint — October 22, 2026:** two fresh guests exceed **2 GiB of
+**Latest investigation — October 23, 2026:** the second application's NVIDIA
+OpenGL renderer initializes, but the two-application workload exhausts the
+192 MiB CPU mapping guard and fails native cleanup verification. It remains
+rejected. Explicit lease/object capacity agreements preserve older limits;
+the new backend passes a separate **1,800-frame legacy 4K desktop regression**
+with full pixels, input response and clean live teardown. Multi-window rendering
+and failure recovery remain open. [Actual compatibility frame and all failed attempts](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-MULTIWINDOW-ADMISSION.md).
+
+**Verified pressure checkpoint — October 22, 2026:** two fresh guests exceed **2 GiB of
 GPU virtual mappings**, verify 56 GPU copy/evict cycles and retained contents,
 then each pass **1,800 desktop handoffs over 35.3 and 34.5 seconds**. Complete
 4K source/SDL pixels, rendered input response, lifecycles, resizing and live

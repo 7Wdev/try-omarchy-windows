@@ -55,8 +55,11 @@ static bool enable_desktop_fences;
 module_param(enable_desktop_fences, bool, 0444);
 static bool enable_desktop_slots;
 module_param(enable_desktop_slots, bool, 0444);
+static bool enable_desktop_leases;
+module_param(enable_desktop_leases, bool, 0444);
 static u32 lease_limit(void)
 {
+	if (enable_desktop_leases) return WDDM_APERTURE_DESKTOP_LEASES;
 	return enable_coordinated_leases ? WDDM_APERTURE_COORDINATED_LEASES : wddm_aperture_lease_limit(fence_hub.slots);
 }
 static long coordinator_caps(void __user *pointer)
@@ -230,8 +233,17 @@ static long create_lease(struct file *control, void __user *pointer)
 		result = -EINVAL;
 	else if (active_leases >= lease_limit() || next_cookie == U64_MAX ||
 		 (arg.kind == WDDM_APERTURE_ALLOCATION &&
-		  arg.bytes > cpu_byte_limit() - active_cpu_bytes))
+		  arg.bytes > cpu_byte_limit() - active_cpu_bytes)) {
+		/* Record the actual admission state under the same lock. A later
+		 * userspace INFO query can race other clients releasing views. */
+		pr_warn_ratelimited("WDDM_APERTURE_ADMISSION_REJECTED kind=%u requestedBytes=%llu activeLeases=%u leaseLimit=%u activeCpuBytes=%llu cpuByteLimit=%llu leaseExhausted=%u cpuBytesExceeded=%u cookieExhausted=%u atomicSnapshot=true\n",
+			arg.kind, (unsigned long long)arg.bytes, active_leases,
+			lease_limit(), (unsigned long long)active_cpu_bytes,
+			(unsigned long long)cpu_byte_limit(), active_leases >= lease_limit(),
+			arg.kind == WDDM_APERTURE_ALLOCATION && arg.bytes > cpu_byte_limit() - active_cpu_bytes,
+			next_cookie == U64_MAX);
 		result = -ENOSPC;
+	}
 	else if (arg.kind == WDDM_APERTURE_ALLOCATION) {
 		list_for_each_entry(other, &aperture_leases, link) {
 			if (other->kind == arg.kind && arg.offset < other->offset + other->bytes &&
@@ -423,6 +435,7 @@ static int __init aperture_init(void)
 	if (enable_coordinated_leases && (!enable_sparse_aperture || !enable_desktop_4k_cpu)) return -EINVAL;
     if (enable_desktop_fences && !enable_coordinated_leases) return -EINVAL;
     if (enable_desktop_slots && !enable_desktop_fences) return -EINVAL;
+    if (enable_desktop_leases && !enable_desktop_slots) return -EINVAL;
 	native_sync_wq = alloc_workqueue("wddm-native-sync", WQ_UNBOUND | WQ_MEM_RECLAIM, 0);
 	if (!native_sync_wq) return -ENOMEM;
 	result = pci_register_driver(&aperture_driver);

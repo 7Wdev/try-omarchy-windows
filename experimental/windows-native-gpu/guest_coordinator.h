@@ -9,6 +9,11 @@
 #include <set>
 #include <atomic>
 #include <sys/stat.h>
+#if defined(WDDM_BRIDGE_FOUR_ACTOR_OBJECTS) && WDDM_BRIDGE_FOUR_ACTOR_OBJECTS
+#if !defined(WDDM_BRIDGE_WIDE_KERNEL_LEASES) || !WDDM_BRIDGE_WIDE_KERNEL_LEASES
+#error Four-actor object metadata requires expanded kernel lease negotiation
+#endif
+#endif
 
 namespace guest_broker {
 namespace cg=driver_bridge::coordinator;
@@ -44,14 +49,27 @@ public:
                     const wddm_aperture_desktop_fences& fences={},const wddm_aperture_desktop_slots& slots={},bool references=false) {
         const bool wide=layout.fence_slots==512;
         const bool expanded=layout.allocation_slots==1024;
+#if defined(WDDM_BRIDGE_WIDE_KERNEL_LEASES) && WDDM_BRIDGE_WIDE_KERNEL_LEASES
+#if !defined(WDDM_BRIDGE_MANAGED_GPUVA) || !WDDM_BRIDGE_MANAGED_GPUVA
+#error Expanded kernel lease negotiation requires managed GPU address accounting
+#endif
+        constexpr auto expectedLeases=driver_bridge::GuestCoordinatedLeaseObjects.leaseLimit;
+        if(!wide || !expanded || !references) reject("Expanded kernel leases require the full reference desktop layout");
+#else
+        constexpr auto expectedLeases=driver_bridge::CoordinatedObjectCapacity{}.leaseLimit;
+#endif
         const driver_bridge::OpenGlDesktopPresentationCapacity wanted{{{expanded ? references ? 13u : 12u : wide ? 11u : 10u,caps.version,caps.cpu_byte_limit,layout.allocation_slots,layout.fence_slots,0},
             driver_bridge::OpenGlDesktopLargeMapBytes},driver_bridge::OpenGlDesktopPresentationReportedBytes};
-        if((references && !expanded) || !wddm_aperture_valid_coordinator_caps(leases) || !leases.enabled || leases.lease_limit!=driver_bridge::CoordinatedObjectCapacity{}.leaseLimit ||
+        if((references && !expanded) || !wddm_aperture_valid_coordinator_caps(leases) || !leases.enabled || leases.lease_limit!=expectedLeases ||
             !wddm_aperture_valid_caps(caps) || caps.flags!=(WDDM_APERTURE_DESKTOP_CPU_ENABLED|WDDM_APERTURE_SPARSE_ENABLED) ||
             !driver_bridge::validCoordinatedPresentationCapacity(wanted) ||
             (wide && (!wddm_aperture_valid_desktop_fences(fences) || !fences.enabled || fences.slots!=layout.fence_slots || fences.bytes!=layout.fence_bytes)) ||
             (expanded && (!wddm_aperture_valid_desktop_slots(slots) || !slots.enabled || slots.slots!=layout.allocation_slots || slots.bytes!=layout.allocation_bytes))) reject("Coordinator kernel capacity mismatch");
-#if defined(WDDM_BRIDGE_MANAGED_GPUVA) && WDDM_BRIDGE_MANAGED_GPUVA
+#if defined(WDDM_BRIDGE_FOUR_ACTOR_OBJECTS) && WDDM_BRIDGE_FOUR_ACTOR_OBJECTS
+        const auto referenceObjects=driver_bridge::GuestCoordinatedActorObjects;
+#elif defined(WDDM_BRIDGE_WIDE_KERNEL_LEASES) && WDDM_BRIDGE_WIDE_KERNEL_LEASES
+        const auto referenceObjects=driver_bridge::GuestCoordinatedLeaseObjects;
+#elif defined(WDDM_BRIDGE_MANAGED_GPUVA) && WDDM_BRIDGE_MANAGED_GPUVA
         const auto referenceObjects=driver_bridge::GuestCoordinatedManagedObjects;
 #else
         const auto referenceObjects=driver_bridge::GuestCoordinatedReferenceObjects;
@@ -66,7 +84,9 @@ public:
         if(wide) receipt("BROKER_COORDINATOR_FENCE_CAPACITY profile=%u slots=%u bytes=%llu actualIoctl=true\n",wanted.mapping.aperture.version,fences.slots,static_cast<unsigned long long>(fences.bytes));
         if(expanded) receipt("BROKER_COORDINATOR_SLOT_CAPACITY profile=%u slots=%u bytes=%llu cpuByteLimit=%llu actualIoctl=true\n",wanted.mapping.aperture.version,slots.slots,static_cast<unsigned long long>(slots.bytes),static_cast<unsigned long long>(caps.cpu_byte_limit));
         if(references) receipt("BROKER_COORDINATOR_REFERENCE_CAPACITY profile=13 objectsVersion=%u resources=64 syncs=64 perActor=16 byteBudgetsMultiplied=false\n",objects.version);
-        if(objects.version==6) receipt("BROKER_COORDINATOR_MANAGED_MAPPING_CAPACITY version=6 reservedAddressBytes=68719476736 standaloneMappingBytes=1073741824 residentUsageBytes=1073741824 cpuBytes=201326592\n");
+        if(objects.version>=6) receipt("BROKER_COORDINATOR_MANAGED_MAPPING_CAPACITY version=%u reservedAddressBytes=68719476736 standaloneMappingBytes=1073741824 residentUsageBytes=1073741824 cpuBytes=201326592\n",objects.version);
+        if(objects.version>=7) receipt("BROKER_COORDINATOR_DESKTOP_LEASE_CAPACITY version=%u leaseLimit=1536 fenceSlots=512 allocationSlots=1024 physicalMemoryGuardsChanged=false\n",objects.version);
+        if(objects.version==8) receipt("BROKER_COORDINATOR_FOUR_ACTOR_OBJECT_CAPACITY version=8 actors=4 hwQueues=64 syncObjects=768 perActorHwQueues=16 perActorSyncObjects=192 physicalMemoryGuardsChanged=false\n");
     }
     cg::Info info() const { return agreement; }
     void beginLiveRetirement() {

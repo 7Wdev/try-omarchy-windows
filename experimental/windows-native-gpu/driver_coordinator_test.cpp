@@ -299,17 +299,31 @@ int main() {
     CHECK(validCoordinatedAgreement(GuestOpenGlDesktopReferenceCapacity,GuestCoordinatedReferenceObjects));
     CHECK(validCoordinatedAgreement(GuestOpenGlDesktopReferenceCapacity,GuestCoordinatedManagedObjects));
     CHECK(!validCoordinatedAgreement(GuestOpenGlDesktopSlotCapacity,GuestCoordinatedManagedObjects));
+    CHECK(validCoordinatedAgreement(GuestOpenGlDesktopReferenceCapacity,GuestCoordinatedLeaseObjects));
+    CHECK(!validCoordinatedAgreement(GuestOpenGlDesktopSlotCapacity,GuestCoordinatedLeaseObjects));
+    CHECK(validCoordinatedAgreement(GuestOpenGlDesktopReferenceCapacity,GuestCoordinatedActorObjects));
+    CHECK(!validCoordinatedAgreement(GuestOpenGlDesktopSlotCapacity,GuestCoordinatedActorObjects));
+    for(const auto objects:{GuestCoordinatedManagedObjects,GuestCoordinatedLeaseObjects,GuestCoordinatedActorObjects})
     for(const bool supported:{false,true}) {
         NativeMock managed;managed.managedGpuMappings=supported;
         cg::Runtime owner(managed);Control client{owner};bool rejected=false;
         try {
-            const auto reply=client.control(cg::Operation::Initialize,encoded(cg::Initialization{GuestOpenGlDesktopReferenceCapacity,GuestCoordinatedManagedObjects}));
+            const auto reply=client.control(cg::Operation::Initialize,encoded(cg::Initialization{GuestOpenGlDesktopReferenceCapacity,objects}));
             CHECK(!at<cg::Frame>(reply).status);
             const auto info=at<cg::Info>(client.control(cg::Operation::Info),sizeof(cg::Frame));
-            CHECK(info.objects.version==6 && cg::validInfo(info));
+            CHECK(info.objects.version==objects.version && info.objects.leaseLimit==objects.leaseLimit && cg::validInfo(info));
         } catch(const std::runtime_error&) { rejected=true; }
         CHECK(rejected==!supported);
         CHECK(owner.failed()==!supported);
+    }
+    {
+        auto old=GuestCoordinatedManagedObjects;old.leaseLimit=1536;CHECK(!validCoordinatedObjectCapacity(old));
+        auto current=GuestCoordinatedLeaseObjects;current.leaseLimit=768;CHECK(!validCoordinatedObjectCapacity(current));
+        current=GuestCoordinatedLeaseObjects;current.version=8;CHECK(!validCoordinatedObjectCapacity(current));
+        current=GuestCoordinatedActorObjects;current.version=9;CHECK(!validCoordinatedObjectCapacity(current));
+        current=GuestCoordinatedActorObjects;current.hwQueues=65;CHECK(!validCoordinatedObjectCapacity(current));
+        current=GuestCoordinatedActorObjects;current.syncObjects=769;CHECK(!validCoordinatedObjectCapacity(current));
+        current=GuestCoordinatedLeaseObjects;current.syncObjects=768;CHECK(!validCoordinatedObjectCapacity(current));
     }
     CHECK(!validCoordinatedAgreement(GuestOpenGlDesktopReferenceCapacity,GuestCoordinatedDesktopObjects));
     CHECK(!validCoordinatedAgreement(GuestOpenGlDesktopSlotCapacity,GuestCoordinatedReferenceObjects));

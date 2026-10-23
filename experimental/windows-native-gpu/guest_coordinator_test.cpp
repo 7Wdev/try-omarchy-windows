@@ -69,6 +69,9 @@ int main() {
     CHECK(wddm_aperture_valid_coordinator_caps({1,0,256,0}));
     CHECK(wddm_aperture_valid_coordinator_caps({1,0,512,0}));
     CHECK(wddm_aperture_valid_coordinator_caps({1,1,768,0}));
+    CHECK(wddm_aperture_valid_coordinator_caps({1,1,1536,0}));
+    CHECK(!wddm_aperture_valid_coordinator_caps({1,0,1536,0}));
+    CHECK(!wddm_aperture_valid_coordinator_caps({1,1,1537,0}));
     CHECK(!wddm_aperture_valid_coordinator_caps({2,1,768,0}));
     CHECK(!wddm_aperture_valid_coordinator_caps({1,2,768,0}));
     CHECK(!wddm_aperture_valid_coordinator_caps({1,1,512,0}));

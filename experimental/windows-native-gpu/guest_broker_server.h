@@ -58,6 +58,8 @@ public:
             const auto leases=coordinatedCapacity();
             if(!leases.enabled || (value.fence_slots!=256 && value.fence_slots!=512) || (value.allocation_slots!=512 && value.allocation_slots!=1024) || value.active_leases>leases.lease_limit)
                 throw std::system_error(EPROTO,std::generic_category(),"Broker coordinated kernel layout mismatch");
+            if(leases.lease_limit==WDDM_APERTURE_DESKTOP_LEASES && (value.fence_slots!=512 || value.allocation_slots!=1024))
+                throw std::system_error(EPROTO,std::generic_category(),"Expanded lease records lack the desktop aperture layout");
         }
         if(value.fence_slots==512) {
             const auto fences=desktopFenceCapacity();const auto leases=coordinatedCapacity();

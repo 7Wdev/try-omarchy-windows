@@ -250,16 +250,26 @@ int main(void)
         if(n==3) bad.reserved=1;
         errno=0;REQUIRE(ioctl(control,WDDM_APERTURE_COORDINATOR_CAPS,&bad)==-1 && errno==EINVAL);
     }
-    struct wddm_aperture_create leases[WDDM_APERTURE_COORDINATED_LEASES];
+    struct wddm_aperture_create leases[WDDM_APERTURE_DESKTOP_LEASES];
     const unsigned lease_limit=coordinator.lease_limit;
+    if(lease_limit==WDDM_APERTURE_DESKTOP_LEASES &&
+       (!desktop_fences.enabled || !desktop_slots.enabled || layout.fence_slots!=512 || layout.allocation_slots!=1024)) {
+        fprintf(stderr,"Expanded lease records require the exact desktop layout\n");return 1;
+    }
     printf("COORDINATOR_LEASE_CONTRACT enabled=%u limit=%u cpuByteLimit=%llu\n",coordinator.enabled,lease_limit,(unsigned long long)capacity.cpu_byte_limit);
     for (unsigned n=0;n<lease_limit;++n) {
         leases[n]=fence(); REQUIRE(!ioctl(control,WDDM_APERTURE_CREATE,&leases[n]));
+        if(lease_limit==WDDM_APERTURE_DESKTOP_LEASES) {
+            /* The controller owns each lease independently of the recipient
+             * FD. Exercise the full metadata bound without assuming a raised
+             * per-process descriptor limit. */
+            REQUIRE(!close(leases[n].fd));leases[n].fd=-1;
+        }
     }
     arg=fence(); errno=0;
     REQUIRE(ioctl(control,WDDM_APERTURE_CREATE,&arg)==-1 && errno==ENOSPC);
     REQUIRE(info(control).active_leases==lease_limit);
-    for (unsigned n=0;n<lease_limit;++n) { revoke_lease(control,leases[n].cookie); close(leases[n].fd); }
+    for (unsigned n=0;n<lease_limit;++n) { revoke_lease(control,leases[n].cookie); if(leases[n].fd>=0) close(leases[n].fd); }
     if (layout.allocation_bytes > capacity.cpu_byte_limit) {
         cpu=(struct wddm_aperture_create){.version=1,.kind=2,.bytes=capacity.cpu_byte_limit,.host_generation=3,.flags=1};
         REQUIRE(!ioctl(control,WDDM_APERTURE_CREATE,&cpu));

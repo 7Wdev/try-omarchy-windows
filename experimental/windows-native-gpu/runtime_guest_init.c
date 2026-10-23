@@ -126,14 +126,23 @@ static int kernel_aperture_start(void) {
     if (access("/kernel-aperture-required", F_OK)) return 0;
     const int module = open("/wddm-aperture.ko", O_RDONLY | O_CLOEXEC);
     if (module < 0) { perror("aperture module open"); return -1; }
-    char parameters[192]={0};
-    if(!access("/native-sync-files-required",F_OK)) strcat(parameters,"enable_native_sync_files=1 ");
-    if(!access("/native-buffers-required",F_OK)) strcat(parameters,"enable_native_buffers=1 ");
-    if(!access("/opt/wddm-root/desktop-4k-cpu-probe",F_OK)) strcat(parameters,"enable_desktop_4k_cpu=1 ");
-    if(!access("/opt/wddm-root/desktop-sparse-probe",F_OK)) strcat(parameters,"enable_sparse_aperture=1 ");
-    if(!access("/opt/wddm-root/desktop-coordinator-probe",F_OK)) strcat(parameters,"enable_coordinated_leases=1 ");
-    if(!access("/opt/wddm-root/desktop-fence-probe",F_OK)) strcat(parameters,"enable_desktop_fences=1 ");
-    if(!access("/opt/wddm-root/desktop-slot-probe",F_OK)) strcat(parameters,"enable_desktop_slots=1 ");
+    char parameters[256]={0};
+    const struct { const char* marker;const char* value; } options[]={
+        {"/native-sync-files-required","enable_native_sync_files=1 "},
+        {"/native-buffers-required","enable_native_buffers=1 "},
+        {"/opt/wddm-root/desktop-4k-cpu-probe","enable_desktop_4k_cpu=1 "},
+        {"/opt/wddm-root/desktop-sparse-probe","enable_sparse_aperture=1 "},
+        {"/opt/wddm-root/desktop-coordinator-probe","enable_coordinated_leases=1 "},
+        {"/opt/wddm-root/desktop-fence-probe","enable_desktop_fences=1 "},
+        {"/opt/wddm-root/desktop-slot-probe","enable_desktop_slots=1 "},
+        {"/opt/wddm-root/desktop-lease-probe","enable_desktop_leases=1 "},
+    };
+    for(size_t index=0;index<sizeof options/sizeof options[0];++index) {
+        if(access(options[index].marker,F_OK)) continue;
+        const size_t used=strlen(parameters),length=strlen(options[index].value);
+        if(length>=sizeof parameters-used) { close(module);errno=EOVERFLOW;perror("aperture module parameters");return -1; }
+        memcpy(parameters+used,options[index].value,length+1);
+    }
     const int result = (int)syscall(SYS_finit_module, module, parameters, 0);
     close(module);
     if (result) { perror("guest aperture finit_module"); return -1; }
