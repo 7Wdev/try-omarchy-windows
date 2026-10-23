@@ -21,9 +21,11 @@ An earlier **16-reference admission failure remains unresolved**.
 [Actual two-window frame, all attempts and limits](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-MULTIAPP-CPU384.md).
 
 **Recovery follow-up:** valid capacity refusals now preserve the broker
-connection. Authenticated IPC controls and a further complete two-window GPU
-regression pass; the intermittent reference-limit cause and visual refusal
-recovery remain open. [Evidence and precise scope](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-ALIAS-CAPACITY-RECOVERY.md).
+connection. Two fresh guests now recover from an explicitly injected
+**guest-side, pre-native refusal**, retry the same GPU resource, and pass
+**1,800 handoffs** with complete pixels, input/resize response and live cleanup.
+Actual native quota-refusal recovery and the intermittent reference-limit cause
+remain open. [Actual post-fault frame, all attempts and precise scope](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-INJECTED-ALIAS-GPU-RECOVERY.md).
 
 **Verified pressure checkpoint — October 22, 2026:** two fresh guests exceed **2 GiB of
 GPU virtual mappings**, verify 56 GPU copy/evict cycles and retained contents,
@@ -38,7 +40,7 @@ input path, including the launcher's reserved-key routing.** The GPU relay uses
 that frontend's input implementation. Physical-input acceptance and normal
 launcher integration remain open. [Verified source map](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/UPSTREAM-INPUT-GRAPHICS-INTEGRATION.md).
 
-![Actual two-application NVIDIA SDL backbuffer, run 145 handoff 1800](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/windows-nvgpu-lab/docs/images/omarchy-multiapp-frame-1800-2026-10-23.png)
+![Actual two-application NVIDIA SDL backbuffer after injected guest-side refusal, run 154 handoff 1800](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/windows-nvgpu-lab/docs/images/omarchy-injected-refusal-frame-1800-2026-10-23.png)
 
 Actual **2560×1566 SDL pre-swap backbuffer** from a complete 3840×2160 GPU source.
 Physical 4K scanout remains unverified. The test uses a disposable UWSM/PAM

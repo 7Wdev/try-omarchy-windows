@@ -7,6 +7,11 @@ connection and caller-owned FD after `ENOMEM` / `ENOSPC`, then successfully retr
 on the same connection. **The intermittent GPU reference-limit cause and visual
 recovery after a real GPU admission failure remain unverified.**
 
+**Later controlled GPU follow-up:** two fresh guests recover from one explicitly
+injected pre-native guest refusal and pass all 1,800 handoffs and complete
+pixel/lifetime checks. [Actual post-fault frame and exact scope](LIVE-INJECTED-ALIAS-GPU-RECOVERY.md).
+Actual Windows-native quota rejection and its natural cause remain open.
+
 ## Correction
 
 `ResolveObject` now treats capacity refusal as recoverable, consistently with

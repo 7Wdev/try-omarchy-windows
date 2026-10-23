@@ -9,6 +9,15 @@
 #include <set>
 #include <atomic>
 #include <sys/stat.h>
+#if defined(WDDM_BRIDGE_DIAGNOSTIC_ALIAS_REFUSAL_FRAME)
+#if !defined(WDDM_BRIDGE_4K_LAB) || !WDDM_BRIDGE_4K_LAB || !defined(WDDM_BRIDGE_MULTIAPP_CPU) || !WDDM_BRIDGE_MULTIAPP_CPU
+#error Diagnostic alias refusal requires the explicit CPU384 4K test build
+#endif
+#if WDDM_BRIDGE_DIAGNOSTIC_ALIAS_REFUSAL_FRAME < 1 || WDDM_BRIDGE_DIAGNOSTIC_ALIAS_REFUSAL_FRAME > 1700
+#error Diagnostic alias refusal must be armed in frames 1..1700
+#endif
+#include "diagnostic_alias_refusal.h"
+#endif
 #if defined(WDDM_BRIDGE_MULTIAPP_CPU) && WDDM_BRIDGE_MULTIAPP_CPU
 #if !defined(WDDM_BRIDGE_FOUR_ACTOR_OBJECTS) || !WDDM_BRIDGE_FOUR_ACTOR_OBJECTS
 #error Multi-application CPU mappings require four-actor object negotiation
@@ -180,8 +189,15 @@ class ActorPort {
     const pid_t process;
     std::set<std::uint32_t> adapters;
     bool dead=false;
+#if defined(WDDM_BRIDGE_DIAGNOSTIC_ALIAS_REFUSAL_FRAME)
+    DiagnosticAliasRefusal diagnosticRefusal;
+#endif
 public:
-    ActorPort(CoordinatorPort& controller,bool presentationOwner,pid_t pid):owner(controller),primary(presentationOwner),process(pid) {}
+    ActorPort(CoordinatorPort& controller,bool presentationOwner,pid_t pid):owner(controller),primary(presentationOwner),process(pid)
+#if defined(WDDM_BRIDGE_DIAGNOSTIC_ALIAS_REFUSAL_FRAME)
+        ,diagnosticRefusal(presentationOwner,WDDM_BRIDGE_DIAGNOSTIC_ALIAS_REFUSAL_FRAME)
+#endif
+    {}
     std::uint64_t actor() const { return id; }
     cg::Info info() const { return owner.info(); }
     std::vector<std::uint8_t> exchange(const std::vector<std::uint8_t>& packet) {
@@ -203,12 +219,29 @@ public:
             if(!r.status && !value.ntstatus) {
                 if(h.type==static_cast<std::uint32_t>(Op::OpenAdapter)) adapters.insert(r.handle);
                 if(h.type==static_cast<std::uint32_t>(Op::CloseAdapter)) adapters.erase(h.handle);
+#if defined(WDDM_BRIDGE_DIAGNOSTIC_ALIAS_REFUSAL_FRAME)
+                if(primary && h.type==static_cast<std::uint32_t>(Op::QueueCompositorFrame)) {
+                    if(r.type!=h.type || reply.size()!=sizeof(Header)+sizeof(Reply))
+                        throw std::runtime_error("Diagnostic compositor acknowledgement extent mismatch");
+                    if(diagnosticRefusal.acceptedNativeFrame(value.value))
+                        receipt("BROKER_DIAGNOSTIC_ALIAS_REFUSAL_ARMED actor=%llu pid=%d completedFrames=%llu threshold=%u actualNativeReplyAccepted=true testOnly=true gpuProof=false\n",
+                            static_cast<unsigned long long>(id),process,static_cast<unsigned long long>(value.value),WDDM_BRIDGE_DIAGNOSTIC_ALIAS_REFUSAL_FRAME);
+                }
+#endif
             }
         }
         return reply;
     }
     std::uint32_t alias(std::uint64_t donor,std::uint32_t ticket,std::uint32_t kind) {
         if(dead || adapters.empty()) throw std::system_error(EBADF,std::generic_category(),"Recipient has no adapter");
+#if defined(WDDM_BRIDGE_DIAGNOSTIC_ALIAS_REFUSAL_FRAME)
+        if(diagnosticRefusal.refuseResourceAlias(kind==WDDM_OBJECT_RESOURCE)) {
+            receipt("BROKER_DIAGNOSTIC_ALIAS_REFUSAL_INJECTED actor=%llu pid=%d donor=%llu sourceTicket=%u kind=%u completedFrames=%llu errno=%d origin=guest-before-native nativeAliasCalled=false testOnly=true resourcesReleased=false gpuProof=false\n",
+                static_cast<unsigned long long>(id),process,static_cast<unsigned long long>(donor),ticket,kind,
+                static_cast<unsigned long long>(diagnosticRefusal.completedFrames()),ENOMEM);
+            throw DiagnosticAliasRefusalError();
+        }
+#endif
         return owner.alias(cg::Alias{donor,id,kind==WDDM_OBJECT_SYNC ? driver_bridge::Kind::SharedSync : driver_bridge::Kind::SharedResource,ticket,*adapters.begin(),0}).ticket;
     }
     void processExited() { if(id) owner.disconnect(id);dead=true; }
@@ -315,7 +348,7 @@ public:
             try { ticket=native.alias(entry.producer,entry.source,kind); }
             catch(const std::system_error& error) {
 #if defined(WDDM_BRIDGE_MULTIAPP_CPU) && WDDM_BRIDGE_MULTIAPP_CPU
-                // Observe FD lifetime after the refused native admission. Never
+                // Observe FD lifetime after alias refusal. Never
                 // close a live capability or infer GPU completion from this view.
                 try {
                 registry.collect();
@@ -329,8 +362,14 @@ public:
                 }
                 const auto queued=registry.pending.find(native.actor());
                 if(queued!=registry.pending.end()) for(const auto& item:queued->second) if(item.kind==kind) ++pending;
+#if defined(WDDM_BRIDGE_DIAGNOSTIC_ALIAS_REFUSAL_FRAME)
+                const bool injected=dynamic_cast<const DiagnosticAliasRefusalError*>(&error)!=nullptr;
+                receipt("BROKER_ALIAS_REFUSAL_SNAPSHOT actor=%llu kind=%u errno=%d liveFdReferences=%u reapedFdReferences=%u pendingReaps=%u afterAliasAdmissionRefused=true diagnosticInjected=%s registryLocked=true resourcesReleased=false gpuProof=false\n",
+                    static_cast<unsigned long long>(native.actor()),kind,error.code().value(),live,reaped,pending,injected?"true":"false");
+#else
                 receipt("BROKER_ALIAS_REFUSAL_SNAPSHOT actor=%llu kind=%u errno=%d liveFdReferences=%u reapedFdReferences=%u pendingReaps=%u afterNativeAdmissionRefused=true registryLocked=true resourcesReleased=false gpuProof=false\n",
                     static_cast<unsigned long long>(native.actor()),kind,error.code().value(),live,reaped,pending);
+#endif
                 } catch(...) {
                     receipt("BROKER_ALIAS_REFUSAL_SNAPSHOT_UNAVAILABLE actor=%llu originalErrno=%d resourcesReleased=false originalErrorPreserved=true\n",
                         static_cast<unsigned long long>(native.actor()),error.code().value());

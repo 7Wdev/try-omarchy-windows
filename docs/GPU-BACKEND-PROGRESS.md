@@ -21,11 +21,15 @@ open. Progress counts are unchanged.
 [Actual two-window frame, precise failures and exact sources](LIVE-MULTIAPP-CPU384.md).
 
 **Recovery follow-up:** a valid `ENOMEM`/`ENOSPC` resolution reply now preserves
-the broker connection and live caller FD. Real IPC refusal/retry controls pass;
-the corrected guest separately passes a complete **1,800-handoff two-window
-GPU regression**. This does not establish visual recovery after a real GPU
-refusal. The intermittent reference-limit cause remains open.
-[Exact controls, real GPU compatibility and limits](LIVE-ALIAS-CAPACITY-RECOVERY.md).
+the broker connection and live caller FD. Two fresh guests additionally recover
+from one explicitly injected **guest-side refusal before the native alias call**,
+retry the exact GPU resource, and complete **1,800 handoffs** with complete
+source/SDL pixels, input/resize response and live cleanup. An initial origin-label
+defect and a run occluded by a real calendar popup stay nonaccepted. The unchanged
+wallpaper oracle is retained. Actual native quota-refusal recovery and the natural
+reference-limit cause remain open; progress counts stay unchanged.
+[Actual post-fault frame, every attempt and exact limits](LIVE-INJECTED-ALIAS-GPU-RECOVERY.md) ·
+[Original transport correction](LIVE-ALIAS-CAPACITY-RECOVERY.md).
 
 **Earlier multi-window admission investigation — October 23, 2026:** a second real
 application initializes its NVIDIA OpenGL renderer. The simultaneous workload
