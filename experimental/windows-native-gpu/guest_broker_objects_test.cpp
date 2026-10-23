@@ -31,6 +31,8 @@ struct ObjectMock {
     struct Record { Fd watch; ObjectRef ref; std::uint64_t identity; };
     std::map<std::uint32_t,Record> records;
     bool corrupt=false;
+    unsigned resolveRefusals=0;
+    int resolveError=ENOMEM;
     unsigned reapCount=0;
     static std::uint64_t identity(int fd) {
         std::uint64_t cookie=0; socklen_t bytes=sizeof(cookie);
@@ -49,6 +51,7 @@ struct ObjectMock {
         const auto cookie=identity(fd);
         for (const auto& item:records) if (item.second.identity==cookie) {
             if (item.second.ref.kind!=kind) throw std::system_error(EINVAL,std::generic_category(),"Mock wrong kind");
+            if (resolveRefusals) { --resolveRefusals; throw std::system_error(resolveError,std::generic_category(),"Mock native alias refusal"); }
             auto ref=item.second.ref; if (corrupt) ++ref.cookie; return ref;
         }
         throw std::system_error(EBADF,std::generic_category(),"Mock unregistered FD");
@@ -204,10 +207,53 @@ static void recipientAfterProducer() {
     CHECK(!unlink(path.c_str()) && !rmdir(directory));
     std::cout<<"BROKER_OBJECT_RPC clientUid=65534 inheritedSocket=true recipientAfterProducer=true memoryRevokedFirst=true nativeCloses=1 native=mock kernel=mock gpu=false\n";
 }
+static void resolutionRefusal(int error,bool recoverable,bool malformed=false) {
+    char directory[]="/tmp/wddm-broker-refusal-XXXXXX"; CHECK(mkdtemp(directory)); CHECK(!chmod(directory,0755));
+    const auto path=std::string(directory)+"/broker.sock";
+    sockaddr_un address{}; address.sun_family=AF_UNIX; std::memcpy(address.sun_path,path.c_str(),path.size()+1);
+    Fd listener(socket(AF_UNIX,SOCK_SEQPACKET|SOCK_CLOEXEC,0)); const int enabled=1;
+    CHECK(listener.get()>=0 && !setsockopt(listener.get(),SOL_SOCKET,SO_PASSCRED,&enabled,sizeof enabled));
+    CHECK(!bind(listener.get(),reinterpret_cast<sockaddr*>(&address),sizeof address));
+    CHECK(!chown(path.c_str(),65534,65534) && !chmod(path.c_str(),0600) && !listen(listener.get(),1));
+    const auto child=fork(); CHECK(child>=0);
+    if (!child) {
+        try {
+            close(listener.get()); CHECK(!setgroups(0,nullptr) && !setgid(65534) && !setuid(65534));
+            setenv("WDDM_BRIDGE_BROKER_SOCKET",path.c_str(),1); Client client;
+            client.driver(packet(Op::ExportResource,9)); auto cap=client.createObject(11,WDDM_OBJECT_RESOURCE);
+            if (malformed) denied([&]{client.request(Operation::ResolveObject,encode(ObjectRequest{WDDM_OBJECT_RESOURCE,0,0}));},EPROTO);
+            else denied([&]{client.resolveObject(cap.fds[0].get(),WDDM_OBJECT_RESOURCE);},error);
+            CHECK(fcntl(cap.fds[0].get(),F_GETFD)>=0); // Refusal cannot revoke the sender's live capability.
+            if (recoverable) {
+                CHECK(client.objectInfo().version==WDDM_APERTURE_VERSION);
+                CHECK(client.resolveObject(cap.fds[0].get(),WDDM_OBJECT_RESOURCE).ticket==11);
+                client.driver(packet(Op::QuerySharedResourceInfo,11,encode(SharedResourceQueryDesc{2,0})));
+            } else denied([&]{client.objectInfo();},ESHUTDOWN);
+            _exit(0);
+        } catch (const std::exception& e) { dprintf(2,"Resolution refusal child: %s\n",e.what()); _exit(1); }
+    }
+    Fd accepted(accept4(listener.get(),nullptr,nullptr,SOCK_CLOEXEC|SOCK_NONBLOCK)); CHECK(accepted.get()>=0);
+    Peer peer(std::move(accepted),65534,65534); MemoryMock memory; ObjectMock objects;
+    objects.resolveRefusals=1;objects.resolveError=error;NativeMock native{memory,objects};
+    CHECK(serve(peer,native,memory,objects)==(recoverable ? 0 : 1));
+    int status=0; CHECK(waitpid(child,&status,0)==child && WIFEXITED(status) && !WEXITSTATUS(status));
+    CHECK(peer.processExited() && memory.closed && objects.records.empty() && objects.reapCount==1 && native.closes==1 &&
+          native.queries==(recoverable ? 1u : 0u) && objects.resolveRefusals==(malformed ? 1u : 0u));
+    CHECK(!unlink(path.c_str()) && !rmdir(directory));
+    const auto marker="BROKER_RESOLVE_REFUSAL errno="+std::to_string(error)+" recoverable="+std::to_string(recoverable)+
+        " malformed="+std::to_string(malformed)+" sameConnectionRetry="+std::to_string(recoverable)+
+        " liveFdPreserved=true pidfdExitRequired=true native=mock kernel=mock gpu=false\n";
+    std::cout.flush();
+    CHECK(write(STDOUT_FILENO,marker.data(),marker.size())==static_cast<ssize_t>(marker.size()));
+}
 int main() {
     try {
         alarm(15); objectPolicy(); importedViews();
-        if (geteuid()) std::cout<<"BROKER_OBJECT_RPC skipped=root-required\n"; else recipientAfterProducer();
+        if (geteuid()) std::cout<<"BROKER_OBJECT_RPC skipped=root-required\n";
+        else {
+            recipientAfterProducer(); resolutionRefusal(ENOMEM,true); resolutionRefusal(ENOSPC,true);
+            resolutionRefusal(EIO,false); resolutionRefusal(ETIMEDOUT,false); resolutionRefusal(EPROTO,false,true);
+        }
         alarm(0); return 0;
     } catch (const std::exception& error) { std::cerr<<error.what()<<'\n'; return 1; }
 }

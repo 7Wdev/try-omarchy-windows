@@ -23,6 +23,12 @@
 namespace guest_broker {
 namespace cg=driver_bridge::coordinator;
 namespace ar=driver_bridge::actors;
+inline int nativeAliasFailureErrno(std::int32_t status) {
+    // ntstatus.h: STATUS_NO_MEMORY / STATUS_INSUFFICIENT_RESOURCES. An
+    // unexpected native failure must not masquerade as recoverable pressure.
+    const auto value=static_cast<std::uint32_t>(status);
+    return value==0xc0000017u || value==0xc000009au ? ENOMEM : EIO;
+}
 class CoordinatorPort {
     Port port;
     driver_bridge::FairRpcMutex lock;
@@ -155,8 +161,9 @@ public:
         const auto result=decode<driver_bridge::SharedReferenceAlias>(control(cg::Operation::Alias,encode(value)));
         if(result.ntstatus>0 || (result.ntstatus ? result.ticket!=0 : !result.ticket)) reject("Coordinator alias reply mismatch");
         if(result.ntstatus) {
-            receipt("BROKER_COORDINATOR_ALIAS_REJECTED kind=%u ntstatus=%d nativeReplyPreserved=true\n",static_cast<unsigned>(value.kind),result.ntstatus);
-            throw std::system_error(ENOMEM,std::generic_category(),"Native recipient alias failed");
+            const auto error=nativeAliasFailureErrno(result.ntstatus);
+            receipt("BROKER_COORDINATOR_ALIAS_REJECTED kind=%u ntstatus=%d errno=%d nativeReplyPreserved=true\n",static_cast<unsigned>(value.kind),result.ntstatus,error);
+            throw std::system_error(error,std::generic_category(),"Native recipient alias failed");
         }
         return result;
     }

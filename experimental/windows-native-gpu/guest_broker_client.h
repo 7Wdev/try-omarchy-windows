@@ -28,7 +28,10 @@ inline std::uint32_t importKind(driver_bridge::Op op) {
     return 0;
 }
 inline bool recoverableObjectError(Operation operation,int error) {
-    return (operation==Operation::ResolveObject && (error==EBADF || error==EINVAL || error==EPERM || error==ENODEV)) ||
+    // A valid capability can outlive a refused recipient alias. Keep the
+    // authenticated channel usable for reaping/retry after capacity errors.
+    // Protocol/driver failures still poison the connection on both endpoints.
+    return (operation==Operation::ResolveObject && (error==EBADF || error==EINVAL || error==EPERM || error==ENODEV || error==ENOMEM || error==ENOSPC)) ||
            ((operation==Operation::ExportNativeSyncFile || operation==Operation::ResolveNativeSyncFile ||
              operation==Operation::ExportNativeBuffer || operation==Operation::NativeBufferInfo) &&
             (error==EBADF || error==EINVAL || error==EPERM || error==ENODEV || error==EOPNOTSUPP || error==ETIMEDOUT || error==EIO || error==ENOMEM || error==ENOSPC)) ||

@@ -1,5 +1,10 @@
 # Two NVIDIA applications in the 4K desktop fixture
 
+**Recovery follow-up:** valid capacity replies now preserve the broker
+connection; real IPC controls and another complete two-window GPU regression
+pass. The GPU reference-limit cause and visual refusal recovery remain open.
+[Exact evidence and limits](LIVE-ALIAS-CAPACITY-RECOVERY.md).
+
 Updated **2026-10-23**. Two fresh guests each complete **1,800 GPU handoffs**
 with the shipped wallpaper, Omarchy bar and **two readable Alacritty windows**.
 Both independently audited runs pass complete first/final source and SDL pixels,

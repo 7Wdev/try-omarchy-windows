@@ -179,6 +179,8 @@ jobs:
           sudo /tmp/broker-objects-4k-test
           c++ -std=c++17 -O2 -Wall -Wextra -Werror -pthread experimental/windows-native-gpu/guest_coordinator_test.cpp -o /tmp/guest-coordinator-test
           /tmp/guest-coordinator-test
+          c++ -std=c++17 -O2 -Wall -Wextra -Werror -pthread -DWDDM_BRIDGE_4K_LAB=1 -DWDDM_BRIDGE_MANAGED_GPUVA=1 -DWDDM_BRIDGE_WIDE_KERNEL_LEASES=1 -DWDDM_BRIDGE_FOUR_ACTOR_OBJECTS=1 -DWDDM_BRIDGE_MULTIAPP_CPU=1 experimental/windows-native-gpu/guest_coordinator_test.cpp -o /tmp/guest-coordinator-multiapp-test
+          /tmp/guest-coordinator-multiapp-test
           c++ -std=c++17 -O2 -Wall -Wextra -Werror -pthread experimental/windows-native-gpu/guest_broker_receipts_test.cpp -o /tmp/guest-broker-receipts-test
           /tmp/guest-broker-receipts-test
           c++ -std=c++17 -O2 -Wall -Wextra -Werror experimental/windows-native-gpu/bounded_gpu_retirement_wait_test.cpp -o /tmp/bounded-gpu-retirement-wait-test

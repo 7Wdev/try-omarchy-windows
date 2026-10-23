@@ -20,6 +20,11 @@ older agreements retain their limits and the GPU usage guard stays 1 GiB.
 An earlier **16-reference admission failure remains unresolved**.
 [Actual two-window frame, all attempts and limits](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-MULTIAPP-CPU384.md).
 
+**Recovery follow-up:** valid capacity refusals now preserve the broker
+connection. Authenticated IPC controls and a further complete two-window GPU
+regression pass; the intermittent reference-limit cause and visual refusal
+recovery remain open. [Evidence and precise scope](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-ALIAS-CAPACITY-RECOVERY.md).
+
 **Verified pressure checkpoint — October 22, 2026:** two fresh guests exceed **2 GiB of
 GPU virtual mappings**, verify 56 GPU copy/evict cycles and retained contents,
 then each pass **1,800 desktop handoffs over 35.3 and 34.5 seconds**. Complete

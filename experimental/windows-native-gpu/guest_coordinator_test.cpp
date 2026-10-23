@@ -44,6 +44,7 @@ struct KernelMock {
 struct NativeMock {
     std::uint64_t id=0;
     std::uint32_t nextAlias=100;
+    int aliasRefusal=0;
     std::atomic<unsigned> aliases{0},closed{0};
     std::atomic<bool> exited{false},finished{false};
     std::condition_variable ready;
@@ -51,7 +52,9 @@ struct NativeMock {
     std::uint64_t actor() const { return id; }
     cg::Info info() const { return {}; }
     std::uint32_t alias(std::uint64_t donor,std::uint32_t ticket,std::uint32_t kind) {
-        CHECK(donor && donor!=id && ticket==3 && (kind==WDDM_OBJECT_RESOURCE || kind==WDDM_OBJECT_SYNC));++aliases;return nextAlias++;
+        CHECK(donor && donor!=id && ticket==3 && (kind==WDDM_OBJECT_RESOURCE || kind==WDDM_OBJECT_SYNC));
+        if(aliasRefusal) { const auto error=aliasRefusal;aliasRefusal=0;throw std::system_error(error,std::generic_category(),"Mock native recipient capacity refusal"); }
+        ++aliases;return nextAlias++;
     }
     std::vector<std::uint8_t> exchange(const std::vector<std::uint8_t>& packet) {
         CHECK(exited);Header h{};std::memcpy(&h,packet.data(),sizeof h);
@@ -66,6 +69,12 @@ template<class Store> static void exported(Store& store,Op op,std::uint32_t tick
     auto reply=packet(op,ticket);const auto result=encode(Reply{});reply.insert(reply.end(),result.begin(),result.end());store.observe(packet(op,1),reply);
 }
 int main() {
+    CHECK(nativeAliasFailureErrno(static_cast<std::int32_t>(0xc0000017u))==ENOMEM);
+    CHECK(nativeAliasFailureErrno(static_cast<std::int32_t>(0xc000009au))==ENOMEM);
+    for(const auto status:{0xc000000du,0xc0000008u,0xc0000022u,0x887a0005u}) {
+        const auto error=nativeAliasFailureErrno(static_cast<std::int32_t>(status));
+        CHECK(error==EIO && !recoverableObjectError(Operation::ResolveObject,error));
+    }
     CHECK(wddm_aperture_valid_caps({1,0,WDDM_APERTURE_CPU_LIMIT,{0,0}}));
     CHECK(wddm_aperture_valid_caps({1,3,WDDM_APERTURE_DESKTOP_CPU_LIMIT,{0,0}}));
     CHECK(wddm_aperture_valid_caps({1,7,WDDM_APERTURE_MULTIAPP_CPU_LIMIT,{0,0}}));
@@ -111,6 +120,13 @@ int main() {
         }
         CHECK(!first.closed && !first.finished); // Real recipient duplicate keeps source capability alive.
         recipient.validate(inherited.get(),kind,recipient);CHECK(!second.aliases);
+        for(const auto code:{ENOMEM,ENOSPC}) {
+            second.aliasRefusal=code;bad=false;
+            try { (void)recipient.resolve(inherited.get(),kind,recipient); }
+            catch(const std::system_error& error) { bad=error.code().value()==code; }
+            CHECK(bad && recoverableObjectError(Operation::ResolveObject,code) && !second.aliases && !second.closed &&
+                  !first.closed && !first.finished && state->records.size()==2 && fcntl(inherited.get(),F_GETFD)>=0);
+        }
         const auto foreign=recipient.resolve(inherited.get(),kind,recipient);
         CHECK(foreign.ticket==100 && foreign.cookie==original.second.cookie && second.aliases==1);
         CHECK(recipient.resolve(inherited.get(),kind,recipient).ticket==100 && second.aliases==1);
@@ -123,5 +139,5 @@ int main() {
         own.first=Fd();recipient.drain(second,recipient);
         CHECK(second.closed==2 && second.finished && state->records.empty());
     }
-    std::cout<<"GUEST_COORDINATOR realUnixFdLifetime=true collidingLocalTickets=true kernelGlobalTicketsUnique=true forgedCookieRejected=true foreignTicketRejected=true aliasCached=true producerExitRetained=true nativeAndKernel=mock gpu=false\n";
+    std::cout<<"GUEST_COORDINATOR realUnixFdLifetime=true collidingLocalTickets=true kernelGlobalTicketsUnique=true forgedCookieRejected=true foreignTicketRejected=true refusedAliasLeavesNoCache=true capacityRetry=true aliasCached=true producerExitRetained=true nativeAndKernel=mock gpu=false\n";
 }

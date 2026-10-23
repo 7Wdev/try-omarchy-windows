@@ -20,6 +20,13 @@ normal launcher, continuous stability and desktop product acceptance remain
 open. Progress counts are unchanged.
 [Actual two-window frame, precise failures and exact sources](LIVE-MULTIAPP-CPU384.md).
 
+**Recovery follow-up:** a valid `ENOMEM`/`ENOSPC` resolution reply now preserves
+the broker connection and live caller FD. Real IPC refusal/retry controls pass;
+the corrected guest separately passes a complete **1,800-handoff two-window
+GPU regression**. This does not establish visual recovery after a real GPU
+refusal. The intermittent reference-limit cause remains open.
+[Exact controls, real GPU compatibility and limits](LIVE-ALIAS-CAPACITY-RECOVERY.md).
+
 **Earlier multi-window admission investigation — October 23, 2026:** a second real
 application initializes its NVIDIA OpenGL renderer. The simultaneous workload
 then reaches the unchanged 192 MiB CPU mapping guard and fails native cleanup
