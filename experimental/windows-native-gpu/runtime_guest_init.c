@@ -136,6 +136,7 @@ static int kernel_aperture_start(void) {
         {"/opt/wddm-root/desktop-fence-probe","enable_desktop_fences=1 "},
         {"/opt/wddm-root/desktop-slot-probe","enable_desktop_slots=1 "},
         {"/opt/wddm-root/desktop-lease-probe","enable_desktop_leases=1 "},
+        {"/opt/wddm-root/multiapp-cpu-probe","enable_multiapp_cpu=1 "},
     };
     for(size_t index=0;index<sizeof options/sizeof options[0];++index) {
         if(access(options[index].marker,F_OK)) continue;

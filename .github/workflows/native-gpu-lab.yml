@@ -171,6 +171,7 @@ jobs:
           c++ -std=c++17 -O2 -Wall -Wextra -Werror -pthread experimental/windows-native-gpu/guest_graphics_broker.cpp -o /tmp/guest-graphics-broker
           c++ -std=c++17 -O2 -Wall -Wextra -Werror -pthread -DWDDM_BRIDGE_4K_LAB=1 -DWDDM_BRIDGE_MANAGED_GPUVA=1 -DWDDM_BRIDGE_WIDE_KERNEL_LEASES=1 experimental/windows-native-gpu/guest_graphics_broker.cpp -o /tmp/guest-graphics-broker-wide
           c++ -std=c++17 -O2 -Wall -Wextra -Werror -pthread -DWDDM_BRIDGE_4K_LAB=1 -DWDDM_BRIDGE_MANAGED_GPUVA=1 -DWDDM_BRIDGE_WIDE_KERNEL_LEASES=1 -DWDDM_BRIDGE_FOUR_ACTOR_OBJECTS=1 experimental/windows-native-gpu/guest_graphics_broker.cpp -o /tmp/guest-graphics-broker-four
+          c++ -std=c++17 -O2 -Wall -Wextra -Werror -pthread -DWDDM_BRIDGE_4K_LAB=1 -DWDDM_BRIDGE_MANAGED_GPUVA=1 -DWDDM_BRIDGE_WIDE_KERNEL_LEASES=1 -DWDDM_BRIDGE_FOUR_ACTOR_OBJECTS=1 -DWDDM_BRIDGE_MULTIAPP_CPU=1 experimental/windows-native-gpu/guest_graphics_broker.cpp -o /tmp/guest-graphics-broker-multiapp
           c++ -std=c++17 -O2 -Wall -Wextra -Werror -pthread experimental/windows-native-gpu/guest_broker_routing_test.cpp -o /tmp/broker-routing-test
           c++ -std=c++17 -O2 -Wall -Wextra -Werror -pthread experimental/windows-native-gpu/guest_broker_objects_test.cpp -o /tmp/broker-objects-test
           sudo /tmp/broker-objects-test

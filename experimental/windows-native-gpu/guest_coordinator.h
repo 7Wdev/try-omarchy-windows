@@ -9,6 +9,11 @@
 #include <set>
 #include <atomic>
 #include <sys/stat.h>
+#if defined(WDDM_BRIDGE_MULTIAPP_CPU) && WDDM_BRIDGE_MULTIAPP_CPU
+#if !defined(WDDM_BRIDGE_FOUR_ACTOR_OBJECTS) || !WDDM_BRIDGE_FOUR_ACTOR_OBJECTS
+#error Multi-application CPU mappings require four-actor object negotiation
+#endif
+#endif
 #if defined(WDDM_BRIDGE_FOUR_ACTOR_OBJECTS) && WDDM_BRIDGE_FOUR_ACTOR_OBJECTS
 #if !defined(WDDM_BRIDGE_WIDE_KERNEL_LEASES) || !WDDM_BRIDGE_WIDE_KERNEL_LEASES
 #error Four-actor object metadata requires expanded kernel lease negotiation
@@ -58,14 +63,21 @@ public:
 #else
         constexpr auto expectedLeases=driver_bridge::CoordinatedObjectCapacity{}.leaseLimit;
 #endif
-        const driver_bridge::OpenGlDesktopPresentationCapacity wanted{{{expanded ? references ? 13u : 12u : wide ? 11u : 10u,caps.version,caps.cpu_byte_limit,layout.allocation_slots,layout.fence_slots,0},
+#if defined(WDDM_BRIDGE_MULTIAPP_CPU) && WDDM_BRIDGE_MULTIAPP_CPU
+        constexpr bool multiapp=true;
+#else
+        constexpr bool multiapp=false;
+#endif
+        const driver_bridge::OpenGlDesktopPresentationCapacity wanted{{{expanded ? references ? multiapp ? 14u : 13u : 12u : wide ? 11u : 10u,caps.version,caps.cpu_byte_limit,layout.allocation_slots,layout.fence_slots,0},
             driver_bridge::OpenGlDesktopLargeMapBytes},driver_bridge::OpenGlDesktopPresentationReportedBytes};
         if((references && !expanded) || !wddm_aperture_valid_coordinator_caps(leases) || !leases.enabled || leases.lease_limit!=expectedLeases ||
-            !wddm_aperture_valid_caps(caps) || caps.flags!=(WDDM_APERTURE_DESKTOP_CPU_ENABLED|WDDM_APERTURE_SPARSE_ENABLED) ||
+            !wddm_aperture_valid_caps(caps) || caps.flags!=(WDDM_APERTURE_DESKTOP_CPU_ENABLED|WDDM_APERTURE_SPARSE_ENABLED|(multiapp ? WDDM_APERTURE_MULTIAPP_CPU_ENABLED : 0u)) ||
             !driver_bridge::validCoordinatedPresentationCapacity(wanted) ||
             (wide && (!wddm_aperture_valid_desktop_fences(fences) || !fences.enabled || fences.slots!=layout.fence_slots || fences.bytes!=layout.fence_bytes)) ||
             (expanded && (!wddm_aperture_valid_desktop_slots(slots) || !slots.enabled || slots.slots!=layout.allocation_slots || slots.bytes!=layout.allocation_bytes))) reject("Coordinator kernel capacity mismatch");
-#if defined(WDDM_BRIDGE_FOUR_ACTOR_OBJECTS) && WDDM_BRIDGE_FOUR_ACTOR_OBJECTS
+#if defined(WDDM_BRIDGE_MULTIAPP_CPU) && WDDM_BRIDGE_MULTIAPP_CPU
+        const auto referenceObjects=driver_bridge::GuestCoordinatedMultiappObjects;
+#elif defined(WDDM_BRIDGE_FOUR_ACTOR_OBJECTS) && WDDM_BRIDGE_FOUR_ACTOR_OBJECTS
         const auto referenceObjects=driver_bridge::GuestCoordinatedActorObjects;
 #elif defined(WDDM_BRIDGE_WIDE_KERNEL_LEASES) && WDDM_BRIDGE_WIDE_KERNEL_LEASES
         const auto referenceObjects=driver_bridge::GuestCoordinatedLeaseObjects;
@@ -83,10 +95,11 @@ public:
             leases.lease_limit,static_cast<unsigned long long>(caps.cpu_byte_limit),caps.flags);
         if(wide) receipt("BROKER_COORDINATOR_FENCE_CAPACITY profile=%u slots=%u bytes=%llu actualIoctl=true\n",wanted.mapping.aperture.version,fences.slots,static_cast<unsigned long long>(fences.bytes));
         if(expanded) receipt("BROKER_COORDINATOR_SLOT_CAPACITY profile=%u slots=%u bytes=%llu cpuByteLimit=%llu actualIoctl=true\n",wanted.mapping.aperture.version,slots.slots,static_cast<unsigned long long>(slots.bytes),static_cast<unsigned long long>(caps.cpu_byte_limit));
-        if(references) receipt("BROKER_COORDINATOR_REFERENCE_CAPACITY profile=13 objectsVersion=%u resources=64 syncs=64 perActor=16 byteBudgetsMultiplied=false\n",objects.version);
-        if(objects.version>=6) receipt("BROKER_COORDINATOR_MANAGED_MAPPING_CAPACITY version=%u reservedAddressBytes=68719476736 standaloneMappingBytes=1073741824 residentUsageBytes=1073741824 cpuBytes=201326592\n",objects.version);
-        if(objects.version>=7) receipt("BROKER_COORDINATOR_DESKTOP_LEASE_CAPACITY version=%u leaseLimit=1536 fenceSlots=512 allocationSlots=1024 physicalMemoryGuardsChanged=false\n",objects.version);
-        if(objects.version==8) receipt("BROKER_COORDINATOR_FOUR_ACTOR_OBJECT_CAPACITY version=8 actors=4 hwQueues=64 syncObjects=768 perActorHwQueues=16 perActorSyncObjects=192 physicalMemoryGuardsChanged=false\n");
+        if(references) receipt("BROKER_COORDINATOR_REFERENCE_CAPACITY profile=%u objectsVersion=%u resources=64 syncs=64 perActor=16 byteBudgetsMultiplied=false\n",wanted.mapping.aperture.version,objects.version);
+        if(objects.version>=6) receipt("BROKER_COORDINATOR_MANAGED_MAPPING_CAPACITY version=%u reservedAddressBytes=68719476736 standaloneMappingBytes=1073741824 residentUsageBytes=1073741824 cpuBytes=%llu\n",objects.version,static_cast<unsigned long long>(caps.cpu_byte_limit));
+        if(objects.version>=7) receipt("BROKER_COORDINATOR_DESKTOP_LEASE_CAPACITY version=%u leaseLimit=1536 fenceSlots=512 allocationSlots=1024 physicalMemoryGuardsChanged=%s\n",objects.version,multiapp?"true":"false");
+        if(objects.version>=8) receipt("BROKER_COORDINATOR_FOUR_ACTOR_OBJECT_CAPACITY version=%u actors=4 hwQueues=64 syncObjects=768 perActorHwQueues=16 perActorSyncObjects=192 physicalMemoryGuardsChanged=%s\n",objects.version,multiapp?"true":"false");
+        if(multiapp) receipt("BROKER_COORDINATOR_MULTIAPP_CPU_CAPACITY profile=14 objectsVersion=9 flags=7 cpuBytes=402653184 reportedGpuBytes=1073741824 cpuMappingGuardRaised=true gpuUsageGuardRaised=false\n");
     }
     cg::Info info() const { return agreement; }
     void beginLiveRetirement() {
@@ -291,7 +304,34 @@ public:
                 ref.kind==kind && found->second.global.kind==kind && native.actor(),"Foreign kernel capability identity mismatch");
         auto& entry=found->second;auto alias=entry.aliases.find(native.actor());
         if(alias==entry.aliases.end()) {
-            const auto ticket=native.alias(entry.producer,entry.source,kind);
+            std::uint32_t ticket=0;
+            try { ticket=native.alias(entry.producer,entry.source,kind); }
+            catch(const std::system_error& error) {
+#if defined(WDDM_BRIDGE_MULTIAPP_CPU) && WDDM_BRIDGE_MULTIAPP_CPU
+                // Observe FD lifetime after the refused native admission. Never
+                // close a live capability or infer GPU completion from this view.
+                try {
+                registry.collect();
+                unsigned live=0,reaped=0,pending=0;
+                for(const auto& item:registry.entries) {
+                    if(item.second.global.kind!=kind || !item.second.aliases.count(native.actor())) continue;
+                    if(item.second.reaped) ++reaped;else ++live;
+                    receipt("BROKER_ALIAS_REFUSAL_REFERENCE actor=%llu kind=%u cookie=%llu sourceActor=%llu sourceTicket=%u recipientTicket=%u kernelFdReaped=%s registryLocked=true gpuProof=false\n",
+                        static_cast<unsigned long long>(native.actor()),kind,static_cast<unsigned long long>(item.second.global.cookie),
+                        static_cast<unsigned long long>(item.second.producer),item.second.source,item.second.aliases.at(native.actor()),item.second.reaped?"true":"false");
+                }
+                const auto queued=registry.pending.find(native.actor());
+                if(queued!=registry.pending.end()) for(const auto& item:queued->second) if(item.kind==kind) ++pending;
+                receipt("BROKER_ALIAS_REFUSAL_SNAPSHOT actor=%llu kind=%u errno=%d liveFdReferences=%u reapedFdReferences=%u pendingReaps=%u afterNativeAdmissionRefused=true registryLocked=true resourcesReleased=false gpuProof=false\n",
+                    static_cast<unsigned long long>(native.actor()),kind,error.code().value(),live,reaped,pending);
+                } catch(...) {
+                    receipt("BROKER_ALIAS_REFUSAL_SNAPSHOT_UNAVAILABLE actor=%llu originalErrno=%d resourcesReleased=false originalErrorPreserved=true\n",
+                        static_cast<unsigned long long>(native.actor()),error.code().value());
+                }
+#endif
+                (void)error;
+                throw;
+            }
             local.retainAlias(ObjectRef{kind,ticket,ref.cookie});
             alias=entry.aliases.emplace(native.actor(),ticket).first;
             receipt("BROKER_COORDINATOR_ALIAS donor=%llu recipient=%llu kind=%u sourceTicket=%u recipientTicket=%u cookie=%llu realFd=true\n",

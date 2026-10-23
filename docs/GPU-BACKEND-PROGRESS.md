@@ -4,11 +4,23 @@ Updated **2026-10-23**. This page tracks the experimental QEMU/WHPX Windows-nati
 NVIDIA backend. The released Try Omarchy launcher continues using the upstream
 graphics runtime.
 
-![4K Omarchy frame achieved; multi-window admission and recovery in progress; backend stages 4/8; desktop gates 0/4](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/windows-nvgpu-lab/docs/images/gpu-backend-progress-multiwindow-2026-10-23.svg)
+![Two-window 4K NVIDIA fixture verified; stability and recovery in progress; backend stages 4/8; desktop gates 0/4](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/windows-nvgpu-lab/docs/images/gpu-backend-progress-multiapp-2026-10-23.svg)
 
 ## What is verified now?
 
-**Latest multi-window investigation — October 23, 2026:** a second real
+**Latest two-window checkpoint — October 23, 2026:** two fresh guests each pass
+**1,800 GPU handoffs over 33.52 / 33.03 seconds**, with two readable NVIDIA
+application windows, complete source/SDL pixels, four focus checkpoints,
+independent changing counters and live native cleanup. Explicit profile 14/v9
+opts into a **384 MiB aggregate CPU mapping guard**; the GPU usage guard stays
+1 GiB and older agreements retain their limits. A separate frozen v6 desktop
+regression also passes on the new binary. An earlier **16-reference alias
+admission failure remains unresolved**. This is a bounded fixture result;
+normal launcher, continuous stability and desktop product acceptance remain
+open. Progress counts are unchanged.
+[Actual two-window frame, precise failures and exact sources](LIVE-MULTIAPP-CPU384.md).
+
+**Earlier multi-window admission investigation — October 23, 2026:** a second real
 application initializes its NVIDIA OpenGL renderer. The simultaneous workload
 then reaches the unchanged 192 MiB CPU mapping guard and fails native cleanup
 verification, before a desktop frame completes. It is **rejected**. New opt-in
@@ -24,7 +36,7 @@ cycles and retained contents, then pass **1,800 desktop handoffs each over 35.3
 and 34.5 seconds**. Complete 4K source/SDL pixels, rendered input response,
 lifecycles, resizing and live cleanup pass. The reported resident and CPU
 mapping guards are unchanged. This closes the bounded extended-address check;
-longer memory-pressure recovery, simultaneous windows and normal launcher/input
+longer memory-pressure recovery, continuous multi-window use and normal launcher/input
 acceptance remain open. [Actual frame, exact evidence and scope](LIVE-GPU-VA-PRESSURE.md).
 
 **Earlier managed-residency checkpoint — October 22, 2026:** two fresh guests

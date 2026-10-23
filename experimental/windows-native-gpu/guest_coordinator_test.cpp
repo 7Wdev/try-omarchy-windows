@@ -66,6 +66,13 @@ template<class Store> static void exported(Store& store,Op op,std::uint32_t tick
     auto reply=packet(op,ticket);const auto result=encode(Reply{});reply.insert(reply.end(),result.begin(),result.end());store.observe(packet(op,1),reply);
 }
 int main() {
+    CHECK(wddm_aperture_valid_caps({1,0,WDDM_APERTURE_CPU_LIMIT,{0,0}}));
+    CHECK(wddm_aperture_valid_caps({1,3,WDDM_APERTURE_DESKTOP_CPU_LIMIT,{0,0}}));
+    CHECK(wddm_aperture_valid_caps({1,7,WDDM_APERTURE_MULTIAPP_CPU_LIMIT,{0,0}}));
+    CHECK(!wddm_aperture_valid_caps({1,3,WDDM_APERTURE_MULTIAPP_CPU_LIMIT,{0,0}}));
+    CHECK(!wddm_aperture_valid_caps({1,7,WDDM_APERTURE_DESKTOP_CPU_LIMIT,{0,0}}));
+    CHECK(!wddm_aperture_valid_caps({1,4,WDDM_APERTURE_MULTIAPP_CPU_LIMIT,{0,0}}));
+    CHECK(!wddm_aperture_valid_caps({1,15,WDDM_APERTURE_MULTIAPP_CPU_LIMIT,{0,0}}));
     CHECK(wddm_aperture_valid_coordinator_caps({1,0,256,0}));
     CHECK(wddm_aperture_valid_coordinator_caps({1,0,512,0}));
     CHECK(wddm_aperture_valid_coordinator_caps({1,1,768,0}));

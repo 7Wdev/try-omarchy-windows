@@ -85,6 +85,29 @@ int main() {
         for(const auto view:held) aperture.release(view,unmap,stop);
         require(!aperture.groups() && !aperture.bytes() && aperture.chunkMaps()==aperture.chunkUnmaps());
     }
+    // Reproduce run 141's aggregate CPU admission failure. The separate profile
+    // admits another bounded view without changing any older capacity receipt.
+    require(!vendorCpuBudgetFits(201293824,65536,ExpandedVendorCpuCapability,true));
+    require(vendorCpuBudgetFits(201293824,65536,ExpandedVendorCpuCapability,true,true));
+    require(vendorCpuByteLimit(ExpandedVendorCpuCapability,true)==192u*1024*1024);
+    require(vendorCpuByteLimit(ExpandedVendorCpuCapability,true,true)==384u*1024*1024);
+    require(vendorCpuByteLimit(ExpandedVendorCpuCapability,false,true)==ExpandedVendorCpuBytes);
+    require(vendorCpuByteLimit(0,true,true)==MaxAllocatedBytes);
+    require(vendorCpuBudgetFits(OpenGlMultiappCpuBytes-4096,4096,ExpandedVendorCpuCapability,true,true));
+    require(!vendorCpuBudgetFits(OpenGlMultiappCpuBytes-4096,8192,ExpandedVendorCpuCapability,true,true));
+    require(!vendorCpuBudgetFits(UINT32_MAX,4096,ExpandedVendorCpuCapability,true,true));
+    require(!vendorCpuBudgetFits(4096,UINT32_MAX,ExpandedVendorCpuCapability,true,true));
+    require(validOpenGlMultiappCapacity(GuestOpenGlMultiappCapacity));
+    require(validOpenGlMultiappProfile(GuestOpenGlMultiappProfile));
+    auto mixed=GuestOpenGlMultiappCapacity;mixed.mapping.aperture.cpuByteLimit=OpenGlDesktop4kCpuBytes;
+    require(!validCoordinatedPresentationCapacity(mixed));
+    mixed=GuestOpenGlDesktopReferenceCapacity;mixed.mapping.aperture.cpuByteLimit=OpenGlMultiappCpuBytes;
+    require(!validCoordinatedPresentationCapacity(mixed));
+    for(unsigned word=0;word<12;++word) {
+        auto changed=GuestOpenGlMultiappCapacity;std::uint32_t words[12]{};
+        std::memcpy(words,&changed,sizeof words);++words[word];std::memcpy(&changed,words,sizeof words);
+        require(!validOpenGlMultiappCapacity(changed));
+    }
     require(!stops);
     std::cout << "PASS: 256 virtual slots fit full 4K map beside small views; unchanged legacy 96 MiB CPU budget; explicit512-slot boundary, reuse and stale-owner controls\n";
 }

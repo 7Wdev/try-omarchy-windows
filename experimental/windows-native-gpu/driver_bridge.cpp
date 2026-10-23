@@ -674,7 +674,7 @@ public:
         return submitNativeHwCommand(handle,desc,data,true);
     }
     bool supportsLiveRetirement() const override {
-        return coordinatedObjectsEnabled && coordinatedObjectCapacity.version>=5 && openGlProfileVersion==13 &&
+        return coordinatedObjectsEnabled && coordinatedObjectCapacity.version>=5 && (openGlProfileVersion==13 || openGlProfileVersion==14) &&
             runtime && !runtime->hasStopped() && retirementEnabled && asyncSubmitEnabled;
     }
     bool prepareLiveRetirement() override {
@@ -701,13 +701,14 @@ public:
     bool beginCoordinatedObjects(CoordinatedObjectCapacity value) override {
         if(!validCoordinatedObjectCapacity(value) || coordinatedObjectsEnabled || !openglDesktopPresentationEnabled || !runtime || runtime->hasStopped() ||
             !ownedAdapters.empty() || !deviceAdapters.empty() || !hwQueues.empty() || !syncObjects.empty()) return false;
-        const auto expected=openGlProfileVersion==13 ? 5u : runtime->fenceSlotLimit()==512 ? 4u : 3u;
+        if(openGlProfileVersion==14 && (!deferredResidencyEnabled || value.version!=9)) return false;
+        const auto expected=openGlProfileVersion==14 ? 9u : openGlProfileVersion==13 ? 5u : runtime->fenceSlotLimit()==512 ? 4u : 3u;
         if(value.version!=expected && !((value.version>=6 && value.version<=8) && expected==5 && deferredResidencyEnabled)) return false;
         coordinatedObjectCapacity=value;coordinatedObjectsEnabled=true;
         std::cerr<<"{\"nativeCoordinatedObjectCapacity\":true,\"version\":"<<value.version<<",\"vendorAllocationObjects\":"<<vendorObjectLimit()<<",\"hwQueues\":"<<hwQueueLimit()<<",\"syncObjects\":"<<syncObjectLimit()
                  <<",\"reservedAddressBytes\":"<<reservationByteLimit()<<",\"reservationCount\":"<<reservationLimit()
                  <<",\"sharedResourceReferences\":"<<sharedResourceLimit()<<",\"sharedSyncReferences\":"<<sharedSyncLimit()
-                 <<",\"kernelLeaseLimit\":"<<value.leaseLimit<<",\"fenceSlots\":"<<runtime->fenceSlotLimit()<<",\"cpuBytes\":201326592,\"gpuVaBytes\":1073741824,\"reportedGpuBytes\":1073741824,\"memoryBudgetsMultiplied\":false,\"reservationMappingsSeparated\":"<<(value.version>=6?"true":"false")<<"}\n";
+                 <<",\"kernelLeaseLimit\":"<<value.leaseLimit<<",\"fenceSlots\":"<<runtime->fenceSlotLimit()<<",\"cpuBytes\":"<<vendorCpuByteLimit(capabilities().flags,openglDesktop4kCpuEnabled,openGlProfileVersion==14)<<",\"gpuVaBytes\":1073741824,\"reportedGpuBytes\":1073741824,\"memoryBudgetsMultiplied\":false,\"reservationMappingsSeparated\":"<<(value.version>=6?"true":"false")<<"}\n";
         return true;
     }
     StreamProfile beginStreaming() override {
@@ -719,14 +720,15 @@ public:
         return GuestStreamProfile;
     }
     OpenGlProfile beginOpenGl(std::uint32_t version = 1) override {
+        if(version==14 && !deferredResidencyEnabled) return {};
         if (version>=6 && !(capabilities().flags & ExpandedVendorGpuCapability)) return {};
         if (version>=7 && (!(capabilities().flags & ExpandedVendorCpuCapability) || !runtime ||
             runtime->allocationSlotLimit()!=(version>=12 ? DesktopVendorCpuSlots : version>=8 ? SparseVendorCpuSlots : MaxVendorCpuSlots) || runtime->fenceSlotLimit()!=(version>=11 ? 512u : 256u))) return {};
         if (runtime && runtime->allocationSlotLimit()==SparseVendorCpuSlots && version!=8 && version!=9 && version!=10 && version!=11) return {};
-        if (runtime && runtime->allocationSlotLimit()==DesktopVendorCpuSlots && version!=12 && version!=13) return {};
+        if (runtime && runtime->allocationSlotLimit()==DesktopVendorCpuSlots && version!=12 && version!=13 && version!=14) return {};
         if (!gpu_diagnostic::HighResolution || openglEnabled || streamingEnabled || !asyncSubmitEnabled || !syncEnabled || !reservationEnabled ||
             !runtime || runtime->hasStopped() || !ownedAdapters.empty() || !deviceAdapters.empty() ||
-            !pendingSubmissions.empty() || !pendingHwSignals.empty() || (version != 1 && version != 2 && version != 3 && version != 4 && version != 5 && version != 6 && version != 7 && version != 8 && version != 9 && version != 10 && version!=11 && version!=12 && version!=13)) return {};
+            !pendingSubmissions.empty() || !pendingHwSignals.empty() || (version != 1 && version != 2 && version != 3 && version != 4 && version != 5 && version != 6 && version != 7 && version != 8 && version != 9 && version != 10 && version!=11 && version!=12 && version!=13 && version!=14)) return {};
         openglEnabled = true;openGlProfileVersion=version;
         openglFencesEnabled = version >= 2;
         openglCompositorEnabled = version >= 3;
@@ -737,13 +739,13 @@ public:
         openglDesktopSparseEnabled = version >= 8;
         openglDesktopLargeMapEnabled = version >= 9;
         openglDesktopPresentationEnabled = version >= 10;
-        const auto profile = version==13 ? GuestOpenGlDesktopReferenceProfile : version==12 ? GuestOpenGlDesktopSlotProfile : version==11 ? GuestOpenGlDesktopFenceProfile : version == 10 ? GuestOpenGlDesktopPresentationProfile : version == 9 ? GuestOpenGlDesktopLargeMapProfile : version == 8 ? GuestOpenGlDesktopSparseProfile : version == 7 ? GuestOpenGlDesktop4kCpuProfile : version == 6 ? GuestOpenGlDesktop4kProfile : version == 5 ? GuestOpenGlDesktopProfile : version == 4 ? GuestOpenGlCompositorRenderProfile : version == 3 ? GuestOpenGlCompositorProfile : version == 2 ? GuestOpenGlFenceProfile : GuestOpenGlProfile;
+        const auto profile = version==14 ? GuestOpenGlMultiappProfile : version==13 ? GuestOpenGlDesktopReferenceProfile : version==12 ? GuestOpenGlDesktopSlotProfile : version==11 ? GuestOpenGlDesktopFenceProfile : version == 10 ? GuestOpenGlDesktopPresentationProfile : version == 9 ? GuestOpenGlDesktopLargeMapProfile : version == 8 ? GuestOpenGlDesktopSparseProfile : version == 7 ? GuestOpenGlDesktop4kCpuProfile : version == 6 ? GuestOpenGlDesktop4kProfile : version == 5 ? GuestOpenGlDesktopProfile : version == 4 ? GuestOpenGlCompositorRenderProfile : version == 3 ? GuestOpenGlCompositorProfile : version == 2 ? GuestOpenGlFenceProfile : GuestOpenGlProfile;
         std::cerr << "{\"openGlProfileNegotiated\":true,\"version\":" << version << ",\"frames\":" << profile.frames << ",\"commandLimit\":" << profile.commandLimit << ",\"pendingCommands\":16,\"reservationLimit\":" << profile.reservationLimit << ",\"reservedByteLimit\":17179869184,\"requestLimit\":" << profile.requestLimit;
         if (version >= 2) std::cerr << ",\"objectLimit\":" << profile.objectLimit
             << ",\"hwQueueLimit\":" << OpenGlFenceHwQueues << ",\"vendorObjectLimit\":" << vendorObjectLimit() << ",\"syncObjectLimit\":" << syncObjectLimit();
         if (version >= 6) std::cerr << ",\"gpuMappedByteLimit\":" << vendorGpuPageLimit(capabilities().flags,true,openglDesktopLargeMapEnabled)*4096ull
             << ",\"reportedGpuUsageLimitBytes\":" << reportedGpuUsageLimit();
-        if (version>=7) std::cerr << ",\"cpuMappedByteLimit\":" << OpenGlDesktop4kCpuBytes
+        if (version>=7) std::cerr << ",\"cpuMappedByteLimit\":" << vendorCpuByteLimit(capabilities().flags,openglDesktop4kCpuEnabled,openGlProfileVersion==14)
             << ",\"kernelCapacityRequired\":true,\"cpuApertureSlots\":" << runtime->allocationSlotLimit();
         std::cerr << "}\n";
         return profile;
@@ -1542,7 +1544,7 @@ public:
             compositorOutput=std::make_unique<driver_shared::CompositorPresenter>();
             hr=compositorOutput->initialize(luid,desc,[this](const char* stage,std::uint64_t bytes) {
                 return reportedGpuUsageAcceptable(bytes,stage);
-            },coordinatedObjectsEnabled && coordinatedObjectCapacity.version>=5 && openGlProfileVersion==13,runtime->inputChannel(),runtime->inputSelfTest(),runtime->sdlControl());
+            },coordinatedObjectsEnabled && coordinatedObjectCapacity.version>=5 && (openGlProfileVersion==13 || openGlProfileVersion==14),runtime->inputChannel(),runtime->inputSelfTest(),runtime->sdlControl());
         }
         if (SUCCEEDED(hr)) hr=compositorOutput->submit(resource,source->second.handle.get(),fence->second.get(),desc,frame);
         if (FAILED(hr)) {
@@ -1934,10 +1936,10 @@ public:
         const auto bytes = static_cast<std::uint32_t>(owned.pages * 4096);
         if (!bytes || bytes > MaxVendorCpuMappingBytes)
             return {{static_cast<std::int32_t>(0xc0000017u), 0, 0}, {0, 0, 0}};
-        if(!vendorCpuBudgetFits(vendorCpuBytes,bytes,capabilities().flags,openglDesktop4kCpuEnabled)) {
+        if(!vendorCpuBudgetFits(vendorCpuBytes,bytes,capabilities().flags,openglDesktop4kCpuEnabled,openGlProfileVersion==14)) {
             ++vendorCpuByteQuotaRejections;
             std::cerr<<"{\"nativeCpuByteAdmissionRejected\":true,\"usedBytes\":"<<vendorCpuBytes<<",\"requestedBytes\":"<<bytes
-                <<",\"limitBytes\":"<<vendorCpuByteLimit(capabilities().flags,openglDesktop4kCpuEnabled)<<"}\n";
+                <<",\"limitBytes\":"<<vendorCpuByteLimit(capabilities().flags,openglDesktop4kCpuEnabled,openGlProfileVersion==14)<<"}\n";
             return {{static_cast<std::int32_t>(0xc0000017u),0,0},{0,0,0}};
         }
         if(!reportedGpuUsageAcceptable()) return {{static_cast<std::int32_t>(0xc0000017u),0,0},{0,0,0}};
@@ -2526,7 +2528,7 @@ public:
                   << ",\"peakVendorAllocationObjects\":" << peakVendorAllocationObjects
                   << ",\"vendorAllocationObjectLimit\":" << vendorObjectLimit()
                   << ",\"vendorCpuSlotLimit\":" << (runtime ? runtime->allocationSlotLimit() : DefaultVendorCpuSlots)
-                  << ",\"vendorCpuMappedByteLimit\":" << vendorCpuByteLimit(capabilities().flags,openglDesktop4kCpuEnabled)
+                  << ",\"vendorCpuMappedByteLimit\":" << vendorCpuByteLimit(capabilities().flags,openglDesktop4kCpuEnabled,openGlProfileVersion==14)
                   << ",\"vendorCpuSlotQuotaRejections\":" << vendorCpuSlotQuotaRejections
                   << ",\"completedVendorAllocations\":" << completedVendorAllocations
                   << ",\"completedVendorResources\":" << completedVendorResources

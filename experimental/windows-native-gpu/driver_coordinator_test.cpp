@@ -37,7 +37,7 @@ struct NativeMock : Driver {
     }
     Result exportSync(std::uint32_t sync) override { CHECK(live.count(sync));return openAdapter(); }
     bool beginCoordinatedObjects(CoordinatedObjectCapacity value) override { CHECK(++objectCalls==1 && validCoordinatedObjectCapacity(value));return badStage!=4; }
-    OpenGlProfile beginOpenGl(std::uint32_t version) override { CHECK(++glCalls==1 && (version==10 || version==11 || version==12 || version==13));auto p=version==13 ? GuestOpenGlDesktopReferenceProfile : version==12 ? GuestOpenGlDesktopSlotProfile : version==11 ? GuestOpenGlDesktopFenceProfile : GuestOpenGlDesktopPresentationProfile;if(badStage==1) p.objectLimit=0;return p; }
+    OpenGlProfile beginOpenGl(std::uint32_t version) override { CHECK(++glCalls==1 && (version==10 || version==11 || version==12 || version==13 || version==14));auto p=version==14 ? GuestOpenGlMultiappProfile : version==13 ? GuestOpenGlDesktopReferenceProfile : version==12 ? GuestOpenGlDesktopSlotProfile : version==11 ? GuestOpenGlDesktopFenceProfile : GuestOpenGlDesktopPresentationProfile;if(badStage==1) p.objectLimit=0;return p; }
     SyncSharingProfile beginSyncSharing() override { CHECK(++syncCalls==1);auto p=GuestSyncSharingProfile;if(badStage==2) p.version=1;return p; }
     ResourceSharingProfile beginResourceSharing() override { CHECK(++resourceCalls==1);auto p=GuestResourceSharingProfile;if(badStage==3) p.handleLimit=0;return p; }
     Result openAdapter() override { ++calls;live.insert(++next);return {0,next,0}; }
@@ -303,6 +303,21 @@ int main() {
     CHECK(!validCoordinatedAgreement(GuestOpenGlDesktopSlotCapacity,GuestCoordinatedLeaseObjects));
     CHECK(validCoordinatedAgreement(GuestOpenGlDesktopReferenceCapacity,GuestCoordinatedActorObjects));
     CHECK(!validCoordinatedAgreement(GuestOpenGlDesktopSlotCapacity,GuestCoordinatedActorObjects));
+    CHECK(validCoordinatedAgreement(GuestOpenGlMultiappCapacity,GuestCoordinatedMultiappObjects));
+    for(const auto old:{GuestCoordinatedReferenceObjects,GuestCoordinatedManagedObjects,GuestCoordinatedLeaseObjects,GuestCoordinatedActorObjects})
+        CHECK(!validCoordinatedAgreement(GuestOpenGlMultiappCapacity,old));
+    CHECK(!validCoordinatedAgreement(GuestOpenGlDesktopReferenceCapacity,GuestCoordinatedMultiappObjects));
+    for(const bool supported:{false,true}) {
+        NativeMock managed;managed.managedGpuMappings=supported;
+        cg::Runtime owner(managed);Control client{owner};bool rejected=false;
+        try {
+            const auto reply=client.control(cg::Operation::Initialize,encoded(cg::Initialization{GuestOpenGlMultiappCapacity,GuestCoordinatedMultiappObjects}));
+            CHECK(!at<cg::Frame>(reply).status);
+            const auto info=at<cg::Info>(client.control(cg::Operation::Info),sizeof(cg::Frame));
+            CHECK(cg::validInfo(info) && info.capacity.mapping.aperture.cpuByteLimit==OpenGlMultiappCpuBytes && info.objects.version==9);
+        } catch(const std::runtime_error&) { rejected=true; }
+        CHECK(rejected==!supported && owner.failed()==!supported);
+    }
     for(const auto objects:{GuestCoordinatedManagedObjects,GuestCoordinatedLeaseObjects,GuestCoordinatedActorObjects})
     for(const bool supported:{false,true}) {
         NativeMock managed;managed.managedGpuMappings=supported;
@@ -320,7 +335,7 @@ int main() {
         auto old=GuestCoordinatedManagedObjects;old.leaseLimit=1536;CHECK(!validCoordinatedObjectCapacity(old));
         auto current=GuestCoordinatedLeaseObjects;current.leaseLimit=768;CHECK(!validCoordinatedObjectCapacity(current));
         current=GuestCoordinatedLeaseObjects;current.version=8;CHECK(!validCoordinatedObjectCapacity(current));
-        current=GuestCoordinatedActorObjects;current.version=9;CHECK(!validCoordinatedObjectCapacity(current));
+        current=GuestCoordinatedActorObjects;current.version=10;CHECK(!validCoordinatedObjectCapacity(current));
         current=GuestCoordinatedActorObjects;current.hwQueues=65;CHECK(!validCoordinatedObjectCapacity(current));
         current=GuestCoordinatedActorObjects;current.syncObjects=769;CHECK(!validCoordinatedObjectCapacity(current));
         current=GuestCoordinatedLeaseObjects;current.syncObjects=768;CHECK(!validCoordinatedObjectCapacity(current));

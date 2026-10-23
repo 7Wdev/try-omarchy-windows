@@ -62,12 +62,12 @@ constexpr std::uint32_t VendorCpuCapability = 2048;
 // Preserve standard allocation and 16/32/64-slot vendor CPU budgets.
 constexpr std::uint32_t ExpandedVendorCpuCapability = 4194304;
 constexpr std::uint32_t ExpandedVendorCpuBytes = gpu_diagnostic::ExpandedCpuBytes;
-inline std::uint32_t vendorCpuByteLimit(std::uint32_t capabilities, bool desktop4kCpu=false) {
-    if (desktop4kCpu && (capabilities & ExpandedVendorCpuCapability)) return OpenGlDesktop4kCpuBytes;
+inline std::uint32_t vendorCpuByteLimit(std::uint32_t capabilities, bool desktop4kCpu=false, bool multiappCpu=false) {
+    if (desktop4kCpu && (capabilities & ExpandedVendorCpuCapability)) return multiappCpu ? OpenGlMultiappCpuBytes : OpenGlDesktop4kCpuBytes;
     return (capabilities & ExpandedVendorCpuCapability) ? ExpandedVendorCpuBytes : MaxAllocatedBytes;
 }
-inline bool vendorCpuBudgetFits(std::uint32_t used, std::uint32_t bytes, std::uint32_t capabilities, bool desktop4kCpu=false) {
-    const auto limit = vendorCpuByteLimit(capabilities,desktop4kCpu);
+inline bool vendorCpuBudgetFits(std::uint32_t used, std::uint32_t bytes, std::uint32_t capabilities, bool desktop4kCpu=false, bool multiappCpu=false) {
+    const auto limit = vendorCpuByteLimit(capabilities,desktop4kCpu,multiappCpu);
     return used <= limit && bytes <= limit - used;
 }
 constexpr std::uint32_t VendorTranslationCapability = 4096;
@@ -478,8 +478,8 @@ struct CoordinatedObjectCapacity {
 constexpr std::size_t MaxCoordinatedSharedReferences=64;
 static_assert(sizeof(CoordinatedObjectCapacity)==32,"Fixed coordinated object/address-space capacity");
 inline bool validCoordinatedObjectCapacity(CoordinatedObjectCapacity value) {
-    return ((value.version==3 && !value.vendorAllocations) || ((value.version>=4 && value.version<=8) && value.vendorAllocations==1024)) &&
-        value.hwQueues==(value.version==8 ? 64u : 32u) && value.syncObjects==(value.version==8 ? 768u : 384u) &&
+    return ((value.version==3 && !value.vendorAllocations) || ((value.version>=4 && value.version<=9) && value.vendorAllocations==1024)) &&
+        value.hwQueues==(value.version>=8 ? 64u : 32u) && value.syncObjects==(value.version>=8 ? 768u : 384u) &&
         value.leaseLimit==(value.version>=7 ? 1536u : 768u) &&
         value.reservedGpuBytes==64ull*1024*1024*1024 && value.reservations==256;
 }
@@ -494,9 +494,10 @@ constexpr CoordinatedObjectCapacity GuestCoordinatedLeaseObjects{7,32,384,1536,6
 // v8 supplies object records for all four supported actors at their existing
 // per-actor bounds. Fence aperture slots and physical byte guards are separate.
 constexpr CoordinatedObjectCapacity GuestCoordinatedActorObjects{8,4*OpenGlFenceHwQueues,4*OpenGlCompositorSyncObjects,1536,64ull*1024*1024*1024,256,1024};
+constexpr CoordinatedObjectCapacity GuestCoordinatedMultiappObjects{9,64,768,1536,64ull*1024*1024*1024,256,1024};
 inline bool validCoordinatedAgreement(OpenGlDesktopPresentationCapacity capacity,CoordinatedObjectCapacity objects) {
     return validCoordinatedPresentationCapacity(capacity) && validCoordinatedObjectCapacity(objects) &&
-        (capacity.mapping.aperture.version==13 ? (objects.version>=5 && objects.version<=8) :
+        (capacity.mapping.aperture.version==14 ? objects.version==9 : capacity.mapping.aperture.version==13 ? (objects.version>=5 && objects.version<=8) :
             objects.version==(capacity.mapping.aperture.version>=11 ? 4u : 3u));
 }
 class Driver {
@@ -823,14 +824,14 @@ public:
     // process exit, CPU-view revocation and shared capability drainage. Keep
     // failed children owned; do not advance to parent/resource phases early.
     LiveRetirementProgress retireExitedActor() {
-        if(!coordinated || mayPresent || coordinated->gl.version!=13)
+        if(!coordinated || mayPresent || (coordinated->gl.version!=13 && coordinated->gl.version!=14))
             throw std::runtime_error("Live retirement requires a coordinated application");
         return retireExitedObjects();
     }
     // Only the terminal group control may retire the presentation owner, after
     // every actor exited and the native presentation queues were drained.
     LiveRetirementProgress retireStoppedPrimary() {
-        if(!coordinated || !mayPresent || coordinated->gl.version!=13)
+        if(!coordinated || !mayPresent || (coordinated->gl.version!=13 && coordinated->gl.version!=14))
             throw std::runtime_error("Terminal retirement requires the coordinated primary");
         return retireExitedObjects();
     }
@@ -985,10 +986,10 @@ public:
             std::uint32_t version = 1;
             if (packet.size() != sizeof h) {
                 std::memcpy(&version, packet.data() + sizeof h, sizeof version);
-                if((version==11 || version==12 || version==13) && !coordinated) return reply(h,-93);
-                if (version != 2 && version != 3 && version != 4 && version != 5 && version != 6 && version != 7 && version != 8 && version != 9 && version != 10 && version!=11 && version!=12 && version!=13) return reply(h, -93);
+                if((version==11 || version==12 || version==13 || version==14) && !coordinated) return reply(h,-93);
+                if (version != 2 && version != 3 && version != 4 && version != 5 && version != 6 && version != 7 && version != 8 && version != 9 && version != 10 && version!=11 && version!=12 && version!=13 && version!=14) return reply(h, -93);
             }
-            if (version==10 || version==11 || version==12 || version==13) {
+            if (version==10 || version==11 || version==12 || version==13 || version==14) {
                 if(packet.size()!=sizeof h+sizeof(OpenGlDesktopPresentationCapacity)) return reply(h,-22);
                 OpenGlDesktopPresentationCapacity capacity{};std::memcpy(&capacity,packet.data()+sizeof h,sizeof capacity);
                 if(version>=11 ? !coordinated || !validCoordinatedPresentationCapacity(capacity) : !validOpenGlDesktopPresentationCapacity(capacity)) return reply(h,-22);
@@ -1007,7 +1008,7 @@ public:
             if ((driver.capabilities().flags & required) != required) return reply(h, -95);
             if(coordinated && version!=coordinated->gl.version) return reply(h,-95);
             const auto profile = coordinated ? coordinated->gl : driver.beginOpenGl(version);
-            if (version == 1 ? !validOpenGlProfile(profile) : version == 2 ? !validOpenGlFenceProfile(profile) : version == 3 ? !validOpenGlCompositorProfile(profile) : version == 4 ? !validOpenGlCompositorRenderProfile(profile) : version == 5 ? !validOpenGlDesktopProfile(profile) : version==6 ? !validOpenGlDesktop4kProfile(profile) : version==7 ? !validOpenGlDesktop4kCpuProfile(profile) : version==8 ? !validOpenGlDesktopSparseProfile(profile) : version==9 ? !validOpenGlDesktopLargeMapProfile(profile) : version==13 ? !validOpenGlDesktopReferenceProfile(profile) : version==12 ? !validOpenGlDesktopSlotProfile(profile) : version==11 ? !validOpenGlDesktopFenceProfile(profile) : !validOpenGlDesktopPresentationProfile(profile)) return reply(h, -95);
+            if (version == 1 ? !validOpenGlProfile(profile) : version == 2 ? !validOpenGlFenceProfile(profile) : version == 3 ? !validOpenGlCompositorProfile(profile) : version == 4 ? !validOpenGlCompositorRenderProfile(profile) : version == 5 ? !validOpenGlDesktopProfile(profile) : version==6 ? !validOpenGlDesktop4kProfile(profile) : version==7 ? !validOpenGlDesktop4kCpuProfile(profile) : version==8 ? !validOpenGlDesktopSparseProfile(profile) : version==9 ? !validOpenGlDesktopLargeMapProfile(profile) : version==14 ? !validOpenGlMultiappProfile(profile) : version==13 ? !validOpenGlDesktopReferenceProfile(profile) : version==12 ? !validOpenGlDesktopSlotProfile(profile) : version==11 ? !validOpenGlDesktopFenceProfile(profile) : !validOpenGlDesktopPresentationProfile(profile)) return reply(h, -95);
             openglNegotiated = true;
             fenceApertureBytes=version>=11 ? DesktopFenceApertureBytes : FenceApertureBytes;
             openglFenceNegotiated = version >= 2;
@@ -1786,9 +1787,9 @@ public:
             if (object.cpuBytes) return reply(h, -16);
             if (!object.gpuPages || object.gpuOffsetPages) return reply(h, -95);
             const auto bytes = object.gpuPages * 4096u;
-            if (!vendorCpuBudgetFits(vendorCpuBytes, bytes, driver.capabilities().flags,openglDesktop4kCpuNegotiated)) {
+            if (!vendorCpuBudgetFits(vendorCpuBytes, bytes, driver.capabilities().flags,openglDesktop4kCpuNegotiated,coordinated && coordinated->gl.version==14)) {
                 std::cerr<<"{\"wireCpuByteAdmissionRejected\":true,\"usedBytes\":"<<vendorCpuBytes<<",\"requestedBytes\":"<<bytes
-                    <<",\"limitBytes\":"<<vendorCpuByteLimit(driver.capabilities().flags,openglDesktop4kCpuNegotiated)<<"}\n";
+                    <<",\"limitBytes\":"<<vendorCpuByteLimit(driver.capabilities().flags,openglDesktop4kCpuNegotiated,coordinated && coordinated->gl.version==14)<<"}\n";
                 return reply(h,-24);
             }
             const auto native = driver.lockVendorAllocation(object.nativeHandle, device->second.nativeHandle);

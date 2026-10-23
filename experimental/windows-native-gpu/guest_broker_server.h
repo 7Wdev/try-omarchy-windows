@@ -51,7 +51,7 @@ public:
         if (value.version != WDDM_APERTURE_VERSION || !driver_bridge::validFenceSlots(value.fence_slots,true) ||
             !driver_bridge::validVendorCpuSlots(value.allocation_slots,true,true) || value.cpu_slot_bytes != 1048576 ||
             value.fence_bytes != value.fence_slots*4096ull || value.allocation_bytes != value.allocation_slots*1048576ull ||
-            value.active_cpu_bytes > WDDM_APERTURE_DESKTOP_CPU_LIMIT ||
+            value.active_cpu_bytes > WDDM_APERTURE_MULTIAPP_CPU_LIMIT ||
             (value.active_cpu_bytes>WDDM_APERTURE_CPU_LIMIT && value.active_cpu_bytes>capacity().cpu_byte_limit))
             throw std::system_error(EPROTO,std::generic_category(),"Broker kernel layout mismatch");
         if(value.active_leases>wddm_aperture_lease_limit(value.fence_slots)) {
@@ -66,13 +66,17 @@ public:
             if(!fences.enabled || fences.slots!=value.fence_slots || fences.bytes!=value.fence_bytes || !leases.enabled || (value.allocation_slots!=512 && value.allocation_slots!=1024))
                 throw std::system_error(EPROTO,std::generic_category(),"Desktop fence kernel agreement missing");
         }
-        if (value.allocation_slots>=512 && ((value.fence_slots!=256 && value.fence_slots!=512) || capacity().flags!=(WDDM_APERTURE_DESKTOP_CPU_ENABLED|WDDM_APERTURE_SPARSE_ENABLED)))
+        if (value.allocation_slots>=512 && ((value.fence_slots!=256 && value.fence_slots!=512) || (capacity().flags!=(WDDM_APERTURE_DESKTOP_CPU_ENABLED|WDDM_APERTURE_SPARSE_ENABLED) && capacity().flags!=(WDDM_APERTURE_DESKTOP_CPU_ENABLED|WDDM_APERTURE_SPARSE_ENABLED|WDDM_APERTURE_MULTIAPP_CPU_ENABLED))))
             throw std::system_error(EPROTO,std::generic_category(),"Sparse kernel layout lacks exact capacity opt-in");
         if(value.allocation_slots==1024) {
             const auto slots=desktopSlotCapacity();
             if(!slots.enabled || slots.slots!=value.allocation_slots || slots.bytes!=value.allocation_bytes || value.fence_slots!=512)
                 throw std::system_error(EPROTO,std::generic_category(),"Desktop slot kernel agreement missing");
         }
+        if((capacity().flags&WDDM_APERTURE_MULTIAPP_CPU_ENABLED) &&
+           (value.allocation_slots!=1024 || value.fence_slots!=512 ||
+            coordinatedCapacity().lease_limit!=WDDM_APERTURE_DESKTOP_LEASES))
+            throw std::system_error(EPROTO,std::generic_category(),"Multi-application CPU capacity lacks the full desktop layout");
         return value;
     }
     std::pair<Fd,std::uint64_t> acquire(ViewRequest view) {
@@ -167,23 +171,24 @@ template<class Authority> void verifyCpuCapacityProfile(const std::vector<std::u
     Header h{}; std::memcpy(&h,packet.data(),sizeof h);
     std::uint32_t version=0; std::memcpy(&version,packet.data()+sizeof h,sizeof version);
     if (h.type!=static_cast<unsigned>(Op::BeginOpenGl) || version<7) return;
-    if ((version!=7 && version!=8 && version!=9 && version!=10 && version!=11 && version!=12 && version!=13) || packet.size()!=sizeof h+(version>=10 ? sizeof(OpenGlDesktopPresentationCapacity) : version==9 ? sizeof(OpenGlDesktopLargeMapCapacity) : sizeof(OpenGlDesktop4kCapacity)))
+    if ((version!=7 && version!=8 && version!=9 && version!=10 && version!=11 && version!=12 && version!=13 && version!=14) || packet.size()!=sizeof h+(version>=10 ? sizeof(OpenGlDesktopPresentationCapacity) : version==9 ? sizeof(OpenGlDesktopLargeMapCapacity) : sizeof(OpenGlDesktop4kCapacity)))
         throw std::system_error(EPROTO,std::generic_category(),"Missing kernel capacity receipt");
     OpenGlDesktop4kCapacity wanted{}; std::memcpy(&wanted,packet.data()+sizeof h,sizeof wanted);
     OpenGlDesktopLargeMapCapacity large{};
     if (version==9) std::memcpy(&large,packet.data()+sizeof h,sizeof large);
     OpenGlDesktopPresentationCapacity presentation{};
     if(version>=10) std::memcpy(&presentation,packet.data()+sizeof h,sizeof presentation);
-    if (version==13 ? !validOpenGlDesktopReferenceCapacity(presentation) : version==12 ? !validOpenGlDesktopSlotCapacity(presentation) : version==11 ? !validOpenGlDesktopFenceCapacity(presentation) : version==10 ? !validOpenGlDesktopPresentationCapacity(presentation) : version==7 ? !validOpenGlDesktop4kCapacity(wanted) : version==8 ? !validOpenGlDesktopSparseCapacity(wanted) : !validOpenGlDesktopLargeMapCapacity(large)) throw std::system_error(EPROTO,std::generic_category(),"Invalid CPU capacity contract");
+    if (version==14 ? !validOpenGlMultiappCapacity(presentation) : version==13 ? !validOpenGlDesktopReferenceCapacity(presentation) : version==12 ? !validOpenGlDesktopSlotCapacity(presentation) : version==11 ? !validOpenGlDesktopFenceCapacity(presentation) : version==10 ? !validOpenGlDesktopPresentationCapacity(presentation) : version==7 ? !validOpenGlDesktop4kCapacity(wanted) : version==8 ? !validOpenGlDesktopSparseCapacity(wanted) : !validOpenGlDesktopLargeMapCapacity(large)) throw std::system_error(EPROTO,std::generic_category(),"Invalid CPU capacity contract");
     const auto caps=kernel.capacity(); const auto layout=kernel.info();
-    if (!wddm_aperture_valid_caps(caps) || caps.flags!=(WDDM_APERTURE_DESKTOP_CPU_ENABLED | (version>=8 ? WDDM_APERTURE_SPARSE_ENABLED : 0u)) ||
+    if (!wddm_aperture_valid_caps(caps) || caps.flags!=(WDDM_APERTURE_DESKTOP_CPU_ENABLED | (version>=8 ? WDDM_APERTURE_SPARSE_ENABLED : 0u) | (version==14 ? WDDM_APERTURE_MULTIAPP_CPU_ENABLED : 0u)) ||
         caps.cpu_byte_limit!=wanted.cpuByteLimit || layout.version!=1 ||
         layout.allocation_slots!=wanted.cpuSlots || layout.fence_slots!=wanted.fenceSlots)
         throw std::system_error(EPROTO,std::generic_category(),"Kernel/profile CPU capacity mismatch");
     if(version>=11) {
         const auto fences=kernel.desktopFenceCapacity();const auto leases=kernel.coordinatedCapacity();
         if(!wddm_aperture_valid_desktop_fences(fences) || !fences.enabled || fences.slots!=wanted.fenceSlots ||
-           fences.bytes!=layout.fence_bytes || !wddm_aperture_valid_coordinator_caps(leases) || !leases.enabled)
+           fences.bytes!=layout.fence_bytes || !wddm_aperture_valid_coordinator_caps(leases) || !leases.enabled ||
+           (version==14 && leases.lease_limit!=WDDM_APERTURE_DESKTOP_LEASES))
             throw std::system_error(EPROTO,std::generic_category(),"Missing actual desktop fence receipt");
     }
     if(version>=12) {

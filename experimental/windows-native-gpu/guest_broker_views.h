@@ -97,7 +97,8 @@ public:
                     (request.size()==sizeof(Header) || request.size()==sizeof(Header)+sizeof(std::uint32_t) || request.size()==sizeof(Header)+sizeof(OpenGlDesktop4kCapacity) || request.size()==sizeof(Header)+sizeof(OpenGlDesktopLargeMapCapacity) || request.size()==sizeof(Header)+sizeof(OpenGlDesktopPresentationCapacity)) &&
                     response.size()==sizeof(Header)+sizeof(OpenGlProfile),"Invalid native OpenGL profile receipt");
             const auto version=request.size()==sizeof(Header) ? 1u : at<std::uint32_t>(request,sizeof(Header));
-            require(version==13 ? request.size()==sizeof(Header)+sizeof(OpenGlDesktopPresentationCapacity) &&
+            require(version==14 ? request.size()==sizeof(Header)+sizeof(OpenGlDesktopPresentationCapacity) &&
+                    validOpenGlMultiappCapacity(at<OpenGlDesktopPresentationCapacity>(request,sizeof(Header))) : version==13 ? request.size()==sizeof(Header)+sizeof(OpenGlDesktopPresentationCapacity) &&
                     validOpenGlDesktopReferenceCapacity(at<OpenGlDesktopPresentationCapacity>(request,sizeof(Header))) : version==12 ? request.size()==sizeof(Header)+sizeof(OpenGlDesktopPresentationCapacity) &&
                     validOpenGlDesktopSlotCapacity(at<OpenGlDesktopPresentationCapacity>(request,sizeof(Header))) : version==11 ? request.size()==sizeof(Header)+sizeof(OpenGlDesktopPresentationCapacity) &&
                     validOpenGlDesktopFenceCapacity(at<OpenGlDesktopPresentationCapacity>(request,sizeof(Header))) : version==10 ? request.size()==sizeof(Header)+sizeof(OpenGlDesktopPresentationCapacity) &&
@@ -108,7 +109,7 @@ public:
             const auto profile=at<OpenGlProfile>(response,sizeof(Header));
             require(version==1 ? validOpenGlProfile(profile) : version==2 ? validOpenGlFenceProfile(profile) :
                     version==3 ? validOpenGlCompositorProfile(profile) : version==4 ? validOpenGlCompositorRenderProfile(profile) :
-                    version==5 ? validOpenGlDesktopProfile(profile) : version==6 ? validOpenGlDesktop4kProfile(profile) : version==7 ? validOpenGlDesktop4kCpuProfile(profile) : version==8 ? validOpenGlDesktopSparseProfile(profile) : version==9 ? validOpenGlDesktopLargeMapProfile(profile) : version==13 ? validOpenGlDesktopReferenceProfile(profile) : version==12 ? validOpenGlDesktopSlotProfile(profile) : version==11 ? validOpenGlDesktopFenceProfile(profile) : version==10 && validOpenGlDesktopPresentationProfile(profile),"Wrong native OpenGL profile receipt");
+                    version==5 ? validOpenGlDesktopProfile(profile) : version==6 ? validOpenGlDesktop4kProfile(profile) : version==7 ? validOpenGlDesktop4kCpuProfile(profile) : version==8 ? validOpenGlDesktopSparseProfile(profile) : version==9 ? validOpenGlDesktopLargeMapProfile(profile) : version==14 ? validOpenGlMultiappProfile(profile) : version==13 ? validOpenGlDesktopReferenceProfile(profile) : version==12 ? validOpenGlDesktopSlotProfile(profile) : version==11 ? validOpenGlDesktopFenceProfile(profile) : version==10 && validOpenGlDesktopPresentationProfile(profile),"Wrong native OpenGL profile receipt");
             // The broker must enforce the host's exact negotiated live-object
             // budget. Its former unconditional 512 cap rejected valid v4/v5
             // allocations while the native session still had capacity.

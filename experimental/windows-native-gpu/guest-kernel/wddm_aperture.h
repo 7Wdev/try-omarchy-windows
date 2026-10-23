@@ -19,9 +19,11 @@ static inline __u32 wddm_aperture_lease_limit(__u32 fence_slots)
 }
 #define WDDM_APERTURE_CPU_LIMIT (96ULL * 1024 * 1024)
 #define WDDM_APERTURE_DESKTOP_CPU_LIMIT (192ULL * 1024 * 1024)
+#define WDDM_APERTURE_MULTIAPP_CPU_LIMIT (384ULL * 1024 * 1024)
 /* Additive discovery leaves the original INFO structure/ABI unchanged. */
 #define WDDM_APERTURE_DESKTOP_CPU_ENABLED 1U
 #define WDDM_APERTURE_SPARSE_ENABLED 2U
+#define WDDM_APERTURE_MULTIAPP_CPU_ENABLED 4U
 struct wddm_aperture_caps {
 	__u32 version, flags;
 	__u64 cpu_byte_limit, reserved[2];
@@ -31,7 +33,9 @@ static inline int wddm_aperture_valid_caps(struct wddm_aperture_caps caps)
 	return caps.version == 1 && !caps.reserved[0] && !caps.reserved[1] &&
 		((!caps.flags && caps.cpu_byte_limit == WDDM_APERTURE_CPU_LIMIT) ||
 		 ((caps.flags == WDDM_APERTURE_DESKTOP_CPU_ENABLED || caps.flags == (WDDM_APERTURE_DESKTOP_CPU_ENABLED|WDDM_APERTURE_SPARSE_ENABLED)) &&
-		  caps.cpu_byte_limit == WDDM_APERTURE_DESKTOP_CPU_LIMIT));
+		  caps.cpu_byte_limit == WDDM_APERTURE_DESKTOP_CPU_LIMIT) ||
+		 (caps.flags == (WDDM_APERTURE_DESKTOP_CPU_ENABLED|WDDM_APERTURE_SPARSE_ENABLED|WDDM_APERTURE_MULTIAPP_CPU_ENABLED) &&
+		  caps.cpu_byte_limit == WDDM_APERTURE_MULTIAPP_CPU_LIMIT));
 }
 #define WDDM_APERTURE_CAPS _IOWR('W', 0x50, struct wddm_aperture_caps)
 /* Separate immutable opt-in: original INFO/CAPS and byte budgets stay fixed. */

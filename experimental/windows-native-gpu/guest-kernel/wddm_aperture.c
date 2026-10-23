@@ -57,6 +57,8 @@ static bool enable_desktop_slots;
 module_param(enable_desktop_slots, bool, 0444);
 static bool enable_desktop_leases;
 module_param(enable_desktop_leases, bool, 0444);
+static bool enable_multiapp_cpu;
+module_param(enable_multiapp_cpu, bool, 0444);
 static u32 lease_limit(void)
 {
 	if (enable_desktop_leases) return WDDM_APERTURE_DESKTOP_LEASES;
@@ -73,6 +75,7 @@ static long coordinator_caps(void __user *pointer)
 }
 static u64 cpu_byte_limit(void)
 {
+	if (enable_multiapp_cpu) return WDDM_APERTURE_MULTIAPP_CPU_LIMIT;
 	return enable_desktop_4k_cpu ? WDDM_APERTURE_DESKTOP_CPU_LIMIT : WDDM_APERTURE_CPU_LIMIT;
 }
 static long desktop_fence_caps(void __user *pointer)
@@ -91,7 +94,8 @@ static long aperture_caps(void __user *pointer)
 	if (caps.version != 1 || caps.flags || caps.cpu_byte_limit || caps.reserved[0] || caps.reserved[1])
 		return -EINVAL;
 	caps.flags = (enable_desktop_4k_cpu ? WDDM_APERTURE_DESKTOP_CPU_ENABLED : 0) |
-		(enable_sparse_aperture ? WDDM_APERTURE_SPARSE_ENABLED : 0);
+		(enable_sparse_aperture ? WDDM_APERTURE_SPARSE_ENABLED : 0) |
+		(enable_multiapp_cpu ? WDDM_APERTURE_MULTIAPP_CPU_ENABLED : 0);
 	caps.cpu_byte_limit = cpu_byte_limit();
 	return copy_to_user(pointer, &caps, sizeof(caps)) ? -EFAULT : 0;
 }
@@ -436,6 +440,7 @@ static int __init aperture_init(void)
     if (enable_desktop_fences && !enable_coordinated_leases) return -EINVAL;
     if (enable_desktop_slots && !enable_desktop_fences) return -EINVAL;
     if (enable_desktop_leases && !enable_desktop_slots) return -EINVAL;
+    if (enable_multiapp_cpu && !enable_desktop_leases) return -EINVAL;
 	native_sync_wq = alloc_workqueue("wddm-native-sync", WQ_UNBOUND | WQ_MEM_RECLAIM, 0);
 	if (!native_sync_wq) return -ENOMEM;
 	result = pci_register_driver(&aperture_driver);

@@ -48,9 +48,13 @@ constexpr OpenGlProfile GuestOpenGlDesktopSlotProfile{12, 0, 0, 128, 16ull * 102
 // Version 13 requires the v5 group object agreement: 64 native resource and
 // sync references across four actors, with the per-actor 16-reference caps fixed.
 constexpr OpenGlProfile GuestOpenGlDesktopReferenceProfile{13, 0, 0, 128, 16ull * 1024 * 1024 * 1024, 0, 1024};
+// Version 14 explicitly enlarges aggregate CPU mappings for multiple clients.
+// It requires the new kernel receipt and v9 object agreement; v1-13 stay fixed.
+constexpr OpenGlProfile GuestOpenGlMultiappProfile{14, 0, 0, 128, 16ull * 1024 * 1024 * 1024, 0, 1024};
 constexpr std::uint64_t OpenGlDesktopPresentationReportedBytes=1024ull*1024*1024;
 constexpr std::uint32_t OpenGlDesktopLargeMapBytes=1024u*1024*1024;
 constexpr std::uint32_t OpenGlDesktop4kCpuBytes = 192u * 1024 * 1024;
+constexpr std::uint32_t OpenGlMultiappCpuBytes = 384u * 1024 * 1024;
 struct OpenGlDesktop4kCapacity {
     std::uint32_t version, kernelVersion;
     std::uint64_t cpuByteLimit;
@@ -77,6 +81,7 @@ constexpr OpenGlDesktopPresentationCapacity GuestOpenGlDesktopPresentationCapaci
 constexpr OpenGlDesktopPresentationCapacity GuestOpenGlDesktopFenceCapacity{{{11,1,OpenGlDesktop4kCpuBytes,512,512,0},OpenGlDesktopLargeMapBytes},OpenGlDesktopPresentationReportedBytes};
 constexpr OpenGlDesktopPresentationCapacity GuestOpenGlDesktopSlotCapacity{{{12,1,OpenGlDesktop4kCpuBytes,1024,512,0},OpenGlDesktopLargeMapBytes},OpenGlDesktopPresentationReportedBytes};
 constexpr OpenGlDesktopPresentationCapacity GuestOpenGlDesktopReferenceCapacity{{{13,1,OpenGlDesktop4kCpuBytes,1024,512,0},OpenGlDesktopLargeMapBytes},OpenGlDesktopPresentationReportedBytes};
+constexpr OpenGlDesktopPresentationCapacity GuestOpenGlMultiappCapacity{{{14,1,OpenGlMultiappCpuBytes,1024,512,0},OpenGlDesktopLargeMapBytes},OpenGlDesktopPresentationReportedBytes};
 inline bool validOpenGlDesktopPresentationCapacity(OpenGlDesktopPresentationCapacity c) {
     auto map=c.mapping;
     if(map.aperture.version!=10 || c.reportedGpuByteLimit!=OpenGlDesktopPresentationReportedBytes) return false;
@@ -94,6 +99,10 @@ inline bool validOpenGlDesktopFenceCapacity(OpenGlDesktopPresentationCapacity c)
     return validOpenGlDesktopPresentationCapacity(c);
 }
 inline bool validCoordinatedPresentationCapacity(OpenGlDesktopPresentationCapacity c) {
+    if(c.mapping.aperture.version==14) {
+        if(c.mapping.aperture.cpuByteLimit!=OpenGlMultiappCpuBytes) return false;
+        c.mapping.aperture.version=13;c.mapping.aperture.cpuByteLimit=OpenGlDesktop4kCpuBytes;
+    }
     if(c.mapping.aperture.version==13) c.mapping.aperture.version=12;
     if(c.mapping.aperture.version==12) {
         if(c.mapping.aperture.cpuSlots!=1024) return false;
@@ -108,6 +117,9 @@ inline bool validOpenGlDesktopSlotCapacity(OpenGlDesktopPresentationCapacity c) 
 inline bool validOpenGlDesktopReferenceCapacity(OpenGlDesktopPresentationCapacity c) {
     return c.mapping.aperture.version==13 && validCoordinatedPresentationCapacity(c);
 }
+inline bool validOpenGlMultiappCapacity(OpenGlDesktopPresentationCapacity c) {
+    return c.mapping.aperture.version==14 && validCoordinatedPresentationCapacity(c);
+}
 inline bool validOpenGlDesktopFenceProfile(OpenGlProfile p) {
     if(p.version!=11) return false;
     p.version=10;
@@ -115,7 +127,7 @@ inline bool validOpenGlDesktopFenceProfile(OpenGlProfile p) {
         p.reservedBytes==16ull*1024*1024*1024 && !p.requestLimit && p.objectLimit==1024;
 }
 inline bool validCoordinatedPresentationProfile(OpenGlProfile p) {
-    if(p.version==12 || p.version==13) p.version=11;
+    if(p.version==12 || p.version==13 || p.version==14) p.version=11;
     return p.version==11 ? validOpenGlDesktopFenceProfile(p) : p.version==10 &&
         !p.frames && !p.commandLimit && p.reservationLimit==64 &&
         p.reservedBytes==16ull*1024*1024*1024 && !p.requestLimit && p.objectLimit==1024;
@@ -125,6 +137,9 @@ inline bool validOpenGlDesktopSlotProfile(OpenGlProfile p) {
 }
 inline bool validOpenGlDesktopReferenceProfile(OpenGlProfile p) {
     return p.version==13 && validCoordinatedPresentationProfile(p);
+}
+inline bool validOpenGlMultiappProfile(OpenGlProfile p) {
+    return p.version==14 && validCoordinatedPresentationProfile(p);
 }
 inline bool validOpenGlDesktopPresentationProfile(OpenGlProfile p) {
     return p.version==10 && !p.frames && !p.commandLimit && p.reservationLimit==64 &&

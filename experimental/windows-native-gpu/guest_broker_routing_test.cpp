@@ -168,6 +168,26 @@ static void cpuCapacityPolicy() {
     for(const auto profile:{GuestOpenGlDesktopSlotProfile,GuestOpenGlDesktopFenceProfile}) {
         Views views;denied([&]{views.observe(referenceBegin,packet(Op::BeginOpenGl,0,encode(profile)));},EPROTO);
     }
+    auto multiapp=expanded;multiapp.cap.flags=7;multiapp.cap.cpu_byte_limit=WDDM_APERTURE_MULTIAPP_CPU_LIMIT;
+    multiapp.leases.lease_limit=WDDM_APERTURE_DESKTOP_LEASES;
+    const auto multiappBegin=packet(Op::BeginOpenGl,0,encode(GuestOpenGlMultiappCapacity));
+    verifyCpuCapacityProfile(multiappBegin,multiapp);
+    Views multiappViews;multiappViews.observe(multiappBegin,packet(Op::BeginOpenGl,0,encode(GuestOpenGlMultiappProfile)));
+    denied([&]{verifyCpuCapacityProfile(multiappBegin,expanded);},EPROTO);
+    denied([&]{verifyCpuCapacityProfile(referenceBegin,multiapp);},EPROTO);
+    auto oldLeases=multiapp;oldLeases.leases.lease_limit=WDDM_APERTURE_COORDINATED_LEASES;
+    denied([&]{verifyCpuCapacityProfile(multiappBegin,oldLeases);},EPROTO);
+    for(unsigned field=0;field<12;++field) {
+        auto capacity=GuestOpenGlMultiappCapacity;std::uint32_t words[12]{};
+        std::memcpy(words,&capacity,sizeof words);++words[field];std::memcpy(&capacity,words,sizeof words);
+        const auto malformed=packet(Op::BeginOpenGl,0,encode(capacity));
+        denied([&]{verifyCpuCapacityProfile(malformed,multiapp);},EPROTO);
+        Views views;denied([&]{views.observe(malformed,packet(Op::BeginOpenGl,0,encode(GuestOpenGlMultiappProfile)));},EPROTO);
+    }
+    for(const auto profile:{GuestOpenGlDesktopReferenceProfile,GuestOpenGlDesktopSlotProfile}) {
+        Views views;denied([&]{views.observe(multiappBegin,packet(Op::BeginOpenGl,0,encode(profile)));},EPROTO);
+    }
+    std::cout<<"BROKER_MULTIAPP_PROFILE exact14=true cpu384MiB=true legacy192MiBUnchanged=true malformedExtentRejected=true kernel=mock gpu=false\n";
     std::cout<<"BROKER_REFERENCE_PROFILE exact13=true actualCpuAndFenceReceiptsRequired=true olderProfilesUnchanged=true kernel=mock gpu=false\n";
     std::cout<<"BROKER_LARGE_MAP exact1GiB=true fixed40ByteReceipt=true malformedRejected=true oldProfilesUnchanged=true kernel=mock gpu=false\n";
     std::cout<<"BROKER_SPARSE_CAPACITY exact512Slots=true oldProfileRejected=true oldKernelRejected=true kernel=mock gpu=false\n";

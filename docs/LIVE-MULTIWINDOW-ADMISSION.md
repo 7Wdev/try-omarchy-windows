@@ -1,5 +1,10 @@
 # Two-application admission investigation
 
+**Follow-up:** the explicit CPU384 experiment now completes two independent
+two-window 4K streams. An intermittent reference-limit failure remains open.
+[Actual frame, successes and all new failures](LIVE-MULTIAPP-CPU384.md).
+The observations below describe the earlier CPU192 checkpoint.
+
 Updated **2026-10-23**. The new simultaneous-application workload is **not
 accepted**. The candidate initializes the second application's real NVIDIA
 OpenGL renderer, then exhausts the existing CPU mapping budget and fails native

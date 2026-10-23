@@ -72,7 +72,7 @@ public:
             (value.allocation_slots & (value.allocation_slots - 1)) ||
             value.cpu_slot_bytes != 1048576 || value.fence_bytes != value.fence_slots * 4096ull ||
             value.allocation_bytes != value.allocation_slots * value.cpu_slot_bytes ||
-            value.active_cpu_bytes > WDDM_APERTURE_DESKTOP_CPU_LIMIT ||
+            value.active_cpu_bytes > WDDM_APERTURE_MULTIAPP_CPU_LIMIT ||
             (value.active_cpu_bytes>WDDM_APERTURE_CPU_LIMIT && value.active_cpu_bytes>capacity().cpu_byte_limit))
             throw std::runtime_error("Kernel aperture layout mismatch");
         if(value.active_leases>wddm_aperture_lease_limit(value.fence_slots)) {
@@ -82,18 +82,29 @@ public:
         }
         if(value.fence_slots==512) {
             const auto profile=std::getenv("WDDM_BRIDGE_ACTOR_PROFILE");
-            if(!guest_broker::clientEnabled() || !profile || (std::strcmp(profile,"11") && std::strcmp(profile,"12") && std::strcmp(profile,"13")) ||
+            if(!guest_broker::clientEnabled() || !profile || (std::strcmp(profile,"11") && std::strcmp(profile,"12") && std::strcmp(profile,"13") && std::strcmp(profile,"14")) ||
                guest_broker::client().coordinatedProfile().capacity.mapping.aperture.fenceSlots!=512)
                 throw std::runtime_error("Desktop fence aperture lacks coordinator agreement");
         }
         if(value.allocation_slots==1024) {
             const auto profile=std::getenv("WDDM_BRIDGE_ACTOR_PROFILE");
-            if(!guest_broker::clientEnabled() || !profile || (std::strcmp(profile,"12") && std::strcmp(profile,"13")) || value.fence_slots!=512 ||
+            if(!guest_broker::clientEnabled() || !profile || (std::strcmp(profile,"12") && std::strcmp(profile,"13") && std::strcmp(profile,"14")) || value.fence_slots!=512 ||
                 guest_broker::client().coordinatedProfile().capacity.mapping.aperture.cpuSlots!=1024)
                 throw std::runtime_error("Desktop CPU slots lack coordinator agreement");
         }
-        if (value.allocation_slots>=512 && ((value.fence_slots!=256 && value.fence_slots!=512) || capacity().flags!=(WDDM_APERTURE_DESKTOP_CPU_ENABLED|WDDM_APERTURE_SPARSE_ENABLED)))
+        if (value.allocation_slots>=512 && ((value.fence_slots!=256 && value.fence_slots!=512) || (capacity().flags!=(WDDM_APERTURE_DESKTOP_CPU_ENABLED|WDDM_APERTURE_SPARSE_ENABLED) && capacity().flags!=(WDDM_APERTURE_DESKTOP_CPU_ENABLED|WDDM_APERTURE_SPARSE_ENABLED|WDDM_APERTURE_MULTIAPP_CPU_ENABLED))))
             throw std::runtime_error("Sparse kernel layout lacks exact capacity opt-in");
+        if(capacity().flags&WDDM_APERTURE_MULTIAPP_CPU_ENABLED) {
+            const auto profile=std::getenv("WDDM_BRIDGE_ACTOR_PROFILE");
+            if(!guest_broker::clientEnabled() || !profile || std::strcmp(profile,"14") ||
+               value.allocation_slots!=1024 || value.fence_slots!=512)
+                throw std::runtime_error("Multi-application CPU mappings require profile 14");
+            const auto group=guest_broker::client().coordinatedProfile();
+            if(!driver_bridge::validCoordinatedAgreement(group.capacity,group.objects) ||
+               group.gl.version!=14 || group.objects.version!=9 ||
+               group.capacity.mapping.aperture.cpuByteLimit!=capacity().cpu_byte_limit)
+                throw std::runtime_error("Multi-application CPU mappings lack exact coordinator agreement");
+        }
         return value;
     }
     void* map(std::uint32_t kind, std::uint64_t offset, std::size_t bytes, std::uint64_t generation = 0) {

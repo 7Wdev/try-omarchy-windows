@@ -232,7 +232,7 @@ int main(void)
     /* Exhaustion rejects without allocating an FD or changing accounting. */
     struct wddm_aperture_coordinator_caps coordinator={.version=1};
     REQUIRE(!ioctl(control,WDDM_APERTURE_COORDINATOR_CAPS,&coordinator) && wddm_aperture_valid_coordinator_caps(coordinator));
-    REQUIRE(!coordinator.enabled || (layout.fence_slots==(desktop_fences.enabled ? 512u : 256u) && layout.allocation_slots==(desktop_slots.enabled ? 1024u : 512u) && capacity.flags==3));
+    REQUIRE(!coordinator.enabled || (layout.fence_slots==(desktop_fences.enabled ? 512u : 256u) && layout.allocation_slots==(desktop_slots.enabled ? 1024u : 512u) && (capacity.flags==3 || capacity.flags==7)));
     REQUIRE(!desktop_fences.enabled || coordinator.enabled);
     REQUIRE(!desktop_slots.enabled || (desktop_fences.enabled && coordinator.enabled));
     // Validate the last physical page without reading an unbacked host slot.
@@ -252,6 +252,8 @@ int main(void)
     }
     struct wddm_aperture_create leases[WDDM_APERTURE_DESKTOP_LEASES];
     const unsigned lease_limit=coordinator.lease_limit;
+    if(capacity.flags&WDDM_APERTURE_MULTIAPP_CPU_ENABLED)
+        REQUIRE(capacity.flags==7 && capacity.cpu_byte_limit==WDDM_APERTURE_MULTIAPP_CPU_LIMIT && coordinator.enabled && lease_limit==WDDM_APERTURE_DESKTOP_LEASES && desktop_fences.enabled && desktop_slots.enabled);
     if(lease_limit==WDDM_APERTURE_DESKTOP_LEASES &&
        (!desktop_fences.enabled || !desktop_slots.enabled || layout.fence_slots!=512 || layout.allocation_slots!=1024)) {
         fprintf(stderr,"Expanded lease records require the exact desktop layout\n");return 1;
