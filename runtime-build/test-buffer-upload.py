@@ -37,6 +37,7 @@ harness = r'''
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #if TEST_WINDOWS
 #ifndef _WIN32
@@ -65,7 +66,10 @@ struct virgl_sub_upload_data { GLenum target; struct pipe_box *box; };
 static const char *vendor;
 static unsigned char storage[64];
 static unsigned bound, maps, uploads, unmaps, failures, access_flags, vendor_reads;
-static bool fail_map;
+static bool fail_map, fail_alloc;
+static const void *uploaded_from;
+static void *test_malloc(size_t size) { return fail_alloc ? NULL : malloc(size); }
+#define malloc(size) test_malloc(size)
 static struct { bool intel_windows_buffer_uploads; } vrend_state;
 static const unsigned char *glGetString(GLenum key) {
     assert(key == GL_VENDOR); vendor_reads++; return (const unsigned char *)vendor;
@@ -81,7 +85,7 @@ static void *glMapBufferRange(GLenum target, size_t offset, size_t size, unsigne
 }
 static void glBufferSubData(GLenum target, size_t offset, size_t size, const void *data) {
     (void)target; assert(bound == 50 && offset + size <= sizeof(storage));
-    uploads++; memcpy(storage + offset, data, size);
+    uploads++; uploaded_from = data; memcpy(storage + offset, data, size);
 }
 static void glUnmapBuffer(GLenum target) { (void)target; unmaps++; }
 #define virgl_error(...) (failures++)
@@ -89,6 +93,7 @@ static void glUnmapBuffer(GLenum target) { (void)target; unmaps++; }
 harness += function(iov, 'size_t vrend_read_from_iovec(')
 harness += function(iov, 'size_t vrend_read_from_iovec_cb(')
 harness += function(renderer, 'static void iov_buffer_upload(')
+harness += function(renderer, 'static bool iov_buffer_upload_once(')
 harness += function(renderer, 'static bool vrend_intel_windows_buffer_uploads(')
 harness += '''
 static void upload(struct vrend_resource *res, const struct iovec *iov,
@@ -98,7 +103,7 @@ static void upload(struct vrend_resource *res, const struct iovec *iov,
 harness += body(renderer, buffer) + '\n}\n'
 harness += r'''
 static void check(const char *driver, GLenum target, bool immutable, bool synchronized,
-                  bool failed, unsigned expected_maps) {
+                  bool failed, unsigned expected_maps, bool no_memory) {
     unsigned char a[] = "abcdef", b[] = "ghijklmnop";
     struct iovec vectors[] = {{a, 6}, {b, 0}, {b, 10}};
     struct pipe_box box = {.x = 5, .width = 12};
@@ -108,7 +113,7 @@ static void check(const char *driver, GLenum target, bool immutable, bool synchr
     /* Renderer init reads the vendor once; uploads only read the flag. */
     vendor = driver; vendor_reads = 0;
     vrend_state.intel_windows_buffer_uploads = TEST_WINDOWS && vrend_intel_windows_buffer_uploads();
-    fail_map = failed;
+    fail_map = failed; fail_alloc = no_memory;
     bound = maps = uploads = unmaps = failures = access_flags = vendor_reads = 0;
     memset(storage, 0x7e, sizeof(storage));
     upload(&resource, vectors, 3, &info);
@@ -117,7 +122,9 @@ static void check(const char *driver, GLenum target, bool immutable, bool synchr
     for (unsigned i = 0; i < sizeof(storage); i++)
         if (i < 5 || i >= 17) assert(storage[i] == 0x7e);
     assert(bound == 0);
-    if (!expected_maps || failed) assert(uploads == 2 && unmaps == 0);
+    /* The sub-data path gathers the pages into one call unless it is out of memory. */
+    if (!expected_maps) assert(uploads == (no_memory ? 2u : 1u) && unmaps == 0);
+    else if (failed) assert(uploads == 2 && unmaps == 0);
     else assert(uploads == 0 && unmaps == 1);
     if (expected_maps) {
         assert(access_flags == (GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_RANGE_BIT |
@@ -126,17 +133,35 @@ static void check(const char *driver, GLenum target, bool immutable, bool synchr
     assert(failures == (failed && expected_maps ? 1u : 0u));
     assert(vendor_reads == 0);
 }
+static void check_one_page(void) {
+    /* A range inside one page is sent straight from guest memory. */
+    unsigned char a[] = "abcdefghij";
+    struct iovec vectors[] = {{a, 0}, {a, 4}, {a + 4, 6}};
+    struct pipe_box box = {.x = 3, .width = 5};
+    struct vrend_transfer_info info = {.offset = 5, .box = &box};
+    struct vrend_resource resource = {VREND_STORAGE_GL_BUFFER, 50, GL_ARRAY_BUFFER};
+    vrend_state.intel_windows_buffer_uploads = TEST_WINDOWS;
+    fail_map = fail_alloc = false;
+    bound = maps = uploads = unmaps = failures = 0; uploaded_from = NULL;
+    memset(storage, 0x7e, sizeof(storage));
+    upload(&resource, vectors, 3, &info);
+    assert(!memcmp(storage + 3, "fghij", 5));
+    if (TEST_WINDOWS) assert(maps == 0 && uploads == 1 && uploaded_from == a + 5);
+    else assert(maps == 1 && uploads == 0);
+}
 int main(void) {
     /* Captured Intel Windows index and vertex uploads must avoid the map call. */
-    check("Intel", GL_ELEMENT_ARRAY_BUFFER, false, false, false, !TEST_WINDOWS);
-    check("Intel", GL_ELEMENT_ARRAY_BUFFER, false, true, false, !TEST_WINDOWS);
-    check("Intel", GL_ELEMENT_ARRAY_BUFFER, true, false, false, 1);
-    check("Intel", GL_ARRAY_BUFFER, false, false, false, !TEST_WINDOWS);
-    check("Intel", GL_ARRAY_BUFFER, true, false, false, 1);
-    check("AMD", GL_ELEMENT_ARRAY_BUFFER, false, false, false, 1);
-    check(NULL, GL_ELEMENT_ARRAY_BUFFER, false, false, false, 1);
-    check("AMD", GL_ELEMENT_ARRAY_BUFFER, false, true, true, 1);
-    puts("ok - mutable uploads, immutable storage, other vendors, Linux, partial multi-iovec writes and map-failure fallback");
+    check("Intel", GL_ELEMENT_ARRAY_BUFFER, false, false, false, !TEST_WINDOWS, false);
+    check("Intel", GL_ELEMENT_ARRAY_BUFFER, false, false, false, !TEST_WINDOWS, true);
+    check("Intel", GL_ELEMENT_ARRAY_BUFFER, false, true, false, !TEST_WINDOWS, false);
+    check("Intel", GL_ELEMENT_ARRAY_BUFFER, true, false, false, 1, false);
+    check("Intel", GL_ARRAY_BUFFER, false, false, false, !TEST_WINDOWS, false);
+    check("Intel", GL_ARRAY_BUFFER, true, false, false, 1, false);
+    check("AMD", GL_ELEMENT_ARRAY_BUFFER, false, false, false, 1, false);
+    check(NULL, GL_ELEMENT_ARRAY_BUFFER, false, false, false, 1, false);
+    check("AMD", GL_ELEMENT_ARRAY_BUFFER, false, true, true, 1, false);
+    check_one_page();
+    puts("ok - mutable uploads, one call per upload, immutable storage, other vendors, Linux, partial multi-iovec writes and fallbacks");
     return 0;
 }
 '''
