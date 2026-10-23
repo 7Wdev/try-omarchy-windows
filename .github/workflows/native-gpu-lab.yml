@@ -82,9 +82,22 @@ jobs:
             experimental/windows-native-gpu/build-stream/rgba-oracle.exe
             experimental/windows-native-gpu/build/nlohmann-json-LICENSE.MIT
             dist/TryOmarchy-7Wdev.exe
+  milestone-replays:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - name: Compile the independent pixel oracle
+        run: c++ -std=c++17 -O2 -Wall -Wextra -Werror experimental/windows-native-gpu/rgba_oracle.cpp -o /tmp/rgba-oracle
+      - name: Replay every milestone module in this partition
+        run: python3 experimental/windows-native-gpu/run_milestone_checks.py --shard-index ${{ matrix.shard }} --shard-count 4
   portable-checks:
     runs-on: ubuntu-latest
-    # Includes native compilation and complete archived GPU-buffer replays.
+    # Archived GPU-buffer replays run separately so they cannot starve builds.
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
@@ -179,8 +192,6 @@ jobs:
           /tmp/profile-test
           c++ -std=c++17 -O2 -Wall -Wextra -Werror -DWDDM_BRIDGE_4K_LAB=1 experimental/windows-native-gpu/diagnostic_profile_test.cpp -o /tmp/profile-4k-test
           /tmp/profile-4k-test
-          c++ -std=c++17 -O2 -Wall -Wextra -Werror experimental/windows-native-gpu/rgba_oracle.cpp -o /tmp/rgba-oracle
-          python3 -m unittest discover -s experimental/windows-native-gpu -p 'test_*milestone.py'
           cc -std=c11 -O2 -Wall -Wextra -Werror experimental/windows-native-gpu/virtio-trace-probe/trace_control.c -o /tmp/virtio-trace-control
           /tmp/virtio-trace-control
           c++ -std=c++17 -O2 -Wall -Wextra -Werror experimental/windows-native-gpu/aggregate_gpu_budget_test.cpp -o /tmp/aggregate-gpu-budget-test
