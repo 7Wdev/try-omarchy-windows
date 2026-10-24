@@ -163,6 +163,12 @@ jobs:
           c++ -std=c++17 -O2 -Wall -Wextra -Werror -shared -fPIC experimental/windows-native-gpu/guest_broker_finalizer_probe.cpp -o /tmp/broker-finalizer.so
           c++ -std=c++17 -O2 -Wall -Wextra -Werror -pthread experimental/windows-native-gpu/guest_broker_peer_test.cpp -ldl -o /tmp/broker-peer-test
           /tmp/broker-peer-test /tmp/broker-finalizer.so
+          c++ -std=c++17 -O2 -Wall -Wextra -Werror -pthread experimental/windows-native-gpu/guest_aperture_info_test.cpp -o /tmp/guest-aperture-info-test
+          sudo /tmp/guest-aperture-info-test
+          c++ -std=c++17 -O2 -Wall -Wextra -Werror -pthread -DWDDM_BRIDGE_4K_LAB=1 -DWDDM_BRIDGE_MANAGED_GPUVA=1 -DWDDM_BRIDGE_WIDE_KERNEL_LEASES=1 -DWDDM_BRIDGE_FOUR_ACTOR_OBJECTS=1 -DWDDM_BRIDGE_MULTIAPP_CPU=1 experimental/windows-native-gpu/guest_aperture_info_test.cpp -o /tmp/guest-aperture-info-multiapp-test
+          sudo /tmp/guest-aperture-info-multiapp-test
+          cc -std=c11 -O2 -Wall -Wextra -Werror experimental/windows-native-gpu/guest_trace_line_test.c -o /tmp/guest-trace-line-test
+          /tmp/guest-trace-line-test
           c++ -std=c++17 -O2 -Wall -Wextra -Werror experimental/windows-native-gpu/guest_primary_identity_test.cpp -o /tmp/guest-primary-identity-test
           sudo install -o root -g root -m 0755 /tmp/guest-primary-identity-test /tmp/guest-primary-identity-owned-test
           sudo /tmp/guest-primary-identity-owned-test

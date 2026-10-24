@@ -10,9 +10,17 @@ The experimental QEMU/WHPX bridge renders the shipped Omarchy wallpaper, bar
 and two readable applications on NVIDIA at **3840×2160**, through QEMU SDL.
 Normal launcher integration and a stable interactive desktop remain in development.
 
-![Two-window 4K NVIDIA fixture verified; stability and recovery in progress; backend 4/8; desktop product 0/4](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/windows-nvgpu-lab/docs/images/gpu-backend-progress-multiapp-2026-10-23.svg)
+![Two-window 4K NVIDIA fixture verified; stability and recovery in progress; backend 4/8; desktop product 0/4](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/windows-nvgpu-lab/docs/images/gpu-backend-progress-metadata-2026-10-24.svg)
 
-**Latest checkpoint — October 23, 2026:** two fresh guests each pass
+**Latest checkpoint — October 24, 2026:** immutable metadata requests fall
+from **54 to 12 across six controlled validations**, while mutable counters
+stay fresh. A new **1,800-handoff 4K GPU desktop regression** passes complete
+pixels, two application windows, input response, resizing and live cleanup.
+Atomic diagnostic receipts fix a real journal-prefix collision. Rendering
+speedup and memory-pressure recovery remain unverified; two earlier pressure
+failures stay rejected. [Actual frame, retained failures and exact scope](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-METADATA-AND-TRACE-FRAMING.md).
+
+**Earlier two-window checkpoint — October 23, 2026:** two fresh guests each pass
 **1,800 GPU handoffs with two application windows**, complete 4K source/SDL
 pixels, four focus checkpoints, changing counters and clean live teardown.
 Explicit profile 14/v9 opts into a **384 MiB aggregate CPU mapping guard**;
@@ -40,7 +48,7 @@ input path, including the launcher's reserved-key routing.** The GPU relay uses
 that frontend's input implementation. Physical-input acceptance and normal
 launcher integration remain open. [Verified source map](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/UPSTREAM-INPUT-GRAPHICS-INTEGRATION.md).
 
-![Actual two-application NVIDIA SDL backbuffer after injected guest-side refusal, run 154 handoff 1800](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/windows-nvgpu-lab/docs/images/omarchy-injected-refusal-frame-1800-2026-10-23.png)
+![Actual two-application NVIDIA SDL backbuffer, metadata/framing run 162 handoff 1800](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/windows-nvgpu-lab/docs/images/omarchy-metadata-framed-1800-2026-10-24.png)
 
 Actual **2560×1566 SDL pre-swap backbuffer** from a complete 3840×2160 GPU source.
 Physical 4K scanout remains unverified. The test uses a disposable UWSM/PAM

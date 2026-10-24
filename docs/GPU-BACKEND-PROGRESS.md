@@ -1,14 +1,22 @@
 # NVIDIA backend progress
 
-Updated **2026-10-23**. This page tracks the experimental QEMU/WHPX Windows-native
+Updated **2026-10-24**. This page tracks the experimental QEMU/WHPX Windows-native
 NVIDIA backend. The released Try Omarchy launcher continues using the upstream
 graphics runtime.
 
-![Two-window 4K NVIDIA fixture verified; stability and recovery in progress; backend stages 4/8; desktop gates 0/4](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/windows-nvgpu-lab/docs/images/gpu-backend-progress-multiapp-2026-10-23.svg)
+![Two-window 4K NVIDIA fixture verified; stability and recovery in progress; backend stages 4/8; desktop gates 0/4](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/windows-nvgpu-lab/docs/images/gpu-backend-progress-metadata-2026-10-24.svg)
 
 ## What is verified now?
 
-**Latest two-window checkpoint — October 23, 2026:** two fresh guests each pass
+**Latest checkpoint — October 24, 2026:** immutable metadata requests fall
+from **54 to 12 across six controlled validations**, while mutable counters
+stay fresh. A new **1,800-handoff 4K GPU desktop regression** passes complete
+pixels, two application windows, input response, resizing and live cleanup.
+Atomic diagnostic receipts fix a real journal-prefix collision. Rendering
+speedup and memory-pressure recovery remain unverified; two earlier pressure
+failures stay rejected. [Actual frame, retained failures and exact scope](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-METADATA-AND-TRACE-FRAMING.md).
+
+**Earlier two-window checkpoint — October 23, 2026:** two fresh guests each pass
 **1,800 GPU handoffs over 33.52 / 33.03 seconds**, with two readable NVIDIA
 application windows, complete source/SDL pixels, four focus checkpoints,
 independent changing counters and live native cleanup. Explicit profile 14/v9
