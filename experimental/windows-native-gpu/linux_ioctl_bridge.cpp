@@ -2150,7 +2150,12 @@ extern "C" int ioctl(int fd, unsigned long requestNumber, ...) noexcept {
     catch (const QueryProtocolError& error) { state.protocolFailed(); errno = error.code < 0 ? -error.code : EPROTO; }
     catch (const Error& error) { errno = error.number; }
     catch (...) { state.protocolFailed(); errno = EIO; }
-    std::fprintf(stderr, "LINUX_BRIDGE ioctlFailed nr=%u errno=%d\n", static_cast<unsigned>(_IOC_NR(requestNumber)), errno); return -1;
+    // A full, closed or broken diagnostic sink must not replace the GPU error
+    // that libdxg translates back to NTSTATUS for the caller.
+    const int failure = errno;
+    std::fprintf(stderr, "LINUX_BRIDGE ioctlFailed nr=%u errno=%d\n", static_cast<unsigned>(_IOC_NR(requestNumber)), failure);
+    errno = failure;
+    return -1;
 }
 
 extern "C" int wddm_bridge_begin_opengl_desktop_fence_render() {

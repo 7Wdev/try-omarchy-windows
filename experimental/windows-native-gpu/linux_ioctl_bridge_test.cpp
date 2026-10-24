@@ -41,6 +41,26 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (fd < 0) return failed("open");
+    if (!std::strcmp(mode, "errno-log-failure")) {
+        const int saved = fcntl(STDERR_FILENO, F_DUPFD_CLOEXEC, 3);
+        const int full = open("/dev/full", O_WRONLY | O_CLOEXEC);
+        if (saved < 0 || full < 0 || dup2(full, STDERR_FILENO) != STDERR_FILENO)
+            return failed("redirect failing diagnostic sink");
+        close(full);
+        D3DKMT_OPENADAPTERFROMLUID adapter{}; adapter.AdapterLuid.LowPart = 0x57475055;
+        errno = 0;
+        const int result = ioctl(fd, _IOWR('G', 1, D3DKMT_OPENADAPTERFROMLUID), &adapter);
+        const int returnedError = errno;
+        const bool logFailed = std::ferror(stderr) != 0;
+        if (dup2(saved, STDERR_FILENO) != STDERR_FILENO) _exit(95);
+        close(saved); std::clearerr(stderr);
+        if (result != -1 || returnedError != ENOMEM || adapter.hAdapter || !logFailed) {
+            std::fprintf(stderr,"ERRNO_LOG_FAILURE result=%d returnedErrno=%d expectedErrno=%d logFailed=%d\n",
+                         result,returnedError,ENOMEM,logFailed);
+            return failed("diagnostic logging changed the native failure");
+        }
+        close(fd); return 0;
+    }
     if (!std::strcmp(mode, "exit-lifetime-fd")) { exitDescriptor = fd; return 0; }
     if (!std::strncmp(mode,"hw-wait-",8) || !std::strncmp(mode,"context-wait-",13)) {
         const bool contextStream = !std::strncmp(mode,"context-wait-",13);

@@ -65,7 +65,8 @@ try:
                 send(op,0,hello=True)
             if mode == 'closed-worker': break
         elif mode == 'bad-reply': send(op,1,padding=1)
-        elif op == 0x2001: send(op,1)
+        elif op == 0x2001:
+            send(op,0,ntstatus=-1073741801) if mode == 'errno-log-failure' else send(op,1)
         elif op == 0x2003: send(op,handle)
         elif op == 0x2004: send(op,2)
         elif op == 0x2005: send(op,handle)
@@ -251,6 +252,7 @@ if mode == 'resource-failed-destroy': assert operations.count(0x2058) == 2, oper
 if mode == 'resource-list-destroy': assert operations.count(0x2051) == 1, operations
 if mode.startswith('gpu-state-'): assert operations == [0x2000], operations
 if mode.startswith('resident-'): assert operations == [0x2000], operations
+if mode == 'errno-log-failure': assert operations == [0x2000,0x2001], operations
 if mode in ('cpu-disabled','cpu-invalid'): assert 0x2054 not in operations, operations
 if mode.startswith('cpu-'): assert 0x2055 not in operations, operations
 if mode == 'translation-disabled': assert 0x2056 not in operations, operations
@@ -284,7 +286,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix='wddm-ioctl-fault-') as directory:
         worker = pathlib.Path(directory) / 'owned-worker'
         worker.write_text(WORKER, encoding='utf-8'); worker.chmod(0o700)
-        for mode in ('exit-lifetime-fd', 'context-wait-disabled', 'context-wait-invalid', 'context-wait-unowned', 'hw-wait-disabled', 'hw-wait-invalid', 'hw-wait-unowned', 'share-attributes', 'native-resource-normal', 'native-resource-disabled', 'native-resource-invalid',
+        for mode in ('errno-log-failure', 'exit-lifetime-fd', 'context-wait-disabled', 'context-wait-invalid', 'context-wait-unowned', 'hw-wait-disabled', 'hw-wait-invalid', 'hw-wait-unowned', 'share-attributes', 'native-resource-normal', 'native-resource-disabled', 'native-resource-invalid',
                      'native-resource-unowned', 'native-resource-duplicate', 'native-resource-retry', 'native-resource-thread', 'consume-disabled', 'consume-unowned', 'consume-null', 'no-worker', 'wrong-version', 'reuse', 'bad-reply', 'closed-worker', 'normal',
                      'cpu-wait-invalid', 'cpu-wait-unowned',
                      'shared-resource-normal', 'shared-resource-disabled', 'shared-resource-invalid',
