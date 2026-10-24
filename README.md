@@ -12,7 +12,14 @@ Normal launcher integration and a stable interactive desktop remain in developme
 
 ![Two-window 4K NVIDIA fixture verified; stability and recovery in progress; backend 4/8; desktop product 0/4](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/windows-nvgpu-lab/docs/images/gpu-backend-progress-metadata-2026-10-24.svg)
 
-**Latest checkpoint — October 24, 2026:** immutable metadata requests fall
+**Residency recovery investigation — October 24, 2026:** a controlled
+single-allocation refusal recovered through 1,800 GPU handoffs, but a
+four-allocation repeat caused device loss. That runtime candidate stays
+unpublished. The failure is retained with 16 replay checks; private paging-queue
+research continues and progress counts stay unchanged.
+[Actual frame, rejected candidate and next check](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-RESIDENCY-ROLLBACK-INVESTIGATION.md).
+
+**Verified metadata checkpoint — October 24, 2026:** immutable metadata requests fall
 from **54 to 12 across six controlled validations**, while mutable counters
 stay fresh. A new **1,800-handoff 4K GPU desktop regression** passes complete
 pixels, two application windows, input response, resizing and live cleanup.

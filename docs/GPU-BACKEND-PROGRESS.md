@@ -8,7 +8,14 @@ graphics runtime.
 
 ## What is verified now?
 
-**Latest checkpoint — October 24, 2026:** immutable metadata requests fall
+**Residency recovery investigation — October 24, 2026:** a controlled
+single-allocation refusal recovered through 1,800 GPU handoffs, but a
+four-allocation repeat caused device loss. That runtime candidate stays
+unpublished. The failure is retained with 16 replay checks; private paging-queue
+research continues and progress counts stay unchanged.
+[Actual frame, rejected candidate and next check](LIVE-RESIDENCY-ROLLBACK-INVESTIGATION.md).
+
+**Verified metadata checkpoint — October 24, 2026:** immutable metadata requests fall
 from **54 to 12 across six controlled validations**, while mutable counters
 stay fresh. A new **1,800-handoff 4K GPU desktop regression** passes complete
 pixels, two application windows, input response, resizing and live cleanup.
