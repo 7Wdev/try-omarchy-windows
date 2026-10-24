@@ -1,14 +1,92 @@
 # NVIDIA backend progress
 
-Updated **2026-10-21**. This page tracks the experimental QEMU/WHPX Windows-native
+Updated **2026-10-24**. This page tracks the experimental QEMU/WHPX Windows-native
 NVIDIA backend. The released Try Omarchy launcher continues using the upstream
 graphics runtime.
 
-![4K Omarchy frame achieved; QEMU SDL host GPU relay verified; backend stages 4/8; desktop gates 0/4](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/windows-nvgpu-lab/docs/images/gpu-backend-progress-virtio-trace-2026-10-21.svg)
+![Two-window 4K NVIDIA fixture verified; stability and recovery in progress; backend stages 4/8; desktop gates 0/4](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/windows-nvgpu-lab/docs/images/gpu-backend-progress-metadata-2026-10-24.svg)
 
 ## What is verified now?
 
-**Live trace follow-up:** moving the complete graphics diagnostics from the
+**Residency recovery investigation — October 24, 2026:** a controlled
+single-allocation refusal recovered through 1,800 GPU handoffs, but a
+four-allocation repeat caused device loss. That runtime candidate stays
+unpublished. The failure is retained with 16 replay checks; private paging-queue
+research continues and progress counts stay unchanged.
+[Actual frame, rejected candidate and next check](LIVE-RESIDENCY-ROLLBACK-INVESTIGATION.md).
+
+**Verified metadata checkpoint — October 24, 2026:** immutable metadata requests fall
+from **54 to 12 across six controlled validations**, while mutable counters
+stay fresh. A new **1,800-handoff 4K GPU desktop regression** passes complete
+pixels, two application windows, input response, resizing and live cleanup.
+Atomic diagnostic receipts fix a real journal-prefix collision. Rendering
+speedup and memory-pressure recovery remain unverified; two earlier pressure
+failures stay rejected. [Actual frame, retained failures and exact scope](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-METADATA-AND-TRACE-FRAMING.md).
+
+**Earlier two-window checkpoint — October 23, 2026:** two fresh guests each pass
+**1,800 GPU handoffs over 33.52 / 33.03 seconds**, with two readable NVIDIA
+application windows, complete source/SDL pixels, four focus checkpoints,
+independent changing counters and live native cleanup. Explicit profile 14/v9
+opts into a **384 MiB aggregate CPU mapping guard**; the GPU usage guard stays
+1 GiB and older agreements retain their limits. A separate frozen v6 desktop
+regression also passes on the new binary. An earlier **16-reference alias
+admission failure remains unresolved**. This is a bounded fixture result;
+normal launcher, continuous stability and desktop product acceptance remain
+open. Progress counts are unchanged.
+[Actual two-window frame, precise failures and exact sources](LIVE-MULTIAPP-CPU384.md).
+
+**Recovery follow-up:** a valid `ENOMEM`/`ENOSPC` resolution reply now preserves
+the broker connection and live caller FD. Two fresh guests additionally recover
+from one explicitly injected **guest-side refusal before the native alias call**,
+retry the exact GPU resource, and complete **1,800 handoffs** with complete
+source/SDL pixels, input/resize response and live cleanup. An initial origin-label
+defect and a run occluded by a real calendar popup stay nonaccepted. The unchanged
+wallpaper oracle is retained. Actual native quota-refusal recovery and the natural
+reference-limit cause remain open; progress counts stay unchanged.
+[Actual post-fault frame, every attempt and exact limits](LIVE-INJECTED-ALIAS-GPU-RECOVERY.md) ·
+[Original transport correction](LIVE-ALIAS-CAPACITY-RECOVERY.md).
+
+**Earlier multi-window admission investigation — October 23, 2026:** a second real
+application initializes its NVIDIA OpenGL renderer. The simultaneous workload
+then reaches the unchanged 192 MiB CPU mapping guard and fails native cleanup
+verification, before a desktop frame completes. It is **rejected**. New opt-in
+lease/object agreements retain older limits, and the candidate separately passes
+the frozen v6 **1,800-frame 4K desktop regression**, complete pixels, QMP input
+response, resizing and live cleanup. Multi-window rendering and admission-failure
+recovery remain open; the progress counts are unchanged.
+[Actual compatibility frame, precise failures and source evidence](LIVE-MULTIWINDOW-ADMISSION.md).
+
+**Latest GPU address-pressure checkpoint — October 22, 2026:** two fresh guests
+exceed **2 GiB of virtual GPU mappings** before frame one, verify 56 GPU copy/evict
+cycles and retained contents, then pass **1,800 desktop handoffs each over 35.3
+and 34.5 seconds**. Complete 4K source/SDL pixels, rendered input response,
+lifecycles, resizing and live cleanup pass. The reported resident and CPU
+mapping guards are unchanged. This closes the bounded extended-address check;
+longer memory-pressure recovery, continuous multi-window use and normal launcher/input
+acceptance remain open. [Actual frame, exact evidence and scope](LIVE-GPU-VA-PRESSURE.md).
+
+**Earlier managed-residency checkpoint — October 22, 2026:** two fresh guests
+pass 1,800 GPU handoffs each over **32.9 and 32.2 seconds**, complete pixels,
+input response, lifecycles, resizing and live cleanup. The ownership ledger
+accounts for all 47/45 deferred references with no retained references left.
+A new explicit address-accounting agreement separates owned GPU reservations
+from the unchanged resident-memory guard. Those earlier successful runs do not
+exercise the extended virtual boundary; the new bounded follow-up above does. Default
+behavior and earlier failed attempts are retained.
+[Actual frame, all attempts and scope](LIVE-MANAGED-GPU-RESIDENCY.md).
+
+**Earlier sustained rendering checkpoint — October 22, 2026:** two fresh guests
+pass **1,800 GPU handoffs over 33.5 and 33.8 seconds**, complete 4K source/SDL
+pixel audits, rendered input response, application lifecycles, resizing and live
+cleanup. Matching private libraries from the signed installed NVIDIA **621.01**
+driver restore graphics initialization after a host driver update. The official
+input implementation is preserved. A shared-budget prototype failed an eviction
+path and remains rejected; the verified host source is retained. Displayed cadence,
+physical input latency, normal launcher integration and ≥93% native performance
+remain unverified.
+[Actual frame, all attempts and limits](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/LIVE-SUSTAINED-NVIDIA-DESKTOP.md).
+
+**Earlier live trace comparison:** moving the complete graphics diagnostics from the
 emulated UART to a dedicated virtio-serial port reduces median steady GPU handoff
 intervals from **43–44 ms to 16.6–16.7 ms** in this bounded workload. Two virtio
 runs and two UART baselines pass 300 handoffs, full 4K source/SDL pixel audits,
@@ -111,9 +189,13 @@ retains its original scope and failures.
 | 3. 4K guest shaders and shared GPU textures | Demonstrated in the lab | [Independent 4K shader pixels, GPU copies and fence retirement](https://github.com/7Wdev/try-omarchy-windows/blob/2290aa6209289dddfbae54b542c524927414c020/docs/LIVE-GPU-4K.md). |
 | 4. Repeated guest rendering | Demonstrated in bounded diagnostics | [64-frame guest runs](https://github.com/7Wdev/try-omarchy-windows/blob/2290aa6209289dddfbae54b542c524927414c020/docs/LIVE-GPU-GUEST-STREAM.md), safe allocator/texture reuse and explicit cleanup. This is not long-run desktop or all-frame display acceptance. |
 | 5. Guest graphics/device integration | In progress | Native render-node/GBM, EGL fences, separate GPU clients, 4K captures and five application lifecycles with live reclamation pass twice. Supported device integration, recovery and sustained work remain required. |
-| 6. Interactive Omarchy/Hyprland desktop | In progress: two 300-frame 4K application-resize/input-response runs pass; separate QEMU SDL host GPU import/BGRA controls pass | Connect the real guest compositor to the tested SDL relay with retained input, then validate normal launcher sessions, continuous display, focus, fullscreen and multiple windows. |
-| 7. Required APIs and NVIDIA features | Pending acceptance | OpenGL diagnostics pass; test general OpenGL, Vulkan, CUDA, video and NVIDIA capabilities in real guest applications. |
+| 6. Interactive Omarchy/Hyprland desktop | In progress: real guest → QEMU SDL, two 1,800-handoff 4K repeats with input response, resizing and live cleanup | Validate normal launcher sessions, displayed cadence, official physical input, focus, fullscreen and simultaneous windows. |
+| 7. Required APIs and NVIDIA features | Pending acceptance | OpenGL diagnostics pass; test general OpenGL, Vulkan, CUDA, video, NVIDIA DLSS and hardware ray tracing in real guest applications. |
 | 8. Reliability and ≥93% native performance | Pending acceptance | Matched guest/native benchmarks through 4K, concurrent host/guest GPU workloads, long runs, bounded memory and device/VM recovery. |
+
+NVIDIA **DLSS** and **hardware ray tracing** are required, unverified targets.
+Their acceptance requires actual guest applications or SDK workloads with
+verified NVIDIA hardware execution, correct output and measured performance.
 
 ## Desktop product acceptance gates
 
@@ -130,9 +212,9 @@ not close the broader product requirements below.
 
 ## Remaining work
 
-1. Connect real guest compositor buffers to the tested QEMU SDL relay, retaining its
-   keyboard/cursor logic; extend hardware trim/reallocation and longer rendering
-   without relaxing the usage guard.
+1. Extend the bounded pre-stream address-pressure result to memory pressure
+   while rendering, hardware staging reallocation and longer workloads,
+   retaining official input and the independent physical-memory guards.
 2. Integrate the supported guest device path, normal first-boot session and Windows
    launcher/input, with independently verified continuous presentation.
 3. Extend the bounded live-retirement result to concurrent application windows,
