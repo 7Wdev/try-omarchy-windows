@@ -12,6 +12,12 @@ Normal launcher integration and a stable interactive desktop remain in developme
 
 [Daily-use readiness and the next Chromium browsing checks](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/DAILY-USE-READINESS.md).
 
+**Networking checkpoint — October 25, 2026:** the read-only guest now passes
+DNS and certificate-verified HTTPS, then completes **1,800 4K GPU handoffs**
+with complete pixels, application relaunch and live cleanup. Chromium's first
+GPU initialization attempt fails and remains unaccepted.
+[Actual networked frame and browsing status](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/GUEST-BROWSING-PROGRESS.md).
+
 ![Two-window 4K NVIDIA fixture verified; native health queries supported; backend 4/8; desktop product 0/4](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/windows-nvgpu-lab/docs/images/gpu-backend-progress-device-state-2026-10-25.svg)
 
 **Native GPU health — October 25, 2026:** the published-runtime build completes

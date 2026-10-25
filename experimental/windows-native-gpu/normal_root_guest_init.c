@@ -163,6 +163,14 @@ int main(void) {
     if(mount("/dev/vda","/lower","ext4",MS_RDONLY|MS_NOATIME,"noload")) fail("readonly-ext4");
     if(mount("tmpfs","/overlay","tmpfs",MS_NOSUID|MS_NODEV,"size=512m,mode=0700")) fail("bounded-overlay-tmpfs");
     directory("/overlay/upper",0700); directory("/overlay/work",0700);
+    // The overlay upper becomes the OS root. Preserve the source root's
+    // metadata so ordinary users and sandboxed system services can traverse it.
+    struct stat root_metadata;
+    if(stat("/lower",&root_metadata) || !S_ISDIR(root_metadata.st_mode) ||
+       chown("/overlay/upper",root_metadata.st_uid,root_metadata.st_gid) ||
+       chmod("/overlay/upper",root_metadata.st_mode&07777)) fail("overlay-root-metadata");
+    printf("NORMAL_ROOT_METADATA_PRESERVED mode=%03o uid=%u gid=%u sourceWrites=false\n",
+        (unsigned)(root_metadata.st_mode&07777),(unsigned)root_metadata.st_uid,(unsigned)root_metadata.st_gid);
     if(mount("overlay","/newroot","overlay",0,"lowerdir=/lower,upperdir=/overlay/upper,workdir=/overlay/work,index=off")) fail("temporary-root-overlay");
     // The source fstab describes a persistent ext4 root. This explicit boot
     // check uses the already-mounted RAM overlay and no persistent mounts.

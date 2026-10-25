@@ -184,7 +184,7 @@ class Runtime {
         throw std::runtime_error("SDL relay requires a hardware NVIDIA adapter");
     }
 public:
-    Runtime(unsigned short driverPort, const qemu_fence::Paths& paths, bool enableCpu = false, bool cpuStoreTest = false, bool cpuEofTest = false, bool hwQueueEofTest = false, std::size_t cpuSlots = driver_bridge::DefaultVendorCpuSlots, bool syncEofTest = false, bool reservationEofTest = false, bool gpuStateEofTest = false, bool cpuSpanEofTest = false, bool syncNoMaxEofTest = false, bool hwQueueNoBroadcastEofTest = false, bool hwQueueNoBroadcastWaitEofTest = false, std::uint32_t configuredFenceSlots = 0, const char* readonlyRoot = nullptr, bool desktopFences = false, bool enableWindowInput = false, bool inputSelfTest = false, bool enableSdl = false, bool virtioTrace = false)
+    Runtime(unsigned short driverPort, const qemu_fence::Paths& paths, bool enableCpu = false, bool cpuStoreTest = false, bool cpuEofTest = false, bool hwQueueEofTest = false, std::size_t cpuSlots = driver_bridge::DefaultVendorCpuSlots, bool syncEofTest = false, bool reservationEofTest = false, bool gpuStateEofTest = false, bool cpuSpanEofTest = false, bool syncNoMaxEofTest = false, bool hwQueueNoBroadcastEofTest = false, bool hwQueueNoBroadcastWaitEofTest = false, std::uint32_t configuredFenceSlots = 0, const char* readonlyRoot = nullptr, bool desktopFences = false, bool enableWindowInput = false, bool inputSelfTest = false, bool enableSdl = false, bool virtioTrace = false, bool userNetwork = false)
         : fenceSlots(configuredFenceSlots ? configuredFenceSlots : cpuSlots >= driver_bridge::ExpandedVendorCpuSlots ? driver_bridge::ExpandedFenceSlots : driver_bridge::DefaultFenceSlots),
           allocationSlots(cpuSlots), allocationAperture(cpuSlots,desktopFences), allocationsEnabled(enableCpu), logfile(std::filesystem::absolute(paths.log)) {
         if (!driver_bridge::validFenceSlots(fenceSlots,desktopFences) || !driver_bridge::validVendorCpuSlots(cpuSlots,gpu_diagnostic::HighResolution,desktopFences) || (cpuSlots==driver_bridge::SparseVendorCpuSlots && fenceSlots!=(desktopFences ? 512u : 256u)) || (cpuSlots==driver_bridge::DesktopVendorCpuSlots && (!desktopFences || fenceSlots!=512)) || (!enableCpu && cpuSlots != driver_bridge::DefaultVendorCpuSlots))
@@ -196,6 +196,8 @@ public:
             throw std::runtime_error("SDL graphics requires the owned desktop root; optional input is isolated QMP diagnostic only");
         if(virtioTrace && (!enableSdl || !readonlyRoot || !desktopFences))
             throw std::runtime_error("Virtio graphics trace requires the owned SDL root runtime");
+        if(userNetwork && (!enableSdl || !readonlyRoot || !desktopFences))
+            throw std::runtime_error("User networking requires the owned SDL desktop root runtime");
         if (readonlyRoot) {
             const auto root=std::filesystem::path(readonlyRoot);
             if (!root.is_absolute() || !std::filesystem::is_regular_file(root))
@@ -259,6 +261,10 @@ public:
             L"socket,id=wddm,host=127.0.0.1,nodelay=on,port=" + std::to_wstring(driverPort), L"-device",
             L"virtserialport,bus=bridge-serial.0,chardev=wddm,name=org.7wdev.wddm"};
         args.insert(args.end(),rootArguments.begin(),rootArguments.end());
+        if(userNetwork) {
+            args.insert(args.end(),{L"-netdev",L"user,id=browser-net",
+                L"-device",L"virtio-net-pci,id=browser-nic,netdev=browser-net,romfile="});
+        }
         if(virtioTrace) {
             const auto trace=driver_capture::directory()/"graphics-virtio.trace";
             const auto file=CreateFileW(trace.c_str(),GENERIC_WRITE,FILE_SHARE_READ,nullptr,CREATE_NEW,FILE_ATTRIBUTE_NORMAL,nullptr);
@@ -313,6 +319,12 @@ public:
         std::cout << "{\"ownedQemuPid\":" << child.dwProcessId << ",\"guestMemoryMiB\":" << memoryMiB << "}\n" << std::flush;
         if (readonlyRoot) std::cout << "{\"ownedQemuReadonlyRootAttached\":true,\"fileNodeReadonly\":true,\"rawNodeReadonly\":true,\"sourceWriteSharingDenied\":true}\n" << std::flush;
         qmp = std::make_unique<Qmp>(qmpPort, process, name);
+        if(userNetwork) {
+            const auto backend=qmp->call("qom-get",{{"path","/machine/peripheral/browser-nic"},{"property","netdev"}});
+            if(backend!="browser-net") throw std::runtime_error("Owned virtio NIC has an unexpected network backend");
+            std::cout<<"{\"ownedQemuUserNetworkRealized\":true,\"nic\":\"virtio-net-pci\",\"hostForwards\":[],"
+                <<"\"internetConnectivityVerified\":false,\"browserRenderingVerified\":false}\n"<<std::flush;
+        }
         if(enableSdl) {
             auto graphicsQmp=std::make_shared<Qmp>(graphicsPort,process,name);
             const auto options=graphicsQmp->call("query-display-options");

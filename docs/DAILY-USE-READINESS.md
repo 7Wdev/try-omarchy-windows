@@ -3,17 +3,21 @@
 The NVIDIA backend remains an engineering prototype. A complete 4K GPU desktop
 with wallpaper, bar and application windows is verified, including input response,
 application replacement, real device-health queries and live resource cleanup.
-The latest accepted run lasts 1,800 handoffs over 35.93 seconds. This does not
+The latest accepted networked run lasts 1,800 handoffs over 36.75 seconds. This does not
 establish daily-use stability or compatibility with arbitrary applications.
 
 ## Next practical acceptance: Chromium
 
-Chromium is already present in the guest image. The current frozen graphics-test
-QEMU binary was built without the user networking backend, and its test VM has no
-network adapter. The SDL candidate build now opts into libslirp, using the same
-QEMU user-networking approach as the official launcher. CI must prove backend
-availability and actual virtio NIC realization before a guest browsing run.
-This capability check does not itself verify an Internet connection.
+Chromium is already present in the guest image. The new SDL QEMU candidate includes
+libslirp and passes CI/local virtio NIC realization checks. An explicitly networked
+read-only guest passes DHCP, DNS and certificate-verified public HTTPS, followed by
+the complete 4K GPU desktop workload. Preserving the source root's permissions in
+the RAM overlay fixes an observed resolver service failure. [Actual frame and
+networking evidence](GUEST-BROWSING-PROGRESS.md).
+
+Chromium's first attempt fails EGL GPU initialization and the page-navigation
+check times out. Its sandbox stays enabled and software fallback stays disabled.
+Browser GPU rendering and interactive Internet browsing remain unverified.
 
 The browsing test must establish all of the following:
 
