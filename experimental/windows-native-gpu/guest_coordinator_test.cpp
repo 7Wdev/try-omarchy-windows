@@ -69,6 +69,52 @@ template<class Store> static void exported(Store& store,Op op,std::uint32_t tick
     auto reply=packet(op,ticket);const auto result=encode(Reply{});reply.insert(reply.end(),result.begin(),result.end());store.observe(packet(op,1),reply);
 }
 int main() {
+    {
+        const Header h{static_cast<std::uint32_t>(Op::MakeVendorResident),42,0,0};
+        auto request=encode(h);const auto desc=encode(ResidentDesc{4,1,1,0});
+        request.insert(request.end(),desc.begin(),desc.end());request.resize(request.size()+32);
+        auto response=encode(h);
+        const Reply status{static_cast<std::int32_t>(0xc0000017u),0,123};
+        const auto native=encode(status),resident=encode(ResidentReply{0,0,65536});
+        response.insert(response.end(),native.begin(),native.end());response.insert(response.end(),resident.begin(),resident.end());
+        const auto beforeRequest=request,beforeResponse=response;
+        const auto seen=residencyFailureObservation(request,response);
+        CHECK(seen && seen->queue==42 && seen->requested==4 && seen->flags==1 && seen->returned==0 &&
+              seen->ntstatus==status.ntstatus && seen->pagingFence==123 && seen->bytesToTrim==65536);
+        CHECK(request==beforeRequest && response==beforeResponse);
+        for(std::size_t length=0;length<response.size();++length) {
+            auto bad=response;bad.resize(length);CHECK(!residencyFailureObservation(request,bad));
+        }
+        auto extra=response;extra.push_back(0);CHECK(!residencyFailureObservation(request,extra));
+        for(unsigned test=0;test<8;++test) {
+            auto bad=response;Header header=h;Reply reply=status;ResidentReply output{0,0,65536};
+            switch(test) {
+                case 0: ++header.type;break;
+                case 1: ++header.handle;break;
+                case 2: header.status=-1;break;
+                case 3: header.padding=1;break;
+                case 4: reply.reserved=1;break;
+                case 5: reply.ntstatus=0;break;
+                case 6: output.reserved=1;break;
+                case 7: output.count=5;break;
+            }
+            std::memcpy(bad.data(),&header,sizeof header);std::memcpy(bad.data()+sizeof header,&reply,sizeof reply);
+            std::memcpy(bad.data()+sizeof header+sizeof reply,&output,sizeof output);
+            CHECK(!residencyFailureObservation(request,bad));
+        }
+        for(unsigned test=0;test<5;++test) {
+            auto bad=request;Header header=h;ResidentDesc descriptor{4,1,1,0};
+            switch(test) {
+                case 0: header.status=-1;break;
+                case 1: header.handle=0;break;
+                case 2: descriptor.count=UINT32_MAX;break;
+                case 3: descriptor.reserved=1;break;
+                case 4: descriptor.priorities=0;break;
+            }
+            std::memcpy(bad.data(),&header,sizeof header);std::memcpy(bad.data()+sizeof header,&descriptor,sizeof descriptor);
+            CHECK(!residencyFailureObservation(bad,response));
+        }
+    }
     CHECK(nativeAliasFailureErrno(static_cast<std::int32_t>(0xc0000017u))==ENOMEM);
     CHECK(nativeAliasFailureErrno(static_cast<std::int32_t>(0xc000009au))==ENOMEM);
     for(const auto status:{0xc000000du,0xc0000008u,0xc0000022u,0x887a0005u}) {

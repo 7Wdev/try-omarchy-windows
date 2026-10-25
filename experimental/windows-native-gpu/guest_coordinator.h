@@ -4,6 +4,7 @@
 #include "guest_broker_server.h"
 #include "driver_coordinator.h"
 #include "guest_broker_receipts.h"
+#include "broker_residency_observation.h"
 #include "fair_rpc_mutex.h"
 #include <deque>
 #include <set>
@@ -214,6 +215,12 @@ public:
                 throw std::runtime_error("Disconnected actor cannot submit native calls");
             reply=owner.control(cg::Operation::ReapReference,encode(cg::Reference{id,h.type==static_cast<std::uint32_t>(Op::CloseSharedSync) ? Kind::SharedSync : Kind::SharedResource,h.handle}));
         } else reply=owner.call(id,packet);
+        if(const auto failure=residencyFailureObservation(packet,reply)) {
+            receipt("BROKER_RESIDENCY_NATIVE_FAILURE actor=%llu pid=%d queue=%u requested=%u flags=%u returned=%u ntstatus=%d pagingFence=%llu bytesToTrim=%llu nativeReplyReceived=true clientDeliveryVerified=false\n",
+                static_cast<unsigned long long>(id),process,failure->queue,failure->requested,failure->flags,
+                failure->returned,failure->ntstatus,static_cast<unsigned long long>(failure->pagingFence),
+                static_cast<unsigned long long>(failure->bytesToTrim));
+        }
         if(reply.size()>=sizeof(Header)+sizeof(Reply)) {
             Header r{};Reply value{};std::memcpy(&r,reply.data(),sizeof r);std::memcpy(&value,reply.data()+sizeof r,sizeof value);
             if(!r.status && !value.ntstatus) {
