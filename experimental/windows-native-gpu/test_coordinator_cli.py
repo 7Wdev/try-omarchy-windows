@@ -8,6 +8,15 @@ def main():
     parser.add_argument('--bridge', required=True)
     args = parser.parse_args()
     cases = [
+        ['--stdio','--driver-resource-reference-slots','32'],
+        ['--stdio','--driver-resource-reference-slots','16'],
+        ['--stdio','--driver-resource-reference-slots','33'],
+        ['--stdio','--driver-resource-reference-slots','32','--driver-resource-reference-slots','32'],
+        ['--stdio','--driver-actor-slots','8','--driver-resource-reference-slots','32'],
+        ['--stdio','--driver-actor-slots','8'],
+        ['--stdio','--driver-actor-slots','4'],
+        ['--stdio','--driver-actor-slots','9'],
+        ['--stdio','--driver-actor-slots','8','--driver-actor-slots','8'],
         ['--stdio', '--driver-window-input'],
         ['--stdio', '--driver-input-self-test'],
         ['--stdio', '--driver-window-input', '--driver-window-input'],

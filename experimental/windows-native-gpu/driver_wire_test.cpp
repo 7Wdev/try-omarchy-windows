@@ -456,7 +456,62 @@ static void actorResourceAliases() {
     std::cout<<"ACTOR_RESOURCE_ALIAS physicalAdapterChecked=true negotiatedOnly=true independentNativeReference=true donorSessionDestroyed=true recipientImport=true malformedRepliesRejected=true quotasPreserved=true native=mock gpu=false\n";
 }
 
+static void applicationResourceReferences() {
+    struct GroupNative : Fake {
+        unsigned duplicates=0;
+        native_gpu::Capabilities capabilities() const override {
+            auto value=Fake::capabilities();
+            value.flags|=AsyncHwSubmitCapability|SyncCapability|GpuReservationCapability|VendorMemoryManagementCapability|
+                ExpandedVendorGpuCapability|ExpandedVendorCpuCapability|VendorAllocationCapability|SharedVendorResourceCapability|NativeSharedTextureCapability;
+            return value;
+        }
+        OpenGlProfile beginOpenGl(std::uint32_t version) override { require(version==14);return GuestOpenGlMultiappProfile; }
+        bool beginCoordinatedObjects(CoordinatedObjectCapacity value) override { return value.version==9 && validCoordinatedObjectCapacity(value); }
+        bool allowsReservationBackedMappings() const override { return true; }
+        bool retainsMappedResidencyOnEvict() const override { return true; }
+        SyncSharingProfile beginSyncSharing() override { return GuestSyncSharingProfile; }
+        bool samePhysicalAdapter(std::uint32_t a,std::uint32_t b) const override { return a>500 && b>500; }
+        Result duplicateSharedReference(Kind kind,std::uint32_t source) override {
+            require(kind==Kind::SharedResource && resourceTickets.count(source));++duplicates;
+            if(resourceTickets.size()>=MaxCoordinatedSharedReferences) return {static_cast<std::int32_t>(0xc0000017u),0,0};
+            const auto id=++next;resourceTickets.insert(id);return {0,id,0};
+        }
+    } native;
+    native.vendorEnabled=native.resourceEnabled=native.sharedResourceEnabled=native.nativeTextureEnabled=true;
+    CoordinatedProfiles profiles(native,GuestOpenGlMultiappCapacity,GuestCoordinatedMultiappObjects,32);
+    Session donor(native,profiles,false),first(native,profiles,true),second(native,profiles,false);
+    std::uint32_t adapters[3]{};Session* sessions[]={&donor,&first,&second};
+    for(unsigned n=0;n<3;++n) {
+        sessions[n]->dispatch(hello());const auto profile=sessions[n]->dispatch(request(Op::BeginResourceSharing));
+        require(!header(profile).status);ResourceSharingProfile agreement{};
+        std::memcpy(&agreement,profile.data()+sizeof(Header),sizeof agreement);
+        require(validApplicationResourceSharingProfile(agreement));
+        adapters[n]=header(sessions[n]->dispatch(request(Op::OpenAdapter))).handle;
+        require(header(sessions[n]->dispatch(request(Op::CreateDevice,adapters[n]))).handle);
+    }
+    NativeSharedVendorAllocationDesc desc{{{4,0x78100000,0,4,0,0},4,0},{130,73,28,1}};
+    auto create=request(Op::CreateNativeSharedVendorResourceAllocation,2,desc);create.insert(create.end(),{37,38,39,40,5,6,7,8});
+    const auto output=donor.dispatch(create);VendorResourceReply resource{};
+    require(!header(output).status);std::memcpy(&resource,output.data()+sizeof(Header)+sizeof(Reply),sizeof resource);
+    const auto ticket=header(donor.dispatch(request(Op::ExportResource,resource.resource))).handle;require(ticket);
+    std::vector<std::uint32_t> firstTickets;
+    for(unsigned n=0;n<32;++n) {
+        const auto alias=first.aliasSharedReference(donor,Kind::SharedResource,ticket,adapters[1]);
+        require(!alias.ntstatus && alias.ticket);firstTickets.push_back(alias.ticket);
+    }
+    const auto attempts=native.duplicates;
+    require(first.aliasSharedReference(donor,Kind::SharedResource,ticket,adapters[1]).ntstatus<0 && native.duplicates==attempts);
+    for(unsigned n=0;n<31;++n) require(!second.aliasSharedReference(donor,Kind::SharedResource,ticket,adapters[2]).ntstatus);
+    require(native.resourceTickets.size()==64);
+    const auto globalRefusal=second.aliasSharedReference(donor,Kind::SharedResource,ticket,adapters[2]);
+    require(globalRefusal.ntstatus<0 && !globalRefusal.ticket && native.resourceTickets.size()==64);
+    require(!header(first.dispatch(request(Op::CloseSharedResource,firstTickets.front()))).status);
+    require(!second.aliasSharedReference(donor,Kind::SharedResource,ticket,adapters[2]).ntstatus && native.resourceTickets.size()==64);
+    require(!header(first.dispatch(request(Op::QueryDriverVersion,adapters[1]))).status);
+    std::cout<<"APPLICATION_RESOURCE_REFERENCES perActor32=true thirtyThirdRefusedBeforeNative=true group64=true sixtyFifthRefused=true lastCloseReusesSlot=true donorPreserved=true mock=true gpu=false\n";
+}
 int main() {
+    applicationResourceReferences();
     {
         Fake driver;Session session(driver),other(driver);
         require(header(session.dispatch(request(Op::QueryDeviceExecutionState,1))).status==-71);

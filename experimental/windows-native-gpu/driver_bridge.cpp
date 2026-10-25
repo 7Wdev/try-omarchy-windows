@@ -2667,7 +2667,7 @@ public:
     }
 };
 static void serve(Stream& stream, const std::string& sectionName = {}, std::uint32_t sectionBytes = 0,
-                  bool contexts = false, bool queries = false, driver_qemu::Runtime* runtime = nullptr, bool allocations = false, bool gpuVa = false, bool residency = false, bool cpu = false, bool cpuStoreTest = false, bool translation = false, bool hwQueues = false, bool sync = false, bool submit = false, bool retirement = false, bool reservation = false, bool gpuState = false, bool asyncSubmit = false, bool sharedResources = false, bool consumeShared = false, bool presentShared = false, bool nativeMetadata = false, bool consumeProcess = false, bool coordinated = false, unsigned sdlFailureTest = 0, bool deferredResidency = false) {
+                  bool contexts = false, bool queries = false, driver_qemu::Runtime* runtime = nullptr, bool allocations = false, bool gpuVa = false, bool residency = false, bool cpu = false, bool cpuStoreTest = false, bool translation = false, bool hwQueues = false, bool sync = false, bool submit = false, bool retirement = false, bool reservation = false, bool gpuState = false, bool asyncSubmit = false, bool sharedResources = false, bool consumeShared = false, bool presentShared = false, bool nativeMetadata = false, bool consumeProcess = false, bool coordinated = false, unsigned sdlFailureTest = 0, bool deferredResidency = false, std::uint32_t actorSlots = 4, std::uint32_t resourceReferences = 16) {
     KmtDriver driver(sectionName, sectionBytes, contexts, queries, runtime, allocations, gpuVa, residency, cpu, cpuStoreTest, translation, hwQueues, sync, submit, retirement, reservation, gpuState, asyncSubmit, sharedResources, consumeShared, presentShared, nativeMetadata,consumeProcess);
     driver.configureDeferredResidency(deferredResidency);
     std::exception_ptr failure;
@@ -2681,7 +2681,7 @@ static void serve(Stream& stream, const std::string& sectionName = {}, std::uint
     }
     if(coordinated) {
         {
-            coordinator::Runtime owner(driver);
+            coordinator::Runtime owner(driver,actorSlots,resourceReferences);
             std::uint64_t count=0;std::size_t peakObjects=0,peakActors=0;
             try {
                 const unsigned seconds=runtime && runtime->fenceSlotLimit()==512 ? 240u : 120u;
@@ -2777,6 +2777,10 @@ int main(int argc, char** argv) {
         bool contexts = false, queries = false, allocations = false, gpuVa = false, residency = false, cpu = false, cpuStoreTest = false, cpuEofTest = false, translation = false, hwQueues = false, hwQueueEofTest = false, sync = false, syncEofTest = false, submit = false, retirement = false, reservation = false, reservationEofTest = false, gpuState = false, gpuStateEofTest = false, cpuSpanEofTest = false, syncNoMaxEofTest = false;
         std::size_t cpuSlots = DefaultVendorCpuSlots;
         bool cpuSlotsConfigured = false;
+        std::uint32_t actorSlots=4;
+        bool actorSlotsConfigured=false;
+        std::uint32_t resourceReferences=16;
+        bool resourceReferencesConfigured=false;
         std::uint32_t fenceSlots = 0;
         bool hwQueueNoBroadcastEofTest = false;
         bool hwQueueNoBroadcastWaitEofTest = false;
@@ -2785,6 +2789,16 @@ int main(int argc, char** argv) {
         bool virtioTrace=false,deferredResidency=false,userNetwork=false;
         const char* readonlyRoot = nullptr;
         while (argc > 1) {
+            if(argc>2 && std::string(argv[argc-2])=="--driver-resource-reference-slots") {
+                if(resourceReferencesConfigured || std::string(argv[argc-1])!="32")
+                    throw std::runtime_error("Application resource reference slots must be specified once as 32");
+                resourceReferences=32;resourceReferencesConfigured=true;argc-=2;continue;
+            }
+            if(argc>2 && std::string(argv[argc-2])=="--driver-actor-slots") {
+                if(actorSlotsConfigured || std::string(argv[argc-1])!="8")
+                    throw std::runtime_error("Application actor slots must be specified once as 8");
+                actorSlots=8;actorSlotsConfigured=true;argc-=2;continue;
+            }
             if (argc>2 && std::string(argv[argc-2])=="--driver-rootfs-readonly") {
                 if (readonlyRoot || !argv[argc-1][0]) throw std::runtime_error("Read-only root image must be specified once with a nonempty path");
                 readonlyRoot=argv[argc-1]; argc-=2; continue;
@@ -2856,6 +2870,10 @@ int main(int argc, char** argv) {
             throw std::runtime_error("Virtio trace requires the explicit high-resolution owned SDL coordinator and read-only root");
         if(userNetwork && (!gpu_diagnostic::HighResolution || !sdlRelay || !coordinated || !readonlyRoot))
             throw std::runtime_error("User networking requires the explicit high-resolution owned SDL coordinator and read-only root");
+        if(actorSlotsConfigured && (!gpu_diagnostic::HighResolution || !sdlRelay || !coordinated || !readonlyRoot || cpuSlots!=DesktopVendorCpuSlots || fenceSlots!=512))
+            throw std::runtime_error("Application actor capacity requires the explicit full owned SDL desktop and read-only root");
+        if(resourceReferencesConfigured && !actorSlotsConfigured)
+            throw std::runtime_error("Application resource references require the explicit application actor capacity");
         if(deferredResidency && (!gpu_diagnostic::HighResolution || !sdlRelay || !coordinated || !readonlyRoot || !residency || !retirement))
             throw std::runtime_error("Deferred residency requires the explicit high-resolution owned SDL coordinator, residency, retirement and read-only root");
         if (readonlyRoot && (cpuStoreTest || cpuEofTest || cpuSpanEofTest || hwQueueEofTest || syncEofTest || syncNoMaxEofTest ||
@@ -2979,7 +2997,7 @@ int main(int argc, char** argv) {
             throw std::runtime_error("Cannot configure low-latency GPU RPC socket");
         std::cerr<<"{\"nativeGpuTransportConfigured\":true,\"tcpNoDelay\":true,\"tcpNoDelayOptionBytes\":"<<optionBytes
             <<",\"framedReplyScatterGather\":true,\"inputPathChanged\":false}\n";
-        Stream stream(client.value); serve(stream, sectionName, sectionBytes, contexts, queries, runtime.get(), allocations, gpuVa, residency, cpu, cpuStoreTest, translation, hwQueues, sync, submit, retirement, reservation, gpuState, asyncSubmit, sharedResources, consumeShared, presentShared, nativeMetadata,consumeProcess,coordinated,sdlFailureTest,deferredResidency);
+        Stream stream(client.value); serve(stream, sectionName, sectionBytes, contexts, queries, runtime.get(), allocations, gpuVa, residency, cpu, cpuStoreTest, translation, hwQueues, sync, submit, retirement, reservation, gpuState, asyncSubmit, sharedResources, consumeShared, presentShared, nativeMetadata,consumeProcess,coordinated,sdlFailureTest,deferredResidency,actorSlots,resourceReferences);
         if (runtime) {
             runtime->report();
             if (!runtime->cleanExit()) throw std::runtime_error("Owned QEMU runtime did not exit cleanly");

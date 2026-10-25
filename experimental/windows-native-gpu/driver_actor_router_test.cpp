@@ -44,6 +44,7 @@ int main() {
         {
         actors::Router router;
         const auto a=router.attach(first),b=router.attach(second);CHECK(a==1 && b==2 && !router.attach(first));
+        CHECK(!router.configureActorLimit(8));
         std::uint64_t sequence=1;
         auto call=[&](std::uint64_t actor,const std::vector<std::uint8_t>& body) { return router.dispatch(envelope(actor,sequence++,body)); };
         CHECK(!at<actors::Envelope>(call(a,hello())).status && !at<actors::Envelope>(call(b,hello())).status);
@@ -62,6 +63,7 @@ int main() {
         CHECK(router.attach(third)==3 && router.attach(fourth)==4 && !router.attach(fifth));
         CHECK(!at<actors::Envelope>(router.dispatch(envelope(3,sequence++,{},actors::Operation::Close))).status);
         CHECK(router.attach(fifth)==5); // Retired actor IDs are never reused.
+        CHECK(!router.configureActorLimit(8));
         CHECK(at<actors::Envelope>(call(3,hello())).status==-9);
         // Router destruction leaves both actual Sessions untouched. Their
         // owner must reap the VM before allowing nonempty Session destruction.

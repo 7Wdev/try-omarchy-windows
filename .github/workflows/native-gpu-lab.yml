@@ -191,6 +191,11 @@ jobs:
           /tmp/guest-coordinator-test
           c++ -std=c++17 -O2 -Wall -Wextra -Werror -pthread -DWDDM_BRIDGE_4K_LAB=1 -DWDDM_BRIDGE_MANAGED_GPUVA=1 -DWDDM_BRIDGE_WIDE_KERNEL_LEASES=1 -DWDDM_BRIDGE_FOUR_ACTOR_OBJECTS=1 -DWDDM_BRIDGE_MULTIAPP_CPU=1 experimental/windows-native-gpu/guest_coordinator_test.cpp -o /tmp/guest-coordinator-multiapp-test
           /tmp/guest-coordinator-multiapp-test
+          application_gpu_flags=(-DWDDM_BRIDGE_4K_LAB=1 -DWDDM_BRIDGE_MANAGED_GPUVA=1 -DWDDM_BRIDGE_WIDE_KERNEL_LEASES=1 -DWDDM_BRIDGE_FOUR_ACTOR_OBJECTS=1 -DWDDM_BRIDGE_MULTIAPP_CPU=1 -DWDDM_BRIDGE_APPLICATION_ACTORS=1 -DWDDM_BRIDGE_APPLICATION_REFERENCES=1)
+          c++ -std=c++17 -O2 -Wall -Wextra -Werror -pthread "${application_gpu_flags[@]}" experimental/windows-native-gpu/guest_coordinator_test.cpp -o /tmp/guest-coordinator-application-test
+          /tmp/guest-coordinator-application-test
+          c++ -std=c++17 -O2 -Wall -Wextra -Werror -pthread "${application_gpu_flags[@]}" experimental/windows-native-gpu/guest_graphics_broker.cpp -o /tmp/guest-graphics-broker-application
+          c++ -std=c++17 -Wall -Wextra -Werror "${application_gpu_flags[@]}" -isystem .runtime-headers/include -isystem .runtime-headers/include/wsl/stubs -isystem .runtime-dxg/include -shared -fPIC experimental/windows-native-gpu/linux_ioctl_bridge.cpp -pthread -o /tmp/linux-ioctl-bridge-application.so
           c++ -std=c++17 -O2 -Wall -Wextra -Werror -pthread experimental/windows-native-gpu/guest_broker_receipts_test.cpp -o /tmp/guest-broker-receipts-test
           /tmp/guest-broker-receipts-test
           c++ -std=c++17 -O2 -Wall -Wextra -Werror experimental/windows-native-gpu/bounded_gpu_retirement_wait_test.cpp -o /tmp/bounded-gpu-retirement-wait-test

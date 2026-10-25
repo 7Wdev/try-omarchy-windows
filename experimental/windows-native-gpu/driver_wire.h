@@ -98,9 +98,18 @@ constexpr std::size_t MaxSharedResourceHandles = 16;
 constexpr std::uint32_t MaxSharedResourceRuntimeBytes = 1024;
 struct ResourceSharingProfile { std::uint32_t version, handleLimit, allocationCount, runtimeByteLimit; };
 constexpr ResourceSharingProfile GuestResourceSharingProfile{1, MaxSharedResourceHandles, 1, MaxSharedResourceRuntimeBytes};
+constexpr std::uint32_t ApplicationResourceReferences=32;
+constexpr ResourceSharingProfile GuestApplicationResourceSharingProfile{2, ApplicationResourceReferences, 1, MaxSharedResourceRuntimeBytes};
 inline bool validResourceSharingProfile(ResourceSharingProfile p) {
     return p.version == 1 && p.handleLimit == MaxSharedResourceHandles && p.allocationCount == 1 &&
            p.runtimeByteLimit == MaxSharedResourceRuntimeBytes;
+}
+inline bool validApplicationResourceSharingProfile(ResourceSharingProfile p) {
+    return p.version==2 && p.handleLimit==ApplicationResourceReferences && p.allocationCount==1 &&
+           p.runtimeByteLimit==MaxSharedResourceRuntimeBytes;
+}
+inline bool validCoordinatedResourceSharingProfile(ResourceSharingProfile p) {
+    return validResourceSharingProfile(p) || validApplicationResourceSharingProfile(p);
 }
 static_assert(sizeof(ResourceSharingProfile) == 16, "fixed native resource sharing negotiation");
 struct SharedResourceQueryDesc { std::uint32_t device, runtimeCapacity; };
@@ -650,11 +659,14 @@ class CoordinatedProfiles {
     ResourceSharingProfile resource{};
     bool managedMappings=false;
 public:
-    CoordinatedProfiles(Driver& driver,OpenGlDesktopPresentationCapacity capacity,CoordinatedObjectCapacity objectCapacity={}) : owner(&driver) {
+    CoordinatedProfiles(Driver& driver,OpenGlDesktopPresentationCapacity capacity,CoordinatedObjectCapacity objectCapacity={},
+                        std::uint32_t resourceReferences=MaxSharedResourceHandles) : owner(&driver) {
         constexpr auto required=AsyncHwSubmitCapability|SyncCapability|GpuReservationCapability|VendorMemoryManagementCapability|
             ExpandedVendorGpuCapability|ExpandedVendorCpuCapability|VendorAllocationCapability|SharedVendorResourceCapability|NativeSharedTextureCapability;
         caps=driver.capabilities();
-        if(!validCoordinatedAgreement(capacity,objectCapacity) || caps.version!=Version || caps.vendor!=0x10de ||
+        if((resourceReferences!=MaxSharedResourceHandles && resourceReferences!=ApplicationResourceReferences) ||
+            (resourceReferences==ApplicationResourceReferences && (capacity.mapping.aperture.version!=14 || objectCapacity.version!=9)) ||
+            !validCoordinatedAgreement(capacity,objectCapacity) || caps.version!=Version || caps.vendor!=0x10de ||
             (caps.flags&required)!=required) throw std::runtime_error("Invalid coordinated native capacity/capabilities");
         gl=driver.beginOpenGl(capacity.mapping.aperture.version);
         if(gl.version!=capacity.mapping.aperture.version || !validCoordinatedPresentationProfile(gl)) throw std::runtime_error("Coordinated native OpenGL agreement failed");
@@ -666,6 +678,10 @@ public:
         if(!validSyncSharingProfile(sync)) throw std::runtime_error("Coordinated native fence agreement failed");
         resource=driver.beginResourceSharing();
         if(!validResourceSharingProfile(resource)) throw std::runtime_error("Coordinated native resource agreement failed");
+        // The v9 native agreement already enforces 64 references for the whole
+        // group. This changes only how that fixed pool may be distributed to
+        // a recipient, after the trusted controller and owner both opt in.
+        if(resourceReferences==ApplicationResourceReferences) resource=GuestApplicationResourceSharingProfile;
     }
     CoordinatedProfiles(const CoordinatedProfiles&)=delete;
     CoordinatedProfiles& operator=(const CoordinatedProfiles&)=delete;
@@ -783,7 +799,7 @@ public:
         if(parent==donor.objects.end() || parent->second.kind!=Kind::Adapter ||
             !driver.samePhysicalAdapter(parent->second.nativeHandle,target->second.nativeHandle)) return {invalid,0};
         const auto count=std::count_if(objects.begin(),objects.end(),[kind](const auto& value){return value.second.kind==kind;});
-        const auto referenceLimit=kind==Kind::SharedResource ? MaxSharedResourceHandles : MaxSharedSyncHandles;
+        const auto referenceLimit=kind==Kind::SharedResource ? resourceReferenceLimit() : MaxSharedSyncHandles;
         if(objects.size()>=objectLimit() || nextId==UINT32_MAX || static_cast<std::size_t>(count)>=referenceLimit) {
             std::cerr<<"{\"nativeSharedAliasAdmissionRejected\":true,\"stage\":\"wire\",\"kind\":\""<<(kind==Kind::SharedResource ? "resource" : "sync")
                 <<"\",\"liveWireObjects\":"<<objects.size()<<",\"wireObjectLimit\":"<<objectLimit()<<",\"liveReferences\":"<<count
@@ -815,6 +831,7 @@ public:
     }
     std::size_t objectCount() const { return objects.size(); }
     std::size_t objectLimit() const { return wireObjectLimit; }
+    std::size_t resourceReferenceLimit() const { return coordinated ? coordinated->resource.handleLimit : MaxSharedResourceHandles; }
     std::size_t hwQueueLimit() const { return openglFenceNegotiated ? OpenGlFenceHwQueues : MaxHwQueues; }
     std::size_t reservationLimit() const { return coordinated && openglDesktopNegotiated ? coordinated->gl.reservationLimit : openglDesktopNegotiated ? GuestOpenGlDesktopProfile.reservationLimit : openglRenderNegotiated ? GuestOpenGlCompositorRenderProfile.reservationLimit : openglNegotiated ? GuestOpenGlProfile.reservationLimit : MaxGpuReservations; }
     std::size_t syncObjectLimit() const { return openglCompositorNegotiated ? OpenGlCompositorSyncObjects : MaxSyncObjects; }
@@ -1290,7 +1307,7 @@ public:
             const auto required = SharedVendorResourceCapability | NativeSharedTextureCapability;
             if ((driver.capabilities().flags & required) != required) return reply(h, -95);
             const auto profile = coordinated ? coordinated->resource : driver.beginResourceSharing();
-            if (!validResourceSharingProfile(profile)) return reply(h, -95);
+            if (!(coordinated ? validCoordinatedResourceSharingProfile(profile) : validResourceSharingProfile(profile))) return reply(h, -95);
             resourceSharingNegotiated = true;
             auto out = reply(h, 0); out.resize(sizeof h + sizeof profile);
             std::memcpy(out.data() + sizeof h, &profile, sizeof profile);
@@ -1373,7 +1390,7 @@ public:
             if (!source->second.shared) return reply(h, -22);
             if (objects.size() >= objectLimit() || nextId == UINT32_MAX ||
                 static_cast<std::size_t>(std::count_if(objects.begin(), objects.end(), [](const auto& item) {
-                    return item.second.kind == Kind::SharedResource; })) >= MaxSharedResourceHandles) return reply(h, -24);
+                    return item.second.kind == Kind::SharedResource; })) >= resourceReferenceLimit()) return reply(h, -24);
             const auto result = driver.exportResource(source->second.nativeHandle);
             if (result.ntstatus > 0 || result.value || (result.ntstatus < 0 ? result.nativeHandle != 0 : result.nativeHandle == 0)) {
                 if (result.nativeHandle) driver.destroy(Kind::SharedResource, result.nativeHandle);

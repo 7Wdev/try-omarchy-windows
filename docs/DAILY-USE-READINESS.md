@@ -3,7 +3,7 @@
 The NVIDIA backend remains an engineering prototype. A complete 4K GPU desktop
 with wallpaper, bar and application windows is verified, including input response,
 application replacement, real device-health queries and live resource cleanup.
-The latest accepted networked run lasts 1,800 handoffs over 36.75 seconds. This does not
+The latest accepted networked regression lasts 1,800 handoffs over 43.42 seconds. This does not
 establish daily-use stability or compatibility with arbitrary applications.
 
 ## Next practical acceptance: Chromium
@@ -15,8 +15,13 @@ the complete 4K GPU desktop workload. Preserving the source root's permissions i
 the RAM overlay fixes an observed resolver service failure. [Actual frame and
 networking evidence](GUEST-BROWSING-PROGRESS.md).
 
-Chromium's first attempt fails EGL GPU initialization and the page-navigation
-check times out. Its sandbox stays enabled and software fallback stays disabled.
+Explicit process and resource-reference agreements now clear the observed
+four-process and sixteen-reference startup boundaries. Host, guest broker and
+client ioctl tracking use the same authenticated agreement; default behavior and
+aggregate memory budgets are preserved. Chromium's latest attempt still times
+out during page navigation and reports a scanout/rendering/texturing buffer
+allocation failure. The browser sandbox is requested and software fallback is
+disabled; independent browser sandbox and WebGL proof have not completed.
 Browser GPU rendering and interactive Internet browsing remain unverified.
 
 The browsing test must establish all of the following:

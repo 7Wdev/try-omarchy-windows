@@ -88,6 +88,7 @@ class ObjectStore {
     enum class State { Unbound, Bound, Reaped };
     struct Entry { ObjectRef ref; State state=State::Unbound; std::uint32_t source=0; };
     std::map<std::uint32_t,Entry> entries;
+    const std::uint32_t resourceReferences;
     std::uint64_t exports=0,published=0,resolved=0,reaped=0,closed=0;
     static void require(bool condition,int error,const char* message) {
         if (!condition) throw std::system_error(error,std::generic_category(),message);
@@ -115,14 +116,25 @@ class ObjectStore {
         return found->second;
     }
 public:
+    explicit ObjectStore(driver_bridge::ResourceSharingProfile profile=driver_bridge::GuestResourceSharingProfile)
+        :resourceReferences(profile.handleLimit) {
+        require(driver_bridge::validCoordinatedResourceSharingProfile(profile),EPROTO,"Invalid capability reference agreement");
+    }
+    void admitAlias(std::uint32_t kind,int capacityError=ENOMEM) const {
+        require(kind==WDDM_OBJECT_SYNC || kind==WDDM_OBJECT_RESOURCE,EPROTO,"Invalid capability reference type");
+        const auto count=std::count_if(entries.begin(),entries.end(),[kind](const auto& item){return item.second.ref.kind==kind;});
+        const auto limit=kind==WDDM_OBJECT_RESOURCE ? resourceReferences : driver_bridge::MaxSharedSyncHandles;
+        require(entries.size()<resourceReferences+driver_bridge::MaxSharedSyncHandles && static_cast<std::size_t>(count)<limit,
+                capacityError,"Recipient capability reference capacity exhausted");
+    }
     std::vector<std::uint8_t> coordinatedProfile() const { return {}; }
     bool multiClient() const { return false; }
     // Only the privileged coordinator may add an independently duplicated
     // recipient NT reference after resolving a real kernel capability FD.
     void retainAlias(ObjectRef ref) {
         require(ref.ticket && ref.cookie && (ref.kind==WDDM_OBJECT_SYNC || ref.kind==WDDM_OBJECT_RESOURCE),EPROTO,"Invalid recipient alias receipt");
-        const auto count=std::count_if(entries.begin(),entries.end(),[&](const auto& item){return item.second.ref.kind==ref.kind;});
-        require(entries.size()<32 && count<16 && !entries.count(ref.ticket),EPROTO,"Recipient alias identity or budget collision");
+        admitAlias(ref.kind);
+        require(!entries.count(ref.ticket),EPROTO,"Recipient alias identity collision");
         entries.emplace(ref.ticket,Entry{ref,State::Bound,0});
     }
     template<class Authority> void authorize(const std::vector<std::uint8_t>& packet,const std::vector<Fd>& fds,Authority& kernel) {
@@ -150,8 +162,10 @@ public:
                 EPROTO,"Native capability result mismatch");
         if (result.ntstatus) return;
         if (kind) {
-            const auto count=std::count_if(entries.begin(),entries.end(),[&](const auto& item){return item.second.ref.kind==kind;});
-            require(output.handle && output.handle!=UINT32_MAX && entries.size()<32 && count<16 && !entries.count(output.handle),
+            // A successful native export beyond the agreed capacity is a
+            // protocol violation. A refused alias preflight remains ENOMEM.
+            admitAlias(kind,EPROTO);
+            require(output.handle && output.handle!=UINT32_MAX && !entries.count(output.handle),
                     EPROTO,"Native capability identity or budget collision");
             entries.emplace(output.handle,Entry{ObjectRef{kind,output.handle,0},State::Unbound,h.handle}); ++exports;
         } else {

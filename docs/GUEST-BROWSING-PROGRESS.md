@@ -2,8 +2,9 @@
 
 The diagnostic Omarchy guest now resolves DNS and loads a public HTTPS page
 with certificate verification, then completes the 4K NVIDIA desktop workload.
-Chromium acceleration remains unverified: its first run fails during EGL GPU
-initialization. This is progress toward browsing, not daily-use acceptance.
+Chromium acceleration remains unverified. Explicit process and buffer agreements
+clear its initial admission failures, but page navigation still times out.
+This is progress toward browsing, not daily-use acceptance.
 
 The SDL QEMU candidate includes libslirp. Its CI and local checks realize an
 actual virtio NIC; the native owner independently checks the NIC's attached
@@ -44,6 +45,53 @@ process fails EGL initialization and the page-navigation check times out. The
 run remains rejected for browser rendering; it shuts down cleanly. GPU-process
 environment, broker admission and sandbox compatibility need further diagnosis.
 No browser shader success or daily-use readiness is claimed.
+
+## Application capacity follow-up
+
+The real four-process admission limit was observed with an incoming connection
+pending. An explicit eight-process agreement admits Chromium's actual GPU
+process. The next failure was the compositor's sixteen live resource references.
+The new 32-reference agreement is enforced consistently by the native owner,
+guest capability store and client ioctl bridge. Each layer retains its default
+limit when the extended agreement is absent. The group resource pool stays at 64,
+fence references stay at sixteen per process, and memory budgets are not
+multiplied. [Protocol and lifetime details](APPLICATION-GPU-CAPACITY.md).
+
+| Attempt | Observation | Browser acceptance |
+| --- | --- | --- |
+| 186 | Four active processes leave an incoming connection pending; EGL initialization fails. | Rejected |
+| 187 | Chromium GPU process is admitted; compositor exhausts sixteen live native references. | Rejected |
+| 189 | Host accepts more references; guest capability store retains the older limit. | Rejected |
+| 191 | Guest store accepts the alias; client ioctl tracking retains the older limit. | Rejected |
+| 192 | All layers accept the agreement and the client holds eighteen resource references; page navigation times out. | Rejected |
+
+Run 192 has no observed alias refusal or broker protocol rejection and shuts down
+cleanly, with 941 native submissions and 1,000 successful device-health queries.
+Chromium also reports `Cannot create bo with format=RGBA_8888 and
+usage=Scanout|Rendering|Texturing`. The current Mesa render-node patch explicitly
+rejects scanout usage. Supporting the application's presentation requirements and
+diagnosing the navigation wait are the next boundaries; this observation does
+not establish that the allocation failure is the sole navigation cause. Video
+initialization also fails and remains unaccepted. The browser keeps its sandbox
+flags and disables software rasterization; independent sandbox, WebGL shader
+pixels and displayed-browser acceptance have not completed.
+
+The new host separately passes the full legacy networked desktop regression:
+1,800 handoffs over 43.42 seconds, 5,076 native submissions and 5,069 real health
+queries. Complete first/final source and SDL pixels have maximum channel error
+one. Wallpaper, input response, resizing, focus, application replacement and live
+cleanup pass; the VM exits naturally and source-disk/installed-driver guards pass.
+The source is 3840×2160; the actual SDL capture below is 2560×1566. It shows the
+desktop regression, with two terminal applications.
+
+![Actual SDL desktop regression after application capacity changes](images/omarchy-application-capacity-desktop-2026-10-25.png)
+
+[Structured observations and raw-stream hashes](evidence/APPLICATION-GPU-CAPACITY-2026-10-25.json)
+retain the rejected attempts. Raw private runtime streams remain local. Unit
+checks cover malformed agreements, namespace isolation, bounded admission,
+last-FD close and slot reuse; mock checks are identified separately from GPU
+observations. Both strict Windows builds and default/4K/application guest shim
+builds pass. CI includes the explicit application profile.
 
 The next acceptance requires an actual Chromium window with NVIDIA WebGL shader
 pixels, authenticated GPU-process/native-work correlation, the sandbox active,

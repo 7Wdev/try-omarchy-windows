@@ -103,15 +103,40 @@ public:
         const auto referenceObjects=driver_bridge::GuestCoordinatedReferenceObjects;
 #endif
         const auto objects=references ? referenceObjects : wide ? driver_bridge::GuestCoordinatedDesktopObjects : driver_bridge::CoordinatedObjectCapacity{};
-        if(!control(cg::Operation::Initialize,encode(cg::Initialization{wanted,objects})).empty()) reject("Coordinator initialization payload");
+        constexpr std::uint32_t requestedActors=
+#if defined(WDDM_BRIDGE_APPLICATION_ACTORS) && WDDM_BRIDGE_APPLICATION_ACTORS
+            driver_bridge::actors::MaxApplicationActors;
+#else
+            driver_bridge::actors::MaxActors;
+#endif
+        if(requestedActors>driver_bridge::actors::MaxActors && (!multiapp || !references))
+            reject("Application processes require the shared aggregate desktop agreement");
+        constexpr std::uint32_t requestedReferences=
+#if defined(WDDM_BRIDGE_APPLICATION_REFERENCES) && WDDM_BRIDGE_APPLICATION_REFERENCES
+            driver_bridge::ApplicationResourceReferences;
+#else
+            driver_bridge::MaxSharedResourceHandles;
+#endif
+        if(requestedReferences>driver_bridge::MaxSharedResourceHandles && requestedActors!=driver_bridge::actors::MaxApplicationActors)
+            reject("Application resource references require application process negotiation");
+        const auto initialization=requestedReferences>driver_bridge::MaxSharedResourceHandles ?
+            encode(cg::ApplicationReferenceInitialization{{{wanted,objects},requestedActors,0},requestedReferences,0}) :
+            requestedActors==driver_bridge::actors::MaxActors ? encode(cg::Initialization{wanted,objects}) :
+            encode(cg::ApplicationInitialization{{wanted,objects},requestedActors,0});
+        if(!control(cg::Operation::Initialize,initialization).empty()) reject("Coordinator initialization payload");
         agreement=decode<cg::Info>(control(cg::Operation::Info));
         if(!cg::validInfo(agreement) || std::memcmp(&wanted,&agreement.capacity,sizeof wanted) ||
-            std::memcmp(&objects,&agreement.objects,sizeof objects)) reject("Coordinator agreement mismatch");
+            std::memcmp(&objects,&agreement.objects,sizeof objects) || agreement.maxActors!=requestedActors ||
+            agreement.resource.handleLimit!=requestedReferences)
+            reject("Coordinator agreement mismatch");
+        if(requestedActors>driver_bridge::actors::MaxActors)
+            receipt("BROKER_COORDINATOR_APPLICATION_ACTOR_CAPACITY actors=%u hwQueues=%u syncObjects=%u cpuBytes=%llu reportedGpuBytes=1073741824 memoryBudgetsMultiplied=false\n",
+                requestedActors,objects.hwQueues,objects.syncObjects,static_cast<unsigned long long>(caps.cpu_byte_limit));
         receipt("BROKER_COORDINATOR_KERNEL_CAPACITY verified=true leaseLimit=%u cpuBytes=%llu flags=%u actualIoctl=true\n",
             leases.lease_limit,static_cast<unsigned long long>(caps.cpu_byte_limit),caps.flags);
         if(wide) receipt("BROKER_COORDINATOR_FENCE_CAPACITY profile=%u slots=%u bytes=%llu actualIoctl=true\n",wanted.mapping.aperture.version,fences.slots,static_cast<unsigned long long>(fences.bytes));
         if(expanded) receipt("BROKER_COORDINATOR_SLOT_CAPACITY profile=%u slots=%u bytes=%llu cpuByteLimit=%llu actualIoctl=true\n",wanted.mapping.aperture.version,slots.slots,static_cast<unsigned long long>(slots.bytes),static_cast<unsigned long long>(caps.cpu_byte_limit));
-        if(references) receipt("BROKER_COORDINATOR_REFERENCE_CAPACITY profile=%u objectsVersion=%u resources=64 syncs=64 perActor=16 byteBudgetsMultiplied=false\n",wanted.mapping.aperture.version,objects.version);
+        if(references) receipt("BROKER_COORDINATOR_REFERENCE_CAPACITY profile=%u objectsVersion=%u resources=64 syncs=64 perActor=%u perActorSync=16 byteBudgetsMultiplied=false\n",wanted.mapping.aperture.version,objects.version,requestedReferences);
         if(objects.version>=6) receipt("BROKER_COORDINATOR_MANAGED_MAPPING_CAPACITY version=%u reservedAddressBytes=68719476736 standaloneMappingBytes=1073741824 residentUsageBytes=1073741824 cpuBytes=%llu\n",objects.version,static_cast<unsigned long long>(caps.cpu_byte_limit));
         if(objects.version>=7) receipt("BROKER_COORDINATOR_DESKTOP_LEASE_CAPACITY version=%u leaseLimit=1536 fenceSlots=512 allocationSlots=1024 physicalMemoryGuardsChanged=%s\n",objects.version,multiapp?"true":"false");
         if(objects.version>=8) receipt("BROKER_COORDINATOR_FOUR_ACTOR_OBJECT_CAPACITY version=%u actors=4 hwQueues=64 syncObjects=768 perActorHwQueues=16 perActorSyncObjects=192 physicalMemoryGuardsChanged=%s\n",objects.version,multiapp?"true":"false");
@@ -330,8 +355,13 @@ template<class Native,class Authority> class ActorObjects {
     Native& native;
     ObjectStore local;
     static void require(bool ok,const char* message) { if(!ok) throw std::system_error(EPROTO,std::generic_category(),message); }
+    static driver_bridge::ResourceSharingProfile resourceProfile(const Native& port) {
+        const auto info=port.info();
+        require(cg::validInfo(info),"Invalid authenticated actor capability agreement");
+        return info.resource;
+    }
 public:
-    ActorObjects(ObjectRegistry<Authority>& objects,Native& port):registry(objects),native(port) {}
+    ActorObjects(ObjectRegistry<Authority>& objects,Native& port):registry(objects),native(port),local(resourceProfile(port)) {}
     std::vector<std::uint8_t> coordinatedProfile() const { return encode(native.info()); }
     bool multiClient() const { return true; }
     // Authority methods translate kernel-global identities into this actor's
@@ -352,7 +382,7 @@ public:
         auto& entry=found->second;auto alias=entry.aliases.find(native.actor());
         if(alias==entry.aliases.end()) {
             std::uint32_t ticket=0;
-            try { ticket=native.alias(entry.producer,entry.source,kind); }
+            try { local.admitAlias(kind);ticket=native.alias(entry.producer,entry.source,kind); }
             catch(const std::system_error& error) {
 #if defined(WDDM_BRIDGE_MULTIAPP_CPU) && WDDM_BRIDGE_MULTIAPP_CPU
                 // Observe FD lifetime after alias refusal. Never

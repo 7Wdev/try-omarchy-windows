@@ -12,6 +12,13 @@ Normal launcher integration and a stable interactive desktop remain in developme
 
 [Daily-use readiness and the next Chromium browsing checks](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/DAILY-USE-READINESS.md).
 
+**Application compatibility checkpoint — October 25, 2026:** explicit process and
+buffer agreements clear Chromium's four-process and sixteen-buffer boundaries.
+A new legacy desktop regression passes **1,800 4K GPU handoffs**, complete pixels
+and live cleanup. Chromium now passes those admission checks but still times out
+during navigation; browser rendering and daily use remain unverified.
+[Actual desktop frame, retained browser failures and next boundary](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/GUEST-BROWSING-PROGRESS.md#application-capacity-follow-up).
+
 **Networking checkpoint — October 25, 2026:** the read-only guest now passes
 DNS and certificate-verified HTTPS, then completes **1,800 4K GPU handoffs**
 with complete pixels, application relaunch and live cleanup. Chromium's first

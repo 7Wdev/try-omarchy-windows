@@ -34,13 +34,15 @@ static int coordinated(guest_broker::Fd& listener,const char* path,unsigned uid,
     primaryPipe=Fd();
     receipt("BROKER_COORDINATOR_PRIMARY pid=%llu rootChannel=true pinnedPidfd=true gpuProof=false\n",static_cast<unsigned long long>(primary));
     ObjectRegistry<> objects;
+    const auto actorLimit=controller.info().maxActors;
+    if(!driver_bridge::actors::validActorLimit(actorLimit)) throw std::runtime_error("Invalid negotiated actor limit");
     std::atomic<unsigned> active{0},failures{0};std::atomic<bool> primaryFinished{false};
     struct Workers {
         struct Task { std::thread thread;std::atomic<bool> done{false}; };
         std::vector<std::unique_ptr<Task>> tasks;
-        Workers() { tasks.reserve(ar::MaxActors); }
+        explicit Workers(std::size_t limit) { tasks.reserve(limit); }
         ~Workers() { for(auto& task:tasks) if(task->thread.joinable()) task->thread.join(); }
-    } workers;
+    } workers(actorLimit);
     // This diagnostic process is VM-owned. A stalled actor is a failed run;
     // the Windows owner reaps QEMU before releasing retained native objects.
     alarm(info.fence_slots==512 ? 240 : 120);
@@ -50,7 +52,7 @@ static int coordinated(guest_broker::Fd& listener,const char* path,unsigned uid,
         for(auto i=workers.tasks.begin();i!=workers.tasks.end();) {
             if((*i)->done) { (*i)->thread.join();i=workers.tasks.erase(i); } else ++i;
         }
-        if(primaryFinished || workers.tasks.size()>=ar::MaxActors) { poll(nullptr,0,10);continue; }
+        if(primaryFinished || workers.tasks.size()>=actorLimit) { poll(nullptr,0,10);continue; }
         pollfd incoming{listener.get(),POLLIN,0};const auto readyCount=poll(&incoming,1,100);
         if(readyCount<0 && errno==EINTR) continue;
         if(readyCount<0 || (incoming.revents&(POLLERR|POLLNVAL))) throw std::runtime_error("Coordinator listener poll failed");

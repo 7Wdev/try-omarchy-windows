@@ -240,6 +240,8 @@ class Bridge {
     bool compositorQueueEnded = false;
     std::map<std::uint32_t,std::uint32_t> exportedSyncSources;
     bool sharedResourcesNegotiated = false;
+    std::uint32_t resourceReferenceLimit=MaxSharedResourceHandles;
+    ResourceSharingProfile coordinatedResourceProfile{};
     std::set<std::uint32_t> exportedResourceTickets;
     std::set<std::uint32_t> cpuLocks;
     bool negotiated = false;
@@ -293,11 +295,12 @@ class Bridge {
         // Only this explicit root-broker profile may return a recipient alias
         // which was not exported by the current process. Kernel FD authority
         // and native same-GPU checks happened in the privileged coordinator.
-        if(!coordinatedProfileNegotiated || !guest_broker::clientEnabled() || !ticket || known.size()>=16) {
+        const auto referenceLimit=kind==WDDM_OBJECT_SYNC ? MaxSharedSyncHandles : resourceReferenceLimit;
+        if(!coordinatedProfileNegotiated || !guest_broker::clientEnabled() || !ticket || known.size()>=referenceLimit) {
             transport.fail();throw Error(EPROTO);
         }
         known.insert(ticket);
-        std::fprintf(stderr,"LINUX_BRIDGE recipientReferenceAdopted=true kind=%u ticket=%u authenticatedBroker=true\n",kind,ticket);
+        std::fprintf(stderr,"LINUX_BRIDGE recipientReferenceAdopted=true kind=%u ticket=%u referenceLimit=%zu liveReferences=%zu authenticatedBroker=true\n",kind,ticket,referenceLimit,known.size());
         return true;
     }
     void reapObjectTickets() {
@@ -336,10 +339,18 @@ class Bridge {
         if (packet.size() != sizeof(Header) + sizeof(ResourceSharingProfile)) { transport.fail(); throw Error(EPROTO); }
         Header h{}; ResourceSharingProfile profile{};
         std::memcpy(&h, packet.data(), sizeof h); std::memcpy(&profile, packet.data() + sizeof h, sizeof profile);
-        if (h.type != static_cast<std::uint32_t>(Op::BeginResourceSharing) || h.handle || h.status || h.padding || !validResourceSharingProfile(profile)) {
+        const bool validProfile=
+#if defined(WDDM_BRIDGE_APPLICATION_REFERENCES) && WDDM_BRIDGE_APPLICATION_REFERENCES
+            validApplicationResourceSharingProfile(profile);
+#else
+            validResourceSharingProfile(profile);
+#endif
+        if (h.type != static_cast<std::uint32_t>(Op::BeginResourceSharing) || h.handle || h.status || h.padding || !validProfile ||
+            (coordinatedProfileNegotiated && std::memcmp(&profile,&coordinatedResourceProfile,sizeof profile))) {
             transport.fail(); throw Error(EPROTO);
         }
         sharedResourcesNegotiated = true;
+        resourceReferenceLimit=profile.handleLimit;
         std::fprintf(stderr, "LINUX_BRIDGE nativeResourceSharingNegotiated=true kernelObjectFds=true dmaBuf=false\n");
     }
     static constexpr std::uint32_t GuestLuidLow = 0x57475055;
@@ -380,6 +391,7 @@ class Bridge {
             const auto group=guest_broker::client().coordinatedProfile();
             coordinatedProfileVersion=!std::strcmp(coordinated,"14") ? 14 : !std::strcmp(coordinated,"13") ? 13 : !std::strcmp(coordinated,"12") ? 12 : !std::strcmp(coordinated,"11") ? 11 : 10;
             if(group.gl.version!=coordinatedProfileVersion || std::memcmp(&group.caps,&caps,sizeof caps)) { transport.fail();throw Error(EPROTO); }
+            coordinatedResourceProfile=group.resource;
             beginOpenGl(coordinatedProfileVersion);
             coordinatedProfileNegotiated=true;
             std::fprintf(stderr,"LINUX_BRIDGE coordinatedNativeProfile=true version=%u cpuAndGpuBudgetsShared=true\n",coordinatedProfileVersion);

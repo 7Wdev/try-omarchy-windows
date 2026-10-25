@@ -30,6 +30,10 @@ struct Alias {
 };
 struct Reference { std::uint64_t actor=0; Kind kind{}; std::uint32_t ticket=0; };
 struct Initialization { OpenGlDesktopPresentationCapacity capacity{};CoordinatedObjectCapacity objects{}; };
+struct ApplicationInitialization { Initialization base{};std::uint32_t actorSlots=8,reserved=0; };
+struct ApplicationReferenceInitialization { ApplicationInitialization base{};std::uint32_t resourceReferences=ApplicationResourceReferences,reserved=0; };
+constexpr std::uint32_t ApplicationActorsFlag=1;
+constexpr std::uint32_t ApplicationReferencesFlag=2;
 struct Info {
     OpenGlDesktopPresentationCapacity capacity{};
     CoordinatedObjectCapacity objects{};
@@ -41,6 +45,8 @@ struct Info {
 };
 static_assert(sizeof(Frame)==32 && offsetof(Frame,sequence)==8 && offsetof(Frame,reserved)==24,"Coordinator framing");
 static_assert(sizeof(Registration)==8 && sizeof(Alias)==32 && sizeof(Reference)==16 && sizeof(Initialization)==80 && sizeof(Info)==176,"Coordinator control payloads");
+static_assert(sizeof(ApplicationInitialization)==88,"Explicit application process capacity payload");
+static_assert(sizeof(ApplicationReferenceInitialization)==96,"Explicit application resource reference capacity payload");
 constexpr std::size_t MaxPacket=actors::MaxEnvelopeBytes;
 static_assert(MaxCoordinatedSharedReferences==actors::MaxActors*MaxSharedResourceHandles &&
               MaxCoordinatedSharedReferences==actors::MaxActors*MaxSharedSyncHandles,"Fixed v5 group and per-actor reference bounds");
@@ -50,8 +56,13 @@ static_assert(GuestCoordinatedActorObjects.hwQueues==actors::MaxActors*OpenGlFen
 inline bool validInfo(const Info& value) {
     return validCoordinatedAgreement(value.capacity,value.objects) && validCoordinatedPresentationProfile(value.gl) &&
         value.gl.version==value.capacity.mapping.aperture.version &&
-        validSyncSharingProfile(value.sync) && validResourceSharingProfile(value.resource) &&
-        value.caps.version==Version && value.caps.vendor==0x10de && value.maxActors==actors::MaxActors && !value.flags && !value.reserved;
+        validSyncSharingProfile(value.sync) &&
+        value.caps.version==Version && value.caps.vendor==0x10de && !value.reserved &&
+        ((value.maxActors==actors::MaxActors && !value.flags && validResourceSharingProfile(value.resource)) ||
+         (value.maxActors==actors::MaxApplicationActors &&
+          ((value.flags==ApplicationActorsFlag && validResourceSharingProfile(value.resource)) ||
+           (value.flags==(ApplicationActorsFlag|ApplicationReferencesFlag) && validApplicationResourceSharingProfile(value.resource))) &&
+          value.capacity.mapping.aperture.version==14 && value.objects.version==9));
 }
 class Runtime {
     Driver& driver;
@@ -64,6 +75,9 @@ class Runtime {
     bool poisoned=false,primaryClaimed=false;
     bool liveRetirement=false,terminalRetirement=false,presentationStopped=false;
     std::uint64_t primaryActor=0,retiredActors=0,retiredObjects=0;
+    std::uint32_t permittedActorLimit=static_cast<std::uint32_t>(actors::MaxActors);
+    std::uint32_t actorLimit=static_cast<std::uint32_t>(actors::MaxActors);
+    std::uint32_t permittedResourceReferences=MaxSharedResourceHandles;
     std::set<std::uint64_t> retired;
     static std::vector<std::uint8_t> response(Frame h,std::int32_t status,const std::vector<std::uint8_t>& payload={}) {
         h.status=status;h.bytes=static_cast<std::uint32_t>(payload.size());h.reserved=0;
@@ -80,7 +94,14 @@ class Runtime {
     }
     static bool referenceKind(Kind kind) { return kind==Kind::SharedResource || kind==Kind::SharedSync; }
 public:
-    explicit Runtime(Driver& value) : driver(value) {}
+    explicit Runtime(Driver& value,std::uint32_t permittedActors=static_cast<std::uint32_t>(actors::MaxActors),
+                     std::uint32_t resourceReferences=MaxSharedResourceHandles)
+        : driver(value),permittedActorLimit(permittedActors),permittedResourceReferences(resourceReferences) {
+        if(!actors::validActorLimit(permittedActors)) throw std::invalid_argument("Invalid owner actor capacity");
+        if((resourceReferences!=MaxSharedResourceHandles && resourceReferences!=ApplicationResourceReferences) ||
+           (resourceReferences==ApplicationResourceReferences && permittedActors!=actors::MaxApplicationActors))
+            throw std::invalid_argument("Invalid owner resource reference capacity");
+    }
     Runtime(const Runtime&)=delete;
     Runtime& operator=(const Runtime&)=delete;
     // The owner must stop/reap its VM before this object's destruction. A
@@ -121,13 +142,41 @@ public:
             return response(h,-32);
         if(h.operation==Operation::Initialize) {
             Initialization wanted{};
+            std::uint32_t requestedActors=static_cast<std::uint32_t>(actors::MaxActors);
+            std::uint32_t requestedReferences=MaxSharedResourceHandles;
             if(profiles) return response(h,-16);
-            if(!payload(packet,wanted) || !validCoordinatedAgreement(wanted.capacity,wanted.objects)) return response(h,-22);
+            if(!payload(packet,wanted)) {
+                ApplicationInitialization application{};
+                if(!payload(packet,application)) {
+                    ApplicationReferenceInitialization references{};
+                    if(!payload(packet,references) || references.reserved ||
+                       references.resourceReferences!=ApplicationResourceReferences ||
+                       references.resourceReferences>permittedResourceReferences) return response(h,-22);
+                    application=references.base;requestedReferences=references.resourceReferences;
+                }
+                if(application.reserved ||
+                   application.actorSlots!=actors::MaxApplicationActors || application.actorSlots>permittedActorLimit ||
+                   application.base.capacity.mapping.aperture.version!=14 || application.base.objects.version!=9)
+                    return response(h,-22);
+                wanted=application.base;requestedActors=application.actorSlots;
+            }
+            if(!validCoordinatedAgreement(wanted.capacity,wanted.objects)) return response(h,-22);
             // A partial native initialization cannot be retried. The owner
             // catches the exception and stops the VM before releasing state.
             poisoned=true;
-            auto group=std::make_unique<CoordinatedProfiles>(driver,wanted.capacity,wanted.objects);
-            profiles=std::move(group);capacity=wanted.capacity;objectCapacity=wanted.objects;poisoned=false;
+            auto group=std::make_unique<CoordinatedProfiles>(driver,wanted.capacity,wanted.objects,requestedReferences);
+            if(!router.configureActorLimit(requestedActors)) throw std::runtime_error("Actor capacity cannot be configured");
+            profiles=std::move(group);capacity=wanted.capacity;objectCapacity=wanted.objects;
+            actorLimit=requestedActors;poisoned=false;
+            if(actorLimit>actors::MaxActors)
+                std::cerr<<"{\"nativeApplicationActorCapacityNegotiated\":true,\"actorSlots\":"<<actorLimit
+                    <<",\"hwQueues\":"<<objectCapacity.hwQueues<<",\"syncObjects\":"<<objectCapacity.syncObjects
+                    <<",\"memoryBudgetsMultiplied\":false,\"trustedControllerOnly\":true}\n";
+            if(requestedReferences>MaxSharedResourceHandles)
+                std::cerr<<"{\"nativeApplicationReferenceCapacityNegotiated\":true,\"perActorResourceReferences\":"<<requestedReferences
+                    <<",\"groupResourceReferences\":"<<MaxCoordinatedSharedReferences
+                    <<",\"perActorSyncReferences\":"<<MaxSharedSyncHandles
+                    <<",\"memoryBudgetsMultiplied\":false,\"trustedControllerOnly\":true}\n";
             return response(h,0);
         }
         if(!profiles) return response(h,-71);
@@ -176,14 +225,15 @@ public:
         if(h.operation==Operation::Info) {
             if(h.bytes) return response(h,-22);
             const Info value{capacity,objectCapacity,profiles->openGl(),profiles->syncSharing(),profiles->resourceSharing(),profiles->capabilities(),
-                             static_cast<std::uint32_t>(actors::MaxActors),0,0};
+                             actorLimit,(actorLimit==actors::MaxApplicationActors ? ApplicationActorsFlag : 0u)|
+                             (profiles->resourceSharing().version==2 ? ApplicationReferencesFlag : 0u),0};
             return response(h,0,encoded(value));
         }
         if(h.operation==Operation::Register) {
             Registration request{};
             if(!payload(packet,request) || request.reserved ||
                 (request.role!=Role::Application && request.role!=Role::Compositor)) return response(h,-22);
-            if(sessions.size()>=actors::MaxActors || (request.role==Role::Compositor && primaryClaimed)) return response(h,-24);
+            if(sessions.size()>=actorLimit || (request.role==Role::Compositor && primaryClaimed)) return response(h,-24);
             auto session=std::make_unique<Session>(driver,*profiles,request.role==Role::Compositor);
             const auto id=router.attach(*session);if(!id) return response(h,-24);
             try { sessions.emplace(id,std::move(session)); }

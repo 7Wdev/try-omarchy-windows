@@ -254,7 +254,127 @@ static void terminalRetirementControls() {
     }
     std::cout<<"TERMINAL_GROUP_RETIREMENT stoppedActorsOnly=true referencesDrained=true presentationBeforeObjects=true failedDrainFatal=true sealed=true native=mock gpu=false\n";
 }
+static void applicationActorControls() {
+    for(const auto limit:{0u,1u,5u,9u,UINT32_MAX}) {
+        NativeMock driver;bool rejected=false;
+        try { cg::Runtime owner(driver,limit); } catch(const std::invalid_argument&) { rejected=true; }
+        CHECK(rejected && !driver.objectCalls && !driver.glCalls);
+    }
+    const cg::ApplicationInitialization wanted{{GuestOpenGlMultiappCapacity,GuestCoordinatedMultiappObjects},8,0};
+    {
+        NativeMock driver;driver.managedGpuMappings=true;cg::Runtime owner(driver);Control c{owner};
+        CHECK(at<cg::Frame>(c.control(cg::Operation::Initialize,encoded(wanted))).status==-22);
+        CHECK(!driver.objectCalls && !driver.glCalls && !owner.failed());
+        CHECK(!at<cg::Frame>(c.control(cg::Operation::Initialize,encoded(wanted.base))).status);
+        const auto info=at<cg::Info>(c.control(cg::Operation::Info),sizeof(cg::Frame));
+        CHECK(cg::validInfo(info) && info.maxActors==4 && !info.flags);
+    }
+    {
+        NativeMock driver;driver.managedGpuMappings=true;cg::Runtime owner(driver,8);Control c{owner};
+        CHECK(!at<cg::Frame>(c.control(cg::Operation::Initialize,encoded(wanted.base))).status);
+        const auto info=at<cg::Info>(c.control(cg::Operation::Info),sizeof(cg::Frame));
+        CHECK(cg::validInfo(info) && info.maxActors==4 && !info.flags);
+        for(unsigned n=0;n<4;++n) CHECK(c.reg()>0);
+        CHECK(at<cg::Frame>(c.control(cg::Operation::Register,encoded(cg::Registration{}))).status==-24);
+        CHECK(owner.actorCount()==4 && !owner.failed() && owner.teardownAfterVmExit(true));
+    }
+    for(unsigned mutation=0;mutation<5;++mutation) {
+        NativeMock driver;driver.managedGpuMappings=true;cg::Runtime owner(driver,8);Control c{owner};
+        auto bad=wanted;
+        if(mutation==0) bad.actorSlots=4;
+        if(mutation==1) bad.actorSlots=9;
+        if(mutation==2) bad.reserved=1;
+        if(mutation==3) bad.base.capacity=GuestOpenGlDesktopReferenceCapacity;
+        auto bytes=encoded(bad);if(mutation==4) bytes.pop_back();
+        CHECK(at<cg::Frame>(c.control(cg::Operation::Initialize,bytes)).status==-22);
+        CHECK(!driver.glCalls && !driver.objectCalls && !owner.failed());
+        CHECK(!at<cg::Frame>(c.control(cg::Operation::Initialize,encoded(wanted))).status);
+    }
+    {
+        NativeMock driver;driver.managedGpuMappings=true;cg::Runtime owner(driver,8);Control c{owner};
+        CHECK(!at<cg::Frame>(c.control(cg::Operation::Initialize,encoded(wanted))).status);
+        auto info=at<cg::Info>(c.control(cg::Operation::Info),sizeof(cg::Frame));
+        CHECK(cg::validInfo(info) && info.maxActors==8 && info.flags==cg::ApplicationActorsFlag);
+        CHECK(!std::memcmp(&info.objects,&wanted.base.objects,sizeof info.objects));
+        CHECK(info.objects.hwQueues==64 && info.objects.syncObjects==768 && info.objects.leaseLimit==1536);
+        for(unsigned mutation=0;mutation<4;++mutation) {
+            auto bad=info;
+            if(mutation==0) bad.flags=0;
+            if(mutation==1) bad.maxActors=4;
+            if(mutation==2) bad.flags=2;
+            if(mutation==3) bad.reserved=1;
+            CHECK(!cg::validInfo(bad));
+        }
+        std::vector<std::uint64_t> ids;
+        for(unsigned n=0;n<8;++n) {
+            ids.push_back(c.reg());CHECK(ids.back()==n+1);
+            CHECK(!at<Header>(c.call(ids.back(),hello()),40).status);
+        }
+        CHECK(at<cg::Frame>(c.control(cg::Operation::Register,encoded(cg::Registration{}))).status==-24);
+        CHECK(owner.actorCount()==8 && !owner.failed() && driver.glCalls==1 && driver.objectCalls==1);
+        for(const auto id:{ids.front(),ids.back()}) {
+            CHECK(at<Header>(c.call(id,inner(Op::OpenAdapter)),40).handle==1);
+            CHECK(at<Header>(c.call(id,inner(Op::CreateDevice,1)),40).handle==2);
+        }
+        const auto before=driver.calls;
+        CHECK(at<Header>(c.call(ids.back(),inner(Op::QueryDriverVersion,3)),40).status<0 && driver.calls==before);
+        CHECK(!at<cg::Frame>(c.control(cg::Operation::Disconnect,encoded(ids.front()))).status);
+        CHECK(at<cg::Frame>(c.control(cg::Operation::Release,encoded(ids.front()))).status==-16);
+        CHECK(owner.actorCount()==8 && driver.live.size()==4);
+        CHECK(owner.teardownAfterVmExit(true) && driver.live.empty());
+    }
+    std::cout<<"APPLICATION_ACTOR_CONTROL explicitOwnerOptIn=true legacyFourPreserved=true eightNamespaces=true aggregateObjectBudgetUnchanged=true malformedRejected=true mock=true gpu=false\n";
+}
+static void applicationReferenceControls() {
+    const cg::ApplicationReferenceInitialization wanted{{{GuestOpenGlMultiappCapacity,GuestCoordinatedMultiappObjects},8,0},32,0};
+    for(const auto actors:{4u,8u}) {
+        NativeMock driver;cg::Runtime owner(driver,actors);Control c{owner};
+        CHECK(at<cg::Frame>(c.control(cg::Operation::Initialize,encoded(wanted))).status==-22);
+        CHECK(!driver.glCalls && !driver.objectCalls && !owner.failed());
+    }
+    for(const auto slots:{0u,17u,31u,33u,UINT32_MAX}) {
+        NativeMock driver;bool refused=false;
+        try { cg::Runtime owner(driver,8,slots); } catch(const std::invalid_argument&) { refused=true; }
+        CHECK(refused && !driver.glCalls);
+    }
+    {
+        NativeMock driver;bool refused=false;
+        try { cg::Runtime owner(driver,4,32); } catch(const std::invalid_argument&) { refused=true; }
+        CHECK(refused);
+    }
+    for(unsigned mutation=0;mutation<7;++mutation) {
+        NativeMock driver;driver.managedGpuMappings=true;cg::Runtime owner(driver,8,32);Control c{owner};
+        auto bad=wanted;
+        if(mutation==0) bad.resourceReferences=16;
+        if(mutation==1) bad.resourceReferences=33;
+        if(mutation==2) bad.reserved=1;
+        if(mutation==3) bad.base.reserved=1;
+        if(mutation==4) bad.base.actorSlots=4;
+        if(mutation==5) bad.base.base.objects.version=8;
+        auto bytes=encoded(bad);if(mutation==6) bytes.pop_back();
+        CHECK(at<cg::Frame>(c.control(cg::Operation::Initialize,bytes)).status==-22 && !owner.failed());
+        CHECK(!driver.glCalls && !driver.objectCalls);
+        CHECK(!at<cg::Frame>(c.control(cg::Operation::Initialize,encoded(wanted))).status);
+        const auto info=at<cg::Info>(c.control(cg::Operation::Info),32);
+        CHECK(cg::validInfo(info) && info.maxActors==8 && info.flags==3 && info.resource.handleLimit==32);
+        CHECK(info.sync.handleLimit==16 && info.objects.hwQueues==64 && info.objects.syncObjects==768);
+        auto wrong=info;wrong.flags=1;CHECK(!cg::validInfo(wrong));
+        wrong=info;wrong.resource.version=1;CHECK(!cg::validInfo(wrong));
+        wrong=info;wrong.resource.handleLimit=33;CHECK(!cg::validInfo(wrong));
+        CHECK(owner.teardownAfterVmExit(true));
+    }
+    for(const bool legacy:{false,true}) {
+        NativeMock driver;driver.managedGpuMappings=true;cg::Runtime owner(driver,8,32);Control c{owner};
+        const auto bytes=legacy ? encoded(wanted.base.base) : encoded(wanted.base);
+        CHECK(!at<cg::Frame>(c.control(cg::Operation::Initialize,bytes)).status);
+        const auto info=at<cg::Info>(c.control(cg::Operation::Info),32);
+        CHECK(cg::validInfo(info) && info.resource.handleLimit==16 && info.resource.version==1);
+    }
+    std::cout<<"APPLICATION_REFERENCE_CONTROL ownerAndControllerOptIn=true legacySixteenPreserved=true syncLimitUnchanged=true malformedRejected=true mock=true gpu=false\n";
+}
 int main() {
+    applicationReferenceControls();
+    applicationActorControls();
     terminalRetirementControls();
     liveRetirementControls();
     for(const auto capacity:{GuestOpenGlDesktopPresentationCapacity,GuestOpenGlDesktopFenceCapacity,GuestOpenGlDesktopSlotCapacity,GuestOpenGlDesktopReferenceCapacity}) {

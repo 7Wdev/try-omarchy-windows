@@ -11,6 +11,8 @@ namespace driver_bridge::actors {
 constexpr std::uint32_t Magic=0x54434157; // WACT, little endian
 constexpr std::uint16_t ProtocolVersion=1;
 constexpr std::size_t MaxActors=4;
+constexpr std::size_t MaxApplicationActors=8;
+constexpr bool validActorLimit(std::size_t value) { return value==MaxActors || value==MaxApplicationActors; }
 enum class Operation : std::uint16_t { Call=1, Disconnect=2, Close=3 };
 struct Envelope {
     std::uint32_t magic=Magic;
@@ -28,6 +30,7 @@ class Router {
     std::map<std::uint64_t,Actor> actors;
     std::uint64_t nextActor=1,nextSequence=1;
     bool poisoned=false;
+    std::size_t actorLimit=MaxActors;
     static std::vector<std::uint8_t> response(Envelope h,std::int32_t status,const std::vector<std::uint8_t>& payload={}) {
         h.status=status;h.bytes=static_cast<std::uint32_t>(payload.size());h.reserved=h.padding=0;
         std::vector<std::uint8_t> out(sizeof h+payload.size());std::memcpy(out.data(),&h,sizeof h);
@@ -40,10 +43,16 @@ public:
     Router& operator=(const Router&)=delete;
     Router(Router&&)=delete;
     Router& operator=(Router&&)=delete;
+    // The trusted coordinator selects this once before registering processes.
+    // Additional process namespaces do not multiply Driver memory budgets.
+    bool configureActorLimit(std::size_t value) {
+        if(poisoned || !actors.empty() || nextActor!=1 || !validActorLimit(value)) return false;
+        actorLimit=value;return true;
+    }
     // Trusted coordinator-only registration. A guest packet cannot create or
     // select a native Session. IDs never repeat, including after empty close.
     std::uint64_t attach(Session& session) {
-        if(poisoned || actors.size()>=MaxActors || nextActor==UINT64_MAX) return 0;
+        if(poisoned || actors.size()>=actorLimit || nextActor==UINT64_MAX) return 0;
         for(const auto& item:actors) if(&item.second.session.get()==&session) return 0;
         const auto id=nextActor++;
         actors.emplace(id,Actor{std::ref(session),false,0});return id;

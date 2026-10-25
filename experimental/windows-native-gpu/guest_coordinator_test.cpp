@@ -45,14 +45,22 @@ struct NativeMock {
     std::uint64_t id=0;
     std::uint32_t nextAlias=100;
     int aliasRefusal=0;
+    bool applicationReferences=false;
     std::atomic<unsigned> aliases{0},closed{0};
     std::atomic<bool> exited{false},finished{false};
     std::condition_variable ready;
     std::mutex mutex;
     std::uint64_t actor() const { return id; }
-    cg::Info info() const { return {}; }
+    cg::Info info() const {
+        cg::Info value{};value.capacity=GuestOpenGlMultiappCapacity;value.objects=GuestCoordinatedMultiappObjects;
+        value.gl=GuestOpenGlMultiappProfile;value.sync=GuestSyncSharingProfile;
+        value.resource=applicationReferences ? GuestApplicationResourceSharingProfile : GuestResourceSharingProfile;
+        value.caps={driver_bridge::Version,0,0x10de,0};
+        if(applicationReferences) { value.maxActors=8;value.flags=3; }
+        CHECK(cg::validInfo(value));return value;
+    }
     std::uint32_t alias(std::uint64_t donor,std::uint32_t ticket,std::uint32_t kind) {
-        CHECK(donor && donor!=id && ticket==3 && (kind==WDDM_OBJECT_RESOURCE || kind==WDDM_OBJECT_SYNC));
+        CHECK(donor && donor!=id && ticket>=3 && ticket<=34 && (kind==WDDM_OBJECT_RESOURCE || kind==WDDM_OBJECT_SYNC));
         if(aliasRefusal) { const auto error=aliasRefusal;aliasRefusal=0;throw std::system_error(error,std::generic_category(),"Mock native recipient capacity refusal"); }
         ++aliases;return nextAlias++;
     }
@@ -69,6 +77,30 @@ template<class Store> static void exported(Store& store,Op op,std::uint32_t tick
     auto reply=packet(op,ticket);const auto result=encode(Reply{});reply.insert(reply.end(),result.begin(),result.end());store.observe(packet(op,1),reply);
 }
 int main() {
+    {
+        auto state=std::make_shared<KernelState>();ObjectRegistry<KernelMock> registry(KernelMock{state});
+        NativeMock first,second,third;first.id=1;second.id=2;third.id=3;
+        first.applicationReferences=second.applicationReferences=third.applicationReferences=true;
+        ActorObjects source(registry,first),recipient(registry,second),other(registry,third);
+        std::vector<Fd> descriptors;
+        for(unsigned n=0;n<32;++n) {
+            exported(source,Op::ExportResource,n+3);
+            auto cap=source.create(ObjectRequest{WDDM_OBJECT_RESOURCE,n+3,0},source);
+            const auto ref=recipient.resolve(cap.first.get(),WDDM_OBJECT_RESOURCE,recipient);
+            CHECK(ref.ticket==100+n && ref.cookie==cap.second.cookie);
+            descriptors.push_back(std::move(cap.first));
+        }
+        exported(other,Op::ExportResource,3);
+        auto extra=other.create(ObjectRequest{WDDM_OBJECT_RESOURCE,3,0},other);
+        bool refused=false;
+        try { recipient.resolve(extra.first.get(),WDDM_OBJECT_RESOURCE,recipient); }
+        catch(const std::system_error& error) { refused=error.code().value()==ENOMEM; }
+        CHECK(refused && second.aliases==32 && state->records.size()==33 && fcntl(extra.first.get(),F_GETFD)>=0);
+        CHECK(recipient.resolve(descriptors.front().get(),WDDM_OBJECT_RESOURCE,recipient).ticket==100 && second.aliases==32);
+        descriptors.clear();extra.first=Fd();source.drain(first,source);other.drain(third,other);recipient.drain(second,recipient);
+        CHECK(first.closed==32 && third.closed==1 && second.closed==32 && state->records.empty());
+        std::cout<<"GUEST_APPLICATION_REFERENCES authenticatedAgreement=true realFd32=true thirtyThirdRefusedBeforeNative=true liveFdPreserved=true existingAliasReusable=true allReferencesReaped=true nativeAndKernel=mock gpu=false\n";
+    }
     {
         const Header h{static_cast<std::uint32_t>(Op::MakeVendorResident),42,0,0};
         auto request=encode(h);const auto desc=encode(ResidentDesc{4,1,1,0});

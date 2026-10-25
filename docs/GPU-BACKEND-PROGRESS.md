@@ -8,6 +8,13 @@ graphics runtime.
 
 ## What is verified now?
 
+**Application compatibility — October 25, 2026:** negotiated process and resource
+capacity clears Chromium's initial admission failures across host and guest.
+The legacy networked desktop passes another 1,800-handoff full-pixel regression.
+Browser navigation and scanout-usage allocation remain unresolved; browser,
+normal-launcher and daily-use acceptance stay open. Counts remain 4/8 and 0/4.
+[Actual frame and retained browser attempts](GUEST-BROWSING-PROGRESS.md#application-capacity-follow-up).
+
 **Native GPU health — October 25, 2026:** the published-runtime build completes
 **5,786 real device-health queries and 1,800 GPU handoffs**, including application
 close/relaunch, complete source/SDL pixels and live cleanup. Native errors and
