@@ -12,6 +12,10 @@ static Header header(const std::vector<std::uint8_t>& p) {
 }
 struct Fake : Driver {
     int calls = 0; std::uint32_t next = 500; bool fail = false, shortRead = false, badContextReply = false;
+    Result executionState{0,0,1};std::uint32_t lastExecutionDevice=0;
+    Result queryDeviceExecutionState(std::uint32_t device) override {
+        require(device>500);++calls;lastExecutionDevice=device;return executionState;
+    }
     bool contextsEnabled = true;
     int badContextPriorityReply = 0;
     Result setContextInProcessPriority(std::uint32_t context, std::int32_t priority) override {
@@ -453,6 +457,38 @@ static void actorResourceAliases() {
 }
 
 int main() {
+    {
+        Fake driver;Session session(driver),other(driver);
+        require(header(session.dispatch(request(Op::QueryDeviceExecutionState,1))).status==-71);
+        session.dispatch(hello());other.dispatch(hello());
+        const auto adapter=header(session.dispatch(request(Op::OpenAdapter))).handle;
+        const auto device=header(session.dispatch(request(Op::CreateDevice,adapter))).handle;
+        const auto initialCalls=driver.calls;
+        require(header(session.dispatch(request(Op::QueryDeviceExecutionState,adapter))).status==-9);
+        require(header(other.dispatch(request(Op::QueryDeviceExecutionState,device))).status==-9);
+        auto extra=request(Op::QueryDeviceExecutionState,device);extra.push_back(0);
+        require(header(session.dispatch(extra)).status==-22 && driver.calls==initialCalls);
+        for(std::uint64_t state=1;state<=7;++state) {
+            driver.executionState={0,0,state};const auto out=session.dispatch(request(Op::QueryDeviceExecutionState,device));
+            require(!header(out).status && header(out).handle==device && out.size()==sizeof(Header)+sizeof(Reply));
+            Reply value{};std::memcpy(&value,out.data()+sizeof(Header),sizeof value);
+            require(!value.ntstatus && !value.reserved && value.value==state);
+        }
+        const auto nativeDevice=driver.lastExecutionDevice;
+        const auto otherAdapter=header(other.dispatch(request(Op::OpenAdapter))).handle;
+        const auto otherDevice=header(other.dispatch(request(Op::CreateDevice,otherAdapter))).handle;
+        require(otherDevice==device); // Equal wire IDs must still resolve per actor.
+        require(!header(other.dispatch(request(Op::QueryDeviceExecutionState,otherDevice))).status);
+        require(driver.lastExecutionDevice!=nativeDevice);
+        for(const auto invalid:std::vector<Result>{{0,0,0},{0,0,8},{0,0,UINT64_MAX},{259,0,1},{0,42,1},{-123,0,1}}) {
+            driver.executionState=invalid;
+            require(header(session.dispatch(request(Op::QueryDeviceExecutionState,device))).status==-5);
+        }
+        driver.executionState={static_cast<std::int32_t>(0xc00002b6u),0,0};
+        const auto removed=session.dispatch(request(Op::QueryDeviceExecutionState,device));
+        Reply status{};std::memcpy(&status,removed.data()+sizeof(Header),sizeof status);
+        require(!header(removed).status && status.ntstatus==driver.executionState.ntstatus && !status.value);
+    }
     for(const auto kind:{Kind::Adapter,Kind::Device,Kind::PagingQueue,Kind::Allocation,Kind::Context,
             Kind::PagingSync,Kind::VendorAllocation,Kind::Sync,Kind::GpuReservation,Kind::VendorResource})
         require(nativeDestroyWaitsForSubmissions(kind));

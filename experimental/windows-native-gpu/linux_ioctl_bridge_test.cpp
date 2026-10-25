@@ -41,6 +41,44 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (fd < 0) return failed("open");
+    if (!std::strncmp(mode, "device-state-", 13)) {
+        D3DKMT_HANDLE device=999;
+        if(std::strcmp(mode,"device-state-unowned")) {
+            D3DKMT_OPENADAPTERFROMLUID adapter{};adapter.AdapterLuid.LowPart=0x57475055;
+            if(ioctl(fd,_IOWR('G',1,D3DKMT_OPENADAPTERFROMLUID),&adapter)) return failed("device state adapter");
+            D3DKMT_CREATEDEVICE created{};created.hAdapter=adapter.hAdapter;created.Flags.RequestVSync=1;
+            if(ioctl(fd,_IOWR('G',2,D3DKMT_CREATEDEVICE),&created)) return failed("device state device");
+            device=created.hDevice;
+        }
+        D3DKMT_GETDEVICESTATE state{};std::memset(&state,0xa5,sizeof state);
+        state.hDevice=device;state.StateType=D3DKMT_DEVICESTATE_EXECUTION;
+        unsigned char expected[sizeof state];std::memcpy(expected,&state,sizeof state);
+        const int result=ioctl(fd,_IOWR('G',14,D3DKMT_GETDEVICESTATE),&state);
+        const bool success=!std::strcmp(mode,"device-state-normal") || !std::strcmp(mode,"device-state-error-state");
+        if(success) {
+            const auto value=static_cast<D3DKMT_DEVICEEXECUTION_STATE>(!std::strcmp(mode,"device-state-normal")?1:5);
+            std::memcpy(expected+offsetof(D3DKMT_GETDEVICESTATE,ExecutionState),&value,sizeof value);
+            if(result || std::memcmp(&state,expected,sizeof state)) return failed("device state changed another union arm or input");
+        } else {
+            const int error=!std::strcmp(mode,"device-state-unowned")?EBADF:
+                !std::strcmp(mode,"device-state-removed")?ENODEV:
+                !std::strcmp(mode,"device-state-oom")?ENOMEM:
+                (!std::strcmp(mode,"device-state-unsupported-peer") || !std::strcmp(mode,"device-state-unsupported-native"))?ENOSYS:EPROTO;
+            if(result!=-1 || errno!=error || std::memcmp(&state,expected,sizeof state)) return failed("device state error or output preservation");
+        }
+        // Unsupported union arms must never be forwarded or changed.
+        for (const unsigned type : {3u,99u}) {
+            D3DKMT_GETDEVICESTATE state{};std::memset(&state,0xa5,sizeof state);
+            state.hDevice=device;state.StateType=static_cast<D3DKMT_DEVICESTATE_TYPE>(type);
+            unsigned char before[sizeof state];std::memcpy(before,&state,sizeof state);
+            for (unsigned n=0;n<3;++n) {
+                if (ioctl(fd,_IOWR('G',14,D3DKMT_GETDEVICESTATE),&state)!=-1 || errno!=ENOSYS ||
+                    std::memcmp(&state,before,sizeof state)) return failed("device state observation changed unsupported reply");
+            }
+        }
+        if (ioctl(fd,_IOWR('G',14,unsigned),&state)!=-1 || errno!=EINVAL) return failed("device state ABI extent");
+        close(fd);return 0;
+    }
     if (!std::strcmp(mode, "errno-log-failure")) {
         const int saved = fcntl(STDERR_FILENO, F_DUPFD_CLOEXEC, 3);
         const int full = open("/dev/full", O_WRONLY | O_CLOEXEC);

@@ -1,12 +1,19 @@
 # NVIDIA backend progress
 
-Updated **2026-10-24**. This page tracks the experimental QEMU/WHPX Windows-native
+Updated **2026-10-25**. This page tracks the experimental QEMU/WHPX Windows-native
 NVIDIA backend. The released Try Omarchy launcher continues using the upstream
 graphics runtime.
 
-![Two-window 4K NVIDIA fixture verified; stability and recovery in progress; backend stages 4/8; desktop gates 0/4](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/windows-nvgpu-lab/docs/images/gpu-backend-progress-metadata-2026-10-24.svg)
+![Two-window 4K NVIDIA fixture verified; native health queries supported; backend stages 4/8; desktop gates 0/4](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/windows-nvgpu-lab/docs/images/gpu-backend-progress-device-state-2026-10-25.svg)
 
 ## What is verified now?
+
+**Native GPU health — October 25, 2026:** the published-runtime build completes
+**5,786 real device-health queries and 1,800 GPU handoffs**, including application
+close/relaunch, complete source/SDL pixels and live cleanup. Native errors and
+fault states are preserved. A separate private rollback experiment crossed the
+1 GiB guard and failed; it remains excluded. Progress counts stay unchanged.
+[Actual frame, validation and retained failure](GPU-DEVICE-EXECUTION-STATE.md).
 
 **Residency recovery investigation — October 24, 2026:** a controlled
 single-allocation refusal recovered through 1,800 GPU handoffs, but a

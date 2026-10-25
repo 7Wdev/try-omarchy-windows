@@ -407,7 +407,8 @@ enum class Op : std::uint32_t {
     ReserveGpuAddress = 0x2080, FreeGpuReservation, MapGpuState,
     BeginResourceSharing = 0x2090, ExportResource, CloseSharedResource, QuerySharedResourceInfo, ImportResource,
     QueryMemoryBudget = 0x20a0, EvictVendorAllocations,
-    CreateNativeInteropResource, QueryNativeInteropCaps, CaptureCompositorResource, QueueCompositorFrame
+    CreateNativeInteropResource, QueryNativeInteropCaps, CaptureCompositorResource, QueueCompositorFrame,
+    QueryDeviceExecutionState = 0x20b0
 };
 enum class Kind { Adapter, Device, PagingQueue, Allocation, Context, PagingSync, VendorAllocation, HwQueue, HwQueueSync, Sync, GpuReservation, VendorResource, SharedSync, SharedResource };
 // Closing an exported NT reference does not destroy a KMT allocation/sync or
@@ -526,6 +527,9 @@ public:
     virtual Result queryVersion(std::uint32_t adapter) = 0;
     virtual Result queryAdapter(std::uint32_t adapter, QueryDesc desc, std::vector<std::uint8_t>& data) = 0;
     virtual Result createDevice(std::uint32_t adapter) = 0;
+    virtual Result queryDeviceExecutionState(std::uint32_t) {
+        return {static_cast<std::int32_t>(0xc00000bbu),0,0};
+    }
     virtual Result createContext(std::uint32_t device, ContextDesc desc, std::vector<std::uint8_t>& data) = 0;
     virtual Result setContextInProcessPriority(std::uint32_t, std::int32_t) {
         return {static_cast<std::int32_t>(0xc00000bbu), 0, 0};
@@ -1904,6 +1908,16 @@ public:
                 owned.gpuAddress = result.value; owned.reservedGpuBytes = desc.bytes;
                 objects.emplace(id, owned); gpuReservedBytes += desc.bytes; return out;
             } catch (...) { driver.destroy(Kind::GpuReservation, result.nativeHandle); throw; }
+        }
+        if (op == Op::QueryDeviceExecutionState) {
+            if (!negotiated) return reply(h,-71);
+            if (packet.size()!=sizeof h) return reply(h,-22);
+            const auto device=objects.find(h.handle);
+            if (device==objects.end() || device->second.kind!=Kind::Device) return reply(h,-9);
+            const auto result=driver.queryDeviceExecutionState(device->second.nativeHandle);
+            if (result.nativeHandle || result.ntstatus>0 ||
+                (result.ntstatus==0 ? result.value<1 || result.value>7 : result.value!=0)) return reply(h,-5);
+            return reply(h,0,h.handle,&result);
         }
         if (op == Op::QueryMemoryBudget) {
             if (!negotiated) return reply(h,-71);

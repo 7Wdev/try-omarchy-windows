@@ -49,6 +49,7 @@ int ntErrno(std::int32_t status) {
         case 0xc000000d: return EINVAL;
         case 0xc0000017: return ENOMEM;
         case 0xc0000024: return EPROTOTYPE; // libdxg preserves STATUS_OBJECT_TYPE_MISMATCH
+        case 0xc00002b6: return ENODEV; // STATUS_DEVICE_REMOVED
         case 0xc0000034: return ENOENT;
         case 0xc00000bb: return ENOSYS;
         case 0xc00000b5: return EAGAIN;
@@ -481,6 +482,27 @@ public:
         reapObjectTickets();
         const auto nr = static_cast<unsigned>(_IOC_NR(requestNumber)); ++counts[nr];
         switch (nr) {
+            case 14: {
+                auto& a = args<D3DKMT_GETDEVICESTATE>(requestNumber, pointer);
+                if(a.StateType!=D3DKMT_DEVICESTATE_EXECUTION) throw Error(ENOSYS);
+                if(!deviceAdapters.count(a.hDevice)) throw Error(EBADF);
+                Response result{};
+                try { result=call(request(Op::QueryDeviceExecutionState,a.hDevice),0,true); }
+                catch(const Error& error) {
+                    // Older native sessions reject the optional opcode.
+                    if(error.number==EOPNOTSUPP) throw Error(ENOSYS);
+                    throw;
+                }
+                if(result.header.handle!=a.hDevice || result.result.ntstatus>0 ||
+                   (result.result.ntstatus==0 ? result.result.value<1 || result.result.value>7 : result.result.value!=0)) {
+                    transport.fail();throw Error(EPROTO);
+                }
+                checkNt(result.result.ntstatus);
+                // The execution-state union arm is out-only. Leave all other
+                // fields/padding untouched; never copy a host union or pointer.
+                a.ExecutionState=static_cast<D3DKMT_DEVICEEXECUTION_STATE>(result.result.value);
+                return 0;
+            }
             case 63: {
                 const auto& a = args<D3DKMT_SHAREOBJECTS>(requestNumber, pointer);
                 if (a.ObjectCount != 1 || !a.ObjectHandleArray || !a.pSharedNtHandle || a.DesiredAccess != UINT32_C(0x10000000)) throw Error(EINVAL);

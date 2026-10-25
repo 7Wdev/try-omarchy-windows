@@ -70,6 +70,19 @@ try:
         elif op == 0x2003: send(op,handle)
         elif op == 0x2004: send(op,2)
         elif op == 0x2005: send(op,handle)
+        elif op == 0x20b0:
+            assert handle == 2 and len(packet) == 16
+            if mode == 'device-state-unsupported-peer':
+                raw=struct.pack('<IIiI',op,handle,-95,0)
+                sys.stdout.buffer.write(struct.pack('<I',len(raw))+raw);sys.stdout.buffer.flush()
+            else:
+                state=5 if mode=='device-state-error-state' else 0 if mode=='device-state-zero' else 1
+                status=(0xc00002b6-(1<<32)) if mode in ('device-state-removed','device-state-bad-error') else \
+                    -1073741801 if mode=='device-state-oom' else (0xc00000bb-(1<<32)) if mode=='device-state-unsupported-native' else \
+                    259 if mode=='device-state-positive' else 0
+                if status<0 and mode!='device-state-bad-error':state=0
+                send(op,99 if mode=='device-state-bad-handle' else handle,value=state,
+                     ntstatus=status,data=b'x' if mode=='device-state-long' else b'')
         elif op == 0x2022:
             assert handle == 3 and packet[16:] == struct.pack('<i',1)
             send(op,99 if mode == 'priority-bad-id' else handle,
@@ -253,6 +266,8 @@ if mode == 'resource-list-destroy': assert operations.count(0x2051) == 1, operat
 if mode.startswith('gpu-state-'): assert operations == [0x2000], operations
 if mode.startswith('resident-'): assert operations == [0x2000], operations
 if mode == 'errno-log-failure': assert operations == [0x2000,0x2001], operations
+if mode.startswith('device-state-'):
+    assert operations == ([0x2000] if mode=='device-state-unowned' else [0x2000,0x2001,0x2004,0x20b0]), operations
 if mode in ('cpu-disabled','cpu-invalid'): assert 0x2054 not in operations, operations
 if mode.startswith('cpu-'): assert 0x2055 not in operations, operations
 if mode == 'translation-disabled': assert 0x2056 not in operations, operations
@@ -286,7 +301,10 @@ def main():
     with tempfile.TemporaryDirectory(prefix='wddm-ioctl-fault-') as directory:
         worker = pathlib.Path(directory) / 'owned-worker'
         worker.write_text(WORKER, encoding='utf-8'); worker.chmod(0o700)
-        for mode in ('errno-log-failure', 'exit-lifetime-fd', 'context-wait-disabled', 'context-wait-invalid', 'context-wait-unowned', 'hw-wait-disabled', 'hw-wait-invalid', 'hw-wait-unowned', 'share-attributes', 'native-resource-normal', 'native-resource-disabled', 'native-resource-invalid',
+        for mode in ('device-state-normal', 'device-state-error-state', 'device-state-unowned', 'device-state-removed', 'device-state-oom',
+                     'device-state-unsupported-peer', 'device-state-unsupported-native', 'device-state-zero', 'device-state-positive',
+                     'device-state-bad-handle', 'device-state-bad-error', 'device-state-long',
+                     'errno-log-failure', 'exit-lifetime-fd', 'context-wait-disabled', 'context-wait-invalid', 'context-wait-unowned', 'hw-wait-disabled', 'hw-wait-invalid', 'hw-wait-unowned', 'share-attributes', 'native-resource-normal', 'native-resource-disabled', 'native-resource-invalid',
                      'native-resource-unowned', 'native-resource-duplicate', 'native-resource-retry', 'native-resource-thread', 'consume-disabled', 'consume-unowned', 'consume-null', 'no-worker', 'wrong-version', 'reuse', 'bad-reply', 'closed-worker', 'normal',
                      'cpu-wait-invalid', 'cpu-wait-unowned',
                      'shared-resource-normal', 'shared-resource-disabled', 'shared-resource-invalid',

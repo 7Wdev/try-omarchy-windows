@@ -355,6 +355,8 @@ class KmtDriver : public Driver {
     }
     std::uint32_t allocatedBytes = 0;
     unsigned activeAdapters = 0, activeDevices = 0, cleanupFailures = 0;
+    std::uint64_t completedDeviceExecutionQueries=0,failedDeviceExecutionQueries=0;
+    std::map<std::uint32_t,std::uint32_t> deviceExecutionStates;
     std::map<std::uint32_t, std::uint32_t> deviceAdapters;
     std::set<std::uint32_t> ownedAdapters;
     struct GpuReservation { std::uint32_t adapter; std::uint64_t address, bytes; };
@@ -566,6 +568,22 @@ public:
             ++activeDevices;
         }
         return {status, a.hDevice, 0};
+    }
+    Result queryDeviceExecutionState(std::uint32_t device) override {
+        if(!deviceAdapters.count(device)) return {Invalid,0,0};
+        D3DKMT_GETDEVICESTATE state{};state.hDevice=device;state.StateType=D3DKMT_DEVICESTATE_EXECUTION;
+        const auto status=D3DKMTGetDeviceState(&state);
+        if(status!=0) {++failedDeviceExecutionQueries;return {status>0?Invalid:status,0,0};}
+        const auto value=static_cast<std::uint32_t>(state.ExecutionState);
+        if(value<1 || value>7) {++failedDeviceExecutionQueries;return {Invalid,0,0};}
+        ++completedDeviceExecutionQueries;
+        const auto previous=deviceExecutionStates.find(device);
+        if(previous==deviceExecutionStates.end() || previous->second!=value) {
+            std::cerr<<"{\"nativeDeviceExecutionState\":true,\"device\":"<<device<<",\"state\":"<<value
+                     <<",\"nativeCall\":true,\"cachedReply\":false}\n";
+            deviceExecutionStates[device]=value;
+        }
+        return {0,0,value};
     }
     Result queryAdapter(std::uint32_t adapter, QueryDesc desc, std::vector<std::uint8_t>& data) override {
         if (!queriesEnabled || !validQuery(desc) || data.size() != desc.bytes) return {Invalid, 0, 0};
@@ -2399,7 +2417,7 @@ public:
             if (status >= 0) { --activeContexts; contextOwners.erase(handle); }
         } else if (kind == Kind::Device) {
             D3DKMT_DESTROYDEVICE a{}; a.hDevice = handle; status = D3DKMTDestroyDevice(&a);
-            if (status >= 0) { --activeDevices; deviceAdapters.erase(handle); }
+            if (status >= 0) { --activeDevices; deviceAdapters.erase(handle); deviceExecutionStates.erase(handle); }
         } else {
             if (kind != Kind::Adapter || !ownedAdapters.count(handle)) return {Invalid, 0, 0};
             for (const auto& range : gpuReservations) if (range.second.adapter == handle) return {Invalid, 0, 0};
@@ -2437,7 +2455,7 @@ public:
         }
     }
     bool clean() const {
-        return !asyncRetirementFailed && pendingSubmissions.empty() && pendingHwSignals.empty() && pendingHwWaits.empty() && pendingContextSignals.empty() && !activeAdapters && !activeDevices && !activeContexts && pagingFences.empty() && allocations.empty() && vendorAllocations.empty() &&
+        return !asyncRetirementFailed && pendingSubmissions.empty() && pendingHwSignals.empty() && pendingHwWaits.empty() && pendingContextSignals.empty() && !activeAdapters && !activeDevices && !activeContexts && pagingFences.empty() && deviceExecutionStates.empty() && allocations.empty() && vendorAllocations.empty() &&
                !vendorMappedPages && !vendorResidencyAttempts && !retainedResidencyReferences && !vendorCpuBytes && deviceAdapters.empty() && translatedAllocations.empty() &&
                sharedResourceIds.empty() && resourceGuestRuntime.empty() && sharedResourceHandles.empty() && textureConsumers.empty() && contextOwners.empty() && hwQueues.empty() && syncObjects.empty() && sharedSyncHandles.empty() && gpuReservations.empty() && !gpuReservedBytes && gpuStates.empty() && ownedAdapters.empty() &&
                !compositorOutput && !compositorPresenter && !guestMemory && !guestSection && !copyDevice && !copyHeap && !copyQueue && !copyFence && !copyEvent && !cleanupFailures &&
@@ -2450,6 +2468,9 @@ public:
                   << ",\"forcedNativeGpuWorkers\":" << nativeWorkers.forced << ",\"failedNativeGpuWorkers\":" << nativeWorkers.failed
                   << ",\"transferredNativeTextureHandles\":" << nativeWorkers.transferred
                   << ",\"liveAdapters\":" << activeAdapters << ",\"liveDevices\":" << activeDevices
+                  << ",\"completedDeviceExecutionQueries\":"<<completedDeviceExecutionQueries
+                  << ",\"failedDeviceExecutionQueries\":"<<failedDeviceExecutionQueries
+                  << ",\"liveDeviceExecutionStates\":"<<deviceExecutionStates.size()
                   << ",\"liveContexts\":" << activeContexts
                   << ",\"liveSharedResourceHandles\":" << sharedResourceHandles.size() << ",\"exportedResourceHandles\":" << exportedResourceHandles
                   << ",\"closedResourceHandles\":" << closedResourceHandles

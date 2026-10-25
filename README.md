@@ -10,7 +10,14 @@ The experimental QEMU/WHPX bridge renders the shipped Omarchy wallpaper, bar
 and two readable applications on NVIDIA at **3840×2160**, through QEMU SDL.
 Normal launcher integration and a stable interactive desktop remain in development.
 
-![Two-window 4K NVIDIA fixture verified; stability and recovery in progress; backend 4/8; desktop product 0/4](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/windows-nvgpu-lab/docs/images/gpu-backend-progress-metadata-2026-10-24.svg)
+![Two-window 4K NVIDIA fixture verified; native health queries supported; backend 4/8; desktop product 0/4](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/windows-nvgpu-lab/docs/images/gpu-backend-progress-device-state-2026-10-25.svg)
+
+**Native GPU health — October 25, 2026:** the published-runtime build completes
+**5,786 real device-health queries and 1,800 GPU handoffs**, including application
+close/relaunch, complete source/SDL pixels and live cleanup. Native errors and
+fault states are preserved. A separate private rollback experiment crossed the
+1 GiB guard and failed; it remains excluded. Progress counts stay unchanged.
+[Actual frame, validation and retained failure](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/GPU-DEVICE-EXECUTION-STATE.md).
 
 **Residency recovery investigation — October 24, 2026:** a controlled
 single-allocation refusal recovered through 1,800 GPU handoffs, but a
