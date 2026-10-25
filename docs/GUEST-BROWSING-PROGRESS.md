@@ -93,6 +93,16 @@ last-FD close and slot reuse; mock checks are identified separately from GPU
 observations. Both strict Windows builds and default/4K/application guest shim
 builds pass. CI includes the explicit application profile.
 
+An observation-only repeat (run 193) then crosses the existing GPU-usage guard:
+1,079,721,984 > 1,073,741,824 bytes. The native host and guest rendering binaries
+are unchanged; only earlier GPU/process metadata and bounded CDP event logging
+are added to the browser probe. The owner stops the VM before those diagnostics
+complete. All native resources are released after VM exit, but live recovery is
+not demonstrated and the trace is incomplete. This attempt remains rejected;
+its 729 successful device-health queries do not establish recovery. The private
+rollback prototype remains excluded. [Retained pressure counterexample and
+stream hashes](evidence/APPLICATION-PRESSURE-COUNTEREXAMPLE-2026-10-25.json).
+
 The next acceptance requires an actual Chromium window with NVIDIA WebGL shader
 pixels, authenticated GPU-process/native-work correlation, the sandbox active,
 HTTPS browsing, scrolling, tabs, ordinary input, resizing and close/reopen

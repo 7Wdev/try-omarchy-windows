@@ -41,6 +41,10 @@ normal Omarchy account/session and launcher flow, broader application and window
 coverage, longer interactive sessions, suspend/reopen behavior where supported,
 and reliable failure handling under memory pressure. The private residency
 rollback experiment remains excluded after device-loss failures.
+An observation-only browser repeat using the published host crosses the existing
+GPU-usage guard and requires an owned VM stop. Native cleanup succeeds after
+exit, but live recovery remains unverified. This failure is retained in the
+[browsing progress report](GUEST-BROWSING-PROGRESS.md).
 
 The official keyboard/cursor implementation and launcher reserved-key route remain
 the required input path. Physical input latency, physical scanout cadence and
