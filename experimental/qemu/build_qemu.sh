@@ -8,8 +8,13 @@ recipe=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$recipe/../.." && pwd)
 output=$(mkdir -p "$1" && cd "$1" && pwd)
 sdl_candidate=${QEMU_SDL_OPENGL_CANDIDATE:-0}
+user_network=${QEMU_USER_NETWORK_CANDIDATE:-0}
 if [[ "$sdl_candidate" != 0 && "$sdl_candidate" != 1 ]]; then
     echo 'QEMU_SDL_OPENGL_CANDIDATE must be 0 or 1' >&2
+    exit 2
+fi
+if [[ "$user_network" != 0 && "$user_network" != 1 ]]; then
+    echo 'QEMU_USER_NETWORK_CANDIDATE must be 0 or 1' >&2
     exit 2
 fi
 if [[ -e "$output/source" || -e "$output/build" ]]; then
@@ -31,6 +36,10 @@ git -C "$output/source" fetch --quiet --depth=1 origin "$commit"
 git -C "$output/source" -c core.autocrlf=false checkout --quiet --detach "$commit"
 python "$recipe/prepare_qemu.py" "$output/source"
 gl_option=--disable-opengl
+slirp_option=--disable-slirp
+if [[ "$user_network" == 1 ]]; then
+    slirp_option=--enable-slirp
+fi
 if [[ "$sdl_candidate" == 1 ]]; then
     python "$recipe/prepare_sdl_candidate.py" "$output/source"
     cp "$output/source/sdl-candidate-provenance.json" "$output/sdl-candidate-provenance.json"
@@ -56,7 +65,7 @@ fi
 ../source/configure --target-list=x86_64-softmmu --enable-whpx --enable-sdl \
     "${compiler_options[@]}" \
     --disable-gtk --disable-vnc "$gl_option" --disable-virglrenderer \
-    --disable-tools --disable-guest-agent --disable-docs --disable-slirp --disable-libusb
+    --disable-tools --disable-guest-agent --disable-docs "$slirp_option" --disable-libusb
 ninja -j4 qemu-system-x86_64.exe
 if [[ "${QEMU_COMPILER_CACHE:-0}" == 1 ]]; then
     ccache --show-stats | tee "$output/ccache-stats.txt"

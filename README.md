@@ -10,6 +10,8 @@ The experimental QEMU/WHPX bridge renders the shipped Omarchy wallpaper, bar
 and two readable applications on NVIDIA at **3840×2160**, through QEMU SDL.
 Normal launcher integration and a stable interactive desktop remain in development.
 
+[Daily-use readiness and the next Chromium browsing checks](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/DAILY-USE-READINESS.md).
+
 ![Two-window 4K NVIDIA fixture verified; native health queries supported; backend 4/8; desktop product 0/4](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/windows-nvgpu-lab/docs/images/gpu-backend-progress-device-state-2026-10-25.svg)
 
 **Native GPU health — October 25, 2026:** the published-runtime build completes

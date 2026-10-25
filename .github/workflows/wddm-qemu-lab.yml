@@ -36,6 +36,10 @@ jobs:
             mingw-w64-ucrt-x86_64-python
             mingw-w64-ucrt-x86_64-python-yaml
             mingw-w64-ucrt-x86_64-zstd
+      - name: Install user networking for the SDL candidate
+        if: matrix.variant == 'sdl-opengl'
+        shell: msys2 {0}
+        run: pacman -S --noconfirm --needed mingw-w64-ucrt-x86_64-libslirp
       - name: Identify the compiler package inventory
         id: toolchain
         shell: msys2 {0}
@@ -56,6 +60,7 @@ jobs:
           QEMU_COMPILER_CACHE: '1'
           QEMU_CACHE_VARIANT: ${{ matrix.variant }}
           QEMU_SDL_OPENGL_CANDIDATE: ${{ matrix.variant == 'sdl-opengl' && '1' || '0' }}
+          QEMU_USER_NETWORK_CANDIDATE: ${{ matrix.variant == 'sdl-opengl' && '1' || '0' }}
         run: bash experimental/qemu/build_qemu.sh qemu-lab
       - name: Save content-checked compiler results
         if: ${{ always() && !cancelled() }}
@@ -70,6 +75,10 @@ jobs:
         if: matrix.variant == 'sdl-opengl'
         shell: pwsh
         run: python experimental/qemu/test_sdl_relay_cli.py --qemu qemu-lab/bin/qemu-system-x86_64.exe --firmware qemu-lab/share/qemu
+      - name: Verify user networking and virtio NIC realization
+        if: matrix.variant == 'sdl-opengl'
+        shell: pwsh
+        run: python experimental/qemu/test_user_network_cli.py --qemu qemu-lab/bin/qemu-system-x86_64.exe --firmware qemu-lab/share/qemu --report qemu-lab/user-network-capability.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         with:
@@ -85,3 +94,4 @@ jobs:
             qemu-lab/sdl-candidate-provenance.json
             qemu-lab/sdl-input-controls.log
             qemu-lab/ccache-stats.txt
+            qemu-lab/user-network-capability.json
