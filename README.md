@@ -17,7 +17,8 @@ agreement admits a shared 4 GiB GPU-usage pool after native headroom checks.
 The public-source 4K desktop passes **1,800 handoffs**, full pixels, input response,
 application replacement and live cleanup. A separate default-off regression
 retains eviction/reuse coverage; the larger-pool workload has zero evictions.
-Chromium clears the old memory boundary but still lacks a verified browser frame.
+That regression clears the old browser memory boundary; the later browser-frame
+observation is recorded below.
 [Actual frame, retained failures and precise coverage](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/APPLICATION-MEMORY.md).
 
 **Memory-pressure checkpoint — October 26, 2026:** an owner-only admission pilot
@@ -39,14 +40,14 @@ with complete pixels, application relaunch and live cleanup. Chromium's first
 GPU initialization attempt fails and remains unaccepted.
 [Actual networked frame and browsing status](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/GUEST-BROWSING-PROGRESS.md).
 
-![Two-window 4K NVIDIA fixture verified; native health queries supported; backend 4/8; desktop product 0/4](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/windows-nvgpu-lab/docs/images/gpu-backend-progress-application-memory-2026-10-26.svg)
+![Two-window 4K NVIDIA fixture verified; native health queries supported; backend 4/8; desktop product 0/4](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/windows-nvgpu-lab/docs/images/gpu-backend-progress-browser-frame-2026-10-26.svg)
 
-**Browser follow-up — October 26, 2026:** an actual NVIDIA WebGL shader now
-passes with Chromium's GPU sandbox active across all 16 observed GPU threads.
-The first captured browser page body is missing, GPU compositing reports
-disabled_software, and the sustained test fails after two handoffs. Browsing and
-daily-use acceptance remain open; progress counts stay unchanged.
-[Actual incomplete capture and precise scope](docs/SANDBOXED-BROWSER-SHADER.md).
+**GPU browser frame — October 26, 2026:** the first readable HTTPS page and
+NVIDIA shader are visible in Omarchy with **GPU compositing enabled** and all
+**17 observed GPU threads sandboxed**. The 3840×2160 source and complete SDL
+blit pass the first-frame pixel check. The input/sustained fixture still fails
+after two handoffs; daily-use acceptance remains open and counts stay unchanged.
+[Actual 4K source, SDL capture and exact remaining work](docs/GPU-COMPOSITED-BROWSER-FRAME.md).
 
 **Native GPU health — October 25, 2026:** the published-runtime build completes
 **5,786 real device-health queries and 1,800 GPU handoffs**, including application

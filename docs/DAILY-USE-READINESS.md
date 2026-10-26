@@ -22,12 +22,12 @@ Explicit process and resource-reference agreements now clear the observed
 four-process and sixteen-reference startup boundaries. Host, guest broker and
 client ioctl tracking use the same authenticated agreement; default behavior and
 older aggregate memory budgets are preserved. A new explicit memory agreement
-clears the old 1 GiB reported-usage boundary. A private follow-up now passes a
-real NVIDIA WebGL shader with Chromium's GPU sandbox active and all 16 observed
-GPU threads sandboxed. Its first displayed browser capture still lacks page
-contents, GPU compositing reports disabled_software, and the sustained workload
-fails after two handoffs. It does not establish usable browsing.
-[Actual incomplete capture, exact scope and retained failures](SANDBOXED-BROWSER-SHADER.md).
+clears the old 1 GiB reported-usage boundary. A private follow-up now displays a
+readable public HTTPS page and NVIDIA shader with GPU compositing enabled and
+all 17 observed GPU threads sandboxed. The first 4K source/SDL blit passes full
+pixels. The input/sustained fixture still fails after two handoffs; scrolling,
+typing, resize, tabs, browser reopen and usable daily browsing remain unaccepted.
+[Actual first GPU-composited frame and exact limits](GPU-COMPOSITED-BROWSER-FRAME.md).
 
 The browsing test must establish all of the following:
 

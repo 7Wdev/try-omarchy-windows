@@ -1,5 +1,7 @@
 # Sandboxed Chromium shader observation
 
+**Later result:** [run 231 displays a readable GPU-composited page and shader](GPU-COMPOSITED-BROWSER-FRAME.md). Its input/sustained acceptance still fails. The earlier missing-page results below remain retained.
+
 On October 26, 2026, private integration run 225 loads the Linux Kernel Archives
 over secure public HTTPS and renders a real NVIDIA/ANGLE/D3D12 WebGL shader while
 Chromium reports its GPU sandbox active. All 16 observed GPU threads have
