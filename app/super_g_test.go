@@ -89,10 +89,14 @@ func TestSuperAltGPressesAltInGuest(t *testing.T) {
 				t.Fatalf("G release %v", keys)
 			}
 			// Game Bar may keep the physical Alt release from SDL.
-			if keys := chord.altReleased(); !reflect.DeepEqual(keys, []forwardedKey{{alt, false}}) {
+			other := map[string]string{"alt": "alt_r", "alt_r": "alt"}[alt]
+			if keys := chord.altReleased(other); len(keys) != 0 {
+				t.Fatalf("other Alt released %v", keys)
+			}
+			if keys := chord.altReleased(alt); !reflect.DeepEqual(keys, []forwardedKey{{alt, false}}) {
 				t.Fatalf("Alt release %v", keys)
 			}
-			if keys := chord.altReleased(); len(keys) != 0 {
+			if keys := chord.altReleased(alt); len(keys) != 0 {
 				t.Fatalf("second Alt release %v", keys)
 			}
 		})
@@ -103,7 +107,7 @@ func TestSuperGLeavesAltReleaseAlone(t *testing.T) {
 	var chord superGForwarder
 	chord.route(true, true, "", false, false, true)
 	chord.route(true, true, "", false, true, false)
-	if keys := chord.altReleased(); len(keys) != 0 {
+	if keys := chord.altReleased(""); len(keys) != 0 {
 		t.Fatalf("Alt release without an Alt chord: %v", keys)
 	}
 }

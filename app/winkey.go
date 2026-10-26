@@ -129,7 +129,14 @@ func hookCallback(nCode, wParam, lParam uintptr) uintptr {
 		// ends a forwarded Alt+Tab, wherever focus is by then.
 		if isAltVK(vk) && (wParam == wmKeyup || wParam == wmSyskeyup) {
 			sendKeys(altTab.altReleased())
-			sendKeys(superG.altReleased())
+			released := "" // VK_MENU: either Alt
+			switch vk {
+			case vkLMenu:
+				released = "alt"
+			case 0xA5:
+				released = "alt_r"
+			}
+			sendKeys(superG.altReleased(released))
 		}
 		if ctrlAltEndSent && (wParam == wmKeyup || wParam == wmSyskeyup) && isCtrlOrAltVK(vk) {
 			ctrlAltEndSent = false

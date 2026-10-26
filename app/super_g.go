@@ -26,9 +26,10 @@ func (f *superGForwarder) route(focused, guestSuper bool, alt string, otherModif
 	return keys, swallow
 }
 
-// altReleased lets go of the Alt a chord pressed in the guest.
-func (f *superGForwarder) altReleased() []forwardedKey {
-	if f.alt == "" {
+// altReleased lets go of the Alt a chord pressed in the guest once that same
+// Alt comes up. An empty qcode matches either Alt.
+func (f *superGForwarder) altReleased(qcode string) []forwardedKey {
+	if f.alt == "" || qcode != "" && qcode != f.alt {
 		return nil
 	}
 	keys := []forwardedKey{{qcode: f.alt, down: false}}
