@@ -10,6 +10,18 @@ is authenticated as native actor 9 and has native command and queue-signal work.
 This passes the combined shader/sandbox observation that earlier runs could not
 establish together. It does **not** pass browsing or daily-use acceptance.
 
+## Actual shader image
+
+![Actual NVIDIA WebGL shader PNG with GPU sandbox active](images/nvidia-sandboxed-webgl-shader-2026-10-26.png)
+
+Follow-up run 227 captures this 512×256 PNG directly from the real WebGL canvas
+after the shader and all 16 observed GPU threads pass the sandbox checks. It is
+the actual canvas readback, without redrawing the gradient on the CPU. The GPU
+PID is independently authenticated and has native command work. This image is
+separate from the desktop capture below. The same follow-up explicitly rejects
+disabled GPU compositing and does not accept a displayed browser frame.
+[Image receipt, exact pixels and stream hashes](evidence/SANDBOXED-WEBGL-SHADER-IMAGE-2026-10-26.json).
+
 ## Actual first window capture — incomplete page
 
 ![Actual first SDL capture: browser chrome and terminal visible; page content missing](images/omarchy-sandboxed-browser-incomplete-2026-10-26.png)
