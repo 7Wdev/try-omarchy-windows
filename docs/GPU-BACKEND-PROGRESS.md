@@ -8,6 +8,13 @@ graphics runtime.
 
 ## What is verified now?
 
+**Sandboxed browser shader — October 26, 2026:** Chromium loads a secure public
+HTTPS page and runs an actual NVIDIA/ANGLE/D3D12 shader with all 16 observed GPU
+threads sandboxed. The captured browser page body is missing, GPU compositing
+reports disabled_software, and only two handoffs complete. This is shader/sandbox
+progress; browser and daily-use acceptance remain open. Counts stay **4/8, 0/4,
+3/3**. [Actual incomplete frame and exact evidence](SANDBOXED-BROWSER-SHADER.md).
+
 **Application memory — October 26, 2026:** an explicit owner/controller agreement
 admits a shared 4 GiB reported GPU-usage pool after checking current native
 headroom. The public-source enabled desktop passes **1,800 handoffs**, 5,731

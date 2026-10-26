@@ -41,6 +41,13 @@ GPU initialization attempt fails and remains unaccepted.
 
 ![Two-window 4K NVIDIA fixture verified; native health queries supported; backend 4/8; desktop product 0/4](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/windows-nvgpu-lab/docs/images/gpu-backend-progress-application-memory-2026-10-26.svg)
 
+**Browser follow-up — October 26, 2026:** an actual NVIDIA WebGL shader now
+passes with Chromium's GPU sandbox active across all 16 observed GPU threads.
+The first captured browser page body is missing, GPU compositing reports
+disabled_software, and the sustained test fails after two handoffs. Browsing and
+daily-use acceptance remain open; progress counts stay unchanged.
+[Actual incomplete capture and precise scope](docs/SANDBOXED-BROWSER-SHADER.md).
+
 **Native GPU health — October 25, 2026:** the published-runtime build completes
 **5,786 real device-health queries and 1,800 GPU handoffs**, including application
 close/relaunch, complete source/SDL pixels and live cleanup. Native errors and

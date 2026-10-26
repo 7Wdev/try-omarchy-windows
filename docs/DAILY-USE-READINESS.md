@@ -22,13 +22,12 @@ Explicit process and resource-reference agreements now clear the observed
 four-process and sixteen-reference startup boundaries. Host, guest broker and
 client ioctl tracking use the same authenticated agreement; default behavior and
 older aggregate memory budgets are preserved. A new explicit memory agreement
-clears the old 1 GiB reported-usage boundary. The latest private compound
-browser/presentation attempt still fails the browser startup gate before page,
-WebGL or displayed-window proof. Teardown can cancel the outstanding navigation,
-so its `ERR_ABORTED` does not independently establish a network failure.
-The browser sandbox is requested and software fallback is
-disabled; independent browser sandbox and WebGL proof have not completed.
-Browser GPU rendering and interactive Internet browsing remain unverified.
+clears the old 1 GiB reported-usage boundary. A private follow-up now passes a
+real NVIDIA WebGL shader with Chromium's GPU sandbox active and all 16 observed
+GPU threads sandboxed. Its first displayed browser capture still lacks page
+contents, GPU compositing reports disabled_software, and the sustained workload
+fails after two handoffs. It does not establish usable browsing.
+[Actual incomplete capture, exact scope and retained failures](SANDBOXED-BROWSER-SHADER.md).
 
 The browsing test must establish all of the following:
 
