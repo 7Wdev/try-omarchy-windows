@@ -1,5 +1,15 @@
 # Native Windows GPU experiment
 
+## Application memory agreement
+
+The default-off `--driver-application-memory` option and matching
+`WDDM_BRIDGE_APPLICATION_MEMORY=1` guest build negotiate a separate 112-byte
+owner/controller initialization and a shared 4 GiB reported-usage pool. Older
+payloads retain their limits. Native headroom admission, exact authenticated
+capacity matching and retained default/enabled desktop evidence are documented
+in [Application memory](../../docs/APPLICATION-MEMORY.md). This does not establish
+browser, pressure-recovery or daily-use acceptance.
+
 **Product integration priority:** preserve the official launcher's keyboard,
 cursor and reserved-key logic and QEMU SDL input path. Connect the graphics
 backend to that frontend. The fixed QMP test and separate native window remain

@@ -12,6 +12,14 @@ Normal launcher integration and a stable interactive desktop remain in developme
 
 [Daily-use readiness and the next Chromium browsing checks](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/DAILY-USE-READINESS.md).
 
+**Application-memory checkpoint — October 26, 2026:** an explicit owner/controller
+agreement admits a shared 4 GiB GPU-usage pool after native headroom checks.
+The public-source 4K desktop passes **1,800 handoffs**, full pixels, input response,
+application replacement and live cleanup. A separate default-off regression
+retains eviction/reuse coverage; the larger-pool workload has zero evictions.
+Chromium clears the old memory boundary but still lacks a verified browser frame.
+[Actual frame, retained failures and precise coverage](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/APPLICATION-MEMORY.md).
+
 **Memory-pressure checkpoint — October 26, 2026:** an owner-only admission pilot
 refuses an observed Chromium allocation before native residency, avoiding the
 forced VM stop in one repeat. The browser still fails; live desktop recovery
@@ -31,7 +39,7 @@ with complete pixels, application relaunch and live cleanup. Chromium's first
 GPU initialization attempt fails and remains unaccepted.
 [Actual networked frame and browsing status](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/GUEST-BROWSING-PROGRESS.md).
 
-![Two-window 4K NVIDIA fixture verified; native health queries supported; backend 4/8; desktop product 0/4](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/windows-nvgpu-lab/docs/images/gpu-backend-progress-device-state-2026-10-25.svg)
+![Two-window 4K NVIDIA fixture verified; native health queries supported; backend 4/8; desktop product 0/4](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/windows-nvgpu-lab/docs/images/gpu-backend-progress-application-memory-2026-10-26.svg)
 
 **Native GPU health — October 25, 2026:** the published-runtime build completes
 **5,786 real device-health queries and 1,800 GPU handoffs**, including application

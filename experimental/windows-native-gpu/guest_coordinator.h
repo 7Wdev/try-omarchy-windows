@@ -30,6 +30,11 @@
 #endif
 #endif
 
+#if defined(WDDM_BRIDGE_APPLICATION_MEMORY) && WDDM_BRIDGE_APPLICATION_MEMORY
+#if !defined(WDDM_BRIDGE_APPLICATION_ACTORS) || !WDDM_BRIDGE_APPLICATION_ACTORS || !defined(WDDM_BRIDGE_APPLICATION_REFERENCES) || !WDDM_BRIDGE_APPLICATION_REFERENCES || !defined(WDDM_BRIDGE_MULTIAPP_CPU) || !WDDM_BRIDGE_MULTIAPP_CPU
+#error Application memory requires the explicit application process, reference and kernel CPU agreements
+#endif
+#endif
 namespace guest_broker {
 namespace cg=driver_bridge::coordinator;
 namespace ar=driver_bridge::actors;
@@ -84,11 +89,16 @@ public:
 #else
         constexpr bool multiapp=false;
 #endif
+#if defined(WDDM_BRIDGE_APPLICATION_MEMORY) && WDDM_BRIDGE_APPLICATION_MEMORY
+        constexpr bool requestedMemory=true;
+#else
+        constexpr bool requestedMemory=false;
+#endif
         const driver_bridge::OpenGlDesktopPresentationCapacity wanted{{{expanded ? references ? multiapp ? 14u : 13u : 12u : wide ? 11u : 10u,caps.version,caps.cpu_byte_limit,layout.allocation_slots,layout.fence_slots,0},
-            driver_bridge::OpenGlDesktopLargeMapBytes},driver_bridge::OpenGlDesktopPresentationReportedBytes};
+            driver_bridge::OpenGlDesktopLargeMapBytes},requestedMemory ? driver_bridge::GuestApplicationMemoryProfile.reportedBytes : driver_bridge::OpenGlDesktopPresentationReportedBytes};
         if((references && !expanded) || !wddm_aperture_valid_coordinator_caps(leases) || !leases.enabled || leases.lease_limit!=expectedLeases ||
             !wddm_aperture_valid_caps(caps) || caps.flags!=(WDDM_APERTURE_DESKTOP_CPU_ENABLED|WDDM_APERTURE_SPARSE_ENABLED|(multiapp ? WDDM_APERTURE_MULTIAPP_CPU_ENABLED : 0u)) ||
-            !driver_bridge::validCoordinatedPresentationCapacity(wanted) ||
+            (requestedMemory ? !driver_bridge::validApplicationMemoryCapacity(wanted) : !driver_bridge::validCoordinatedPresentationCapacity(wanted)) ||
             (wide && (!wddm_aperture_valid_desktop_fences(fences) || !fences.enabled || fences.slots!=layout.fence_slots || fences.bytes!=layout.fence_bytes)) ||
             (expanded && (!wddm_aperture_valid_desktop_slots(slots) || !slots.enabled || slots.slots!=layout.allocation_slots || slots.bytes!=layout.allocation_bytes))) reject("Coordinator kernel capacity mismatch");
 #if defined(WDDM_BRIDGE_MULTIAPP_CPU) && WDDM_BRIDGE_MULTIAPP_CPU
@@ -119,7 +129,11 @@ public:
 #endif
         if(requestedReferences>driver_bridge::MaxSharedResourceHandles && requestedActors!=driver_bridge::actors::MaxApplicationActors)
             reject("Application resource references require application process negotiation");
-        const auto initialization=requestedReferences>driver_bridge::MaxSharedResourceHandles ?
+        if(requestedMemory && (requestedActors!=driver_bridge::actors::MaxApplicationActors || requestedReferences!=driver_bridge::ApplicationResourceReferences))
+            reject("Application memory requires explicit process and reference capacity");
+        const auto initialization=requestedMemory ?
+            encode(cg::ApplicationMemoryInitialization{{{{wanted,objects},requestedActors,0},requestedReferences,0},driver_bridge::GuestApplicationMemoryProfile}) :
+            requestedReferences>driver_bridge::MaxSharedResourceHandles ?
             encode(cg::ApplicationReferenceInitialization{{{wanted,objects},requestedActors,0},requestedReferences,0}) :
             requestedActors==driver_bridge::actors::MaxActors ? encode(cg::Initialization{wanted,objects}) :
             encode(cg::ApplicationInitialization{{wanted,objects},requestedActors,0});
@@ -127,20 +141,23 @@ public:
         agreement=decode<cg::Info>(control(cg::Operation::Info));
         if(!cg::validInfo(agreement) || std::memcmp(&wanted,&agreement.capacity,sizeof wanted) ||
             std::memcmp(&objects,&agreement.objects,sizeof objects) || agreement.maxActors!=requestedActors ||
-            agreement.resource.handleLimit!=requestedReferences)
+            agreement.resource.handleLimit!=requestedReferences || bool(agreement.flags&cg::ApplicationMemoryFlag)!=requestedMemory)
             reject("Coordinator agreement mismatch");
         if(requestedActors>driver_bridge::actors::MaxActors)
-            receipt("BROKER_COORDINATOR_APPLICATION_ACTOR_CAPACITY actors=%u hwQueues=%u syncObjects=%u cpuBytes=%llu reportedGpuBytes=1073741824 memoryBudgetsMultiplied=false\n",
-                requestedActors,objects.hwQueues,objects.syncObjects,static_cast<unsigned long long>(caps.cpu_byte_limit));
+            receipt("BROKER_COORDINATOR_APPLICATION_ACTOR_CAPACITY actors=%u hwQueues=%u syncObjects=%u cpuBytes=%llu reportedGpuBytes=%llu memoryBudgetsMultiplied=false\n",
+                requestedActors,objects.hwQueues,objects.syncObjects,static_cast<unsigned long long>(caps.cpu_byte_limit),static_cast<unsigned long long>(wanted.reportedGpuByteLimit));
         receipt("BROKER_COORDINATOR_KERNEL_CAPACITY verified=true leaseLimit=%u cpuBytes=%llu flags=%u actualIoctl=true\n",
             leases.lease_limit,static_cast<unsigned long long>(caps.cpu_byte_limit),caps.flags);
         if(wide) receipt("BROKER_COORDINATOR_FENCE_CAPACITY profile=%u slots=%u bytes=%llu actualIoctl=true\n",wanted.mapping.aperture.version,fences.slots,static_cast<unsigned long long>(fences.bytes));
         if(expanded) receipt("BROKER_COORDINATOR_SLOT_CAPACITY profile=%u slots=%u bytes=%llu cpuByteLimit=%llu actualIoctl=true\n",wanted.mapping.aperture.version,slots.slots,static_cast<unsigned long long>(slots.bytes),static_cast<unsigned long long>(caps.cpu_byte_limit));
         if(references) receipt("BROKER_COORDINATOR_REFERENCE_CAPACITY profile=%u objectsVersion=%u resources=64 syncs=64 perActor=%u perActorSync=16 byteBudgetsMultiplied=false\n",wanted.mapping.aperture.version,objects.version,requestedReferences);
-        if(objects.version>=6) receipt("BROKER_COORDINATOR_MANAGED_MAPPING_CAPACITY version=%u reservedAddressBytes=68719476736 standaloneMappingBytes=1073741824 residentUsageBytes=1073741824 cpuBytes=%llu\n",objects.version,static_cast<unsigned long long>(caps.cpu_byte_limit));
+        if(objects.version>=6) receipt("BROKER_COORDINATOR_MANAGED_MAPPING_CAPACITY version=%u reservedAddressBytes=68719476736 standaloneMappingBytes=1073741824 residentUsageBytes=%llu cpuBytes=%llu\n",objects.version,static_cast<unsigned long long>(wanted.reportedGpuByteLimit),static_cast<unsigned long long>(caps.cpu_byte_limit));
         if(objects.version>=7) receipt("BROKER_COORDINATOR_DESKTOP_LEASE_CAPACITY version=%u leaseLimit=1536 fenceSlots=512 allocationSlots=1024 physicalMemoryGuardsChanged=%s\n",objects.version,multiapp?"true":"false");
         if(objects.version>=8) receipt("BROKER_COORDINATOR_FOUR_ACTOR_OBJECT_CAPACITY version=%u actors=4 hwQueues=64 syncObjects=768 perActorHwQueues=16 perActorSyncObjects=192 physicalMemoryGuardsChanged=%s\n",objects.version,multiapp?"true":"false");
-        if(multiapp) receipt("BROKER_COORDINATOR_MULTIAPP_CPU_CAPACITY profile=14 objectsVersion=9 flags=7 cpuBytes=402653184 reportedGpuBytes=1073741824 cpuMappingGuardRaised=true gpuUsageGuardRaised=false\n");
+        if(multiapp) receipt("BROKER_COORDINATOR_MULTIAPP_CPU_CAPACITY profile=14 objectsVersion=9 flags=7 cpuBytes=402653184 reportedGpuBytes=%llu cpuMappingGuardRaised=true gpuUsageGuardRaised=%s\n",
+            static_cast<unsigned long long>(wanted.reportedGpuByteLimit),requestedMemory ? "true" : "false");
+        if(requestedMemory) receipt("BROKER_COORDINATOR_APPLICATION_MEMORY_CAPACITY version=1 infoFlags=7 reportedGpuBytes=%llu sharedPool=true kernelChanged=false physicalPartition=false\n",
+            static_cast<unsigned long long>(wanted.reportedGpuByteLimit));
     }
     cg::Info info() const { return agreement; }
     void beginLiveRetirement() {

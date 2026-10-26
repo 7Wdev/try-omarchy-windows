@@ -113,7 +113,7 @@ public:
                value.allocation_slots!=1024 || value.fence_slots!=512)
                 throw std::runtime_error("Multi-application CPU mappings require profile 14");
             const auto group=coordinatedAgreement();
-            if(!driver_bridge::validCoordinatedAgreement(group.capacity,group.objects) ||
+            if(!driver_bridge::coordinator::validInfo(group) ||
                group.gl.version!=14 || group.objects.version!=9 ||
                group.capacity.mapping.aperture.cpuByteLimit!=capacityReceipt().cpu_byte_limit)
                 throw std::runtime_error("Multi-application CPU mappings lack exact coordinator agreement");

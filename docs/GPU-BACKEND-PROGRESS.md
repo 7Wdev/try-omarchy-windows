@@ -1,12 +1,23 @@
 # NVIDIA backend progress
 
-Updated **2026-10-25**. This page tracks the experimental QEMU/WHPX Windows-native
+Updated **2026-10-26**. This page tracks the experimental QEMU/WHPX Windows-native
 NVIDIA backend. The released Try Omarchy launcher continues using the upstream
 graphics runtime.
 
-![Two-window 4K NVIDIA fixture verified; native health queries supported; backend stages 4/8; desktop gates 0/4](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/windows-nvgpu-lab/docs/images/gpu-backend-progress-device-state-2026-10-25.svg)
+![Two-window 4K NVIDIA fixture verified; native health queries supported; backend stages 4/8; desktop gates 0/4](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/windows-nvgpu-lab/docs/images/gpu-backend-progress-application-memory-2026-10-26.svg)
 
 ## What is verified now?
+
+**Application memory — October 26, 2026:** an explicit owner/controller agreement
+admits a shared 4 GiB reported GPU-usage pool after checking current native
+headroom. The public-source enabled desktop passes **1,800 handoffs**, 5,731
+submissions, 5,724 successful health queries, full source/SDL pixels, input,
+resize, focus, application replacement and live cleanup. Its zero-eviction
+workload lacks retained-residency coverage; a separate default-off regression
+passes the historical positive eviction/reuse/reclaim checks. A private browser
+attempt exceeds the old 1 GiB limit without refusal but still fails browser
+acceptance. Counts remain **4/8, 0/4 and 3/3**.
+[Actual frame, earlier failures, opt-in contract and exact limits](APPLICATION-MEMORY.md).
 
 **Application compatibility — October 25, 2026:** negotiated process and resource
 capacity clears Chromium's initial admission failures across host and guest.

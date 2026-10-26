@@ -36,6 +36,12 @@ struct NativeMock : Driver {
         CHECK(devices.count(device) && validSync(desc));return {openAdapter(),{desc.type==5 ? 4096ull : 0ull,desc.type==5 ? 8192ull : 0ull}};
     }
     Result exportSync(std::uint32_t sync) override { CHECK(live.count(sync));return openAdapter(); }
+    bool applicationMemoryReady=true,applicationMemorySelected=false;
+    unsigned applicationMemoryCalls=0;
+    bool beginApplicationMemory(ApplicationMemoryProfile profile) override {
+        CHECK(++applicationMemoryCalls==1 && validApplicationMemoryProfile(profile));
+        applicationMemorySelected=applicationMemoryReady;return applicationMemoryReady;
+    }
     bool beginCoordinatedObjects(CoordinatedObjectCapacity value) override { CHECK(++objectCalls==1 && validCoordinatedObjectCapacity(value));return badStage!=4; }
     OpenGlProfile beginOpenGl(std::uint32_t version) override { CHECK(++glCalls==1 && (version==10 || version==11 || version==12 || version==13 || version==14));auto p=version==14 ? GuestOpenGlMultiappProfile : version==13 ? GuestOpenGlDesktopReferenceProfile : version==12 ? GuestOpenGlDesktopSlotProfile : version==11 ? GuestOpenGlDesktopFenceProfile : GuestOpenGlDesktopPresentationProfile;if(badStage==1) p.objectLimit=0;return p; }
     SyncSharingProfile beginSyncSharing() override { CHECK(++syncCalls==1);auto p=GuestSyncSharingProfile;if(badStage==2) p.version=1;return p; }
@@ -372,7 +378,73 @@ static void applicationReferenceControls() {
     }
     std::cout<<"APPLICATION_REFERENCE_CONTROL ownerAndControllerOptIn=true legacySixteenPreserved=true syncLimitUnchanged=true malformedRejected=true mock=true gpu=false\n";
 }
+static void applicationMemoryControls() {
+    const cg::ApplicationMemoryInitialization wanted{{{{GuestApplicationMemoryCapacity,GuestCoordinatedMultiappObjects},8,0},32,0},GuestApplicationMemoryProfile};
+    {
+        NativeMock d;d.managedGpuMappings=true;cg::Runtime owner(d,8,32);Control c{owner};
+        CHECK(at<cg::Frame>(c.control(cg::Operation::Initialize,encoded(wanted))).status==-22);
+        CHECK(!d.applicationMemoryCalls && !d.glCalls && !owner.failed());
+    }
+    for(unsigned older=0;older<3;++older) {
+        NativeMock d;d.managedGpuMappings=true;cg::Runtime owner(d,8,32,true);Control c{owner};
+        const cg::ApplicationReferenceInitialization old{{{GuestOpenGlMultiappCapacity,GuestCoordinatedMultiappObjects},8,0},32,0};
+        const auto request=older==0 ? encoded(old.base.base) : older==1 ? encoded(old.base) : encoded(old);
+        CHECK(!at<cg::Frame>(c.control(cg::Operation::Initialize,request)).status);
+        const auto info=at<cg::Info>(c.control(cg::Operation::Info),32);
+        CHECK(cg::validInfo(info) && !(info.flags&cg::ApplicationMemoryFlag));
+        CHECK(info.capacity.reportedGpuByteLimit==OpenGlDesktopPresentationReportedBytes && !d.applicationMemoryCalls);
+        CHECK(owner.teardownAfterVmExit(true));
+    }
+    for(unsigned badOwner=0;badOwner<2;++badOwner) {
+        NativeMock d;bool refused=false;
+        try { cg::Runtime owner(d,badOwner ? 8u : 4u,16,true); }
+        catch(const std::invalid_argument&) { refused=true; }
+        CHECK(refused && !d.applicationMemoryCalls && !d.glCalls);
+    }
+    for(unsigned mutation=0;mutation<10;++mutation) {
+        NativeMock d;d.managedGpuMappings=true;cg::Runtime owner(d,8,32,true);Control c{owner};auto bad=wanted;
+        if(mutation==0) bad.memory.version=2;
+        if(mutation==1) bad.memory.reserved=1;
+        if(mutation==2) bad.memory.reportedBytes=OpenGlDesktopPresentationReportedBytes;
+        if(mutation==3) bad.base.base.base.capacity.reportedGpuByteLimit=OpenGlDesktopPresentationReportedBytes;
+        if(mutation==4) bad.base.base.base.capacity.mapping.gpuMappedByteLimit=0;
+        if(mutation==5) bad.base.base.actorSlots=4;
+        if(mutation==6) bad.base.resourceReferences=16;
+        if(mutation==7) bad.base.base.base.objects.version=8;
+        if(mutation==8) bad.base.reserved=1;
+        auto request=encoded(bad);if(mutation==9) request.pop_back();
+        CHECK(at<cg::Frame>(c.control(cg::Operation::Initialize,request)).status==-22);
+        CHECK(!d.applicationMemoryCalls && !d.glCalls && !d.objectCalls && !owner.failed());
+        CHECK(!at<cg::Frame>(c.control(cg::Operation::Initialize,encoded(wanted))).status);
+        CHECK(d.applicationMemoryCalls==1 && d.applicationMemorySelected && d.glCalls==1);
+        const auto info=at<cg::Info>(c.control(cg::Operation::Info),32);
+        CHECK(cg::validInfo(info) && info.flags==7 && info.capacity.reportedGpuByteLimit==GuestApplicationMemoryProfile.reportedBytes);
+        CHECK(sizeof(info)==176 && info.objects.vendorAllocations==1024 && info.resource.handleLimit==32 && info.sync.handleLimit==16);
+        auto forged=info;forged.flags=3;CHECK(!cg::validInfo(forged));
+        forged=info;forged.capacity.reportedGpuByteLimit=OpenGlDesktopPresentationReportedBytes;CHECK(!cg::validInfo(forged));
+        for(unsigned n=0;n<2;++n) {
+            const auto actor=c.reg();CHECK(!at<Header>(c.call(actor,hello()),40).status);
+            CHECK(at<Header>(c.call(actor,inner(Op::BeginOpenGl,0,encoded(GuestOpenGlMultiappCapacity))),40).status==-22);
+            CHECK(!at<Header>(c.call(actor,inner(Op::BeginOpenGl,0,encoded(GuestApplicationMemoryCapacity))),40).status);
+        }
+        CHECK(d.glCalls==1 && d.applicationMemoryCalls==1);
+        CHECK(at<cg::Frame>(c.control(cg::Operation::Initialize,encoded(wanted))).status==-16);
+        CHECK(owner.teardownAfterVmExit(true));
+    }
+    for(unsigned older=0;older<2;++older) {
+        NativeMock d;cg::Runtime owner(d,8,32,true);Control c{owner};
+        CHECK(at<cg::Frame>(c.control(cg::Operation::Initialize,older ? encoded(wanted.base) : encoded(wanted.base.base.base))).status==-22);
+        CHECK(!d.applicationMemoryCalls && !d.glCalls);
+    }
+    {
+        NativeMock d;d.applicationMemoryReady=false;d.managedGpuMappings=true;cg::Runtime owner(d,8,32,true);Control c{owner};bool refused=false;
+        try { c.control(cg::Operation::Initialize,encoded(wanted)); } catch(const std::runtime_error&) { refused=true; }
+        CHECK(refused && owner.failed() && d.applicationMemoryCalls==1 && !d.glCalls && !d.objectCalls);
+    }
+    std::cout<<"APPLICATION_MEMORY_CONTROL explicit112Bytes=true ownerAndControllerRequired=true oldPayloadBudgetsPreserved=true infoLayoutPreserved=true malformedRejectedBeforeNative=true nativeHeadroomFailureBeforeGl=true clientMustMatchAgreement=true sharedPool=true mock=true gpu=false\n";
+}
 int main() {
+    applicationMemoryControls();
     applicationReferenceControls();
     applicationActorControls();
     terminalRetirementControls();

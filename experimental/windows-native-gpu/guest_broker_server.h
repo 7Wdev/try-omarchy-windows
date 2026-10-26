@@ -4,6 +4,7 @@
 #include "guest_broker_views.h"
 #include "guest_broker_objects.h"
 #include <cstdio>
+#include <optional>
 #include <sys/syscall.h>
 
 namespace guest_broker {
@@ -165,7 +166,8 @@ public:
     }
 };
 // A client-supplied receipt never substitutes for the controller's own query.
-template<class Authority> void verifyCpuCapacityProfile(const std::vector<std::uint8_t>& packet,Authority& kernel) {
+template<class Authority> void verifyCpuCapacityProfile(const std::vector<std::uint8_t>& packet,Authority& kernel,
+        const driver_bridge::coordinator::Info* agreement=nullptr) {
     using namespace driver_bridge;
     if (packet.size()<sizeof(Header)+sizeof(std::uint32_t)) return;
     Header h{}; std::memcpy(&h,packet.data(),sizeof h);
@@ -178,7 +180,8 @@ template<class Authority> void verifyCpuCapacityProfile(const std::vector<std::u
     if (version==9) std::memcpy(&large,packet.data()+sizeof h,sizeof large);
     OpenGlDesktopPresentationCapacity presentation{};
     if(version>=10) std::memcpy(&presentation,packet.data()+sizeof h,sizeof presentation);
-    if (version==14 ? !validOpenGlMultiappCapacity(presentation) : version==13 ? !validOpenGlDesktopReferenceCapacity(presentation) : version==12 ? !validOpenGlDesktopSlotCapacity(presentation) : version==11 ? !validOpenGlDesktopFenceCapacity(presentation) : version==10 ? !validOpenGlDesktopPresentationCapacity(presentation) : version==7 ? !validOpenGlDesktop4kCapacity(wanted) : version==8 ? !validOpenGlDesktopSparseCapacity(wanted) : !validOpenGlDesktopLargeMapCapacity(large)) throw std::system_error(EPROTO,std::generic_category(),"Invalid CPU capacity contract");
+    if (version==14 ? !(validOpenGlMultiappCapacity(presentation) ||
+            (agreement && coordinator::matchesApplicationMemoryCapacity(presentation,*agreement))) : version==13 ? !validOpenGlDesktopReferenceCapacity(presentation) : version==12 ? !validOpenGlDesktopSlotCapacity(presentation) : version==11 ? !validOpenGlDesktopFenceCapacity(presentation) : version==10 ? !validOpenGlDesktopPresentationCapacity(presentation) : version==7 ? !validOpenGlDesktop4kCapacity(wanted) : version==8 ? !validOpenGlDesktopSparseCapacity(wanted) : !validOpenGlDesktopLargeMapCapacity(large)) throw std::system_error(EPROTO,std::generic_category(),"Invalid CPU capacity contract");
     const auto caps=kernel.capacity(); const auto layout=kernel.info();
     if (!wddm_aperture_valid_caps(caps) || caps.flags!=(WDDM_APERTURE_DESKTOP_CPU_ENABLED | (version>=8 ? WDDM_APERTURE_SPARSE_ENABLED : 0u) | (version==14 ? WDDM_APERTURE_MULTIAPP_CPU_ENABLED : 0u)) ||
         caps.cpu_byte_limit!=wanted.cpuByteLimit || layout.version!=1 ||
@@ -223,10 +226,23 @@ template<class Native,class Authority,class ObjectAuthority,class Objects> int s
                     peer.send(operation,message.frame.sequence,encode(kernel.info()));
                 } else if (operation == Operation::DriverCall) {
                     views.approve(message.payload);
-                    verifyCpuCapacityProfile(message.payload,kernel);
+                    std::optional<driver_bridge::coordinator::Info> memoryAgreement;
+                    if(message.payload.size()==sizeof(native_gpu::Header)+sizeof(driver_bridge::OpenGlDesktopPresentationCapacity)) {
+                        native_gpu::Header header{};std::memcpy(&header,message.payload.data(),sizeof header);
+                        driver_bridge::OpenGlDesktopPresentationCapacity capacity{};
+                        if(header.type==static_cast<unsigned>(driver_bridge::Op::BeginOpenGl)) {
+                            std::memcpy(&capacity,message.payload.data()+sizeof header,sizeof capacity);
+                            if(driver_bridge::validApplicationMemoryCapacity(capacity))
+                                memoryAgreement=decode<driver_bridge::coordinator::Info>(objects.coordinatedProfile());
+                        }
+                    }
+                    // This agreement comes from the owner-side actor registry,
+                    // never from an ordinary client's supplied capacity bytes.
+                    const auto* agreement=memoryAgreement ? &*memoryAgreement : nullptr;
+                    verifyCpuCapacityProfile(message.payload,kernel,agreement);
                     objects.authorize(message.payload,message.fds,objectKernel);
                     auto reply=native.exchange(message.payload); ++calls;
-                    views.observe(message.payload,reply);
+                    views.observe(message.payload,reply,agreement);
                     objects.observe(message.payload,reply);
                     peer.send(operation,message.frame.sequence,reply);
                 } else if (operation == Operation::AcquireView) {

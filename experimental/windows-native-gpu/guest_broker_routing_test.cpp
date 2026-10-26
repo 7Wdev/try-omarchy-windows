@@ -187,6 +187,30 @@ static void cpuCapacityPolicy() {
     for(const auto profile:{GuestOpenGlDesktopReferenceProfile,GuestOpenGlDesktopSlotProfile}) {
         Views views;denied([&]{views.observe(multiappBegin,packet(Op::BeginOpenGl,0,encode(profile)));},EPROTO);
     }
+    const auto memoryBegin=packet(Op::BeginOpenGl,0,encode(GuestApplicationMemoryCapacity));
+    const auto memoryReply=packet(Op::BeginOpenGl,0,encode(GuestOpenGlMultiappProfile));
+    denied([&]{verifyCpuCapacityProfile(memoryBegin,multiapp);},EPROTO);
+    { Views views;denied([&]{views.observe(memoryBegin,memoryReply);},EPROTO); }
+    coordinator::Info memory{};memory.capacity=GuestApplicationMemoryCapacity;
+    memory.objects=GuestCoordinatedMultiappObjects;memory.gl=GuestOpenGlMultiappProfile;
+    memory.sync=GuestSyncSharingProfile;memory.resource=GuestApplicationResourceSharingProfile;
+    memory.caps={driver_bridge::Version,0,0x10de,0};memory.maxActors=8;memory.flags=7;
+    CHECK(coordinator::matchesApplicationMemoryCapacity(GuestApplicationMemoryCapacity,memory));
+    verifyCpuCapacityProfile(memoryBegin,multiapp,&memory);
+    { Views views;views.observe(memoryBegin,memoryReply,&memory); }
+    denied([&]{verifyCpuCapacityProfile(memoryBegin,expanded,&memory);},EPROTO);
+    for(unsigned mutation=0;mutation<5;++mutation) {
+        auto forged=memory;
+        if(mutation==0) forged.flags=3;
+        if(mutation==1) forged.capacity.reportedGpuByteLimit=OpenGlDesktopPresentationReportedBytes;
+        if(mutation==2) forged.maxActors=4;
+        if(mutation==3) ++forged.reserved;
+        if(mutation==4) forged.resource=GuestResourceSharingProfile;
+        CHECK(!coordinator::matchesApplicationMemoryCapacity(GuestApplicationMemoryCapacity,forged));
+        denied([&]{verifyCpuCapacityProfile(memoryBegin,multiapp,&forged);},EPROTO);
+        Views views;denied([&]{views.observe(memoryBegin,memoryReply,&forged);},EPROTO);
+    }
+    std::cout<<"BROKER_APPLICATION_MEMORY authenticatedAgreementRequired=true clientBytesInsufficient=true cpuKernelReceiptStillRequired=true malformedAndMismatchedRejected=true mock=true gpu=false\n";
     std::cout<<"BROKER_MULTIAPP_PROFILE exact14=true cpu384MiB=true legacy192MiBUnchanged=true malformedExtentRejected=true kernel=mock gpu=false\n";
     std::cout<<"BROKER_REFERENCE_PROFILE exact13=true actualCpuAndFenceReceiptsRequired=true olderProfilesUnchanged=true kernel=mock gpu=false\n";
     std::cout<<"BROKER_LARGE_MAP exact1GiB=true fixed40ByteReceipt=true malformedRejected=true oldProfilesUnchanged=true kernel=mock gpu=false\n";

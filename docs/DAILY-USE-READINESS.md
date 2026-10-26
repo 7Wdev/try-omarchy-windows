@@ -3,8 +3,10 @@
 The NVIDIA backend remains an engineering prototype. A complete 4K GPU desktop
 with wallpaper, bar and application windows is verified, including input response,
 application replacement, real device-health queries and live resource cleanup.
-The latest accepted networked regressions complete 1,800 handoffs with the
-memory-admission pilot disabled and enabled. This does not
+The latest public-source networked regression completes 1,800 handoffs with an
+explicit 4 GiB application-memory agreement. A separate default-off regression
+retains positive eviction/reuse coverage; the larger pool produces zero evictions
+in this workload. [Actual frame and exact limits](APPLICATION-MEMORY.md). This does not
 establish daily-use stability or compatibility with arbitrary applications.
 
 ## Next practical acceptance: Chromium
@@ -19,9 +21,12 @@ networking evidence](GUEST-BROWSING-PROGRESS.md).
 Explicit process and resource-reference agreements now clear the observed
 four-process and sixteen-reference startup boundaries. Host, guest broker and
 client ioctl tracking use the same authenticated agreement; default behavior and
-aggregate memory budgets are preserved. Chromium's latest attempt still times
-out during page navigation and reports a scanout/rendering/texturing buffer
-allocation failure. The browser sandbox is requested and software fallback is
+older aggregate memory budgets are preserved. A new explicit memory agreement
+clears the old 1 GiB reported-usage boundary. The latest private compound
+browser/presentation attempt still fails the browser startup gate before page,
+WebGL or displayed-window proof. Teardown can cancel the outstanding navigation,
+so its `ERR_ABORTED` does not independently establish a network failure.
+The browser sandbox is requested and software fallback is
 disabled; independent browser sandbox and WebGL proof have not completed.
 Browser GPU rendering and interactive Internet browsing remain unverified.
 

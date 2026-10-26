@@ -2,6 +2,7 @@
 // View authority derives exclusively from successful native wire receipts.
 #pragma once
 #include "driver_wire.h"
+#include "driver_coordinator.h"
 #include "guest_broker_client.h"
 #include <map>
 #include <set>
@@ -85,7 +86,8 @@ public:
             if (entry.second.cookie && below(entry.first,target))
                 throw std::system_error(EBUSY,std::generic_category(),"Native owner still has a CPU view");
     }
-    void observe(const std::vector<std::uint8_t>& request, const std::vector<std::uint8_t>& response) {
+    void observe(const std::vector<std::uint8_t>& request, const std::vector<std::uint8_t>& response,
+                 const driver_bridge::coordinator::Info* agreement=nullptr) {
         using namespace driver_bridge;
         const auto h = at<Header>(request,0), r = at<Header>(response,0);
         require(response.size() <= native_gpu::MaxPacket && r.type == h.type && !r.padding && r.status <= 0,
@@ -98,7 +100,8 @@ public:
                     response.size()==sizeof(Header)+sizeof(OpenGlProfile),"Invalid native OpenGL profile receipt");
             const auto version=request.size()==sizeof(Header) ? 1u : at<std::uint32_t>(request,sizeof(Header));
             require(version==14 ? request.size()==sizeof(Header)+sizeof(OpenGlDesktopPresentationCapacity) &&
-                    validOpenGlMultiappCapacity(at<OpenGlDesktopPresentationCapacity>(request,sizeof(Header))) : version==13 ? request.size()==sizeof(Header)+sizeof(OpenGlDesktopPresentationCapacity) &&
+                    (validOpenGlMultiappCapacity(at<OpenGlDesktopPresentationCapacity>(request,sizeof(Header))) ||
+                     (agreement && coordinator::matchesApplicationMemoryCapacity(at<OpenGlDesktopPresentationCapacity>(request,sizeof(Header)),*agreement))) : version==13 ? request.size()==sizeof(Header)+sizeof(OpenGlDesktopPresentationCapacity) &&
                     validOpenGlDesktopReferenceCapacity(at<OpenGlDesktopPresentationCapacity>(request,sizeof(Header))) : version==12 ? request.size()==sizeof(Header)+sizeof(OpenGlDesktopPresentationCapacity) &&
                     validOpenGlDesktopSlotCapacity(at<OpenGlDesktopPresentationCapacity>(request,sizeof(Header))) : version==11 ? request.size()==sizeof(Header)+sizeof(OpenGlDesktopPresentationCapacity) &&
                     validOpenGlDesktopFenceCapacity(at<OpenGlDesktopPresentationCapacity>(request,sizeof(Header))) : version==10 ? request.size()==sizeof(Header)+sizeof(OpenGlDesktopPresentationCapacity) &&

@@ -8,6 +8,9 @@ def main():
     parser.add_argument('--bridge', required=True)
     args = parser.parse_args()
     cases = [
+        ['--stdio','--driver-application-memory'],
+        ['--stdio','--driver-application-memory','--driver-application-memory'],
+        ['--stdio','--driver-actor-slots','8','--driver-resource-reference-slots','32','--driver-application-memory'],
         ['--stdio','--driver-mapped-residency-admission'],
         ['--stdio','--driver-mapped-residency-admission','--driver-mapped-residency-admission'],
         ['--stdio','--driver-actor-slots','8','--driver-resource-reference-slots','32','--driver-mapped-residency-admission'],

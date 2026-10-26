@@ -4,6 +4,7 @@
 #include "actor_retirement.h"
 #include "stream_profile.h"
 #include "opengl_profile.h"
+#include "application_memory_profile.h"
 #include "wire.h"
 #include "diagnostic_profile.h"
 #include "gpu_state_ranges.h"
@@ -505,8 +506,8 @@ constexpr CoordinatedObjectCapacity GuestCoordinatedLeaseObjects{7,32,384,1536,6
 // per-actor bounds. Fence aperture slots and physical byte guards are separate.
 constexpr CoordinatedObjectCapacity GuestCoordinatedActorObjects{8,4*OpenGlFenceHwQueues,4*OpenGlCompositorSyncObjects,1536,64ull*1024*1024*1024,256,1024};
 constexpr CoordinatedObjectCapacity GuestCoordinatedMultiappObjects{9,64,768,1536,64ull*1024*1024*1024,256,1024};
-inline bool validCoordinatedAgreement(OpenGlDesktopPresentationCapacity capacity,CoordinatedObjectCapacity objects) {
-    return validCoordinatedPresentationCapacity(capacity) && validCoordinatedObjectCapacity(objects) &&
+inline bool validCoordinatedAgreement(OpenGlDesktopPresentationCapacity capacity,CoordinatedObjectCapacity objects,bool applicationMemory=false) {
+    return (applicationMemory ? validApplicationMemoryCapacity(capacity) : validCoordinatedPresentationCapacity(capacity)) && validCoordinatedObjectCapacity(objects) &&
         (capacity.mapping.aperture.version==14 ? objects.version==9 : capacity.mapping.aperture.version==13 ? (objects.version>=5 && objects.version<=8) :
             objects.version==(capacity.mapping.aperture.version>=11 ? 4u : 3u));
 }
@@ -516,6 +517,7 @@ public:
     virtual bool prepareLiveRetirement() { return false; }
     virtual bool stopCoordinatedPresentation() { return false; }
     virtual bool beginCoordinatedObjects(CoordinatedObjectCapacity) { return false; }
+    virtual bool beginApplicationMemory(ApplicationMemoryProfile) { return false; }
     virtual ~Driver() = default;
     virtual native_gpu::Capabilities capabilities() const = 0;
     virtual StreamProfile beginStreaming() { return {}; }
@@ -657,17 +659,22 @@ class CoordinatedProfiles {
     OpenGlProfile gl{};
     SyncSharingProfile sync{};
     ResourceSharingProfile resource{};
-    bool managedMappings=false;
+    bool managedMappings=false,applicationMemoryEnabled=false;
+    OpenGlDesktopPresentationCapacity presentation{};
 public:
     CoordinatedProfiles(Driver& driver,OpenGlDesktopPresentationCapacity capacity,CoordinatedObjectCapacity objectCapacity={},
-                        std::uint32_t resourceReferences=MaxSharedResourceHandles) : owner(&driver) {
+                        std::uint32_t resourceReferences=MaxSharedResourceHandles,bool applicationMemory=false) : owner(&driver) {
         constexpr auto required=AsyncHwSubmitCapability|SyncCapability|GpuReservationCapability|VendorMemoryManagementCapability|
             ExpandedVendorGpuCapability|ExpandedVendorCpuCapability|VendorAllocationCapability|SharedVendorResourceCapability|NativeSharedTextureCapability;
         caps=driver.capabilities();
         if((resourceReferences!=MaxSharedResourceHandles && resourceReferences!=ApplicationResourceReferences) ||
             (resourceReferences==ApplicationResourceReferences && (capacity.mapping.aperture.version!=14 || objectCapacity.version!=9)) ||
-            !validCoordinatedAgreement(capacity,objectCapacity) || caps.version!=Version || caps.vendor!=0x10de ||
+            (applicationMemory && resourceReferences!=ApplicationResourceReferences) ||
+            !validCoordinatedAgreement(capacity,objectCapacity,applicationMemory) || caps.version!=Version || caps.vendor!=0x10de ||
             (caps.flags&required)!=required) throw std::runtime_error("Invalid coordinated native capacity/capabilities");
+        if(applicationMemory && !driver.beginApplicationMemory(GuestApplicationMemoryProfile))
+            throw std::runtime_error("Native application memory capacity unavailable");
+        applicationMemoryEnabled=applicationMemory;presentation=capacity;
         gl=driver.beginOpenGl(capacity.mapping.aperture.version);
         if(gl.version!=capacity.mapping.aperture.version || !validCoordinatedPresentationProfile(gl)) throw std::runtime_error("Coordinated native OpenGL agreement failed");
         if(!driver.beginCoordinatedObjects(objectCapacity)) throw std::runtime_error("Coordinated native object agreement failed");
@@ -691,6 +698,7 @@ public:
     OpenGlProfile openGl() const { return gl; }
     SyncSharingProfile syncSharing() const { return sync; }
     ResourceSharingProfile resourceSharing() const { return resource; }
+    bool applicationMemory() const { return applicationMemoryEnabled; }
 };
 class Session {
     struct Object {
@@ -1011,9 +1019,10 @@ public:
                 if (version != 2 && version != 3 && version != 4 && version != 5 && version != 6 && version != 7 && version != 8 && version != 9 && version != 10 && version!=11 && version!=12 && version!=13 && version!=14) return reply(h, -93);
             }
             if (version==10 || version==11 || version==12 || version==13 || version==14) {
+                if(coordinated && version!=coordinated->gl.version) return reply(h,-95);
                 if(packet.size()!=sizeof h+sizeof(OpenGlDesktopPresentationCapacity)) return reply(h,-22);
                 OpenGlDesktopPresentationCapacity capacity{};std::memcpy(&capacity,packet.data()+sizeof h,sizeof capacity);
-                if(version>=11 ? !coordinated || !validCoordinatedPresentationCapacity(capacity) : !validOpenGlDesktopPresentationCapacity(capacity)) return reply(h,-22);
+                if(version>=11 ? !coordinated || std::memcmp(&capacity,&coordinated->presentation,sizeof capacity) : !validOpenGlDesktopPresentationCapacity(capacity)) return reply(h,-22);
             } else if (version==9) {
                 if (packet.size()!=sizeof h+sizeof(OpenGlDesktopLargeMapCapacity)) return reply(h,-22);
                 OpenGlDesktopLargeMapCapacity capacity{};std::memcpy(&capacity,packet.data()+sizeof h,sizeof capacity);

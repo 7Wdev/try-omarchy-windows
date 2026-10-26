@@ -242,6 +242,8 @@ class Bridge {
     bool sharedResourcesNegotiated = false;
     std::uint32_t resourceReferenceLimit=MaxSharedResourceHandles;
     ResourceSharingProfile coordinatedResourceProfile{};
+    std::uint64_t coordinatedReportedGpuByteLimit=OpenGlDesktopPresentationReportedBytes;
+    bool coordinatedApplicationMemory=false;
     std::set<std::uint32_t> exportedResourceTickets;
     std::set<std::uint32_t> cpuLocks;
     bool negotiated = false;
@@ -392,6 +394,11 @@ class Bridge {
             coordinatedProfileVersion=!std::strcmp(coordinated,"14") ? 14 : !std::strcmp(coordinated,"13") ? 13 : !std::strcmp(coordinated,"12") ? 12 : !std::strcmp(coordinated,"11") ? 11 : 10;
             if(group.gl.version!=coordinatedProfileVersion || std::memcmp(&group.caps,&caps,sizeof caps)) { transport.fail();throw Error(EPROTO); }
             coordinatedResourceProfile=group.resource;
+            coordinatedApplicationMemory=(group.flags&coordinator::ApplicationMemoryFlag)!=0;
+#if !defined(WDDM_BRIDGE_APPLICATION_MEMORY) || !WDDM_BRIDGE_APPLICATION_MEMORY
+            if(coordinatedApplicationMemory) throw Error(ENOTSUP);
+#endif
+            coordinatedReportedGpuByteLimit=group.capacity.reportedGpuByteLimit;
             beginOpenGl(coordinatedProfileVersion);
             coordinatedProfileNegotiated=true;
             std::fprintf(stderr,"LINUX_BRIDGE coordinatedNativeProfile=true version=%u cpuAndGpuBudgetsShared=true\n",coordinatedProfileVersion);
@@ -1739,9 +1746,9 @@ public:
             const auto capacity=aperture.capacity(); const auto layout=aperture.info();
             const OpenGlDesktop4kCapacity contract{version,capacity.version,capacity.cpu_byte_limit,layout.allocation_slots,layout.fence_slots,0};
             const OpenGlDesktopLargeMapCapacity large{contract,OpenGlDesktopLargeMapBytes};
-            const OpenGlDesktopPresentationCapacity presentation{large,OpenGlDesktopPresentationReportedBytes};
+            const OpenGlDesktopPresentationCapacity presentation{large,coordinatedReportedGpuByteLimit};
             if (capacity.flags!=(WDDM_APERTURE_DESKTOP_CPU_ENABLED | (version>=8 ? WDDM_APERTURE_SPARSE_ENABLED : 0u) | (version==14 ? WDDM_APERTURE_MULTIAPP_CPU_ENABLED : 0u)) ||
-                (version==7 ? !validOpenGlDesktop4kCapacity(contract) : version==8 ? !validOpenGlDesktopSparseCapacity(contract) : version==9 ? !validOpenGlDesktopLargeMapCapacity(large) : version==14 ? !validOpenGlMultiappCapacity(presentation) : version==13 ? !validOpenGlDesktopReferenceCapacity(presentation) : version==12 ? !validOpenGlDesktopSlotCapacity(presentation) : version==11 ? !validOpenGlDesktopFenceCapacity(presentation) : version!=10 || !validOpenGlDesktopPresentationCapacity(presentation))) throw Error(ENOSYS);
+                (version==7 ? !validOpenGlDesktop4kCapacity(contract) : version==8 ? !validOpenGlDesktopSparseCapacity(contract) : version==9 ? !validOpenGlDesktopLargeMapCapacity(large) : version==14 ? (coordinatedApplicationMemory ? !validApplicationMemoryCapacity(presentation) : !validOpenGlMultiappCapacity(presentation)) : version==13 ? !validOpenGlDesktopReferenceCapacity(presentation) : version==12 ? !validOpenGlDesktopSlotCapacity(presentation) : version==11 ? !validOpenGlDesktopFenceCapacity(presentation) : version!=10 || !validOpenGlDesktopPresentationCapacity(presentation))) throw Error(ENOSYS);
             begin=version>=10 ? request(Op::BeginOpenGl,0,presentation) : version==9 ? request(Op::BeginOpenGl,0,large) : request(Op::BeginOpenGl,0,contract);
             std::fprintf(stderr,"LINUX_BRIDGE kernelCpuCapacityVerified=true profile=%u cpuByteLimit=%llu cpuSlots=%u fenceSlots=%u\n",version,
                 static_cast<unsigned long long>(contract.cpuByteLimit),contract.cpuSlots,contract.fenceSlots);

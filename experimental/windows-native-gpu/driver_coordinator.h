@@ -32,6 +32,8 @@ struct Reference { std::uint64_t actor=0; Kind kind{}; std::uint32_t ticket=0; }
 struct Initialization { OpenGlDesktopPresentationCapacity capacity{};CoordinatedObjectCapacity objects{}; };
 struct ApplicationInitialization { Initialization base{};std::uint32_t actorSlots=8,reserved=0; };
 struct ApplicationReferenceInitialization { ApplicationInitialization base{};std::uint32_t resourceReferences=ApplicationResourceReferences,reserved=0; };
+struct ApplicationMemoryInitialization { ApplicationReferenceInitialization base{};ApplicationMemoryProfile memory{}; };
+constexpr std::uint32_t ApplicationMemoryFlag=4;
 constexpr std::uint32_t ApplicationActorsFlag=1;
 constexpr std::uint32_t ApplicationReferencesFlag=2;
 struct Info {
@@ -47,6 +49,7 @@ static_assert(sizeof(Frame)==32 && offsetof(Frame,sequence)==8 && offsetof(Frame
 static_assert(sizeof(Registration)==8 && sizeof(Alias)==32 && sizeof(Reference)==16 && sizeof(Initialization)==80 && sizeof(Info)==176,"Coordinator control payloads");
 static_assert(sizeof(ApplicationInitialization)==88,"Explicit application process capacity payload");
 static_assert(sizeof(ApplicationReferenceInitialization)==96,"Explicit application resource reference capacity payload");
+static_assert(sizeof(ApplicationMemoryInitialization)==112,"Explicit application memory capacity payload");
 constexpr std::size_t MaxPacket=actors::MaxEnvelopeBytes;
 static_assert(MaxCoordinatedSharedReferences==actors::MaxActors*MaxSharedResourceHandles &&
               MaxCoordinatedSharedReferences==actors::MaxActors*MaxSharedSyncHandles,"Fixed v5 group and per-actor reference bounds");
@@ -54,15 +57,20 @@ static_assert(GuestCoordinatedActorObjects.hwQueues==actors::MaxActors*OpenGlFen
               GuestCoordinatedActorObjects.syncObjects==actors::MaxActors*OpenGlCompositorSyncObjects,
               "v8 object metadata covers the existing per-actor quotas");
 inline bool validInfo(const Info& value) {
-    return validCoordinatedAgreement(value.capacity,value.objects) && validCoordinatedPresentationProfile(value.gl) &&
-        value.gl.version==value.capacity.mapping.aperture.version &&
-        validSyncSharingProfile(value.sync) &&
+    const bool memory=(value.flags&ApplicationMemoryFlag)!=0;
+    return validCoordinatedAgreement(value.capacity,value.objects,memory) && validCoordinatedPresentationProfile(value.gl) &&
+        value.gl.version==value.capacity.mapping.aperture.version && validSyncSharingProfile(value.sync) &&
         value.caps.version==Version && value.caps.vendor==0x10de && !value.reserved &&
         ((value.maxActors==actors::MaxActors && !value.flags && validResourceSharingProfile(value.resource)) ||
-         (value.maxActors==actors::MaxApplicationActors &&
+         (value.maxActors==actors::MaxApplicationActors && value.capacity.mapping.aperture.version==14 && value.objects.version==9 &&
           ((value.flags==ApplicationActorsFlag && validResourceSharingProfile(value.resource)) ||
-           (value.flags==(ApplicationActorsFlag|ApplicationReferencesFlag) && validApplicationResourceSharingProfile(value.resource))) &&
-          value.capacity.mapping.aperture.version==14 && value.objects.version==9));
+           ((value.flags==(ApplicationActorsFlag|ApplicationReferencesFlag) ||
+             value.flags==(ApplicationActorsFlag|ApplicationReferencesFlag|ApplicationMemoryFlag)) &&
+            validApplicationResourceSharingProfile(value.resource)))));
+}
+inline bool matchesApplicationMemoryCapacity(OpenGlDesktopPresentationCapacity capacity,const Info& info) {
+    return validInfo(info) && info.flags==(ApplicationActorsFlag|ApplicationReferencesFlag|ApplicationMemoryFlag) &&
+        validApplicationMemoryCapacity(capacity) && !std::memcmp(&capacity,&info.capacity,sizeof capacity);
 }
 class Runtime {
     Driver& driver;
@@ -78,6 +86,7 @@ class Runtime {
     std::uint32_t permittedActorLimit=static_cast<std::uint32_t>(actors::MaxActors);
     std::uint32_t actorLimit=static_cast<std::uint32_t>(actors::MaxActors);
     std::uint32_t permittedResourceReferences=MaxSharedResourceHandles;
+    bool permittedApplicationMemory=false;
     std::set<std::uint64_t> retired;
     static std::vector<std::uint8_t> response(Frame h,std::int32_t status,const std::vector<std::uint8_t>& payload={}) {
         h.status=status;h.bytes=static_cast<std::uint32_t>(payload.size());h.reserved=0;
@@ -95,12 +104,14 @@ class Runtime {
     static bool referenceKind(Kind kind) { return kind==Kind::SharedResource || kind==Kind::SharedSync; }
 public:
     explicit Runtime(Driver& value,std::uint32_t permittedActors=static_cast<std::uint32_t>(actors::MaxActors),
-                     std::uint32_t resourceReferences=MaxSharedResourceHandles)
-        : driver(value),permittedActorLimit(permittedActors),permittedResourceReferences(resourceReferences) {
+                     std::uint32_t resourceReferences=MaxSharedResourceHandles,bool applicationMemory=false)
+        : driver(value),permittedActorLimit(permittedActors),permittedResourceReferences(resourceReferences),permittedApplicationMemory(applicationMemory) {
         if(!actors::validActorLimit(permittedActors)) throw std::invalid_argument("Invalid owner actor capacity");
         if((resourceReferences!=MaxSharedResourceHandles && resourceReferences!=ApplicationResourceReferences) ||
            (resourceReferences==ApplicationResourceReferences && permittedActors!=actors::MaxApplicationActors))
             throw std::invalid_argument("Invalid owner resource reference capacity");
+        if(applicationMemory && (permittedActors!=actors::MaxApplicationActors || resourceReferences!=ApplicationResourceReferences))
+            throw std::invalid_argument("Application memory requires explicit application process and reference capacity");
     }
     Runtime(const Runtime&)=delete;
     Runtime& operator=(const Runtime&)=delete;
@@ -144,12 +155,19 @@ public:
             Initialization wanted{};
             std::uint32_t requestedActors=static_cast<std::uint32_t>(actors::MaxActors);
             std::uint32_t requestedReferences=MaxSharedResourceHandles;
+            bool requestedMemory=false;
             if(profiles) return response(h,-16);
             if(!payload(packet,wanted)) {
                 ApplicationInitialization application{};
                 if(!payload(packet,application)) {
                     ApplicationReferenceInitialization references{};
-                    if(!payload(packet,references) || references.reserved ||
+                    if(!payload(packet,references)) {
+                        ApplicationMemoryInitialization memory{};
+                        if(!payload(packet,memory) || !permittedApplicationMemory || !validApplicationMemoryProfile(memory.memory))
+                            return response(h,-22);
+                        references=memory.base;requestedMemory=true;
+                    }
+                    if(references.reserved ||
                        references.resourceReferences!=ApplicationResourceReferences ||
                        references.resourceReferences>permittedResourceReferences) return response(h,-22);
                     application=references.base;requestedReferences=references.resourceReferences;
@@ -160,11 +178,11 @@ public:
                     return response(h,-22);
                 wanted=application.base;requestedActors=application.actorSlots;
             }
-            if(!validCoordinatedAgreement(wanted.capacity,wanted.objects)) return response(h,-22);
+            if(!validCoordinatedAgreement(wanted.capacity,wanted.objects,requestedMemory)) return response(h,-22);
             // A partial native initialization cannot be retried. The owner
             // catches the exception and stops the VM before releasing state.
             poisoned=true;
-            auto group=std::make_unique<CoordinatedProfiles>(driver,wanted.capacity,wanted.objects,requestedReferences);
+            auto group=std::make_unique<CoordinatedProfiles>(driver,wanted.capacity,wanted.objects,requestedReferences,requestedMemory);
             if(!router.configureActorLimit(requestedActors)) throw std::runtime_error("Actor capacity cannot be configured");
             profiles=std::move(group);capacity=wanted.capacity;objectCapacity=wanted.objects;
             actorLimit=requestedActors;poisoned=false;
@@ -177,6 +195,9 @@ public:
                     <<",\"groupResourceReferences\":"<<MaxCoordinatedSharedReferences
                     <<",\"perActorSyncReferences\":"<<MaxSharedSyncHandles
                     <<",\"memoryBudgetsMultiplied\":false,\"trustedControllerOnly\":true}\n";
+            if(requestedMemory)
+                std::cerr<<"{\"nativeApplicationMemoryCapacityNegotiated\":true,\"reportedGpuBytes\":"<<capacity.reportedGpuByteLimit
+                    <<",\"actorSlots\":"<<actorLimit<<",\"sharedAggregatePool\":true,\"trustedControllerOnly\":true}\n";
             return response(h,0);
         }
         if(!profiles) return response(h,-71);
@@ -226,7 +247,8 @@ public:
             if(h.bytes) return response(h,-22);
             const Info value{capacity,objectCapacity,profiles->openGl(),profiles->syncSharing(),profiles->resourceSharing(),profiles->capabilities(),
                              actorLimit,(actorLimit==actors::MaxApplicationActors ? ApplicationActorsFlag : 0u)|
-                             (profiles->resourceSharing().version==2 ? ApplicationReferencesFlag : 0u),0};
+                             (profiles->resourceSharing().version==2 ? ApplicationReferencesFlag : 0u)|
+                             (profiles->applicationMemory() ? ApplicationMemoryFlag : 0u),0};
             return response(h,0,encoded(value));
         }
         if(h.operation==Operation::Register) {

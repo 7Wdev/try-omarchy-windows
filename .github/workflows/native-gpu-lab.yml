@@ -196,6 +196,11 @@ jobs:
           /tmp/guest-coordinator-application-test
           c++ -std=c++17 -O2 -Wall -Wextra -Werror -pthread "${application_gpu_flags[@]}" experimental/windows-native-gpu/guest_graphics_broker.cpp -o /tmp/guest-graphics-broker-application
           c++ -std=c++17 -Wall -Wextra -Werror "${application_gpu_flags[@]}" -isystem .runtime-headers/include -isystem .runtime-headers/include/wsl/stubs -isystem .runtime-dxg/include -shared -fPIC experimental/windows-native-gpu/linux_ioctl_bridge.cpp -pthread -o /tmp/linux-ioctl-bridge-application.so
+          application_memory_flags=("${application_gpu_flags[@]}" -DWDDM_BRIDGE_APPLICATION_MEMORY=1)
+          c++ -std=c++17 -O2 -Wall -Wextra -Werror -pthread "${application_memory_flags[@]}" experimental/windows-native-gpu/guest_coordinator_test.cpp -o /tmp/guest-coordinator-application-memory-test
+          /tmp/guest-coordinator-application-memory-test
+          c++ -std=c++17 -O2 -Wall -Wextra -Werror -pthread "${application_memory_flags[@]}" experimental/windows-native-gpu/guest_graphics_broker.cpp -o /tmp/guest-graphics-broker-application-memory
+          c++ -std=c++17 -Wall -Wextra -Werror "${application_memory_flags[@]}" -isystem .runtime-headers/include -isystem .runtime-headers/include/wsl/stubs -isystem .runtime-dxg/include -shared -fPIC experimental/windows-native-gpu/linux_ioctl_bridge.cpp -pthread -o /tmp/linux-ioctl-bridge-application-memory.so
           c++ -std=c++17 -O2 -Wall -Wextra -Werror -pthread experimental/windows-native-gpu/guest_broker_receipts_test.cpp -o /tmp/guest-broker-receipts-test
           /tmp/guest-broker-receipts-test
           c++ -std=c++17 -O2 -Wall -Wextra -Werror experimental/windows-native-gpu/bounded_gpu_retirement_wait_test.cpp -o /tmp/bounded-gpu-retirement-wait-test
@@ -204,6 +209,8 @@ jobs:
           /tmp/deferred-residency-test
           c++ -std=c++17 -O2 -Wall -Wextra -Werror experimental/windows-native-gpu/mapped_residency_admission_test.cpp -o /tmp/mapped-residency-admission-test
           /tmp/mapped-residency-admission-test
+          c++ -std=c++17 -O2 -Wall -Wextra -Werror experimental/windows-native-gpu/application_memory_profile_test.cpp -o /tmp/application-memory-profile-test
+          /tmp/application-memory-profile-test
           c++ -std=c++17 -O2 -Wall -Wextra -Werror experimental/windows-native-gpu/gpu_mapping_accounting_test.cpp -o /tmp/gpu-mapping-accounting-test
           /tmp/gpu-mapping-accounting-test
           c++ -std=c++17 -O2 -Wall -Wextra -Werror -pthread experimental/windows-native-gpu/fair_rpc_mutex_test.cpp -o /tmp/fair-rpc-mutex-test
