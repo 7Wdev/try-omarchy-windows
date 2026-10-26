@@ -56,6 +56,10 @@ cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\bounded_gpu_retirement_wa
 if not "%errorlevel%"=="0" exit /b %errorlevel%
 bounded-gpu-retirement-wait-test.exe
 if not "%errorlevel%"=="0" exit /b %errorlevel%
+cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\mapped_residency_admission_test.cpp" /Fe:mapped-residency-admission-test.exe
+if not "%errorlevel%"=="0" exit /b %errorlevel%
+mapped-residency-admission-test.exe
+if not "%errorlevel%"=="0" exit /b %errorlevel%
 cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\deferred_residency_test.cpp" /Fe:deferred-residency-test.exe
 if not "%errorlevel%"=="0" exit /b %errorlevel%
 deferred-residency-test.exe

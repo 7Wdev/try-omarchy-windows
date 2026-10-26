@@ -34,6 +34,7 @@
 #include "framed_write.h"
 #include "aggregate_gpu_budget.h"
 #include "deferred_residency.h"
+#include "mapped_residency_admission.h"
 using Microsoft::WRL::ComPtr;
 using namespace driver_bridge;
 class KmtDriver : public Driver {
@@ -316,6 +317,7 @@ class KmtDriver : public Driver {
     bool gpuVaEnabled = false;
     bool residencyEnabled = false;
     bool deferredResidencyEnabled = false;
+    bool mappedResidencyAdmissionEnabled=false;
     std::uint64_t retainedResidencyReferences=0,peakRetainedResidencyReferences=0;
     std::uint64_t deferredEvictionRequests=0,reusedResidencyReferences=0,reclaimedResidencyReferences=0;
     std::uint64_t destroyedRetainedResidencyReferences=0,gpuVaQuotaRejections=0;
@@ -391,22 +393,31 @@ class KmtDriver : public Driver {
     HRESULT lastCopyError = S_OK;
     static constexpr auto Invalid = static_cast<std::int32_t>(0xc000000du);
     static constexpr auto PagingTimeout = static_cast<std::int32_t>(0xc00000b5u);
-    bool reportedGpuUsageAcceptable(std::uint64_t additionalBytes=0,const char* presentationStage=nullptr,std::uint64_t* observedUsage=nullptr) {
+    bool reportedGpuUsageAcceptable(std::uint64_t additionalBytes=0,const char* presentationStage=nullptr,std::uint64_t* observedUsage=nullptr,bool* observedUsageKnown=nullptr) {
         std::lock_guard<std::mutex> lock(reportedUsageGuard);
         // This is a reported-usage guard, not an allocation-size decoder or
         // a pre-allocation hard quota. Nonresident allocations and transient
         // growth can escape CurrentUsage; the endpoint stays diagnostic-only.
+        if(observedUsageKnown) *observedUsageKnown=false;
         if (!allocationBudgetAdapter) return false;
         std::uint64_t total = 0;
+        std::array<std::uint64_t,2> segmentUsage{},segmentBudget{};std::size_t segmentIndex=0;
         for (const auto group : {DXGI_MEMORY_SEGMENT_GROUP_LOCAL, DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL}) {
             DXGI_QUERY_VIDEO_MEMORY_INFO info{};
             if (FAILED(allocationBudgetAdapter->QueryVideoMemoryInfo(0, group, &info)) ||
                 info.CurrentUsage > UINT64_MAX - total) return false;
+            segmentUsage[segmentIndex]=info.CurrentUsage;segmentBudget[segmentIndex]=info.Budget;++segmentIndex;
             total += info.CurrentUsage;
         }
         peakReportedGpuUsage = (std::max)(peakReportedGpuUsage, total);
         if(observedUsage) *observedUsage=total;
+        if(observedUsageKnown) *observedUsageKnown=true;
         const bool fits=reportedGpuBudgetFits(total,additionalBytes,reportedGpuUsageLimit());
+        if(!fits) std::cerr<<"{\"nativeReportedGpuUsageRejected\":true,\"usageBytes\":"<<total
+            <<",\"additionalBytes\":"<<additionalBytes<<",\"limitBytes\":"<<reportedGpuUsageLimit()
+            <<",\"localUsageBytes\":"<<segmentUsage[0]<<",\"nonlocalUsageBytes\":"<<segmentUsage[1]
+            <<",\"localNativeBudgetBytes\":"<<segmentBudget[0]<<",\"nonlocalNativeBudgetBytes\":"<<segmentBudget[1]
+            <<",\"currentProcessOnly\":true,\"policyChanged\":false,\"hardAllocationQuota\":false}\n";
         if(presentationStage) std::cerr<<"{\"nativePresentationMemoryGuard\":true,\"stage\":\""<<presentationStage
             <<"\",\"usageBytes\":"<<total<<",\"additionalBytes\":"<<additionalBytes
             <<",\"limitBytes\":"<<reportedGpuUsageLimit()<<",\"accepted\":"<<(fits?"true":"false")<<"}\n";
@@ -1627,6 +1638,10 @@ public:
             throw std::runtime_error("Deferred residency native prerequisites absent");
         deferredResidencyEnabled=enabled;
     }
+    void configureMappedResidencyAdmission(bool enabled) {
+        if(enabled && !deferredResidencyEnabled) throw std::runtime_error("Mapped admission requires retaining residency");
+        mappedResidencyAdmissionEnabled=enabled;
+    }
     bool retainsMappedResidencyOnEvict() const override { return deferredResidencyEnabled; }
     bool allowsReservationBackedMappings() const override {
         return deferredResidencyEnabled && coordinatedObjectsEnabled && coordinatedObjectCapacity.version>=6;
@@ -1694,6 +1709,35 @@ public:
             if(FAILED(compositorOutput->reclaimStagingForResidency(reclaimTarget,released)))
                 throw std::runtime_error("Cannot reclaim presentation staging before deferred residency");
         }
+        if(mappedResidencyAdmissionEnabled) {
+            if(!coordinatedObjectsEnabled || coordinatedObjectCapacity.version!=9 || !openglDesktopPresentationEnabled)
+                throw std::runtime_error("Mapped admission requires the aggregate application desktop");
+            // Recheck after possible staging reclamation. This is still before
+            // native reference increments, paging submission or logical commit.
+            if(!reportedGpuUsageAcceptable(0,nullptr,&usageBefore))
+                return {{static_cast<std::int32_t>(0xc0000017u),0,0},{0,0,0}};
+            std::vector<driver_residency::MappedCandidate> candidates;
+            candidates.reserve(native.size());
+            for(const auto handle:native) {
+                const auto& allocation=vendorAllocations.at(handle);
+                candidates.push_back({allocation.pages,allocation.residency.native(),
+                    allocation.locked || allocation.cpuLease.has_value() || allocation.cpuBytes!=0});
+            }
+            const auto plan=driver_residency::mappedAdmission(usageBefore,reportedGpuUsageLimit(),candidates.data(),candidates.size());
+            if(!plan.valid) return {{Invalid,0,0},{0,0,0}};
+            if(!plan.fits) {
+                ++failedVendorResidency;
+                std::cerr<<"{\"nativeMappedResidencyAdmissionRefused\":true,\"usageBytes\":"<<usageBefore
+                    <<",\"limitBytes\":"<<reportedGpuUsageLimit()<<",\"mappedExtentEstimateBytes\":"<<plan.estimateBytes
+                    <<",\"bytesToTrimHint\":"<<plan.bytesToTrim<<",\"requestedAllocations\":"<<handles.size()
+                    <<",\"nativeCandidates\":"<<native.size()<<",\"estimatedCandidates\":"<<plan.estimated
+                    <<",\"alreadyReferencedCandidates\":"<<plan.alreadyReferenced<<",\"unknownCandidates\":"<<plan.unknown
+                    <<",\"cpuMappedCandidates\":"<<plan.cpuMapped<<",\"requestFlags\":"<<desc.flags
+                    <<",\"nativeMakeResidentCalled\":false,\"requestedLogicalOwnershipChanged\":false,\"requestedNativeReferencesChanged\":false"
+                    <<",\"mappingExtentIsPhysicalSize\":false,\"ownerOptIn\":true}\n";
+                return {{static_cast<std::int32_t>(0xc0000017u),0,0},{0,0,plan.bytesToTrim}};
+            }
+        }
         D3DDDI_MAKERESIDENT value{};std::int32_t status=0;
         if(!native.empty()) {
             value.hPagingQueue=queue;value.NumAllocations=static_cast<UINT>(native.size());
@@ -1712,7 +1756,30 @@ public:
             if(!waitPaging(queue,value.PagingFenceValue)) throw std::runtime_error("Deferred residency paging deadline exceeded");
             ++completedVendorResidencyWaits;
         }
-        if(!reportedGpuUsageAcceptable()) throw std::runtime_error("Reported GPU usage limit after deferred residency");
+        std::uint64_t usageAfter=0;bool usageAfterKnown=false;
+        if(!reportedGpuUsageAcceptable(0,nullptr,&usageAfter,&usageAfterKnown)) {
+            std::uint64_t requestedMappedPages=0,nativeMappedPages=0,guestReferences=0,retainedReferences=0;
+            unsigned cpuMapped=0,mapped=0,unmapped=0;
+            for(const auto handle:handles) {
+                const auto& allocation=vendorAllocations.at(handle);
+                requestedMappedPages+=allocation.pages;guestReferences+=allocation.residency.guest;
+                retainedReferences+=allocation.residency.retained;
+                if(allocation.pages) ++mapped;else ++unmapped;
+                if(allocation.locked || allocation.cpuLease.has_value() || allocation.cpuBytes) ++cpuMapped;
+            }
+            for(const auto handle:native) nativeMappedPages+=vendorAllocations.at(handle).pages;
+            std::cerr<<"{\"nativeDeferredResidencyBudgetObservation\":true,\"usageBeforeBytes\":"<<usageBefore
+                <<",\"usageAfterBytes\":"<<usageAfter<<",\"usageAfterKnown\":"<<(usageAfterKnown?"true":"false")<<",\"limitBytes\":"<<reportedGpuUsageLimit()
+                <<",\"requestedAllocations\":"<<handles.size()<<",\"nativeAllocations\":"<<native.size()
+                <<",\"reusedAllocations\":"<<(handles.size()-native.size())<<",\"nativeReturnedAllocations\":"<<value.NumAllocations
+                <<",\"nativeStatus\":"<<status<<",\"pagingFence\":"<<value.PagingFenceValue
+                <<",\"nativePagingWaitCompleted\":"<<(!native.empty()?"true":"false")
+                <<",\"requestedMappedPages\":"<<requestedMappedPages<<",\"nativeMappedPages\":"<<nativeMappedPages
+                <<",\"mappedAllocations\":"<<mapped<<",\"unmappedAllocations\":"<<unmapped<<",\"cpuMappedAllocations\":"<<cpuMapped
+                <<",\"guestReferencesBeforeCommit\":"<<guestReferences<<",\"retainedReferencesBeforeCommit\":"<<retainedReferences
+                <<",\"logicalOwnershipCommitted\":false,\"mappingExtentIsPhysicalSize\":false,\"policyChanged\":false}\n";
+            throw std::runtime_error("Reported GPU usage limit after deferred residency");
+        }
         for(const auto handle:handles) {
             auto& allocation=vendorAllocations.at(handle);
             if(allocation.residency.canReuse()) {
@@ -2667,9 +2734,10 @@ public:
     }
 };
 static void serve(Stream& stream, const std::string& sectionName = {}, std::uint32_t sectionBytes = 0,
-                  bool contexts = false, bool queries = false, driver_qemu::Runtime* runtime = nullptr, bool allocations = false, bool gpuVa = false, bool residency = false, bool cpu = false, bool cpuStoreTest = false, bool translation = false, bool hwQueues = false, bool sync = false, bool submit = false, bool retirement = false, bool reservation = false, bool gpuState = false, bool asyncSubmit = false, bool sharedResources = false, bool consumeShared = false, bool presentShared = false, bool nativeMetadata = false, bool consumeProcess = false, bool coordinated = false, unsigned sdlFailureTest = 0, bool deferredResidency = false, std::uint32_t actorSlots = 4, std::uint32_t resourceReferences = 16) {
+                  bool contexts = false, bool queries = false, driver_qemu::Runtime* runtime = nullptr, bool allocations = false, bool gpuVa = false, bool residency = false, bool cpu = false, bool cpuStoreTest = false, bool translation = false, bool hwQueues = false, bool sync = false, bool submit = false, bool retirement = false, bool reservation = false, bool gpuState = false, bool asyncSubmit = false, bool sharedResources = false, bool consumeShared = false, bool presentShared = false, bool nativeMetadata = false, bool consumeProcess = false, bool coordinated = false, unsigned sdlFailureTest = 0, bool deferredResidency = false, std::uint32_t actorSlots = 4, std::uint32_t resourceReferences = 16, bool mappedAdmission = false) {
     KmtDriver driver(sectionName, sectionBytes, contexts, queries, runtime, allocations, gpuVa, residency, cpu, cpuStoreTest, translation, hwQueues, sync, submit, retirement, reservation, gpuState, asyncSubmit, sharedResources, consumeShared, presentShared, nativeMetadata,consumeProcess);
     driver.configureDeferredResidency(deferredResidency);
+    driver.configureMappedResidencyAdmission(mappedAdmission);
     std::exception_ptr failure;
     if(sdlFailureTest==2) {
         const auto control=runtime->sdlControl();
@@ -2786,7 +2854,7 @@ int main(int argc, char** argv) {
         bool hwQueueNoBroadcastWaitEofTest = false;
         bool asyncSubmit = false, sharedResources = false, consumeShared = false, presentShared = false, nativeMetadata = false, consumeProcess = false, coordinated = false, windowInput = false, inputSelfTest = false, sdlRelay = false;
         unsigned sdlFailureTest=0;
-        bool virtioTrace=false,deferredResidency=false,userNetwork=false;
+        bool virtioTrace=false,deferredResidency=false,userNetwork=false,mappedAdmission=false;
         const char* readonlyRoot = nullptr;
         while (argc > 1) {
             if(argc>2 && std::string(argv[argc-2])=="--driver-resource-reference-slots") {
@@ -2847,6 +2915,7 @@ int main(int argc, char** argv) {
             else if (option == "--driver-virtio-trace" && !virtioTrace) virtioTrace = true;
             else if (option == "--driver-user-network" && !userNetwork) userNetwork = true;
             else if (option == "--driver-deferred-residency" && !deferredResidency) deferredResidency = true;
+            else if (option == "--driver-mapped-residency-admission" && !mappedAdmission) mappedAdmission = true;
             else if (option == "--driver-sdl-failure-test" && !sdlFailureTest) sdlFailureTest = 1;
             else if (option == "--driver-sdl-retirement-failure-test" && !sdlFailureTest) sdlFailureTest = 2;
             else if (option == "--driver-shared-resources" && !sharedResources) sharedResources = true;
@@ -2874,6 +2943,8 @@ int main(int argc, char** argv) {
             throw std::runtime_error("Application actor capacity requires the explicit full owned SDL desktop and read-only root");
         if(resourceReferencesConfigured && !actorSlotsConfigured)
             throw std::runtime_error("Application resource references require the explicit application actor capacity");
+        if(mappedAdmission && (!deferredResidency || !resourceReferencesConfigured || !actorSlotsConfigured))
+            throw std::runtime_error("Mapped residency admission requires explicit application actors, references and retaining residency");
         if(deferredResidency && (!gpu_diagnostic::HighResolution || !sdlRelay || !coordinated || !readonlyRoot || !residency || !retirement))
             throw std::runtime_error("Deferred residency requires the explicit high-resolution owned SDL coordinator, residency, retirement and read-only root");
         if (readonlyRoot && (cpuStoreTest || cpuEofTest || cpuSpanEofTest || hwQueueEofTest || syncEofTest || syncNoMaxEofTest ||
@@ -2997,7 +3068,7 @@ int main(int argc, char** argv) {
             throw std::runtime_error("Cannot configure low-latency GPU RPC socket");
         std::cerr<<"{\"nativeGpuTransportConfigured\":true,\"tcpNoDelay\":true,\"tcpNoDelayOptionBytes\":"<<optionBytes
             <<",\"framedReplyScatterGather\":true,\"inputPathChanged\":false}\n";
-        Stream stream(client.value); serve(stream, sectionName, sectionBytes, contexts, queries, runtime.get(), allocations, gpuVa, residency, cpu, cpuStoreTest, translation, hwQueues, sync, submit, retirement, reservation, gpuState, asyncSubmit, sharedResources, consumeShared, presentShared, nativeMetadata,consumeProcess,coordinated,sdlFailureTest,deferredResidency,actorSlots,resourceReferences);
+        Stream stream(client.value); serve(stream, sectionName, sectionBytes, contexts, queries, runtime.get(), allocations, gpuVa, residency, cpu, cpuStoreTest, translation, hwQueues, sync, submit, retirement, reservation, gpuState, asyncSubmit, sharedResources, consumeShared, presentShared, nativeMetadata,consumeProcess,coordinated,sdlFailureTest,deferredResidency,actorSlots,resourceReferences,mappedAdmission);
         if (runtime) {
             runtime->report();
             if (!runtime->cleanExit()) throw std::runtime_error("Owned QEMU runtime did not exit cleanly");

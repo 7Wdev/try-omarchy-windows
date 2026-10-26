@@ -202,6 +202,8 @@ jobs:
           /tmp/bounded-gpu-retirement-wait-test
           c++ -std=c++17 -O2 -Wall -Wextra -Werror experimental/windows-native-gpu/deferred_residency_test.cpp -o /tmp/deferred-residency-test
           /tmp/deferred-residency-test
+          c++ -std=c++17 -O2 -Wall -Wextra -Werror experimental/windows-native-gpu/mapped_residency_admission_test.cpp -o /tmp/mapped-residency-admission-test
+          /tmp/mapped-residency-admission-test
           c++ -std=c++17 -O2 -Wall -Wextra -Werror experimental/windows-native-gpu/gpu_mapping_accounting_test.cpp -o /tmp/gpu-mapping-accounting-test
           /tmp/gpu-mapping-accounting-test
           c++ -std=c++17 -O2 -Wall -Wextra -Werror -pthread experimental/windows-native-gpu/fair_rpc_mutex_test.cpp -o /tmp/fair-rpc-mutex-test

@@ -12,6 +12,12 @@ Normal launcher integration and a stable interactive desktop remain in developme
 
 [Daily-use readiness and the next Chromium browsing checks](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/DAILY-USE-READINESS.md).
 
+**Memory-pressure checkpoint — October 26, 2026:** an owner-only admission pilot
+refuses an observed Chromium allocation before native residency, avoiding the
+forced VM stop in one repeat. The browser still fails; live desktop recovery
+remains unverified. Default-off and enabled 4K desktop regressions pass.
+[Actual frame, policy limits and retained failures](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/MAPPED-RESIDENCY-ADMISSION.md).
+
 **Application compatibility checkpoint — October 25, 2026:** explicit process and
 buffer agreements clear Chromium's four-process and sixteen-buffer boundaries.
 A new legacy desktop regression passes **1,800 4K GPU handoffs**, complete pixels

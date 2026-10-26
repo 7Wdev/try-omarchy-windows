@@ -3,7 +3,8 @@
 The NVIDIA backend remains an engineering prototype. A complete 4K GPU desktop
 with wallpaper, bar and application windows is verified, including input response,
 application replacement, real device-health queries and live resource cleanup.
-The latest accepted networked regression lasts 1,800 handoffs over 43.42 seconds. This does not
+The latest accepted networked regressions complete 1,800 handoffs with the
+memory-admission pilot disabled and enabled. This does not
 establish daily-use stability or compatibility with arbitrary applications.
 
 ## Next practical acceptance: Chromium
@@ -43,8 +44,12 @@ and reliable failure handling under memory pressure. The private residency
 rollback experiment remains excluded after device-loss failures.
 An observation-only browser repeat using the published host crosses the existing
 GPU-usage guard and requires an owned VM stop. Native cleanup succeeds after
-exit, but live recovery remains unverified. This failure is retained in the
-[browsing progress report](GUEST-BROWSING-PROGRESS.md).
+exit, but live recovery remains unverified. A new owner-only pre-native admission
+pilot avoids that forced stop in one repeat: the guest receives ENOMEM and the
+VM exits naturally with live cleanup. Chromium restarts its GPU process and
+navigation still fails. The pilot uses mapping-size estimates with uncovered
+cases; it is not a complete pressure-recovery solution.
+[Policy and retained hardware observations](MAPPED-RESIDENCY-ADMISSION.md).
 
 The official keyboard/cursor implementation and launcher reserved-key route remain
 the required input path. Physical input latency, physical scanout cadence and

@@ -103,6 +103,20 @@ its 729 successful device-health queries do not establish recovery. The private
 rollback prototype remains excluded. [Retained pressure counterexample and
 stream hashes](evidence/APPLICATION-PRESSURE-COUNTEREXAMPLE-2026-10-25.json).
 
+## Memory-pressure follow-up, October 26
+
+An owner-only admission pilot refuses known mapped first-residency batches before
+native submission when their estimated charge exceeds existing headroom. Actual
+Chromium requests receive ENOMEM; run 196 avoids the observed forced VM stop.
+Chromium restarts its GPU process and navigation still fails. No browser frame
+or usable live recovery is accepted.
+
+Both default-off and enabled builds separately pass the existing 1,800-handoff
+4K desktop regression, including complete pixels and live cleanup. The estimate
+is not a physical allocation-size decoder; unexpected post-native guard failures
+can still stop the VM. [Policy, new actual frame and retained hardware
+observations](MAPPED-RESIDENCY-ADMISSION.md).
+
 The next acceptance requires an actual Chromium window with NVIDIA WebGL shader
 pixels, authenticated GPU-process/native-work correlation, the sandbox active,
 HTTPS browsing, scrolling, tabs, ordinary input, resizing and close/reopen
