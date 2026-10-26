@@ -129,6 +129,14 @@ func hookCallback(nCode, wParam, lParam uintptr) uintptr {
 		// ends a forwarded Alt+Tab, wherever focus is by then.
 		if isAltVK(vk) && (wParam == wmKeyup || wParam == wmSyskeyup) {
 			sendKeys(altTab.altReleased())
+			released := "" // VK_MENU: either Alt
+			switch vk {
+			case vkLMenu:
+				released = "alt"
+			case 0xA5:
+				released = "alt_r"
+			}
+			sendKeys(superG.altReleased(released))
 		}
 		if ctrlAltEndSent && (wParam == wmKeyup || wParam == wmSyskeyup) && isCtrlOrAltVK(vk) {
 			ctrlAltEndSent = false
@@ -162,12 +170,20 @@ func hookCallback(nCode, wParam, lParam uintptr) uintptr {
 			pid := qemuPid.Load()
 			held, _, _ := procGetAsyncKeyState.Call(vkG) // state before this change
 			ctrl, _, _ := procGetAsyncKeyState.Call(vkControl)
-			menu, _, _ := procGetAsyncKeyState.Call(vkMenu)
 			shift, _, _ := procGetAsyncKeyState.Call(0x10) // VK_SHIFT
+			leftAlt, _, _ := procGetAsyncKeyState.Call(vkLMenu)
+			rightAlt, _, _ := procGetAsyncKeyState.Call(0xA5)
+			heldAlt := ""
+			if leftAlt&0x8000 != 0 {
+				heldAlt = "alt"
+			} else if rightAlt&0x8000 != 0 {
+				heldAlt = "alt_r"
+			}
 			keys, swallow := superG.route(
 				pid != 0 && foregroundPid() == pid,
 				lwinKey.side == keySideGuest || rwinKey.side == keySideGuest,
-				(ctrl|menu|shift)&0x8000 != 0,
+				heldAlt,
+				(ctrl|shift)&0x8000 != 0,
 				held&0x8000 != 0,
 				wParam == wmKeydown || wParam == wmSyskeydown,
 			)
