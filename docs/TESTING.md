@@ -62,7 +62,8 @@ Do not upload the guest disk or a full backup.
   yourself keep password login.
 - [ ] GPU rendering, then CPU fallback, both reach the desktop.
 - [ ] Keyboard and Windows key work only in the intended window; host shortcuts
-  still work after switching away. Windows handles Win+L itself.
+  still work after switching away. Windows handles Win+L itself. Win+G and
+  Win+Alt+G reach Omarchy in order; Xbox Game Bar may also open (Esc closes it).
 - [ ] Text clipboard works in both directions, including Unicode, trailing
   newlines, copying an earlier value again, and reconnecting after a guest reboot.
 - [ ] Shared files can be read and written from both sides.
