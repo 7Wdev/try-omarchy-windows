@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.13.0 - 2026-10-25
+
+- With GPU rendering on Intel graphics, opening menus or the Hyprland
+  configuration editor no longer freezes Omarchy. Seen on Arc B390 with driver
+  32.0.101.9150; runtime r25 sends buffer uploads without mapping them on
+  Intel (#361, #367, #362).
+- When GPU rendering runs but the Omarchy window never shows the desktop, the
+  launcher asks after two minutes whether to restart with CPU rendering, try
+  GPU again, keep the session or always use CPU. Automatic no longer counts
+  GPU as working until the desktop has actually been on screen (#366, #358).
+- The health check waits while a system package update is running instead of
+  offering Restart as the default (#365, #359).
+- Win+G and Win+Alt+G reach Omarchy's window grouping. Windows' Xbox Game Bar
+  still opens on them as well; press Esc to close it (#369, #370, #368).
+
 ## v0.12.1 - 2026-10-22
 
 - Setup and update downloads work on networks where Windows finds a proxy
