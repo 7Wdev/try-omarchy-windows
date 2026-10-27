@@ -51,6 +51,8 @@ cleanup pass. The test startup synchronization changed; the official input
 implementation did not. Ordinary browsing, normal launcher integration,
 pressure recovery and daily-use acceptance remain open. Counts stay unchanged.
 [Actual final frame, retained failures and exact remaining work](docs/GPU-BROWSER-LIFECYCLE.md).
+The floating-layout follow-up also passes all **1,800 handoffs** and displays
+the shipped wallpaper alongside readable Chromium and terminal windows.
 
 **Native GPU health — October 25, 2026:** the published-runtime build completes
 **5,786 real device-health queries and 1,800 GPU handoffs**, including application

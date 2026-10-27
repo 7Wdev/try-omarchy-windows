@@ -5,14 +5,34 @@ handoffs** with a readable Chromium HTTPS page, NVIDIA shader, a responsive
 terminal and browser close/reopen. This is a bounded diagnostic observation;
 normal Omarchy launcher integration and daily-use acceptance remain incomplete.
 
+## Floating browser with visible wallpaper — follow-up run 235
+
+![Actual final 3840×2160 GPU source with wallpaper, browser and responsive terminal](images/omarchy-browser-wallpaper-source-4k-2026-10-27.png)
+
+Guest build **194** explicitly floats the actual Chromium window through the
+existing Hyprland API, then requires its observed size **1400×1000** and position
+**[2200, 180]** on both launches. The wallpaper and readable browser/terminal
+windows are visible in the actual source and [SDL capture](images/omarchy-browser-wallpaper-sdl-2026-10-27.png).
+All **1,800 handoffs**, terminal input/cursor, resize/focus, browser reopen,
+both shader/compositing/sandbox proofs and live cleanup pass again. Complete
+first/final source-to-SDL pixel checks both have maximum channel error **one**.
+There are **4,436 native submissions**, **4,691 successful health queries**, zero
+failed submissions/health queries and natural VM exit. Both GPU sessions retain
+17 observed sandboxed threads; actors 9 and 11 enqueue 48 and 46 native commands.
+Source/driver/runtime/QEMU guards pass. Official input and GPU backend code are
+unchanged. This is a layout fixture change; broader browser interaction and
+daily-use acceptance remain open. [Exact structured observations and hashes](evidence/GPU-BROWSER-FLOATING-LAYOUT-2026-10-27.json).
+
+## Earlier run 234 — complete lifecycle with a tiled browser
+
 ![Actual final 3840×2160 GPU source after browser reopen](images/omarchy-browser-reopened-source-4k-2026-10-27.png)
 
 The [actual final SDL backbuffer](images/omarchy-browser-reopened-sdl-2026-10-27.png)
 is **2560×1566**. Complete first/final source-to-SDL checks use QEMU's compiled
 GL_LINEAR scaling operation with the readback Y origin normalized. Maximum
 channel errors are **two** and **one**, within the existing tolerance of two.
-Physical 4K scanout remains unverified. The browser is tiled across the desktop;
-correct floating layout with exposed wallpaper is the next display check.
+Physical 4K scanout remains unverified. Run 234's browser is tiled across the
+desktop; follow-up 235 above verifies floating layout with exposed wallpaper.
 
 ## What passed together
 

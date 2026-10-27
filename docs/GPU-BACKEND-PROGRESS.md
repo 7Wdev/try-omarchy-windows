@@ -18,6 +18,10 @@ changed; official input did not. Ordinary scrolling/typing/tabs, normal launcher
 long sessions, pressure recovery and daily-use acceptance remain open.
 Counts stay **4/8, 0/4, 3/3**.
 [Actual final frame, retained failures and scope](GPU-BROWSER-LIFECYCLE.md).
+Follow-up **235** verifies the browser's floating size and position on both
+launches, exposes the shipped wallpaper and passes all **1,800 handoffs** again,
+including complete first/final pixels, input and live cleanup. Browser interaction
+and product acceptance remain open. [Actual wallpaper/browser/terminal frame](GPU-BROWSER-LIFECYCLE.md#floating-browser-with-visible-wallpaper--follow-up-run-235).
 
 **First GPU-composited browser frame — October 26, 2026:** a readable HTTPS page
 and NVIDIA shader are visible in Omarchy with GPU compositing enabled and all
