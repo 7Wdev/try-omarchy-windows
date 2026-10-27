@@ -40,14 +40,17 @@ with complete pixels, application relaunch and live cleanup. Chromium's first
 GPU initialization attempt fails and remains unaccepted.
 [Actual networked frame and browsing status](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/GUEST-BROWSING-PROGRESS.md).
 
-![Two-window 4K NVIDIA fixture verified; native health queries supported; backend 4/8; desktop product 0/4](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/windows-nvgpu-lab/docs/images/gpu-backend-progress-browser-frame-2026-10-26.svg)
+![4K GPU browser lifecycle fixture passes 1800 handoffs; backend 4/8; desktop product 0/4](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/windows-nvgpu-lab/docs/images/gpu-backend-progress-browser-lifecycle-2026-10-27.svg)
 
-**GPU browser frame — October 26, 2026:** the first readable HTTPS page and
-NVIDIA shader are visible in Omarchy with **GPU compositing enabled** and all
-**17 observed GPU threads sandboxed**. The 3840×2160 source and complete SDL
-blit pass the first-frame pixel check. The input/sustained fixture still fails
-after two handoffs; daily-use acceptance remains open and counts stay unchanged.
-[Actual 4K source, SDL capture and exact remaining work](docs/GPU-COMPOSITED-BROWSER-FRAME.md).
+**GPU browser lifecycle — October 27, 2026:** the private integration completes
+**1,800 GPU handoffs**, terminal typing/cursor response, resize/focus checks and
+browser close/reopen. Both Chromium sessions display a public HTTPS page and
+NVIDIA shader with **GPU compositing enabled** and all **17 observed GPU threads
+sandboxed**. Complete first/final 3840×2160 source-to-SDL pixel checks and live
+cleanup pass. The test startup synchronization changed; the official input
+implementation did not. Ordinary browsing, normal launcher integration,
+pressure recovery and daily-use acceptance remain open. Counts stay unchanged.
+[Actual final frame, retained failures and exact remaining work](docs/GPU-BROWSER-LIFECYCLE.md).
 
 **Native GPU health — October 25, 2026:** the published-runtime build completes
 **5,786 real device-health queries and 1,800 GPU handoffs**, including application

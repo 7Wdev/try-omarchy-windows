@@ -1,12 +1,23 @@
 # NVIDIA backend progress
 
-Updated **2026-10-26**. This page tracks the experimental QEMU/WHPX Windows-native
+Updated **2026-10-27**. This page tracks the experimental QEMU/WHPX Windows-native
 NVIDIA backend. The released Try Omarchy launcher continues using the upstream
 graphics runtime.
 
-![Two-window 4K NVIDIA fixture verified; native health queries supported; backend stages 4/8; desktop gates 0/4](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/windows-nvgpu-lab/docs/images/gpu-backend-progress-browser-frame-2026-10-26.svg)
+![GPU browser lifecycle fixture verified; backend stages 4/8; desktop gates 0/4](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/windows-nvgpu-lab/docs/images/gpu-backend-progress-browser-lifecycle-2026-10-27.svg)
 
 ## What is verified now?
+
+**GPU browser lifecycle — October 27, 2026:** private run 234 completes all
+**1,800 handoffs**, terminal typing and cursor response, three terminal sizes,
+four focus checkpoints, browser close/reopen and live cleanup before natural
+VM exit. Both browser sessions pass HTTPS, NVIDIA shader, GPU compositing and
+all 17 observed GPU-thread sandbox checks. Complete first/final source-to-SDL
+pixels pass with maximum channel errors two and one. Test startup synchronization
+changed; official input did not. Ordinary scrolling/typing/tabs, normal launcher,
+long sessions, pressure recovery and daily-use acceptance remain open.
+Counts stay **4/8, 0/4, 3/3**.
+[Actual final frame, retained failures and scope](GPU-BROWSER-LIFECYCLE.md).
 
 **First GPU-composited browser frame — October 26, 2026:** a readable HTTPS page
 and NVIDIA shader are visible in Omarchy with GPU compositing enabled and all

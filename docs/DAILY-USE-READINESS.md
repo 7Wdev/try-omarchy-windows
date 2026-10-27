@@ -24,10 +24,14 @@ client ioctl tracking use the same authenticated agreement; default behavior and
 older aggregate memory budgets are preserved. A new explicit memory agreement
 clears the old 1 GiB reported-usage boundary. A private follow-up now displays a
 readable public HTTPS page and NVIDIA shader with GPU compositing enabled and
-all 17 observed GPU threads sandboxed. The first 4K source/SDL blit passes full
-pixels. The input/sustained fixture still fails after two handoffs; scrolling,
-typing, resize, tabs, browser reopen and usable daily browsing remain unaccepted.
-[Actual first GPU-composited frame and exact limits](GPU-COMPOSITED-BROWSER-FRAME.md).
+all 17 observed GPU threads sandboxed. A later private run now completes 1,800
+handoffs, complete first/final 4K source-to-SDL pixels, terminal typing/cursor
+response, terminal resize, focus checkpoints and browser close/reopen with live
+GPU retirement. Both browser sessions retain the shader/compositing/sandbox
+checks. The fixture waits for browser readiness before starting the existing
+30-second terminal input timer; official input code is unchanged. Browser
+scrolling/typing/tabs, browser resize, continuous browsing and longer sessions
+remain unaccepted. [Actual final frame and exact limits](GPU-BROWSER-LIFECYCLE.md).
 
 The browsing test must establish all of the following:
 
