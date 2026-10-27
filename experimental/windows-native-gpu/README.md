@@ -1,5 +1,13 @@
 # Native Windows GPU experiment
 
+## Application allocation metadata
+
+The default-off `--driver-application-objects` option and matching
+`WDDM_BRIDGE_APPLICATION_OBJECTS=1` guest-controller build negotiate 2,048
+aggregate allocation records through object contract version 10. Both sides
+must opt in; older requests retain 1,024 records. Per-actor and byte limits stay
+fixed. [Agreement, tests and retained three-app failures](../../docs/APPLICATION-OBJECT-CAPACITY.md).
+
 ## Application memory agreement
 
 The default-off `--driver-application-memory` option and matching

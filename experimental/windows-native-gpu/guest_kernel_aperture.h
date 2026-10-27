@@ -114,7 +114,7 @@ public:
                 throw std::runtime_error("Multi-application CPU mappings require profile 14");
             const auto group=coordinatedAgreement();
             if(!driver_bridge::coordinator::validInfo(group) ||
-               group.gl.version!=14 || group.objects.version!=9 ||
+               group.gl.version!=14 || (group.objects.version!=9 && group.objects.version!=10) ||
                group.capacity.mapping.aperture.cpuByteLimit!=capacityReceipt().cpu_byte_limit)
                 throw std::runtime_error("Multi-application CPU mappings lack exact coordinator agreement");
         }

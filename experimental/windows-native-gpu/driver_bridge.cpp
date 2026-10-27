@@ -319,6 +319,7 @@ class KmtDriver : public Driver {
     bool deferredResidencyEnabled = false;
     bool mappedResidencyAdmissionEnabled=false;
     bool applicationMemoryPermitted=false,applicationMemoryEnabled=false;
+    bool applicationObjectsPermitted=false;
     std::uint64_t retainedResidencyReferences=0,peakRetainedResidencyReferences=0;
     std::uint64_t deferredEvictionRequests=0,reusedResidencyReferences=0,reclaimedResidencyReferences=0;
     std::uint64_t destroyedRetainedResidencyReferences=0,gpuVaQuotaRejections=0;
@@ -732,9 +733,11 @@ public:
     bool beginCoordinatedObjects(CoordinatedObjectCapacity value) override {
         if(!validCoordinatedObjectCapacity(value) || coordinatedObjectsEnabled || !openglDesktopPresentationEnabled || !runtime || runtime->hasStopped() ||
             !ownedAdapters.empty() || !deviceAdapters.empty() || !hwQueues.empty() || !syncObjects.empty()) return false;
-        if(openGlProfileVersion==14 && (!deferredResidencyEnabled || value.version!=9)) return false;
+        if(value.version==10 && (!applicationObjectsPermitted || !applicationMemoryEnabled)) return false;
+        if(openGlProfileVersion==14 && (!deferredResidencyEnabled || (value.version!=9 && value.version!=10))) return false;
         const auto expected=openGlProfileVersion==14 ? 9u : openGlProfileVersion==13 ? 5u : runtime->fenceSlotLimit()==512 ? 4u : 3u;
-        if(value.version!=expected && !((value.version>=6 && value.version<=8) && expected==5 && deferredResidencyEnabled)) return false;
+        if(value.version!=expected && !(value.version==10 && expected==9 && applicationObjectsPermitted) &&
+           !((value.version>=6 && value.version<=8) && expected==5 && deferredResidencyEnabled)) return false;
         coordinatedObjectCapacity=value;coordinatedObjectsEnabled=true;
         std::cerr<<"{\"nativeCoordinatedObjectCapacity\":true,\"version\":"<<value.version<<",\"vendorAllocationObjects\":"<<vendorObjectLimit()<<",\"hwQueues\":"<<hwQueueLimit()<<",\"syncObjects\":"<<syncObjectLimit()
                  <<",\"reservedAddressBytes\":"<<reservationByteLimit()<<",\"reservationCount\":"<<reservationLimit()
@@ -1652,6 +1655,11 @@ public:
             <<",\"selected\":false,\"legacyReportedBytes\":"<<OpenGlDesktopPresentationReportedBytes
             <<",\"ordinaryClientCanSelect\":false}\n";
     }
+    void configureApplicationObjects(bool permitted) {
+        if(permitted && !applicationMemoryPermitted)
+            throw std::runtime_error("Application objects require application memory permission");
+        applicationObjectsPermitted=permitted;
+    }
     bool beginApplicationMemory(ApplicationMemoryProfile profile) override {
         static_assert(ApplicationPresentationReserve==driver_shared::ResidencyStagingReserve,"Shared presentation headroom");
         if(!applicationMemoryPermitted || applicationMemoryEnabled || !mappedResidencyAdmissionEnabled ||
@@ -1742,7 +1750,7 @@ public:
                 throw std::runtime_error("Cannot reclaim presentation staging before deferred residency");
         }
         if(mappedResidencyAdmissionEnabled) {
-            if(!coordinatedObjectsEnabled || coordinatedObjectCapacity.version!=9 || !openglDesktopPresentationEnabled)
+            if(!coordinatedObjectsEnabled || (coordinatedObjectCapacity.version!=9 && coordinatedObjectCapacity.version!=10) || !openglDesktopPresentationEnabled)
                 throw std::runtime_error("Mapped admission requires the aggregate application desktop");
             // Recheck after possible staging reclamation. This is still before
             // native reference increments, paging submission or logical commit.
@@ -2767,11 +2775,12 @@ public:
     }
 };
 static void serve(Stream& stream, const std::string& sectionName = {}, std::uint32_t sectionBytes = 0,
-                  bool contexts = false, bool queries = false, driver_qemu::Runtime* runtime = nullptr, bool allocations = false, bool gpuVa = false, bool residency = false, bool cpu = false, bool cpuStoreTest = false, bool translation = false, bool hwQueues = false, bool sync = false, bool submit = false, bool retirement = false, bool reservation = false, bool gpuState = false, bool asyncSubmit = false, bool sharedResources = false, bool consumeShared = false, bool presentShared = false, bool nativeMetadata = false, bool consumeProcess = false, bool coordinated = false, unsigned sdlFailureTest = 0, bool deferredResidency = false, std::uint32_t actorSlots = 4, std::uint32_t resourceReferences = 16, bool mappedAdmission = false, bool applicationMemory = false) {
+                  bool contexts = false, bool queries = false, driver_qemu::Runtime* runtime = nullptr, bool allocations = false, bool gpuVa = false, bool residency = false, bool cpu = false, bool cpuStoreTest = false, bool translation = false, bool hwQueues = false, bool sync = false, bool submit = false, bool retirement = false, bool reservation = false, bool gpuState = false, bool asyncSubmit = false, bool sharedResources = false, bool consumeShared = false, bool presentShared = false, bool nativeMetadata = false, bool consumeProcess = false, bool coordinated = false, unsigned sdlFailureTest = 0, bool deferredResidency = false, std::uint32_t actorSlots = 4, std::uint32_t resourceReferences = 16, bool mappedAdmission = false, bool applicationMemory = false, bool applicationObjects = false) {
     KmtDriver driver(sectionName, sectionBytes, contexts, queries, runtime, allocations, gpuVa, residency, cpu, cpuStoreTest, translation, hwQueues, sync, submit, retirement, reservation, gpuState, asyncSubmit, sharedResources, consumeShared, presentShared, nativeMetadata,consumeProcess);
     driver.configureDeferredResidency(deferredResidency);
     driver.configureMappedResidencyAdmission(mappedAdmission);
     driver.configureApplicationMemory(applicationMemory);
+    driver.configureApplicationObjects(applicationObjects);
     std::exception_ptr failure;
     if(sdlFailureTest==2) {
         const auto control=runtime->sdlControl();
@@ -2783,7 +2792,7 @@ static void serve(Stream& stream, const std::string& sectionName = {}, std::uint
     }
     if(coordinated) {
         {
-            coordinator::Runtime owner(driver,actorSlots,resourceReferences,applicationMemory);
+            coordinator::Runtime owner(driver,actorSlots,resourceReferences,applicationMemory,applicationObjects);
             std::uint64_t count=0;std::size_t peakObjects=0,peakActors=0;
             try {
                 const unsigned seconds=runtime && runtime->fenceSlotLimit()==512 ? 240u : 120u;
@@ -2888,7 +2897,7 @@ int main(int argc, char** argv) {
         bool hwQueueNoBroadcastWaitEofTest = false;
         bool asyncSubmit = false, sharedResources = false, consumeShared = false, presentShared = false, nativeMetadata = false, consumeProcess = false, coordinated = false, windowInput = false, inputSelfTest = false, sdlRelay = false;
         unsigned sdlFailureTest=0;
-        bool virtioTrace=false,deferredResidency=false,userNetwork=false,mappedAdmission=false,applicationMemory=false;
+        bool virtioTrace=false,deferredResidency=false,userNetwork=false,mappedAdmission=false,applicationMemory=false,applicationObjects=false;
         const char* readonlyRoot = nullptr;
         while (argc > 1) {
             if(argc>2 && std::string(argv[argc-2])=="--driver-resource-reference-slots") {
@@ -2951,6 +2960,7 @@ int main(int argc, char** argv) {
             else if (option == "--driver-deferred-residency" && !deferredResidency) deferredResidency = true;
             else if (option == "--driver-mapped-residency-admission" && !mappedAdmission) mappedAdmission = true;
             else if (option == "--driver-application-memory" && !applicationMemory) applicationMemory = true;
+            else if (option == "--driver-application-objects" && !applicationObjects) applicationObjects = true;
             else if (option == "--driver-sdl-failure-test" && !sdlFailureTest) sdlFailureTest = 1;
             else if (option == "--driver-sdl-retirement-failure-test" && !sdlFailureTest) sdlFailureTest = 2;
             else if (option == "--driver-shared-resources" && !sharedResources) sharedResources = true;
@@ -2978,6 +2988,8 @@ int main(int argc, char** argv) {
             throw std::runtime_error("Application actor capacity requires the explicit full owned SDL desktop and read-only root");
         if(resourceReferencesConfigured && !actorSlotsConfigured)
             throw std::runtime_error("Application resource references require the explicit application actor capacity");
+        if(applicationObjects && !applicationMemory)
+            throw std::runtime_error("Application objects require explicit application memory permission");
         if(applicationMemory && !mappedAdmission)
             throw std::runtime_error("Application memory requires explicit mapped residency admission and application capacity");
         if(mappedAdmission && (!deferredResidency || !resourceReferencesConfigured || !actorSlotsConfigured))
@@ -3105,7 +3117,7 @@ int main(int argc, char** argv) {
             throw std::runtime_error("Cannot configure low-latency GPU RPC socket");
         std::cerr<<"{\"nativeGpuTransportConfigured\":true,\"tcpNoDelay\":true,\"tcpNoDelayOptionBytes\":"<<optionBytes
             <<",\"framedReplyScatterGather\":true,\"inputPathChanged\":false}\n";
-        Stream stream(client.value); serve(stream, sectionName, sectionBytes, contexts, queries, runtime.get(), allocations, gpuVa, residency, cpu, cpuStoreTest, translation, hwQueues, sync, submit, retirement, reservation, gpuState, asyncSubmit, sharedResources, consumeShared, presentShared, nativeMetadata,consumeProcess,coordinated,sdlFailureTest,deferredResidency,actorSlots,resourceReferences,mappedAdmission,applicationMemory);
+        Stream stream(client.value); serve(stream, sectionName, sectionBytes, contexts, queries, runtime.get(), allocations, gpuVa, residency, cpu, cpuStoreTest, translation, hwQueues, sync, submit, retirement, reservation, gpuState, asyncSubmit, sharedResources, consumeShared, presentShared, nativeMetadata,consumeProcess,coordinated,sdlFailureTest,deferredResidency,actorSlots,resourceReferences,mappedAdmission,applicationMemory,applicationObjects);
         if (runtime) {
             runtime->report();
             if (!runtime->cleanExit()) throw std::runtime_error("Owned QEMU runtime did not exit cleanly");

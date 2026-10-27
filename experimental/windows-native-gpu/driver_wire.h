@@ -489,7 +489,8 @@ struct CoordinatedObjectCapacity {
 constexpr std::size_t MaxCoordinatedSharedReferences=64;
 static_assert(sizeof(CoordinatedObjectCapacity)==32,"Fixed coordinated object/address-space capacity");
 inline bool validCoordinatedObjectCapacity(CoordinatedObjectCapacity value) {
-    return ((value.version==3 && !value.vendorAllocations) || ((value.version>=4 && value.version<=9) && value.vendorAllocations==1024)) &&
+    return ((value.version==3 && !value.vendorAllocations) || ((value.version>=4 && value.version<=9) && value.vendorAllocations==1024) ||
+            (value.version==10 && value.vendorAllocations==2048)) &&
         value.hwQueues==(value.version>=8 ? 64u : 32u) && value.syncObjects==(value.version>=8 ? 768u : 384u) &&
         value.leaseLimit==(value.version>=7 ? 1536u : 768u) &&
         value.reservedGpuBytes==64ull*1024*1024*1024 && value.reservations==256;
@@ -506,9 +507,12 @@ constexpr CoordinatedObjectCapacity GuestCoordinatedLeaseObjects{7,32,384,1536,6
 // per-actor bounds. Fence aperture slots and physical byte guards are separate.
 constexpr CoordinatedObjectCapacity GuestCoordinatedActorObjects{8,4*OpenGlFenceHwQueues,4*OpenGlCompositorSyncObjects,1536,64ull*1024*1024*1024,256,1024};
 constexpr CoordinatedObjectCapacity GuestCoordinatedMultiappObjects{9,64,768,1536,64ull*1024*1024*1024,256,1024};
+// v10 expands only aggregate allocation metadata. Per-actor and physical byte
+// limits stay fixed; both the owner and controller must explicitly select it.
+constexpr CoordinatedObjectCapacity GuestCoordinatedApplicationObjects{10,64,768,1536,64ull*1024*1024*1024,256,2048};
 inline bool validCoordinatedAgreement(OpenGlDesktopPresentationCapacity capacity,CoordinatedObjectCapacity objects,bool applicationMemory=false) {
     return (applicationMemory ? validApplicationMemoryCapacity(capacity) : validCoordinatedPresentationCapacity(capacity)) && validCoordinatedObjectCapacity(objects) &&
-        (capacity.mapping.aperture.version==14 ? objects.version==9 : capacity.mapping.aperture.version==13 ? (objects.version>=5 && objects.version<=8) :
+        (capacity.mapping.aperture.version==14 ? (objects.version==9 || (applicationMemory && objects.version==10)) : capacity.mapping.aperture.version==13 ? (objects.version>=5 && objects.version<=8) :
             objects.version==(capacity.mapping.aperture.version>=11 ? 4u : 3u));
 }
 class Driver {
@@ -668,7 +672,7 @@ public:
             ExpandedVendorGpuCapability|ExpandedVendorCpuCapability|VendorAllocationCapability|SharedVendorResourceCapability|NativeSharedTextureCapability;
         caps=driver.capabilities();
         if((resourceReferences!=MaxSharedResourceHandles && resourceReferences!=ApplicationResourceReferences) ||
-            (resourceReferences==ApplicationResourceReferences && (capacity.mapping.aperture.version!=14 || objectCapacity.version!=9)) ||
+            (resourceReferences==ApplicationResourceReferences && (capacity.mapping.aperture.version!=14 || (objectCapacity.version!=9 && objectCapacity.version!=10))) ||
             (applicationMemory && resourceReferences!=ApplicationResourceReferences) ||
             !validCoordinatedAgreement(capacity,objectCapacity,applicationMemory) || caps.version!=Version || caps.vendor!=0x10de ||
             (caps.flags&required)!=required) throw std::runtime_error("Invalid coordinated native capacity/capabilities");

@@ -58,6 +58,15 @@ The browsing test must establish all of the following:
 
 ## Remaining product acceptance
 
+The next bounded integration passes **1,800 handoffs** with Nautilus, Chromium
+and the terminal visible together, browser close/reopen and live native cleanup.
+A new paired allocation-metadata agreement clears the observed 1,024-record
+boundary without changing byte limits; the workload reaches 1,061 records.
+Complete first/final source-to-SDL pixels pass. Earlier three-app failures and
+the missing optional retirement journal print remain documented. This broadens
+tested application coverage; it does not certify arbitrary GTK applications or
+long daily sessions. [Actual three-app frame and exact limits](APPLICATION-OBJECT-CAPACITY.md).
+
 Browser success is one application workload. Daily-use readiness also requires a
 normal Omarchy account/session and launcher flow, broader application and window
 coverage, longer interactive sessions, suspend/reopen behavior where supported,

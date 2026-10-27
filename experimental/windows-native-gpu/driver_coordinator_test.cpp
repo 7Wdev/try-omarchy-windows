@@ -443,7 +443,60 @@ static void applicationMemoryControls() {
     }
     std::cout<<"APPLICATION_MEMORY_CONTROL explicit112Bytes=true ownerAndControllerRequired=true oldPayloadBudgetsPreserved=true infoLayoutPreserved=true malformedRejectedBeforeNative=true nativeHeadroomFailureBeforeGl=true clientMustMatchAgreement=true sharedPool=true mock=true gpu=false\n";
 }
+static void applicationObjectControls() {
+    const cg::ApplicationMemoryInitialization wanted{{{{GuestApplicationMemoryCapacity,GuestCoordinatedApplicationObjects},8,0},32,0},GuestApplicationMemoryProfile};
+    {
+        NativeMock d;bool refused=false;
+        try { cg::Runtime owner(d,8,32,false,true); }
+        catch(const std::invalid_argument&) { refused=true; }
+        CHECK(refused && !d.glCalls && !d.objectCalls);
+    }
+    {
+        NativeMock d;d.managedGpuMappings=true;cg::Runtime owner(d,8,32,true);Control c{owner};
+        CHECK(at<cg::Frame>(c.control(cg::Operation::Initialize,encoded(wanted))).status==-22);
+        CHECK(!d.applicationMemoryCalls && !d.glCalls && !d.objectCalls && !owner.failed());
+    }
+    for(unsigned mutation=0;mutation<10;++mutation) {
+        NativeMock d;d.managedGpuMappings=true;cg::Runtime owner(d,8,32,true,true);Control c{owner};auto bad=wanted;
+        auto& objects=bad.base.base.base.objects;
+        if(mutation==0) objects.vendorAllocations=2049;
+        if(mutation==1) objects.vendorAllocations=1024;
+        if(mutation==2) objects.version=9;
+        if(mutation==3) objects.leaseLimit=2048;
+        if(mutation==4) objects.hwQueues=128;
+        if(mutation==5) objects.syncObjects=1024;
+        if(mutation==6) bad.base.base.base.capacity.mapping.aperture.cpuByteLimit*=2;
+        if(mutation==7) bad.memory.reportedBytes*=2;
+        auto request=mutation==8 ? encoded(bad.base) : encoded(bad);
+        if(mutation==9) request.push_back(0);
+        CHECK(at<cg::Frame>(c.control(cg::Operation::Initialize,request)).status==-22);
+        CHECK(!d.glCalls && !d.applicationMemoryCalls && !d.objectCalls && !owner.failed());
+        CHECK(!at<cg::Frame>(c.control(cg::Operation::Initialize,encoded(wanted))).status);
+        const auto info=at<cg::Info>(c.control(cg::Operation::Info),32);
+        CHECK(cg::validInfo(info) && info.flags==cg::ApplicationObjectsFlags && info.objects.vendorAllocations==2048);
+        CHECK(info.objects.version==10 && info.objects.hwQueues==64 && info.objects.syncObjects==768 && info.objects.leaseLimit==1536);
+        CHECK(!std::memcmp(&info.capacity,&GuestApplicationMemoryCapacity,sizeof info.capacity));
+        CHECK(cg::matchesApplicationMemoryCapacity(GuestApplicationMemoryCapacity,info));
+        auto forged=info;forged.flags=cg::ApplicationMemoryFlags;CHECK(!cg::validInfo(forged));
+        forged=info;forged.objects=GuestCoordinatedMultiappObjects;CHECK(!cg::validInfo(forged));
+        forged=info;forged.flags=cg::ApplicationActorsFlag|cg::ApplicationObjectsFlag;CHECK(!cg::validInfo(forged));
+        const auto actor=c.reg();CHECK(!at<Header>(c.call(actor,hello()),40).status);
+        CHECK(!at<Header>(c.call(actor,inner(Op::BeginOpenGl,0,encoded(GuestApplicationMemoryCapacity))),40).status);
+        CHECK(d.glCalls==1 && d.objectCalls==1 && d.applicationMemoryCalls==1);
+        CHECK(owner.teardownAfterVmExit(true));
+    }
+    {
+        NativeMock d;d.managedGpuMappings=true;cg::Runtime owner(d,8,32,true,true);Control c{owner};auto old=wanted;
+        old.base.base.base.objects=GuestCoordinatedMultiappObjects;
+        CHECK(!at<cg::Frame>(c.control(cg::Operation::Initialize,encoded(old))).status);
+        const auto info=at<cg::Info>(c.control(cg::Operation::Info),32);
+        CHECK(cg::validInfo(info) && info.flags==cg::ApplicationMemoryFlags && info.objects.vendorAllocations==1024);
+        CHECK(owner.teardownAfterVmExit(true));
+    }
+    std::cout<<"APPLICATION_OBJECT_CONTROL ownerAndControllerRequired=true legacy1024Preserved=true expanded2048=true byteBudgetsUnchanged=true malformedRejectedBeforeNative=true mock=true gpu=false\n";
+}
 int main() {
+    applicationObjectControls();
     applicationMemoryControls();
     applicationReferenceControls();
     applicationActorControls();

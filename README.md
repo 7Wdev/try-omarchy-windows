@@ -7,10 +7,20 @@
 **7Wdev development fork:** [build and upstream sync](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/FORK.md) ·
 [NVIDIA development PR #2](https://github.com/7Wdev/try-omarchy-windows/pull/2).
 The experimental QEMU/WHPX bridge renders the shipped Omarchy wallpaper, bar
-and two readable applications on NVIDIA at **3840×2160**, through QEMU SDL.
+and three readable applications on NVIDIA at **3840×2160**, through QEMU SDL.
 Normal launcher integration and a stable interactive desktop remain in development.
 
-[Daily-use readiness and the next Chromium browsing checks](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/DAILY-USE-READINESS.md).
+[Daily-use readiness and remaining product checks](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/DAILY-USE-READINESS.md).
+
+![Three GPU apps complete 1800 handoffs; backend 4/8; desktop product 0/4](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/windows-nvgpu-lab/docs/images/gpu-backend-progress-three-apps-2026-10-27.svg)
+
+**Three GPU applications — October 27, 2026:** a private integration completes
+**1,800 handoffs** with Nautilus, sandboxed Chromium and the terminal visible
+together. Complete first/final 4K source-to-SDL pixels, browser interactions,
+resize, close/reopen and live cleanup pass. An explicit allocation-metadata
+agreement clears the observed 1,024-record limit; byte budgets stay fixed.
+Ordinary input/latency, longer sessions and normal launcher integration remain
+open. [Actual three-app frame and retained failures](docs/APPLICATION-OBJECT-CAPACITY.md).
 
 **Application-memory checkpoint — October 26, 2026:** an explicit owner/controller
 agreement admits a shared 4 GiB GPU-usage pool after native headroom checks.
@@ -39,8 +49,6 @@ DNS and certificate-verified HTTPS, then completes **1,800 4K GPU handoffs**
 with complete pixels, application relaunch and live cleanup. Chromium's first
 GPU initialization attempt fails and remains unaccepted.
 [Actual networked frame and browsing status](https://github.com/7Wdev/try-omarchy-windows/blob/windows-nvgpu-lab/docs/GUEST-BROWSING-PROGRESS.md).
-
-![4K GPU browser lifecycle fixture passes 1800 handoffs; backend 4/8; desktop product 0/4](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/windows-nvgpu-lab/docs/images/gpu-backend-progress-browser-lifecycle-2026-10-27.svg)
 
 **GPU browser lifecycle — October 27, 2026:** the private integration completes
 **1,800 GPU handoffs**, terminal typing/cursor response, resize/focus checks and

@@ -4,9 +4,19 @@ Updated **2026-10-27**. This page tracks the experimental QEMU/WHPX Windows-nati
 NVIDIA backend. The released Try Omarchy launcher continues using the upstream
 graphics runtime.
 
-![GPU browser lifecycle fixture verified; backend stages 4/8; desktop gates 0/4](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/windows-nvgpu-lab/docs/images/gpu-backend-progress-browser-lifecycle-2026-10-27.svg)
+![Three GPU apps verified; backend stages 4/8; desktop gates 0/4](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/windows-nvgpu-lab/docs/images/gpu-backend-progress-three-apps-2026-10-27.svg)
 
 ## What is verified now?
+
+**Three GPU applications — October 27, 2026:** private run **245** completes
+**1,800 handoffs** with the shipped Nautilus file manager, sandboxed Chromium
+and terminal visible together. GTK uses a realized GL renderer with correlated
+native work. Browser interactions, resize, close/reopen and live cleanup pass;
+complete first/final pixels have maximum error one. A paired owner/controller
+agreement expands allocation metadata to 2,048 records, with 1,061 used and all
+byte budgets unchanged. Earlier allocation refusals and integration failures
+remain retained. Daily-use acceptance stays open; counts remain **4/8, 0/4, 3/3**.
+[Actual three-app frame, agreement and retained failures](APPLICATION-OBJECT-CAPACITY.md).
 
 **Actual browser resizing — October 27, 2026:** private run **239** completes
 **1,800 handoffs**, both browser sessions' window/viewport resize and restore,

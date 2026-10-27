@@ -11,7 +11,7 @@
 using namespace guest_broker;
 using namespace driver_bridge;
 #define CHECK(x) do { if(!(x)) throw std::runtime_error("aperture info control line "+std::to_string(__LINE__)); } while(0)
-static coordinator::Info agreement(bool memory=false) {
+static coordinator::Info agreement(bool memory=false,bool objects=false) {
     coordinator::Info value{};
     value.capacity=GuestOpenGlMultiappCapacity;value.objects=GuestCoordinatedMultiappObjects;
     value.gl=GuestOpenGlMultiappProfile;value.sync=GuestSyncSharingProfile;value.resource=GuestResourceSharingProfile;
@@ -19,9 +19,12 @@ static coordinator::Info agreement(bool memory=false) {
         value.capacity=GuestApplicationMemoryCapacity;value.maxActors=8;value.flags=7;
         value.resource=GuestApplicationResourceSharingProfile;
     }
+    if(objects) {
+        CHECK(memory);value.objects=GuestCoordinatedApplicationObjects;value.flags=coordinator::ApplicationObjectsFlags;
+    }
     value.caps={driver_bridge::Version,0,0x10de,0};CHECK(coordinator::validInfo(value));return value;
 }
-static void scenario(unsigned broken,bool memory=false) {
+static void scenario(unsigned broken,bool memory=false,bool objects=false) {
     char directory[]="/tmp/aperture-info-control-XXXXXX";CHECK(mkdtemp(directory) && !chmod(directory,0755));
     const std::string path=std::string(directory)+"/broker.sock";
     sockaddr_un address{};address.sun_family=AF_UNIX;std::memcpy(address.sun_path,path.c_str(),path.size()+1);
@@ -78,23 +81,27 @@ static void scenario(unsigned broken,bool memory=false) {
             if(broken==3) value.reserved[0]=1;
             reply=encode(value);
         } else if(message.frame.operation==Operation::CoordinatedProfile) {
-            ++profiles;auto value=agreement(memory);
+            ++profiles;auto value=agreement(memory,objects);
             if(broken==4) value.maxActors=3;
             if(broken==5) value.flags^=coordinator::ApplicationMemoryFlag;
             if(broken==6) ++value.capacity.reportedGpuByteLimit;
+            if(broken==7) value.flags^=coordinator::ApplicationObjectsFlag;
+            if(broken==8) value.objects.version=9;
+            if(broken==9) ++value.capacity.mapping.aperture.cpuByteLimit;
             reply=encode(value);
         } else throw std::runtime_error("Unexpected aperture metadata operation");
         peer.send(message.frame.operation,message.frame.sequence,reply);
     }
     int status=0;CHECK(waitpid(child,&status,0)==child && WIFEXITED(status) && WEXITSTATUS(status)==0);
     CHECK(peer.processExited());CHECK(!unlink(path.c_str()) && !rmdir(directory));
-    std::cout<<"APERTURE_INFO_REQUESTS broken="<<broken<<" memory="<<memory<<" layouts="<<layouts<<" capacities="<<capacities<<" profiles="<<profiles<<std::endl;
+    std::cout<<"APERTURE_INFO_REQUESTS broken="<<broken<<" memory="<<memory<<" objects="<<objects<<" layouts="<<layouts<<" capacities="<<capacities<<" profiles="<<profiles<<std::endl;
     if(!broken) CHECK(layouts==7 && capacities==6 && profiles==6);
 }
 int main() {
     if(geteuid()!=0) { std::cerr<<"Requires root only to run real UID65534 IPC controls\n";return 77; }
     try {
         for(const bool memory:{false,true}) for(unsigned broken=0;broken<7;++broken) scenario(broken,memory);
+        for(unsigned broken=0;broken<10;++broken) scenario(broken,true,true);
         std::cout<<"APERTURE_INFO_COALESCING perCallOnly=true freshCounters=true concurrentCalls=true closedChannelRejected=true malformedLayoutsAndAgreementsRejected=true uid=65534 gpu=false kernel=mock\n";
     } catch(const std::exception& error) { std::cerr<<"APERTURE_INFO_CONTROL_FAILURE "<<error.what()<<"\n";return 1; }
 }

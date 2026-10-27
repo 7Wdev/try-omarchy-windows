@@ -101,7 +101,12 @@ public:
             (requestedMemory ? !driver_bridge::validApplicationMemoryCapacity(wanted) : !driver_bridge::validCoordinatedPresentationCapacity(wanted)) ||
             (wide && (!wddm_aperture_valid_desktop_fences(fences) || !fences.enabled || fences.slots!=layout.fence_slots || fences.bytes!=layout.fence_bytes)) ||
             (expanded && (!wddm_aperture_valid_desktop_slots(slots) || !slots.enabled || slots.slots!=layout.allocation_slots || slots.bytes!=layout.allocation_bytes))) reject("Coordinator kernel capacity mismatch");
-#if defined(WDDM_BRIDGE_MULTIAPP_CPU) && WDDM_BRIDGE_MULTIAPP_CPU
+#if defined(WDDM_BRIDGE_APPLICATION_OBJECTS) && WDDM_BRIDGE_APPLICATION_OBJECTS
+#if !defined(WDDM_BRIDGE_APPLICATION_MEMORY) || !WDDM_BRIDGE_APPLICATION_MEMORY
+#error Application allocation metadata requires explicit application memory agreement
+#endif
+        const auto referenceObjects=driver_bridge::GuestCoordinatedApplicationObjects;
+#elif defined(WDDM_BRIDGE_MULTIAPP_CPU) && WDDM_BRIDGE_MULTIAPP_CPU
         const auto referenceObjects=driver_bridge::GuestCoordinatedMultiappObjects;
 #elif defined(WDDM_BRIDGE_FOUR_ACTOR_OBJECTS) && WDDM_BRIDGE_FOUR_ACTOR_OBJECTS
         const auto referenceObjects=driver_bridge::GuestCoordinatedActorObjects;
@@ -154,10 +159,10 @@ public:
         if(objects.version>=6) receipt("BROKER_COORDINATOR_MANAGED_MAPPING_CAPACITY version=%u reservedAddressBytes=68719476736 standaloneMappingBytes=1073741824 residentUsageBytes=%llu cpuBytes=%llu\n",objects.version,static_cast<unsigned long long>(wanted.reportedGpuByteLimit),static_cast<unsigned long long>(caps.cpu_byte_limit));
         if(objects.version>=7) receipt("BROKER_COORDINATOR_DESKTOP_LEASE_CAPACITY version=%u leaseLimit=1536 fenceSlots=512 allocationSlots=1024 physicalMemoryGuardsChanged=%s\n",objects.version,multiapp?"true":"false");
         if(objects.version>=8) receipt("BROKER_COORDINATOR_FOUR_ACTOR_OBJECT_CAPACITY version=%u actors=4 hwQueues=64 syncObjects=768 perActorHwQueues=16 perActorSyncObjects=192 physicalMemoryGuardsChanged=%s\n",objects.version,multiapp?"true":"false");
-        if(multiapp) receipt("BROKER_COORDINATOR_MULTIAPP_CPU_CAPACITY profile=14 objectsVersion=9 flags=7 cpuBytes=402653184 reportedGpuBytes=%llu cpuMappingGuardRaised=true gpuUsageGuardRaised=%s\n",
-            static_cast<unsigned long long>(wanted.reportedGpuByteLimit),requestedMemory ? "true" : "false");
-        if(requestedMemory) receipt("BROKER_COORDINATOR_APPLICATION_MEMORY_CAPACITY version=1 infoFlags=7 reportedGpuBytes=%llu sharedPool=true kernelChanged=false physicalPartition=false\n",
-            static_cast<unsigned long long>(wanted.reportedGpuByteLimit));
+        if(multiapp) receipt("BROKER_COORDINATOR_MULTIAPP_CPU_CAPACITY profile=14 objectsVersion=%u flags=%u cpuBytes=402653184 reportedGpuBytes=%llu cpuMappingGuardRaised=true gpuUsageGuardRaised=%s\n",
+            objects.version,agreement.flags,static_cast<unsigned long long>(wanted.reportedGpuByteLimit),requestedMemory ? "true" : "false");
+        if(requestedMemory) receipt("BROKER_COORDINATOR_APPLICATION_MEMORY_CAPACITY version=1 infoFlags=%u reportedGpuBytes=%llu sharedPool=true kernelChanged=false physicalPartition=false\n",
+            agreement.flags,static_cast<unsigned long long>(wanted.reportedGpuByteLimit));
     }
     cg::Info info() const { return agreement; }
     void beginLiveRetirement() {
