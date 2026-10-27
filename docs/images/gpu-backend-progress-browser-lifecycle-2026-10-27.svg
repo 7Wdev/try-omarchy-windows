@@ -11,9 +11,9 @@
     <g fill="#bac7d9" font-size="15">
       <text x="24" y="126">Shipped wallpaper</text><text x="366" y="126">Omarchy bar</text><text x="708" y="126">Readable GPU applications</text>
     </g>
-    <text x="24" y="162" fill="#eef4fc" font-size="16">Latest: 1,800 GPU handoffs; floating browser, wallpaper and terminal input verified</text>
-    <text x="24" y="189" fill="#e0aa49" font-size="16">Ordinary browsing, long sessions, pressure recovery and daily-use acceptance remain open</text>
-    <text x="24" y="216" fill="#e0aa49" font-size="15">Next: browser scrolling/typing/tabs, additional applications and longer sessions</text>
+    <text x="24" y="162" fill="#eef4fc" font-size="16">Latest: 1,800 GPU handoffs; browser wheel/text/tabs pass through owned CDP</text>
+    <text x="24" y="189" fill="#e0aa49" font-size="16">Physical input, long sessions, pressure recovery and daily-use acceptance remain open</text>
+    <text x="24" y="216" fill="#e0aa49" font-size="15">Next: official browser input, resize, additional applications and longer sessions</text>
     <text x="24" y="256" fill="#eef4fc" font-size="19">Backend verification · 4/8 stages demonstrated</text>
     <g transform="translate(24 272)">
       <rect width="116" height="20" rx="4" fill="#51c38b"/><rect x="128" width="116" height="20" rx="4" fill="#51c38b"/>

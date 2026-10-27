@@ -53,6 +53,11 @@ pressure recovery and daily-use acceptance remain open. Counts stay unchanged.
 [Actual final frame, retained failures and exact remaining work](docs/GPU-BROWSER-LIFECYCLE.md).
 The floating-layout follow-up also passes all **1,800 handoffs** and displays
 the shipped wallpaper alongside readable Chromium and terminal windows.
+The next **1,800-handoff** trial passes controlled browser wheel scrolling,
+text insertion and tab open/close in both sessions through owned CDP pipes,
+while preserving the GPU process, shader and compositing. Official browser
+input/latency and daily use remain unaccepted.
+[Actual browser interaction frame and precise scope](docs/GPU-BROWSER-INTERACTIONS.md).
 
 **Native GPU health — October 25, 2026:** the published-runtime build completes
 **5,786 real device-health queries and 1,800 GPU handoffs**, including application

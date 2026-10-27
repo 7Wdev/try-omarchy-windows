@@ -8,6 +8,17 @@ graphics runtime.
 
 ## What is verified now?
 
+**Controlled browser interactions — October 27, 2026:** private run **237**
+completes **1,800 handoffs**, terminal input/resize/focus, browser close/reopen,
+complete first/final pixels and live cleanup. In both browser sessions, owned
+CDP wheel events scroll the real page down 500 pixels and back, text insertion
+returns the expected input value, and a temporary tab opens/closes. The GPU
+process, compositing and original NVIDIA shader survive. These checks do not
+certify official browser input or physical latency. A journal diagnostic
+collision remains retained; the audit uses intact owned-file controller copies.
+Counts stay **4/8, 0/4, 3/3**.
+[Actual final frame, exact evidence and remaining work](GPU-BROWSER-INTERACTIONS.md).
+
 **GPU browser lifecycle — October 27, 2026:** private run 234 completes all
 **1,800 handoffs**, terminal typing and cursor response, three terminal sizes,
 four focus checkpoints, browser close/reopen and live cleanup before natural

@@ -33,6 +33,12 @@ checks. The fixture waits for browser readiness before starting the existing
 scrolling/typing/tabs, browser resize, continuous browsing and longer sessions
 remain unaccepted. [Actual final frame and exact limits](GPU-BROWSER-LIFECYCLE.md).
 
+A further 1,800-handoff private trial passes controlled browser wheel, text and
+tab checks in both sessions through owned CDP pipes, with the GPU process,
+compositing and shader preserved. Complete final pixels and live cleanup pass.
+These direct browser checks do not certify ordinary SDL/OS browser input or
+physical latency. [Actual interaction frame and precise limits](GPU-BROWSER-INTERACTIONS.md).
+
 The browsing test must establish all of the following:
 
 - A normal Wayland Chromium window with its sandbox retained and no software
