@@ -28,6 +28,7 @@ var (
 	lwinKey        = routedKey{qcode: "meta_l"} // hook-thread only
 	rwinKey        = routedKey{qcode: "meta_r"} // hook-thread only
 	printKey       = routedKey{qcode: "print"}  // hook-thread only
+	superG         superGForwarder              // hook-thread only
 	altTab         altTabForwarder              // hook-thread only
 	ctrlAltEndSent bool                         // hook-thread only
 	hookChaining   bool                         // hook-thread only
@@ -128,6 +129,14 @@ func hookCallback(nCode, wParam, lParam uintptr) uintptr {
 		// ends a forwarded Alt+Tab, wherever focus is by then.
 		if isAltVK(vk) && (wParam == wmKeyup || wParam == wmSyskeyup) {
 			sendKeys(altTab.altReleased())
+			released := "" // VK_MENU: either Alt
+			switch vk {
+			case vkLMenu:
+				released = "alt"
+			case 0xA5:
+				released = "alt_r"
+			}
+			sendKeys(superG.altReleased(released))
 		}
 		if ctrlAltEndSent && (wParam == wmKeyup || wParam == wmSyskeyup) && isCtrlOrAltVK(vk) {
 			ctrlAltEndSent = false
@@ -160,6 +169,28 @@ func hookCallback(nCode, wParam, lParam uintptr) uintptr {
 		if vk == vkG {
 			pid := qemuPid.Load()
 			held, _, _ := procGetAsyncKeyState.Call(vkG) // state before this change
+			ctrl, _, _ := procGetAsyncKeyState.Call(vkControl)
+			shift, _, _ := procGetAsyncKeyState.Call(0x10) // VK_SHIFT
+			leftAlt, _, _ := procGetAsyncKeyState.Call(vkLMenu)
+			rightAlt, _, _ := procGetAsyncKeyState.Call(0xA5)
+			heldAlt := ""
+			if leftAlt&0x8000 != 0 {
+				heldAlt = "alt"
+			} else if rightAlt&0x8000 != 0 {
+				heldAlt = "alt_r"
+			}
+			keys, swallow := superG.route(
+				pid != 0 && foregroundPid() == pid,
+				lwinKey.side == keySideGuest || rwinKey.side == keySideGuest,
+				heldAlt,
+				(ctrl|shift)&0x8000 != 0,
+				held&0x8000 != 0,
+				wParam == wmKeydown || wParam == wmSyskeydown,
+			)
+			sendKeys(keys)
+			if swallow {
+				return 1
+			}
 			control, _, _ := procGetAsyncKeyState.Call(vkLControl)
 			alt, _, _ := procGetAsyncKeyState.Call(vkLMenu)
 			if isCursorReleaseChord(wParam == wmKeydown || wParam == wmSyskeydown, held&0x8000 != 0, control&0x8000 != 0, alt&0x8000 != 0, pid != 0 && foregroundPid() == pid) {

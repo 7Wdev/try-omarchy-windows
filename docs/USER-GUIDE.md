@@ -37,6 +37,7 @@ Already have WINQ-EMU at `C:\WINQ-EMU`, or stock QEMU from the old bootstrap? Th
 ## Essential keys
 
 - **Windows key** acts as Super, but only while the Try Omarchy window is focused. Everywhere else it stays your normal Windows key, so the Start menu and Win+Shift+S keep working.
+- **Win+G** and **Win+Alt+G** reach Omarchy's window grouping, but Windows' Xbox Game Bar reacts to them too and no app can stop it. If the Game Bar overlay opens, press Esc to get the keyboard back.
 - **Ctrl+Alt+F** fullscreens the VM window itself on your Windows desktop (SUPER+F, below, is the in-Omarchy one).
 - **Ctrl+Alt+G** grabs or releases raw keyboard input. If the host steals a shortcut you meant for Omarchy, grab first. Same trick if you're driving the VM over VNC or RDP and focus gets weird.
 - **Alt+Tab** switches windows inside Omarchy while its window is focused. Use **Ctrl+Alt+Tab** for the Windows task switcher, or click another Windows window. If you would rather Alt+Tab always go to Windows, turn off **Send Alt+Tab to Omarchy** in Settings > General. The change applies right away.
