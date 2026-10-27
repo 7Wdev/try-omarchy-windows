@@ -96,7 +96,8 @@ desktop product gates (0/4) are checklists, not percentages of engineering effor
 A new default-off guest build option samples mapped-memory diagnostics twice
 instead of 10,000 times. Strict shims, transport fault tests and real Linux IPC
 mapping controls pass while retaining the original retirement/MMIO checks.
-This reduces diagnostic work by construction; a live GPU trial and performance
+The paired display-free clear/readback check now passes its scoped broker, GPU
+retirement, pixels and cleanup audit. Desktop integration and performance
 measurement are still required. [Implementation and verification scope](DIRECT-READ-DIAGNOSTICS.md).
 
 The full goal still includes broader OpenGL/Vulkan/CUDA/video support, DLSS,

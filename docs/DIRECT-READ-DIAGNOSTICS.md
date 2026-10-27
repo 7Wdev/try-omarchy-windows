@@ -3,8 +3,10 @@
 An explicit guest build option, `WDDM_BRIDGE_SAMPLED_DIRECT_READS=1`, reduces each
 mapped-fence or allocation-end diagnostic from 10,000 volatile reads to two.
 The default and explicit value `0` retain 10,000 reads. Unknown selections are
-compile errors. This is a candidate for reducing diagnostic overhead; it has
-not received a live GPU/desktop trial or established a performance gain.
+compile errors. A paired live GPU clear/readback trial now verifies both
+selections through the broker, with independently retired native work and live
+cleanup. Desktop performance and the new selection's desktop integration remain
+unverified. [Background GPU evidence and retained oracle limits](BACKGROUND-GPU-CHECKS.md).
 
 The saved run-249 trace contains 6,192 delivered diagnostic records describing
 61,920,000 volatile reads: 3,990 paging-retirement checks, 1,421 allocation maps
@@ -39,7 +41,8 @@ desktop windows and starts no VM. The remaining CPU-only controls also run as an
 ordinary user; the UID-transition test then reports a skip. CI runs all controls.
 
 Strict builds cover default, sampled default, 4K, sampled 4K and sampled
-application-object configurations. A hardware trial must still establish correct
-4K application rendering, real GPU retirement and cleanup with the new selection.
+application-object configurations. The small clear/readback trial verifies real
+GPU retirement and cleanup with the new selection. A desktop trial must still
+establish correct 4K application rendering and behavior with that selection.
 Matched-native performance, input latency and daily-use readiness remain open;
 the backend/product counts stay at **4/8** and **0/4**.

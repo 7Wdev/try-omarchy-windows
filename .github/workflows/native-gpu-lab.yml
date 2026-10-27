@@ -170,6 +170,7 @@ jobs:
           cc -std=c11 -O2 -Wall -Wextra -Werror experimental/windows-native-gpu/guest_trace_line_test.c -o /tmp/guest-trace-line-test
           python3 experimental/windows-native-gpu/test_interactive_frame_probe.py -v
           sudo python3 experimental/windows-native-gpu/test_guest_direct_read_probe.py -v
+          python3 experimental/windows-native-gpu/test_broker_runtime_evidence.py -v
           /tmp/guest-trace-line-test
           c++ -std=c++17 -O2 -Wall -Wextra -Werror experimental/windows-native-gpu/guest_primary_identity_test.cpp -o /tmp/guest-primary-identity-test
           sudo install -o root -g root -m 0755 /tmp/guest-primary-identity-test /tmp/guest-primary-identity-owned-test
