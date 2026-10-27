@@ -46,10 +46,13 @@ continuing to reject stale values and the device-loss sentinel. Raw logs are
 unchanged. The initial metadata's profile/geometry mix-up is retained separately;
 the corrected receipt explicitly identifies the 130×73 surface.
 
-The initialization helper now recognizes a complete single-client broker route
-as well as the older direct route. Missing, duplicate, reordered, privileged,
+The explicit `broker_runtime_qemu.py` adapter recognizes a complete single-client
+broker route as well as the older direct route. The historical runtime harness
+remains byte-identical to its recorded source, preserving the earlier milestone
+replays. The adapter verifies that source digest and changes the initialization
+predicate in a separate module instance. Missing, duplicate, reordered, privileged,
 leaking, failed or mixed-route witnesses are rejected. Existing device/queue
-result and owned-cleanup requirements remain. Four new broker evidence tests
+result and owned-cleanup requirements remain. Five broker evidence tests
 and all 23 existing runtime milestone tests pass. This helper update does not
 turn the original whole-run reports into passing desktop evidence.
 

@@ -1,8 +1,15 @@
 """Retain direct-port evidence while rejecting incomplete/mixed broker routes."""
 import copy
+import hashlib
+from pathlib import Path
+import subprocess
+import sys
 import unittest
+from unittest import mock
 from broker_runtime_evidence import broker_runtime_complete, runtime_transport_complete
-from test_owned_runtime_qemu import initialization_complete
+from broker_runtime_evidence import broker_aware_initialization_complete as initialization_complete
+from broker_runtime_qemu import LEGACY_SHA256, load_harness
+import test_owned_runtime_qemu as legacy
 
 # Project-owned receipt rows from the actual display-free run 3.
 BROKER = '''KERNEL_APERTURE_START loaded=true contracts=true rawSysfsFallback=false
@@ -29,6 +36,25 @@ CLEANUP = dict(driverCleanupVerified=True)
 
 
 class BrokerRuntimeEvidence(unittest.TestCase):
+    def test_adapter_preserves_legacy_source_and_module_behavior(self):
+        path = Path(legacy.__file__)
+        self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), LEGACY_SHA256)
+        original = legacy.initialization_complete
+        adapter = load_harness()
+        self.assertIs(legacy.initialization_complete, original)
+        self.assertIsNot(adapter, legacy)
+        self.assertFalse(legacy.initialization_complete(INITIALIZATION + BROKER, 0, CONTROL, CLEANUP))
+        self.assertTrue(adapter.initialization_complete(INITIALIZATION + BROKER, 0, CONTROL, CLEANUP))
+        changed = path.read_bytes() + b'\nraise AssertionError("drift was executed")\n'
+        with mock.patch('broker_runtime_qemu.Path.read_bytes', return_value=changed) as read:
+            with self.assertRaises(ValueError): load_harness(path)
+            read.assert_called_once()
+        result = subprocess.run([sys.executable, str(path.with_name('broker_runtime_qemu.py')), '--help'],
+                                capture_output=True, text=True, timeout=15,
+                                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('--runtime-workload', result.stdout)
+
     def test_real_broker_receipts_and_legacy_direct_transport(self):
         self.assertTrue(broker_runtime_complete(BROKER))
         self.assertTrue(initialization_complete(INITIALIZATION + BROKER, 0, CONTROL, CLEANUP))

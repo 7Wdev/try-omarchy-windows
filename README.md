@@ -22,6 +22,13 @@ agreement clears the observed 1,024-record limit; byte budgets stay fixed.
 Ordinary input/latency, longer sessions and normal launcher integration remain
 open. [Actual three-app frame and retained failures](docs/APPLICATION-OBJECT-CAPACITY.md).
 
+**Background shader validation — October 27, 2026:** paired original/sampled
+guest shims render two real **3840×2160 NVIDIA shader frames** each, with complete
+independent pixel checks, native GPU handoff and live cleanup. No window or input
+route is requested. The sampled diagnostics produce identical images with fewer
+reads; performance and desktop acceptance remain open.
+[Actual 4K shader image and precise scope](docs/BACKGROUND-4K-SHADERS.md).
+
 **Application-memory checkpoint — October 26, 2026:** an explicit owner/controller
 agreement admits a shared 4 GiB GPU-usage pool after native headroom checks.
 The public-source 4K desktop passes **1,800 handoffs**, full pixels, input response,

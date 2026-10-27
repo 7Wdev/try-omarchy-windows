@@ -46,3 +46,17 @@ def runtime_transport_complete(log):
     if 'transport=authenticated-broker' in log:
         return broker_runtime_complete(log)
     return 'transport=virtio-port' in log
+
+
+def broker_aware_initialization_complete(log, owner_exit, control, cleanup):
+    """Explicit broker-aware predicate; the digest-pinned legacy harness stays intact."""
+    return (owner_exit == 0 and all(marker in log for marker in (
+        'factory=00000000', 'list=00000000', 'nvidia vendor=4318',
+        'nvidiaUmdPresentDuringPrivateQuery=true', 'LINUX_RUNTIME_NVIDIA_UMD_STILL_LOADED=true',
+        'realDxgForwarding=false')) and runtime_transport_complete(log) and
+        all(re.findall(r'^' + re.escape(prefix) + r'=([0-9a-f]{8})[ \t\r]*$', log, re.MULTILINE) == ['00000000']
+            for prefix in ('device', 'copyQueue')) and
+        re.findall(r'^BRIDGE_RUNTIME_EXIT=(\d+)[ \t\r]*$', log, re.MULTILINE) == ['0'] and
+        control.get('ownedQemuExited') is True and control.get('qemuExit') == 0 and
+        control.get('qemuForcedStop') is False and control.get('fenceControlFailed') is False and
+        cleanup.get('driverCleanupVerified') is True)

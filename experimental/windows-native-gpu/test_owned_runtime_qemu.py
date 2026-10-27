@@ -17,7 +17,6 @@ from triangle_evidence import triangle_workload_complete
 from shared_resource_evidence import shared_resource_import_complete
 from shared_texture_evidence import shared_texture_consume_complete
 from native_metadata_evidence import native_texture_runtime_bytes
-from broker_runtime_evidence import runtime_transport_complete
 
 
 def sha256(path):
@@ -30,7 +29,7 @@ def initialization_complete(log, owner_exit, control, cleanup):
     return (owner_exit == 0 and all(marker in log for marker in (
         'factory=00000000', 'list=00000000', 'nvidia vendor=4318',
         'nvidiaUmdPresentDuringPrivateQuery=true', 'LINUX_RUNTIME_NVIDIA_UMD_STILL_LOADED=true',
-        'realDxgForwarding=false')) and runtime_transport_complete(log) and
+        'transport=virtio-port', 'realDxgForwarding=false')) and
         all(re.findall(r'^' + re.escape(prefix) + r'=([0-9a-f]{8})[ \t\r]*$', log, re.MULTILINE) == ['00000000']
             for prefix in ('device', 'copyQueue')) and
         re.findall(r'^BRIDGE_RUNTIME_EXIT=(\d+)[ \t\r]*$', log, re.MULTILINE) == ['0'] and

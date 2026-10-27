@@ -18,6 +18,15 @@ byte budgets unchanged. Earlier allocation refusals and integration failures
 remain retained. Daily-use acceptance stays open; counts remain **4/8, 0/4, 3/3**.
 [Actual three-app frame, agreement and retained failures](APPLICATION-OBJECT-CAPACITY.md).
 
+**Background 4K shader pair — October 27, 2026:** original and sampled-read
+guest shims each render two actual 3840×2160 NVIDIA shader frames with complete
+pixel checks, native shared-texture handoff and live cleanup. Corresponding
+captures are byte-identical; every pixel passes the existing integer oracle,
+with maximum channel error one. Presentation and input are disabled for these
+background runs. Diagnostic counts fall from 4,470,000 to 894 reads; performance
+and daily-use acceptance remain open. Counts stay **4/8, 0/4, 3/3**.
+[Actual shader frame, source guards and scope](BACKGROUND-4K-SHADERS.md).
+
 **Actual browser resizing — October 27, 2026:** private run **239** completes
 **1,800 handoffs**, both browser sessions' window/viewport resize and restore,
 controlled CDP interactions, reopen and live cleanup. GPU processes, compositing

@@ -4,7 +4,8 @@ import hashlib,json,re,sys,subprocess,shutil
 assert len(sys.argv)==4, 'Usage: background_clear_pair_audit.py LAB_DIRECTORY REPOSITORY_DIRECTORY NEW_OUTPUT_JSON'
 lab=Path(sys.argv[1]).resolve();repo=Path(sys.argv[2]).resolve();output=Path(sys.argv[3])
 sys.path.insert(0,str(repo/'experimental/windows-native-gpu'))
-from test_owned_runtime_qemu import initialization_complete,async_submissions_complete,clear_workload_complete
+from test_owned_runtime_qemu import async_submissions_complete,clear_workload_complete
+from broker_runtime_evidence import broker_aware_initialization_complete as initialization_complete
 sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
 build=lab/'background-gpu-clear-v2'
 receipt=json.loads((build/'corrected-build-receipt-v1.json').read_bytes())

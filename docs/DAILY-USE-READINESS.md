@@ -100,6 +100,11 @@ The paired display-free clear/readback check now passes its scoped broker, GPU
 retirement, pixels and cleanup audit. Desktop integration and performance
 measurement are still required. [Implementation and verification scope](DIRECT-READ-DIAGNOSTICS.md).
 
+The next background pair verifies two actual 4K shader frames per selection,
+typed native GPU handoff, complete pixels and live cleanup, with identical images
+across the original and sampled shims. [Actual 4K shader image](BACKGROUND-4K-SHADERS.md).
+This adds GPU coverage while preserving the open desktop/product gates.
+
 The full goal still includes broader OpenGL/Vulkan/CUDA/video support, DLSS,
 hardware ray tracing and at least 93% matched-native performance. These are not
 certified by the current desktop or browser fixtures.

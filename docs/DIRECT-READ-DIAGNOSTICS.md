@@ -42,7 +42,10 @@ ordinary user; the UID-transition test then reports a skip. CI runs all controls
 
 Strict builds cover default, sampled default, 4K, sampled 4K and sampled
 application-object configurations. The small clear/readback trial verifies real
-GPU retirement and cleanup with the new selection. A desktop trial must still
-establish correct 4K application rendering and behavior with that selection.
+GPU retirement and cleanup with the new selection. A later paired test also
+verifies two actual 4K shader frames, native GPU handoff and all pixels with
+byte-identical captures across the selections. [Actual shader image and scope](BACKGROUND-4K-SHADERS.md).
+A desktop trial must still establish correct application/session behavior with
+that selection.
 Matched-native performance, input latency and daily-use readiness remain open;
 the backend/product counts stay at **4/8** and **0/4**.
