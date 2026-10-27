@@ -8,6 +8,17 @@ graphics runtime.
 
 ## What is verified now?
 
+**Actual browser resizing — October 27, 2026:** private run **239** completes
+**1,800 handoffs**, both browser sessions' window/viewport resize and restore,
+controlled CDP interactions, reopen and live cleanup. GPU processes, compositing
+and original shaders survive all four changes. Complete first/final pixels pass
+within the existing tolerance of two. Atomic owned interaction/resize proofs
+avoid reliance on journal-write contiguity. Separate Windows input trial 238
+remains rejected after the host UI tool cannot observe the window; no input was
+sent. Official browser input, longer sessions, broader apps and product acceptance
+remain open. Counts stay **4/8, 0/4, 3/3**.
+[Actual post-resize frame, retained input trial and scope](GPU-BROWSER-RESIZE.md).
+
 **Controlled browser interactions — October 27, 2026:** private run **237**
 completes **1,800 handoffs**, terminal input/resize/focus, browser close/reopen,
 complete first/final pixels and live cleanup. In both browser sessions, owned

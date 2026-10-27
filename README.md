@@ -58,6 +58,10 @@ text insertion and tab open/close in both sessions through owned CDP pipes,
 while preserving the GPU process, shader and compositing. Official browser
 input/latency and daily use remain unaccepted.
 [Actual browser interaction frame and precise scope](docs/GPU-BROWSER-INTERACTIONS.md).
+The resize follow-up passes **1,800 handoffs** and both sessions' actual window
+and viewport resize/restore checks with the NVIDIA shader preserved. Ordinary
+Windows/SDL browser input remains unaccepted after a retained UI-observation
+failure. [Actual post-resize frame and exact evidence](docs/GPU-BROWSER-RESIZE.md).
 
 **Native GPU health — October 25, 2026:** the published-runtime build completes
 **5,786 real device-health queries and 1,800 GPU handoffs**, including application

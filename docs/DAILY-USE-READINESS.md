@@ -30,14 +30,21 @@ response, terminal resize, focus checkpoints and browser close/reopen with live
 GPU retirement. Both browser sessions retain the shader/compositing/sandbox
 checks. The fixture waits for browser readiness before starting the existing
 30-second terminal input timer; official input code is unchanged. Browser
-scrolling/typing/tabs, browser resize, continuous browsing and longer sessions
-remain unaccepted. [Actual final frame and exact limits](GPU-BROWSER-LIFECYCLE.md).
+keyboard/wheel routing, continuous browsing and longer sessions remain unaccepted.
+[Actual final frame and exact limits](GPU-BROWSER-LIFECYCLE.md).
 
 A further 1,800-handoff private trial passes controlled browser wheel, text and
 tab checks in both sessions through owned CDP pipes, with the GPU process,
 compositing and shader preserved. Complete final pixels and live cleanup pass.
 These direct browser checks do not certify ordinary SDL/OS browser input or
 physical latency. [Actual interaction frame and precise limits](GPU-BROWSER-INTERACTIONS.md).
+
+The resize follow-up passes both sessions' actual compositor geometry and browser
+viewport changes, with the original GPU process, compositing and shader retained,
+then completes 1,800 handoffs with full pixels and live cleanup. A separate Windows
+input trial cannot inspect the host window, sends no input, and remains rejected.
+Ordinary Windows/SDL browser input and latency still need evidence.
+[Actual post-resize frame and retained failure](GPU-BROWSER-RESIZE.md).
 
 The browsing test must establish all of the following:
 
