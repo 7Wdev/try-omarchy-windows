@@ -46,6 +46,13 @@ input trial cannot inspect the host window, sends no input, and remains rejected
 Ordinary Windows/SDL browser input and latency still need evidence.
 [Actual post-resize frame and retained failure](GPU-BROWSER-RESIZE.md).
 
+A later interactive fixture now keeps GPU handoffs flowing during the input
+check, clearing an observed hold at frame 1,799. The owned browser has focus,
+but keyboard delivery still fails; run 249 preserves that rejection and verifies
+its actual final-frame drain and live cleanup. Background queue controls and
+strict controller compilation now run without opening a VM or desktop window.
+[Continuous-display evidence and remaining input failure](CONTINUOUS-INPUT-PROGRESS.md).
+
 The browsing test must establish all of the following:
 
 - A normal Wayland Chromium window with its sandbox retained and no software

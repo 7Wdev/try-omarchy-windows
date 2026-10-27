@@ -119,6 +119,7 @@ experimental/windows-native-gpu/virtio-trace-probe/** text eol=lf
 experimental/windows-native-gpu/sustained-frame-probe/** text eol=lf
 experimental/windows-native-gpu/pressure-frame-probe/** text eol=lf
 experimental/windows-native-gpu/multiwindow-frame-probe/** text eol=lf
+experimental/windows-native-gpu/interactive-frame-probe/** text eol=lf
 experimental/windows-native-gpu/aperture_admission_audit.py text eol=lf
 experimental/windows-native-gpu/verify_multiwindow_attempt.py text eol=lf
 experimental/windows-native-gpu/verify_four_actor_legacy_desktop.py text eol=lf
