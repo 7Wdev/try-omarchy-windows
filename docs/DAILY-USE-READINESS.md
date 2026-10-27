@@ -93,6 +93,12 @@ the required input path. Physical input latency, physical scanout cadence and
 matched-native performance must be measured. Backend stage counts (4/8) and
 desktop product gates (0/4) are checklists, not percentages of engineering effort.
 
+A new default-off guest build option samples mapped-memory diagnostics twice
+instead of 10,000 times. Strict shims, transport fault tests and real Linux IPC
+mapping controls pass while retaining the original retirement/MMIO checks.
+This reduces diagnostic work by construction; a live GPU trial and performance
+measurement are still required. [Implementation and verification scope](DIRECT-READ-DIAGNOSTICS.md).
+
 The full goal still includes broader OpenGL/Vulkan/CUDA/video support, DLSS,
 hardware ray tracing and at least 93% matched-native performance. These are not
 certified by the current desktop or browser fixtures.

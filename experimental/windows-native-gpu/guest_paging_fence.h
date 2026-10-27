@@ -3,6 +3,7 @@
 #pragma once
 #include "driver_wire.h"
 #include "guest_kernel_aperture.h"
+#include "guest_direct_read_probe.h"
 #include <dirent.h>
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -100,8 +101,7 @@ public:
         auto fence = reinterpret_cast<volatile std::uint64_t*>(static_cast<char*>(page) + (offset & 4095));
         // This is a diagnostic, not a polling API. Prove these reads bypass
         // the QEMU MMIO emulation before exposing the CPU fence to the UMD.
-        std::uint64_t observed = 0;
-        for (unsigned n = 0; n < 10000; ++n) observed = *fence;
+        const auto observed = guest_direct_read::fenceProbe([&]() { return *fence; });
         try {
             if (word(0x48) != before) throw std::runtime_error("Guest fence reads were emulated");
             mappings.emplace(queue, Mapping{page, fence});
@@ -109,9 +109,9 @@ public:
             if (kernel.enabled()) kernel.unmap(page, 4096); else munmap(page, 4096);
             throw;
         }
-        reads += 10000; ++created;
-        std::fprintf(stderr, "LINUX_BRIDGE %sFenceMapped=true direct=true loads=10000 offset=%llu value=%llu\n",
-                     category, static_cast<unsigned long long>(offset), static_cast<unsigned long long>(observed));
+        reads += guest_direct_read::ProbeLoads; ++created;
+        std::fprintf(stderr, "LINUX_BRIDGE %sFenceMapped=true direct=true loads=%u offset=%llu value=%llu\n",
+                     category, guest_direct_read::ProbeLoads, static_cast<unsigned long long>(offset), static_cast<unsigned long long>(observed));
         return const_cast<std::uint64_t*>(fence);
     }
     void verifyRetired(std::uint32_t queue, std::uint64_t target, const char* operation) {
@@ -119,12 +119,11 @@ public:
         if (found == mappings.end()) throw std::runtime_error("Mapped guest paging fence absent");
         const auto before = word(0x48);
         std::atomic_thread_fence(std::memory_order_seq_cst);
-        std::uint64_t observed = 0;
-        for (unsigned n = 0; n < 10000; ++n) observed = *found->second.fence;
-        if (observed == UINT64_MAX || observed < target || word(0x48) != before) throw std::runtime_error("Guest fence did not directly observe paging retirement");
-        reads += 10000;
-        std::fprintf(stderr, "LINUX_BRIDGE pagingFenceRetired=true direct=true loads=10000 target=%llu observed=%llu operation=%s\n",
-                     static_cast<unsigned long long>(target), static_cast<unsigned long long>(observed), operation);
+        const auto observed = guest_direct_read::fenceProbe([&]() { return *found->second.fence; });
+        if (!guest_direct_read::retired(observed,target) || word(0x48) != before) throw std::runtime_error("Guest fence did not directly observe paging retirement");
+        reads += guest_direct_read::ProbeLoads;
+        std::fprintf(stderr, "LINUX_BRIDGE pagingFenceRetired=true direct=true loads=%u target=%llu observed=%llu operation=%s\n",
+                     guest_direct_read::ProbeLoads, static_cast<unsigned long long>(target), static_cast<unsigned long long>(observed), operation);
     }
     bool waitRetired(std::uint32_t object, std::uint64_t target, const char* owner) {
         const auto found = mappings.find(object);

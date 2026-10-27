@@ -3,6 +3,7 @@
 #pragma once
 #include "driver_wire.h"
 #include "guest_kernel_aperture.h"
+#include "guest_direct_read_probe.h"
 #include <dirent.h>
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -124,7 +125,7 @@ public:
         if (data == MAP_FAILED) throw std::runtime_error("Allocation CPU view failed");
         const auto first = static_cast<volatile const std::uint64_t*>(data);
         const auto last = reinterpret_cast<volatile const std::uint64_t*>(static_cast<const char*>(data) + reply.bytes - 8);
-        for (unsigned n = 0; n < 10000; ++n) { const auto observed = *(n % 2 ? last : first); (void)observed; }
+        guest_direct_read::allocationEndsProbe([&](unsigned end) { return *(end ? last : first); });
         try {
             if (word(0x4c) != beforeRead || word(0x50) != beforeWrite) throw std::runtime_error("Allocation CPU reads were emulated");
             mappings.emplace(allocation, Mapping{data, reply.bytes, 1, offset, reply.generation});
@@ -132,9 +133,9 @@ public:
             if (kernel.enabled()) kernel.unmap(data, reply.bytes); else munmap(data, reply.bytes);
             throw;
         }
-        loads += 10000; ++created;
-        std::fprintf(stderr, "LINUX_BRIDGE allocationCpuMapped=true direct=true loads=10000 bytes=%u offset=%llu generation=%llu\n",
-                     reply.bytes, static_cast<unsigned long long>(offset), static_cast<unsigned long long>(reply.generation));
+        loads += guest_direct_read::ProbeLoads; ++created;
+        std::fprintf(stderr, "LINUX_BRIDGE allocationCpuMapped=true direct=true loads=%u bytes=%u offset=%llu generation=%llu\n",
+                     guest_direct_read::ProbeLoads, reply.bytes, static_cast<unsigned long long>(offset), static_cast<unsigned long long>(reply.generation));
         return data;
     }
     // False means another process-local reference still owns the same view.
