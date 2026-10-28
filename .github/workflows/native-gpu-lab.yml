@@ -173,6 +173,10 @@ jobs:
           python3 experimental/windows-native-gpu/test_broker_runtime_evidence.py -v
           python3 experimental/windows-native-gpu/test_background_shader_evidence.py -v
           python3 experimental/windows-native-gpu/test_async_cpu_wait_evidence.py -v
+          python3 experimental/windows-native-gpu/test_vulkan_memory_fd_evidence.py -v
+          python3 experimental/windows-native-gpu/mesa/test_dozen_memory_fd_evidence.py -v
+          c++ -std=c++17 -O2 -Wall -Wextra -Werror experimental/windows-native-gpu/shared_buffer_profile_test.cpp -o /tmp/shared-buffer-profile-test
+          /tmp/shared-buffer-profile-test
           /tmp/guest-trace-line-test
           c++ -std=c++17 -O2 -Wall -Wextra -Werror experimental/windows-native-gpu/guest_primary_identity_test.cpp -o /tmp/guest-primary-identity-test
           sudo install -o root -g root -m 0755 /tmp/guest-primary-identity-test /tmp/guest-primary-identity-owned-test
@@ -337,6 +341,19 @@ jobs:
           python3 experimental/windows-native-gpu/mesa/apply_mesa_native_images.py /tmp/mesa-26.0.8
           python3 experimental/windows-native-gpu/mesa/apply_mesa_native_render.py /tmp/mesa-26.0.8
           python3 experimental/windows-native-gpu/mesa/apply_mesa_native_render.py /tmp/mesa-26.0.8
+      - name: Verify original and patched Dozen memory FD contracts; CPU only
+        run: |
+          if python3 experimental/windows-native-gpu/mesa/test_dozen_memory_fd.py --source /tmp/mesa-26.0.8 --vulkan-include /tmp/mesa-26.0.8/include --output "$RUNNER_TEMP/dozen-fd-original"; then
+            echo 'Original FD bug was not reproduced'
+            exit 1
+          else
+            test "$?" -eq 1
+          fi
+          python3 experimental/windows-native-gpu/mesa/apply_mesa_dozen_memory_fd.py /tmp/mesa-26.0.8
+          python3 experimental/windows-native-gpu/mesa/apply_mesa_dozen_memory_fd.py /tmp/mesa-26.0.8
+          python3 experimental/windows-native-gpu/mesa/test_dozen_memory_fd.py --source /tmp/mesa-26.0.8 --vulkan-include /tmp/mesa-26.0.8/include --output "$RUNNER_TEMP/dozen-fd-patched"
+          python3 experimental/windows-native-gpu/mesa/verify_dozen_memory_fd_contract.py --baseline "$RUNNER_TEMP/dozen-fd-original" --patched "$RUNNER_TEMP/dozen-fd-patched"
+          c++ -std=c++17 -Wall -Wextra -Werror -I /tmp/mesa-26.0.8/include -c experimental/windows-native-gpu/vulkan_memory_fd_probe.cpp -o /tmp/vulkan-memory-fd-probe.o
       - name: Validate Vulkan compute shaders and compile their probes; no GPU workload
         run: |
           sudo apt-get update

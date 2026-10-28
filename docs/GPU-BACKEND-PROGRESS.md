@@ -1,12 +1,21 @@
 # NVIDIA backend progress
 
-Updated **2026-10-27**. This page tracks the experimental QEMU/WHPX Windows-native
+Updated **2026-10-28**. This page tracks the experimental QEMU/WHPX Windows-native
 NVIDIA backend. The released Try Omarchy launcher continues using the upstream
 graphics runtime.
 
 ![Three GPU apps verified; backend stages 4/8; desktop gates 0/4](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/windows-nvgpu-lab/docs/images/gpu-backend-progress-three-apps-2026-10-27.svg)
 
 ## What is verified now?
+
+**Vulkan buffer/FD ownership — October 28, 2026:** two fresh guests each pass
+32 unique close-on-exec exports from a 64 KiB GPU-only buffer, including FD
+lifetime after the creator's memory is freed. Separate native buffer admission
+and Linux Dozen ownership fixes preserve the original failure controls. Both
+complete 4K compute rounds still pass, with byte guards unchanged and native
+resources/mappings retired before VM exit. Guest FD import/data contents,
+Vulkan rasterization/windows and daily-use acceptance remain open. Counts stay
+**4/8, 0/4, 3/3**. [Exact matrix and source checks](VULKAN-MEMORY-FDS.md).
 
 **4K Vulkan compute — October 28, 2026:** two fresh guests each pass two shader
 rounds with every one of 8,294,400 output words verified. A GPU corruption

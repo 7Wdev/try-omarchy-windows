@@ -274,10 +274,29 @@ class KmtDriver : public Driver {
     unsigned exportedResourceHandles = 0, closedResourceHandles = 0, importedResourceFdObjects = 0;
     unsigned completedVendorResources = 0, destroyedVendorResources = 0;
     unsigned sharedResourceProbes = 0, importedSharedResources = 0, failedSharedResourceProbes = 0;
-    void probeSharedResource(std::uint32_t resource, std::uint32_t runtimeBytes) {
-        ++sharedResourceProbes;
+    unsigned sharedBufferProbes = 0, importedSharedBuffers = 0, failedSharedBufferProbes = 0;
+    bool probeSharedResource(std::uint32_t resource, std::uint32_t runtimeBytes) {
         const auto result = driver_shared::probe(resource, luid);
         const auto& d = result.description;
+        if (d.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER) {
+            ++sharedBufferProbes;
+            const bool success = result.shareStatus == 0 && result.deviceResult == S_OK && result.importResult == S_OK &&
+                result.handleClosed && result.importedReleased && driver_shared::validBufferDescription(d);
+            if (success) ++importedSharedBuffers; else ++failedSharedBufferProbes;
+            if (result.shareStatus == 0 && !result.handleClosed) ++cleanupFailures;
+            std::cerr << "{\"nativeSharedBufferImportProbe\":true,\"verified\":" << (success ? "true" : "false")
+                      << ",\"ntstatus\":" << result.shareStatus << ",\"deviceHresult\":" << result.deviceResult
+                      << ",\"importHresult\":" << result.importResult << ",\"runtimeBytes\":" << runtimeBytes
+                      << ",\"dimension\":" << d.Dimension << ",\"alignment\":" << d.Alignment << ",\"width\":" << d.Width
+                      << ",\"height\":" << d.Height << ",\"layers\":" << d.DepthOrArraySize << ",\"levels\":" << d.MipLevels
+                      << ",\"format\":" << d.Format << ",\"samples\":" << d.SampleDesc.Count << ",\"quality\":" << d.SampleDesc.Quality
+                      << ",\"layout\":" << d.Layout << ",\"flags\":" << d.Flags
+                      << ",\"sharedNtHandleClosed\":" << (result.handleClosed ? "true" : "false")
+                      << ",\"importedResourceReleased\":" << (result.importedReleased ? "true" : "false")
+                      << ",\"gpuCopy\":false,\"presented\":false}\n";
+            return success;
+        }
+        ++sharedResourceProbes;
         const bool success = result.shareStatus == 0 && result.deviceResult == S_OK && result.importResult == S_OK &&
             result.handleClosed && result.importedReleased && d.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
             d.Width && d.Width <= 4096 && d.Height && d.Height <= 4096 && d.DepthOrArraySize == 1 && d.MipLevels == 1 &&
@@ -295,6 +314,7 @@ class KmtDriver : public Driver {
                   << ",\"sharedNtHandleClosed\":" << (result.handleClosed ? "true" : "false")
                   << ",\"importedResourceReleased\":" << (result.importedReleased ? "true" : "false")
                   << ",\"gpuCopy\":false,\"presented\":false}\n";
+        return false;
     }
     unsigned completedVendorDriverProtectionMaps = 0;
     ComPtr<IDXGIAdapter3> allocationBudgetAdapter;
@@ -1430,6 +1450,10 @@ public:
             a.pPrivateRuntimeData = data.data() + desc.privateBytes; a.PrivateRuntimeDataSize = runtimeBytes;
         }
         std::vector<std::uint8_t> nativeRuntime;
+        // Keep the guest runtime bytes for a future FD import, independently
+        // of the native allocation and of any Windows texture metadata.
+        std::vector<std::uint8_t> guestRuntime;
+        if (runtimeBytes) guestRuntime.assign(data.begin() + desc.privateBytes, data.end());
         if (texture) {
             if (!runtimeBytes || !nativeMetadataEnabled || (interop ? !validNativeInteropTexture(*texture) : !validNativeTexture(*texture))) return {Invalid, 0, 0};
             nativeRuntime = driver_metadata::generate(luid, *texture,interop);
@@ -1453,7 +1477,7 @@ public:
         try {
             VendorAllocation owned{}; owned.device = device; owned.address = info.GpuVirtualAddress; owned.resource = a.hResource;
             vendorAllocations.emplace(info.hAllocation, owned);
-            if (texture) resourceGuestRuntime.emplace(a.hResource, std::vector<std::uint8_t>(data.begin() + desc.privateBytes, data.end()));
+            if (runtimeBytes) resourceGuestRuntime.emplace(a.hResource, std::move(guestRuntime));
         }
         catch (...) {
             vendorAllocations.erase(info.hAllocation);
@@ -1472,7 +1496,10 @@ public:
         ++completedVendorAllocations;
         if (withResource) {
             ++completedVendorResources;
-            if (runtimeBytes) { sharedResourceIds.insert(a.hResource); probeSharedResource(a.hResource, a.PrivateRuntimeDataSize); }
+            if (runtimeBytes) {
+                const bool buffer = probeSharedResource(a.hResource, a.PrivateRuntimeDataSize);
+                if (texture || buffer) sharedResourceIds.insert(a.hResource);
+            }
             std::cerr << "{\"nativeVendorResourceCreated\":true,\"allocationCount\":1,\"shared\":" << (runtimeBytes ? "true" : "false")
                       << ",\"systemMemory\":false,\"ntstatus\":" << status << "}\n";
         }
@@ -2599,6 +2626,9 @@ public:
                   << ",\"sharedResourceProbes\":" << sharedResourceProbes
                   << ",\"importedSharedResources\":" << importedSharedResources
                   << ",\"failedSharedResourceProbes\":" << failedSharedResourceProbes
+                  << ",\"sharedBufferProbes\":" << sharedBufferProbes
+                  << ",\"importedSharedBuffers\":" << importedSharedBuffers
+                  << ",\"failedSharedBufferProbes\":" << failedSharedBufferProbes
                   << ",\"completedContextPriorityChanges\":" << completedContextPriorities
                   << ",\"failedContextPriorityChanges\":" << failedContextPriorities
                   << ",\"liveHwQueues\":" << hwQueues.size() << ",\"completedHwQueues\":" << completedHwQueues

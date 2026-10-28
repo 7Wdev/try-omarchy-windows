@@ -1,7 +1,16 @@
 // SPDX-License-Identifier: MIT
 // A bounded import probe. It never copies, presents, or retains a GPU resource.
 #pragma once
+#include "shared_buffer_profile.h"
 namespace driver_shared {
+inline bool validBufferDescription(const D3D12_RESOURCE_DESC& d) {
+    static_assert(D3D12_RESOURCE_DIMENSION_BUFFER == 1 && DXGI_FORMAT_UNKNOWN == 0 &&
+        D3D12_TEXTURE_LAYOUT_ROW_MAJOR == 1 && D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS == 4,
+        "Native buffer description constants changed");
+    return validBufferDescription(BufferDescription{static_cast<std::uint32_t>(d.Dimension), d.Alignment, d.Width,
+        d.Height, d.DepthOrArraySize, d.MipLevels, static_cast<std::uint32_t>(d.Format),
+        d.SampleDesc.Count, d.SampleDesc.Quality, static_cast<std::uint32_t>(d.Layout), static_cast<std::uint32_t>(d.Flags)});
+}
 struct ProbeResult {
     NTSTATUS shareStatus = static_cast<NTSTATUS>(0xc0000001u);
     HRESULT deviceResult = E_FAIL, importResult = E_FAIL;
