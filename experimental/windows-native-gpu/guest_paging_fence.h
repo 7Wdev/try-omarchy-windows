@@ -165,6 +165,11 @@ public:
         return const_cast<const std::uint64_t*>(found->second.fence);
     }
     bool contains(std::uint32_t queue) const { return mappings.count(queue) != 0; }
+    wddm_fence_eventfd_point eventPoint(std::uint32_t object, std::uint64_t target) const {
+        return kernel.eventPoint(mappedWord(object), target);
+    }
+    bool eventStatsAvailable() const { return kernel.eventStatsAvailable(); }
+    wddm_fence_eventfd_stats eventStats() const { return kernel.eventStats(); }
     std::uint64_t directLoads() const { return reads; }
 };
 } // namespace guest_paging

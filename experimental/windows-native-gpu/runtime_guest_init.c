@@ -243,7 +243,25 @@ static int kernel_aperture_stop(void) {
     for(unsigned n=0;native_buffers && !buffer_result && buffers.held && n<2000;++n) {
         usleep(1000); buffers.version=1; buffer_result=ioctl(fd,WDDM_NATIVE_BUFFER_STATS,&buffers);
     }
+    struct wddm_fence_eventfd_stats events={.version=WDDM_APERTURE_VERSION};
+    int event_result=fd<0 ? -1 : ioctl(fd,WDDM_FENCE_EVENTFD_STATS,&events);
+    int event_error=errno;
+    for(unsigned n=0;!event_result && (events.held || events.pending) && n<2000;++n) {
+        usleep(1000); events=(struct wddm_fence_eventfd_stats){.version=WDDM_APERTURE_VERSION};
+        event_result=ioctl(fd,WDDM_FENCE_EVENTFD_STATS,&events); event_error=errno;
+    }
     if (fd >= 0) close(fd);
+    if(!event_result) {
+        if(events.held || events.pending || events.created!=events.released ||
+           events.notified+events.errors!=events.created) {
+            puts("KERNEL_EVENTFD_EXIT cleanup=false"); return -1;
+        }
+        printf("KERNEL_EVENTFD_EXIT held=0 pending=0 created=%llu notified=%llu errors=%llu released=%llu cleanup=true\n",
+            (unsigned long long)events.created,(unsigned long long)events.notified,
+            (unsigned long long)events.errors,(unsigned long long)events.released);
+    } else if(event_error!=ENOTTY && event_error!=EOPNOTSUPP) {
+        puts("KERNEL_EVENTFD_EXIT cleanup=false"); return -1;
+    }
     if(native_buffers) {
         if(buffer_result || buffers.held || buffers.bytes || buffers.created!=buffers.released) {
             puts("KERNEL_NATIVE_BUFFER_EXIT cleanup=false"); return -1;

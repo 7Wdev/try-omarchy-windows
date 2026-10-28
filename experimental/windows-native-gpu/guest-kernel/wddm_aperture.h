@@ -190,4 +190,27 @@ struct wddm_native_buffer_caps {
 	__u32 version, flags, reserved[2];
 };
 #define WDDM_NATIVE_BUFFER_CAPS _IOWR('W', 0x4f, struct wddm_native_buffer_caps)
+
+/* Asynchronous CPU notification through restricted fence-lease capabilities.
+ * event_fd is captured by the kernel; FD reuse cannot redirect a notification.
+ * No Windows handle, controller FD or writable GPU fence is exposed. */
+#define WDDM_FENCE_EVENTFD_MAX_POINTS 64U
+#define WDDM_FENCE_EVENTFD_MAX_WAITS 64U
+#define WDDM_FENCE_EVENTFD_WAIT_ANY 1U
+struct wddm_fence_eventfd_point {
+	__s32 lease_fd;
+	__u32 reserved;
+	__u64 offset, value;
+};
+struct wddm_fence_eventfd_wait {
+	__u32 version, flags, count;
+	__s32 event_fd;
+	__u64 points, reserved[2];
+};
+struct wddm_fence_eventfd_stats {
+	__u32 version, held, pending, reserved;
+	__u64 created, notified, errors, released;
+};
+#define WDDM_FENCE_EVENTFD_WAIT _IOW('W', 0x50, struct wddm_fence_eventfd_wait)
+#define WDDM_FENCE_EVENTFD_STATS _IOWR('W', 0x51, struct wddm_fence_eventfd_stats)
 #endif

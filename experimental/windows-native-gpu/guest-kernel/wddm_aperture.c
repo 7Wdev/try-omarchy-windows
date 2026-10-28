@@ -149,10 +149,12 @@ static int lease_release(struct inode *inode, struct file *file)
 	kfree(lease);
 	return 0;
 }
+static long lease_ioctl(struct file *file, unsigned int command, unsigned long argument);
 static const struct file_operations lease_fops = {
-	.owner = THIS_MODULE, .mmap = lease_mmap, .release = lease_release,
+	.owner = THIS_MODULE, .mmap = lease_mmap, .release = lease_release, .unlocked_ioctl = lease_ioctl,
 };
 #include "wddm_sync_file.h"
+#include "wddm_fence_eventfd.h"
 
 /* Caller holds aperture_lock. Zap every recipient before freeing its range:
  * another creator must not reuse an offset while stale PTEs still exist.
@@ -303,6 +305,11 @@ static long control_ioctl(struct file *control, unsigned int request, unsigned l
 	if (request == WDDM_SYNC_FILE_NATIVE_CREATE) return native_sync_create(control, pointer, true);
 	if (request == WDDM_SYNC_FILE_NATIVE_RESOLVE) return native_sync_resolve(((struct aperture_owner *)control->private_data)->id, pointer);
 	if (request == WDDM_SYNC_FILE_STATS) return native_sync_stats(pointer);
+	if (request == WDDM_FENCE_EVENTFD_STATS) {
+		if (!capable(CAP_SYS_RAWIO)) return -EPERM;
+		if (!enable_native_sync_files) return -EOPNOTSUPP;
+		return native_event_stats(pointer);
+	}
 	if (request == WDDM_NATIVE_BUFFER_CREATE) return native_buffer_create(((struct aperture_owner *)control->private_data)->id, pointer);
 	if (request == WDDM_NATIVE_BUFFER_INFO) return native_buffer_info(((struct aperture_owner *)control->private_data)->id, pointer);
 	if (request == WDDM_NATIVE_BUFFER_STATS) return native_buffer_stats(pointer);
@@ -457,6 +464,7 @@ static void __exit aperture_exit(void)
 	misc_deregister(&aperture_device);
 	pci_unregister_driver(&aperture_driver);
 	destroy_workqueue(native_sync_wq);
+	native_event_exit_summary();
 }
 module_init(aperture_init);
 module_exit(aperture_exit);

@@ -14,6 +14,13 @@ Normal launcher integration and a stable interactive desktop remain in developme
 
 ![Three GPU apps complete 1800 handoffs; backend 4/8; desktop product 0/4](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/windows-nvgpu-lab/docs/images/gpu-backend-progress-three-apps-2026-10-27.svg)
 
+**Background synchronization — October 28, 2026:** six real GPU wait controls
+pass with all 69 notifications released. Original Dozen reaches Vulkan device
+creation and idle. A process-exit control still retains native mappings until
+VM shutdown; Vulkan shaders, GPU-backed Vulkan windows and daily-use stability
+remain open. [Wait tests and retained recovery failure](docs/BACKGROUND-ASYNC-GPU-WAITS.md) ·
+[Vulkan bring-up scope](docs/VULKAN-DEVICE-BRINGUP.md). Counts stay **4/8, 0/4, 3/3**.
+
 **Three GPU applications — October 27, 2026:** a private integration completes
 **1,800 handoffs** with Nautilus, sandboxed Chromium and the terminal visible
 together. Complete first/final 4K source-to-SDL pixels, browser interactions,

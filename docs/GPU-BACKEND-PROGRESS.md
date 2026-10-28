@@ -8,6 +8,16 @@ graphics runtime.
 
 ## What is verified now?
 
+**GPU waits and Vulkan initialization — October 28, 2026:** six background GPU
+wait controls pass, including ANY/ALL, descriptor reuse and capacity; all 69
+notifications retire normally. A separate process-exit control cancels its
+kernel wait but retains native mappings until VM exit, so live crash recovery
+remains unverified. Original Dozen also reaches Vulkan device creation and idle
+with the same opt-in bridge; Vulkan shaders and GPU-backed window presentation
+remain open. Counts stay **4/8, 0/4, 3/3**.
+[Wait controls and retained recovery failure](BACKGROUND-ASYNC-GPU-WAITS.md) ·
+[Vulkan baseline/candidate comparison](VULKAN-DEVICE-BRINGUP.md).
+
 **Three GPU applications — October 27, 2026:** private run **245** completes
 **1,800 handoffs** with the shipped Nautilus file manager, sandboxed Chromium
 and terminal visible together. GTK uses a realized GL renderer with correlated

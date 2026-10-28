@@ -90,6 +90,37 @@ static void native_sync_poll(struct work_struct *work)
 	dma_fence_signal(&sync->fence);
 	dma_fence_put(&sync->fence); /* Retained polling reference. */
 }
+/* Prepare an owned read-only monitored-fence view without publishing work.
+ * Callers can roll back an entire multi-fence registration. The returned
+ * initial reference owns the mapping and is released with dma_fence_put(). */
+static struct native_sync *native_sync_prepare(struct file *source, u64 offset, u64 value)
+{
+	struct aperture_lease *lease = source->private_data;
+	struct native_sync *sync;
+	int result = 0;
+	if ((offset & 7) || value == U64_MAX) return ERR_PTR(-EINVAL);
+	sync = kzalloc(sizeof(*sync), GFP_KERNEL);
+	if (!sync) return ERR_PTR(-ENOMEM);
+	mutex_lock(&aperture_lock);
+	if (!lease->valid || !fence_hub.pci || !cpu_hub.pci) result = -ENODEV;
+	else if (lease->kind != WDDM_APERTURE_FENCE || lease->writable ||
+		 offset >= lease->bytes || sizeof(u64) > lease->bytes - offset) result = -EINVAL;
+	else if (native_sync_held >= WDDM_SYNC_MAX) result = -ENOSPC;
+	else {
+		sync->word = ioremap(lease->physical + offset, sizeof(u64));
+		if (!sync->word) result = -ENOMEM;
+		else { sync->source = get_file(source); ++native_sync_held; }
+	}
+	mutex_unlock(&aperture_lock);
+	if (result) { kfree(sync); return ERR_PTR(result); }
+	__module_get(THIS_MODULE);
+	spin_lock_init(&sync->lock);
+	sync->target = value;
+	INIT_WORK(&sync->free, native_sync_free);
+	INIT_DELAYED_WORK(&sync->poll, native_sync_poll);
+	dma_fence_init(&sync->fence, &native_sync_ops, &sync->lock, dma_fence_context_alloc(1), 1);
+	return sync;
+}
 static long native_sync_create(struct file *control, void __user *pointer, bool linked)
 {
 	struct wddm_sync_file_create arg;

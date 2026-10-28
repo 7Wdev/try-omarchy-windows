@@ -14,6 +14,9 @@
 #include <string>
 #include <link.h>
 #include "triangle_workload.h"
+#ifdef WDDM_BRIDGE_TEST_ASYNC_CPU_WAITS
+#include "async_cpu_wait_workload.h"
+#endif
 #ifdef WDDM_BRIDGE_TEST_GPU_TIMELINE
 #include "guest_gpu_timeline.h"
 #endif
@@ -235,6 +238,9 @@ int main() {
         D3D12_COMMAND_QUEUE_DESC q{}; q.Type=D3D12_COMMAND_LIST_TYPE_COPY;
         ComPtr<ID3D12CommandQueue> queue; hr=device->CreateCommandQueue(&q,IID_PPV_ARGS(&queue));
         std::printf("copyQueue=%08x\n",static_cast<unsigned>(hr)); if (FAILED(hr)) return 1;
+#ifdef WDDM_BRIDGE_TEST_ASYNC_CPU_WAITS
+        return async_wait_test::run(device.Get(), queue.Get());
+#endif
 #ifdef WDDM_BRIDGE_TEST_GPU_TIMELINE
         if (const auto result = guest_gpu_timeline::run(device.Get(), queue.Get())) return result;
 #endif

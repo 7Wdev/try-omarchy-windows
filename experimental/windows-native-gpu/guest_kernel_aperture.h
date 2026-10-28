@@ -3,6 +3,7 @@
 #pragma once
 #include "guest-kernel/wddm_aperture.h"
 #include "guest_broker_client.h"
+#include "guest_async_cpu_wait.h"
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
@@ -19,7 +20,7 @@
 namespace guest_kernel {
 class Aperture {
     int control = -1;
-    struct View { std::uint64_t cookie; std::size_t bytes; };
+    struct View { std::uint64_t cookie; std::size_t bytes; guest_broker::Fd notification; };
     std::map<void*, View> views;
     static void failed(const char* operation) {
         throw std::runtime_error(std::string("Kernel aperture ") + operation + ": " + std::strerror(errno));
@@ -137,12 +138,22 @@ public:
             if (syscall(SYS_ioctl, control, WDDM_APERTURE_CREATE, &arg)) failed("create");
         }
         if (!arg.cookie || arg.fd < 0) throw std::runtime_error("Kernel aperture lease response mismatch");
+        guest_broker::Fd notification;
+        if (guest_async::Enabled && kind == WDDM_APERTURE_FENCE) {
+            const int copy = static_cast<int>(syscall(SYS_fcntl, arg.fd, F_DUPFD_CLOEXEC, 3));
+            if (copy < 0) {
+                const int error = errno;
+                if (!guest_broker::clientEnabled()) syscall(SYS_close, arg.fd);
+                revoke(arg.cookie); errno = error; failed("retain fence capability");
+            }
+            notification = guest_broker::Fd(copy);
+        }
         auto data = mmap(nullptr, bytes, PROT_READ | (arg.flags ? PROT_WRITE : 0), MAP_SHARED, arg.fd, 0);
         const auto saved = errno;
         if (!guest_broker::clientEnabled()) syscall(SYS_close, arg.fd);
         if (data == MAP_FAILED) { revoke(arg.cookie); errno = saved; failed("mmap"); }
         try {
-            if (!views.emplace(data, View{arg.cookie, bytes}).second)
+            if (!views.emplace(data, View{arg.cookie, bytes, std::move(notification)}).second)
                 throw std::runtime_error("Overlapping kernel aperture virtual mappings");
         } catch (...) { munmap(data, bytes); revoke(arg.cookie); throw; }
         std::fprintf(stderr, "LINUX_BRIDGE kernelApertureLease=true kind=%u bytes=%zu cookie=%llu\n", kind, bytes,
@@ -189,6 +200,38 @@ public:
         if (syscall(SYS_ioctl,control,WDDM_SYNC_FILE_STATS,&value))
             throw std::system_error(errno,std::generic_category(),"Native sync-file stats");
         return value;
+    }
+    wddm_fence_eventfd_point eventPoint(const void* word, std::uint64_t target) const {
+        const auto address = reinterpret_cast<std::uintptr_t>(word);
+        if (!guest_async::Enabled || !enabled())
+            throw std::system_error(EOPNOTSUPP, std::generic_category());
+        if (!address || address % 8 || target == UINT64_MAX)
+            throw std::system_error(EINVAL, std::generic_category());
+        for (const auto& entry : views) {
+            const auto start = reinterpret_cast<std::uintptr_t>(entry.first);
+            if (address < start || address - start >= entry.second.bytes ||
+                entry.second.bytes - (address - start) < 8) continue;
+            if (entry.second.notification.get() < 0)
+                throw std::system_error(EBADF, std::generic_category(), "Not a retained fence capability");
+            return {entry.second.notification.get(), 0, address - start, target};
+        }
+        throw std::system_error(EBADF, std::generic_category(), "Fence word has no owned lease");
+    }
+    bool eventStatsAvailable() const {
+        for (const auto& entry : views) if (entry.second.notification.get() >= 0) return true;
+        return false;
+    }
+    wddm_fence_eventfd_stats eventStats() const {
+        for (const auto& entry : views) if (entry.second.notification.get() >= 0) {
+            wddm_fence_eventfd_stats info{}; info.version = WDDM_APERTURE_VERSION;
+            if (syscall(SYS_ioctl, entry.second.notification.get(), WDDM_FENCE_EVENTFD_STATS, &info))
+                throw std::system_error(errno, std::generic_category(), "GPU eventfd statistics");
+            if (info.version != WDDM_APERTURE_VERSION || info.reserved ||
+                info.held > WDDM_FENCE_EVENTFD_MAX_WAITS || info.pending > WDDM_FENCE_EVENTFD_MAX_WAITS)
+                throw std::system_error(EPROTO, std::generic_category());
+            return info;
+        }
+        throw std::system_error(EBADF, std::generic_category(), "No fence capability for statistics");
     }
 };
 static_assert(sizeof(wddm_aperture_info) == 72 && sizeof(wddm_aperture_create) == 64 &&

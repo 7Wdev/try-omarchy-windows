@@ -1463,6 +1463,39 @@ public:
                 std::fprintf(stderr, "LINUX_BRIDGE cpuFenceWaitInput count=%u flags=%u asyncEvent=%u ownedDevice=%u hasObjects=%u hasValues=%u\n",
                     a.ObjectCount, a.Flags.Value, a.hAsyncEvent ? 1u : 0u, deviceAdapters.count(a.hDevice) ? 1u : 0u,
                     a.ObjectHandleArray ? 1u : 0u, a.FenceValueArray ? 1u : 0u);
+                if (guest_async::Enabled && a.hAsyncEvent) {
+                    if (!a.ObjectCount || a.ObjectCount > WDDM_FENCE_EVENTFD_MAX_POINTS ||
+                        (a.Flags.Value & ~WDDM_FENCE_EVENTFD_WAIT_ANY) ||
+                        !a.ObjectHandleArray || !a.FenceValueArray) throw Error(EINVAL);
+                    if (!deviceAdapters.count(a.hDevice)) throw Error(EBADF);
+                    try {
+                        std::vector<wddm_fence_eventfd_point> points;
+                        points.reserve(a.ObjectCount);
+                        for (unsigned index = 0; index < a.ObjectCount; ++index) {
+                            const auto id = a.ObjectHandleArray[index];
+                            const auto target = a.FenceValueArray[index];
+                            if (target == UINT64_MAX) throw Error(EINVAL);
+                            const auto borrowed = borrowedFences.find(id);
+                            guest_paging::Fences* source = nullptr;
+                            std::uint32_t owner = id;
+                            if (borrowed != borrowedFences.end()) {
+                                if (borrowed->second.device != a.hDevice) throw Error(EBADF);
+                                owner = borrowed->second.owner;
+                                source = borrowed->second.hardware ? &hwQueueFences : &pagingFences;
+                            } else {
+                                const auto sync = syncObjects.find(id);
+                                if (sync == syncObjects.end() || sync->second.device != a.hDevice ||
+                                    sync->second.type != 5) throw Error(EBADF);
+                                source = &syncFences;
+                            }
+                            points.push_back(source->eventPoint(owner, target));
+                        }
+                        guest_async::submit(points, reinterpret_cast<std::uintptr_t>(a.hAsyncEvent), a.Flags.Value);
+                    } catch (const std::system_error& error) { throw Error(error.code().value()); }
+                    std::fprintf(stderr, "LINUX_BRIDGE asyncCpuFenceWaitRegistered=true count=%u any=%u kernelEventfd=true\n",
+                        a.ObjectCount, a.Flags.Value ? 1u : 0u);
+                    return 0;
+                }
                 if (a.hAsyncEvent || a.ObjectCount != 1 || a.Flags.Value) throw Error(ENOSYS);
                 if (!a.ObjectHandleArray || !a.FenceValueArray || a.FenceValueArray[0] == UINT64_MAX) throw Error(EINVAL);
                 const auto id = a.ObjectHandleArray[0]; const auto target = a.FenceValueArray[0];
@@ -1866,6 +1899,12 @@ public:
         return syncFences.mappedWord(source->second);
     }
     wddm_sync_file_stats syncFileInfo() { return syncFences.syncFileInfo(); }
+    wddm_fence_eventfd_stats asyncCpuWaitInfo() {
+        if (!guest_async::Enabled) throw Error(EOPNOTSUPP);
+        for (const auto fences : {&syncFences, &hwQueueFences, &pagingFences})
+            if (fences->eventStatsAvailable()) return fences->eventStats();
+        throw Error(EBADF);
+    }
 };
 // The process owns the bridge until the kernel destroys its address space.
 // Stop forwarding under the same mutex used by every hook, but preserve state
@@ -1926,6 +1965,17 @@ extern "C" int wddm_bridge_export_sync_file(const void* word,std::uint64_t value
     try { return state.exportSyncFile(word,value); }
     catch (const std::system_error& error) { errno=error.code().value(); }
     catch (...) { errno=EIO; }
+    return -1;
+}
+extern "C" int wddm_bridge_async_cpu_wait_info(wddm_fence_eventfd_stats* info) {
+    if (!info) { errno = EINVAL; return -1; }
+    if (bridgeStopped) { errno = ESHUTDOWN; return -1; }
+    auto& state = bridge(); std::lock_guard<std::mutex> lock(state.guard);
+    if (bridgeStopped) { errno = ESHUTDOWN; return -1; }
+    try { *info = state.asyncCpuWaitInfo(); return 0; }
+    catch (const Error& error) { errno = error.number; }
+    catch (const std::system_error& error) { errno = error.code().value(); }
+    catch (...) { errno = EIO; }
     return -1;
 }
 extern "C" const void* wddm_bridge_native_fence_word(int fd) {

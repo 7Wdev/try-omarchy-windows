@@ -51,6 +51,7 @@ static void bus_signal(int signal_number)
 #include "native_sync_contract.h"
 #include "native_sync_lineage_contract.h"
 #include "native_buffer_contract.h"
+#include "eventfd_wait_contract.h"
 static void transfer_and_revoke_lease(int control)
 {
     int sockets[2], status;
@@ -286,6 +287,7 @@ int main(void)
     native_sync_contract(control);
     native_sync_lineage_contract(control);
     native_buffer_contract(control);
+    eventfd_wait_contract(control);
     transfer_and_revoke_lease(control);
     /* Controller close revokes a recipient FD even when that FD stays open. */
     arg=fence(); REQUIRE(!ioctl(control,WDDM_APERTURE_CREATE,&arg));
