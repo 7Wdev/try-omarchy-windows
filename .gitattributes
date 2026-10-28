@@ -134,11 +134,21 @@ experimental/windows-native-gpu/vulkan_compute_workload.h text eol=lf
 experimental/windows-native-gpu/vulkan_compute.comp text eol=lf
 experimental/windows-native-gpu/vulkan_memory_fd_probe.cpp text eol=lf
 experimental/windows-native-gpu/vulkan_memory_fd_workload.h text eol=lf
+experimental/windows-native-gpu/vulkan_memory_roundtrip_probe.cpp text eol=lf
+experimental/windows-native-gpu/vulkan_memory_roundtrip_workload.h text eol=lf
+experimental/windows-native-gpu/imported_gpuva_profile_test.cpp text eol=lf
+experimental/windows-native-gpu/guest_eventfd_handle.h text eol=lf
+experimental/windows-native-gpu/guest_eventfd_handle_test.cpp text eol=lf
+experimental/windows-native-gpu/guest_eventfd_preload_test.cpp text eol=lf
+experimental/windows-native-gpu/native_buffer_preparation.h text eol=lf
+experimental/windows-native-gpu/native_buffer_preparation_test.cpp text eol=lf
 experimental/windows-native-gpu/shared_buffer_profile.h text eol=lf
 experimental/windows-native-gpu/shared_buffer_profile_test.cpp text eol=lf
 experimental/windows-native-gpu/shared_resource_probe.h text eol=lf
 experimental/windows-native-gpu/mesa/dozen_memory_fd_contract.cpp text eol=lf
 experimental/windows-native-gpu/mesa/dozen-memory-fd-patch.json text eol=lf
+experimental/windows-native-gpu/mesa/dozen-memory-fd-import-patch.json text eol=lf
+experimental/windows-native-gpu/mesa/dozen_memory_fd_import_contract.cpp text eol=lf
 experimental/windows-native-gpu/guest-kernel/*.h text eol=lf
 experimental/windows-native-gpu/guest-kernel/*.c text eol=lf
 experimental/windows-native-gpu/guest_allocation_memory.h text eol=lf
@@ -162,3 +172,15 @@ experimental/windows-native-gpu/snapshot-nvidia-wsl-runtime.ps1 text eol=lf
 guest-build/*.patch text eol=lf whitespace=-blank-at-eol,-blank-at-eof
 scripts/gpu/blender/*.sh text eol=lf
 scripts/gpu/blender/*.patch text eol=lf whitespace=-blank-at-eol,-blank-at-eof
+
+experimental/windows-native-gpu/native_buffer_metadata.h text eol=lf
+experimental/windows-native-gpu/mesa/dzn_wddm_native_gpu_buffer.h text eol=lf
+experimental/windows-native-gpu/mesa/dozen_native_gpu_buffer_contract.cpp text eol=lf
+experimental/windows-native-gpu/mesa/test_dozen_native_gpu_buffer.py text eol=lf
+experimental/windows-native-gpu/mesa/0007-linux-dozen-native-gpu-buffers.patch text eol=lf
+experimental/windows-native-gpu/mesa/apply_mesa_dozen_native_gpu_buffer.py text eol=lf
+experimental/windows-native-gpu/mesa/dozen-native-gpu-buffer-patch.json text eol=lf
+
+experimental/windows-native-gpu/vulkan_typed_buffer_evidence.py text eol=lf
+experimental/windows-native-gpu/test_vulkan_typed_buffer_evidence.py text eol=lf
+experimental/windows-native-gpu/verify_vulkan_typed_buffers.py text eol=lf

@@ -14,11 +14,19 @@ Normal launcher integration and a stable interactive desktop remain in developme
 
 ![Three GPU apps complete 1800 handoffs; backend 4/8; desktop product 0/4](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/windows-nvgpu-lab/docs/images/gpu-backend-progress-three-apps-2026-10-27.svg)
 
+**Vulkan GPU data sharing — October 28, 2026:** four fresh guests pass both
+complete 64 KiB GPU export/free/import/readback rounds with typed Windows buffer
+metadata, including FD zero and FD-exhaustion recovery. The GPU corruption control
+is rejected, and both original 4K workloads pass. Earlier ownership, import,
+wait-hang and broker-profile failures remain retained. Daily use stays open;
+counts remain **4/8, 0/4, 3/3**.
+[Exact GPU data scope and retained failures](docs/VULKAN-GPU-BUFFER-ROUNDTRIP.md).
+
 **Vulkan buffer sharing — October 28, 2026:** two fresh guests each pass 32
 distinct FD exports and descriptor lifetime after the creator's memory is freed.
 Native buffer admission and Linux Dozen FD ownership fixes retain their failure
-controls; both 4K compute rounds still pass. GPU data import, Vulkan windows and
-daily-use stability remain open; counts stay **4/8, 0/4, 3/3**.
+controls; both 4K compute rounds still pass. Subsequent scoped GPU import/readback checks are recorded above. Vulkan windows
+and daily-use stability remain open; counts stay **4/8, 0/4, 3/3**.
 [Exact buffer/FD scope and controls](docs/VULKAN-MEMORY-FDS.md).
 
 **4K Vulkan compute — October 28, 2026:** two fresh guests each pass two GPU

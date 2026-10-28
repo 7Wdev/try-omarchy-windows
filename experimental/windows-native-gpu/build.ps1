@@ -84,6 +84,10 @@ cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\native_resource_preparati
 if not "%errorlevel%"=="0" exit /b %errorlevel%
 native-resource-preparation-test.exe
 if not "%errorlevel%"=="0" exit /b %errorlevel%
+cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\native_buffer_preparation_test.cpp" /Fe:native-buffer-preparation-test.exe
+if not "%errorlevel%"=="0" exit /b %errorlevel%
+native-buffer-preparation-test.exe
+if not "%errorlevel%"=="0" exit /b %errorlevel%
 cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\sync_sharing_wire_test.cpp" /Fe:sync-sharing-wire-test.exe
 if not "%errorlevel%"=="0" exit /b %errorlevel%
 sync-sharing-wire-test.exe
@@ -103,6 +107,10 @@ if not "%errorlevel%"=="0" exit /b %errorlevel%
 cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\shared_buffer_profile_test.cpp" /Fe:shared-buffer-profile-test.exe
 if not "%errorlevel%"=="0" exit /b %errorlevel%
 shared-buffer-profile-test.exe
+if not "%errorlevel%"=="0" exit /b %errorlevel%
+cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\imported_gpuva_profile_test.cpp" /Fe:imported-gpuva-profile-test.exe
+if not "%errorlevel%"=="0" exit /b %errorlevel%
+imported-gpuva-profile-test.exe
 if not "%errorlevel%"=="0" exit /b %errorlevel%
 cl /nologo /std:c++17 /EHsc /W4 /WX /O2 /DWDDM_BRIDGE_4K_LAB=1 "$PSScriptRoot\cpu_capacity_test.cpp" /Fe:cpu-capacity-test.exe
 if not "%errorlevel%"=="0" exit /b %errorlevel%

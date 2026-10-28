@@ -124,7 +124,7 @@ public:
         const auto retired = retiring(request);
         const bool creating = op == Op::OpenAdapter || op == Op::CreateDevice || op == Op::CreateContext ||
             op == Op::CreateVendorAllocation || op == Op::CreateVendorResourceAllocation ||
-            op == Op::CreateSharedVendorResourceAllocation || op == Op::CreateNativeSharedVendorResourceAllocation || op == Op::CreateNativeInteropResource ||
+            op == Op::CreateSharedVendorResourceAllocation || op == Op::CreateNativeSharedVendorResourceAllocation || op == Op::CreateNativeInteropResource || op == Op::CreateNativeSharedGpuBufferAllocation ||
             op == Op::CreateGuestPagingQueue || op == Op::CreateHwQueue || op == Op::CreateSync || op == Op::LockVendorAllocation ||
             op == Op::ImportResource || op == Op::ImportSync;
         // Other operations can have non-Reply payloads or legitimate pending
@@ -137,7 +137,7 @@ public:
         if (op == Op::OpenAdapter) parent(r.handle,0);
         if (op == Op::CreateDevice || op == Op::CreateContext) parent(r.handle,h.handle);
         if (op == Op::CreateVendorAllocation || op == Op::CreateVendorResourceAllocation ||
-            op == Op::CreateSharedVendorResourceAllocation || op == Op::CreateNativeSharedVendorResourceAllocation || op == Op::CreateNativeInteropResource) {
+            op == Op::CreateSharedVendorResourceAllocation || op == Op::CreateNativeSharedVendorResourceAllocation || op == Op::CreateNativeInteropResource || op == Op::CreateNativeSharedGpuBufferAllocation) {
             parent(r.handle,h.handle);
             if (op != Op::CreateVendorAllocation) {
                 const auto resource = at<VendorResourceReply>(response,payload);

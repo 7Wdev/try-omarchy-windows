@@ -290,6 +290,21 @@ inline bool validGpuVaOutput(GpuVaDesc d, std::uint64_t address) {
     if (d.base) return address == d.base;
     return address >= d.minimum && (!d.maximum || address + d.sizePages * 4096 <= d.maximum);
 }
+// Exact opaque NVIDIA value observed after an owned NT resource open. The
+// ordinary validator above stays strict. Provenance is internal bookkeeping,
+// never a flag supplied in GpuVaDesc. The forwarded descriptor is not rewritten.
+constexpr std::uint64_t VendorImportedDriverProtection = 0x10000009;
+inline bool validImportedGpuVa(GpuVaDesc d, bool openedSharedResource) {
+    if (validGpuVa(d)) return true;
+    if (!openedSharedResource || d.driverProtection != VendorImportedDriverProtection || d.protection != 1) return false;
+    d.driverProtection = 0;
+    return validGpuVa(d);
+}
+inline bool validImportedGpuVaOutput(GpuVaDesc d, std::uint64_t address, bool openedSharedResource) {
+    if (!validImportedGpuVa(d, openedSharedResource)) return false;
+    d.driverProtection = 0;
+    return validGpuVaOutput(d, address);
+}
 inline bool validGpuState(GpuVaDesc d) {
     const auto state = d.protection & 12;
     return d.queue && !d.reserved && d.base && !d.offsetPages && !d.driverProtection &&
@@ -345,6 +360,28 @@ static_assert(sizeof(NativeSharedVendorAllocationDesc) == 48, "fixed typed share
 inline bool validNativeSharedVendorAllocation(NativeSharedVendorAllocationDesc d) {
     return validSharedVendorAllocation(d.shared) && validNativeTexture(d.texture) &&
            d.shared.allocation.privateBytes + d.shared.runtimeBytes <= native_gpu::MaxPacket - sizeof(Header) - sizeof(d);
+}
+// Buffer metadata uses a separate, explicitly queried operation. Existing
+// texture declarations and capability tuples retain their original contracts.
+struct NativeGpuBufferDesc { std::uint64_t bytes; std::uint32_t flags, reserved; };
+struct NativeGpuBufferCaps {
+    std::uint32_t version, flags;
+    std::uint64_t maxBytes;
+    std::uint32_t resourceFlags, reserved;
+};
+constexpr NativeGpuBufferCaps NativeGpuBufferProfile{1, 1, 64ull * 1024 * 1024, 4, 0};
+static_assert(sizeof(NativeGpuBufferDesc) == 16 && sizeof(NativeGpuBufferCaps) == 24, "Fixed native buffer ABI");
+inline bool validNativeGpuBufferCaps(NativeGpuBufferCaps c) {
+    return c.version == 1 && c.flags == 1 && c.maxBytes == NativeGpuBufferProfile.maxBytes && c.resourceFlags == 4 && !c.reserved;
+}
+inline bool validNativeGpuBuffer(NativeGpuBufferDesc d) {
+    return d.bytes && d.bytes <= NativeGpuBufferProfile.maxBytes && (d.flags == 0 || d.flags == 4) && !d.reserved;
+}
+struct NativeSharedGpuBufferAllocationDesc { SharedVendorAllocationDesc shared; NativeGpuBufferDesc buffer; };
+static_assert(sizeof(NativeSharedGpuBufferAllocationDesc) == 48, "Fixed typed shared buffer layout");
+inline bool validNativeSharedGpuBufferAllocation(NativeSharedGpuBufferAllocationDesc d) {
+    return validSharedVendorAllocation(d.shared) && validNativeGpuBuffer(d.buffer) &&
+        d.shared.allocation.privateBytes + d.shared.runtimeBytes <= native_gpu::MaxPacket - sizeof(Header) - sizeof(d);
 }
 // Variable-size compositor buffers use a separate operation. The fixed RGBA
 // texture/stream/Windows-consumer profiles above retain their old contract.
@@ -418,7 +455,8 @@ enum class Op : std::uint32_t {
     BeginResourceSharing = 0x2090, ExportResource, CloseSharedResource, QuerySharedResourceInfo, ImportResource,
     QueryMemoryBudget = 0x20a0, EvictVendorAllocations,
     CreateNativeInteropResource, QueryNativeInteropCaps, CaptureCompositorResource, QueueCompositorFrame,
-    QueryDeviceExecutionState = 0x20b0
+    QueryDeviceExecutionState = 0x20b0,
+    QueryNativeGpuBufferCaps = 0x20c0, CreateNativeSharedGpuBufferAllocation
 };
 enum class Kind { Adapter, Device, PagingQueue, Allocation, Context, PagingSync, VendorAllocation, HwQueue, HwQueueSync, Sync, GpuReservation, VendorResource, SharedSync, SharedResource };
 // Closing an exported NT reference does not destroy a KMT allocation/sync or
@@ -530,6 +568,10 @@ public:
         return {static_cast<std::int32_t>(0xc00000bbu),0,0};
     }
     virtual NativeInteropCaps nativeInteropCaps() const { return {}; }
+    virtual NativeGpuBufferCaps nativeGpuBufferCaps() const { return {}; }
+    virtual VendorResourceResult createNativeSharedGpuBufferAllocation(std::uint32_t, NativeSharedGpuBufferAllocationDesc, std::vector<std::uint8_t>&) {
+        return {{static_cast<std::int32_t>(0xc00000bbu), 0, 0}, 0};
+    }
     virtual Result captureCompositorResource(std::uint32_t, std::uint32_t, CompositorCaptureDesc) {
         return {static_cast<std::int32_t>(0xc00000bbu), 0, 0};
     }
@@ -722,6 +764,7 @@ class Session {
         bool resident = false;
         std::uint64_t submittedFence = 0;
         std::uint32_t vendorResource = 0;
+        bool openedSharedResource = false;
         std::uint32_t syncFlags = 0;
         // Proven lower bound. Failed/partial native operations can leave
         // extra residency references which must not authorize unsafe access.
@@ -1004,6 +1047,14 @@ public:
             streamingNegotiated = true;
             auto out = reply(h, 0); out.resize(sizeof h + sizeof profile);
             std::memcpy(out.data() + sizeof h, &profile, sizeof profile); return out;
+        }
+        if (op == Op::QueryNativeGpuBufferCaps) {
+            if (!negotiated) return reply(h, -71);
+            if (h.handle || packet.size() != sizeof h) return reply(h, -22);
+            const auto caps = driver.nativeGpuBufferCaps();
+            if (!validNativeGpuBufferCaps(caps)) return reply(h, -95);
+            auto out = reply(h, 0); out.resize(sizeof h + sizeof caps);
+            std::memcpy(out.data() + sizeof h, &caps, sizeof caps); return out;
         }
         if (op == Op::QueryNativeInteropCaps) {
             if(!negotiated) return reply(h,-71);
@@ -1378,6 +1429,7 @@ public:
                 out.insert(out.end(), bytes, bytes + sizeof output); out.insert(out.end(), data.begin(), data.end());
                 if (id) {
                     Object allocation{Kind::VendorAllocation, desc.device, result.nativeHandle, 0, 0, false}; allocation.vendorResource = resourceId;
+                    allocation.openedSharedResource = true;
                     if (!objects.emplace(id, allocation).second || !objects.emplace(resourceId, Object{Kind::VendorResource, id, info.resource, 0, 0, true}).second)
                         throw std::runtime_error("Imported resource identity collision");
                 }
@@ -1614,17 +1666,19 @@ public:
         }
         if (op == Op::CreateVendorAllocation || op == Op::CreateVendorResourceAllocation ||
             op == Op::CreateSharedVendorResourceAllocation || op == Op::CreateNativeSharedVendorResourceAllocation ||
-            op == Op::CreateNativeInteropResource || op == Op::DestroyVendorAllocations) {
+            op == Op::CreateNativeInteropResource || op == Op::CreateNativeSharedGpuBufferAllocation || op == Op::DestroyVendorAllocations) {
             if (!negotiated) return reply(h, -71);
             if (!(driver.capabilities().flags & VendorAllocationCapability)) return reply(h, -95);
             const bool interopTexture=op==Op::CreateNativeInteropResource;
             const bool nativeTexture = op == Op::CreateNativeSharedVendorResourceAllocation || interopTexture;
-            const bool sharedResource = op == Op::CreateSharedVendorResourceAllocation || nativeTexture;
+            const bool nativeBuffer = op == Op::CreateNativeSharedGpuBufferAllocation;
+            const bool sharedResource = op == Op::CreateSharedVendorResourceAllocation || nativeTexture || nativeBuffer;
             const bool withResource = op == Op::CreateVendorResourceAllocation || sharedResource;
             if (withResource && !(driver.capabilities().flags & VendorResourceCapability)) return reply(h, -95);
             if (sharedResource && !(driver.capabilities().flags & SharedVendorResourceCapability)) return reply(h, -95);
             if (nativeTexture && !(driver.capabilities().flags & NativeSharedTextureCapability)) return reply(h, -95);
             if(interopTexture && !validNativeInteropCaps(driver.nativeInteropCaps())) return reply(h,-95);
+            if (nativeBuffer && !validNativeGpuBufferCaps(driver.nativeGpuBufferCaps())) return reply(h, -95);
             const auto device = objects.find(h.handle);
             if (device == objects.end() || device->second.kind != Kind::Device) return reply(h, -9);
             if (op == Op::DestroyVendorAllocations) {
@@ -1660,7 +1714,8 @@ public:
             VendorAllocationDesc desc{}; std::memcpy(&desc, packet.data() + sizeof h, sizeof desc);
             SharedVendorAllocationDesc sharedDesc{};
             NativeSharedVendorAllocationDesc nativeDesc{};
-            const auto descriptorBytes = nativeTexture ? sizeof nativeDesc : sharedResource ? sizeof sharedDesc : sizeof desc;
+            NativeSharedGpuBufferAllocationDesc bufferDesc{};
+            const auto descriptorBytes = nativeBuffer ? sizeof bufferDesc : nativeTexture ? sizeof nativeDesc : sharedResource ? sizeof sharedDesc : sizeof desc;
             if (sharedResource) {
                 if (packet.size() < sizeof h + sizeof sharedDesc) return reply(h, -22);
                 std::memcpy(&sharedDesc, packet.data() + sizeof h, sizeof sharedDesc);
@@ -1671,12 +1726,18 @@ public:
                 std::memcpy(&nativeDesc, packet.data() + sizeof h, sizeof nativeDesc);
                 if (interopTexture ? !validNativeInteropAllocation(nativeDesc) : !validNativeSharedVendorAllocation(nativeDesc)) return reply(h, -22);
             }
+            if (nativeBuffer) {
+                if (packet.size() < sizeof h + sizeof bufferDesc) return reply(h, -22);
+                std::memcpy(&bufferDesc, packet.data() + sizeof h, sizeof bufferDesc);
+                if (!validNativeSharedGpuBufferAllocation(bufferDesc)) return reply(h, -22);
+            }
             const auto dataBytes = desc.privateBytes + (sharedResource ? sharedDesc.runtimeBytes : 0);
             if (!validVendorAllocation(desc) || packet.size() != sizeof h + descriptorBytes + dataBytes) return reply(h, -22);
             const auto count = std::count_if(objects.begin(), objects.end(), [](const auto& item) { return item.second.kind == Kind::VendorAllocation; });
             if (objects.size() > objectLimit() - (withResource ? 2 : 1) || nextId >= UINT32_MAX - (withResource ? 1 : 0) || static_cast<std::size_t>(count) >= vendorObjectLimit()) return reply(h, -24);
             std::vector<std::uint8_t> data(packet.begin() + sizeof h + descriptorBytes, packet.end());
-            const auto created = interopTexture ? driver.createNativeInteropResource(device->second.nativeHandle,nativeDesc,data) :
+            const auto created = nativeBuffer ? driver.createNativeSharedGpuBufferAllocation(device->second.nativeHandle, bufferDesc, data) :
+                                interopTexture ? driver.createNativeInteropResource(device->second.nativeHandle,nativeDesc,data) :
                                 nativeTexture ? driver.createNativeSharedVendorResourceAllocation(device->second.nativeHandle, nativeDesc, data) :
                                 sharedResource ? driver.createSharedVendorResourceAllocation(device->second.nativeHandle, sharedDesc, data) :
                                 withResource ? driver.createVendorResourceAllocation(device->second.nativeHandle, desc, data) :
@@ -2037,12 +2098,13 @@ public:
             if (!(driver.capabilities().flags & VendorGpuVaCapability)) return reply(h, -95);
             if (packet.size() != sizeof h + sizeof(GpuVaDesc)) return reply(h, -22);
             GpuVaDesc desc{}; std::memcpy(&desc, packet.data() + sizeof h, sizeof desc);
-            if (!validGpuVa(desc)) return reply(h, -22);
+            if (!validGpuVa(desc) && desc.driverProtection != VendorImportedDriverProtection) return reply(h, -22);
             const auto allocation = objects.find(h.handle), queue = objects.find(desc.queue);
             if (allocation == objects.end() || allocation->second.kind != Kind::VendorAllocation ||
                 queue == objects.end() || queue->second.kind != Kind::PagingQueue || allocation->second.parent != queue->second.parent)
                 return reply(h, -9);
             auto& object = allocation->second;
+            if (!validImportedGpuVa(desc, object.openedSharedResource)) return reply(h, -22);
             if (desc.driverProtection && !object.vendorResource) return reply(h, -22);
             if (object.gpuPages) return reply(h, -16);
             bool reservationBacked=false;std::uint32_t reservedPages=0;
@@ -2069,7 +2131,7 @@ public:
             const auto result = driver.mapVendorAllocation(object.nativeHandle, queue->second.nativeHandle, desc);
             if (result.map.nativeHandle || (result.map.ntstatus >= 0 &&
                 (result.map.ntstatus != 0 && result.map.ntstatus != 0x103)) ||
-                (result.map.ntstatus >= 0 && !validGpuVaOutput(desc, result.map.value)) ||
+                (result.map.ntstatus >= 0 && !validImportedGpuVaOutput(desc, result.map.value, object.openedSharedResource)) ||
                 (result.map.ntstatus < 0 && (result.map.value || result.fence))) return reply(h, -5);
             if (result.map.ntstatus >= 0) {
                 object.gpuPages = static_cast<std::uint32_t>(desc.sizePages); object.gpuAddress = result.map.value;

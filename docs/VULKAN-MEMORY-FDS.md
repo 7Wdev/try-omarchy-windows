@@ -1,14 +1,16 @@
 # Vulkan memory FD ownership — October 28, 2026
 
+Follow-up: [actual GPU payload import/readback and its retained failures](VULKAN-GPU-BUFFER-ROUNDTRIP.md).
+
 Two fresh QEMU/WHPX guests now export **32 distinct close-on-exec descriptors**
 from a dedicated **64 KiB GPU-only buffer**. Every descriptor still identifies
 the same kernel object after the creator's Vulkan buffer and memory are freed.
 All native resources and mappings retire before natural host/VM exit. Separate
 regressions preserve both complete **3840×2160 compute rounds**.
 
-This verifies FD export and reference lifetime. **Importing the FD into another
-Vulkan allocation and checking GPU payload contents remain unverified.** It
-does not establish Vulkan rasterization, Wayland presentation or daily use.
+This checkpoint verifies FD export and reference lifetime. The follow-up above
+verifies scoped GPU import/readback with retained failures. Vulkan rasterization,
+Wayland presentation and daily-use acceptance remain open.
 Progress counts stay **backend 4/8, desktop product 0/4, diagnostic scene 3/3**.
 All runs were windowless, with no source disk, host input or visible renderer.
 The official launcher and keyboard/cursor implementation remain unchanged.

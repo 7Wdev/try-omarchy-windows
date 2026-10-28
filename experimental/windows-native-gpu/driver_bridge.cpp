@@ -26,6 +26,7 @@
 #include "shared_resource_handle.h"
 #include "shared_texture_consumer.h"
 #include "native_texture_metadata.h"
+#include "native_buffer_metadata.h"
 #include "qemu_runtime_host.h"
 #include "shared_texture_worker.h"
 #include "compositor_readback.h"
@@ -252,6 +253,7 @@ class KmtDriver : public Driver {
     struct VendorAllocation {
         std::uint32_t device;
         std::uint32_t resource = 0;
+        bool openedSharedResource = false;
         std::uint64_t address = 0, pages = 0;
         bool reservationBackedMapping = false;
         std::uint32_t residencyAttempts = 0;
@@ -275,13 +277,14 @@ class KmtDriver : public Driver {
     unsigned completedVendorResources = 0, destroyedVendorResources = 0;
     unsigned sharedResourceProbes = 0, importedSharedResources = 0, failedSharedResourceProbes = 0;
     unsigned sharedBufferProbes = 0, importedSharedBuffers = 0, failedSharedBufferProbes = 0;
-    bool probeSharedResource(std::uint32_t resource, std::uint32_t runtimeBytes) {
+    bool probeSharedResource(std::uint32_t resource, std::uint32_t runtimeBytes, const NativeGpuBufferDesc* expectedBuffer = nullptr) {
         const auto result = driver_shared::probe(resource, luid);
         const auto& d = result.description;
         if (d.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER) {
             ++sharedBufferProbes;
             const bool success = result.shareStatus == 0 && result.deviceResult == S_OK && result.importResult == S_OK &&
-                result.handleClosed && result.importedReleased && driver_shared::validBufferDescription(d);
+                result.handleClosed && result.importedReleased && driver_shared::validBufferDescription(d) &&
+                (!expectedBuffer || (d.Width == expectedBuffer->bytes && static_cast<std::uint32_t>(d.Flags) == expectedBuffer->flags));
             if (success) ++importedSharedBuffers; else ++failedSharedBufferProbes;
             if (result.shareStatus == 0 && !result.handleClosed) ++cleanupFailures;
             std::cerr << "{\"nativeSharedBufferImportProbe\":true,\"verified\":" << (success ? "true" : "false")
@@ -1208,6 +1211,7 @@ public:
         }
         try {
             VendorAllocation owned{}; owned.device = desc.device; owned.resource = open.hResource; owned.address = allocation.GpuVirtualAddress;
+            owned.openedSharedResource = true;
             vendorAllocations.emplace(allocation.hAllocation, owned);
             resourceGuestRuntime.emplace(open.hResource, shared->second.guestRuntime);
             sharedResourceIds.insert(open.hResource);
@@ -1420,6 +1424,15 @@ public:
         return gpu_diagnostic::HighResolution && nativeMetadataEnabled && sharedResourcesEnabled &&
                allocationsEnabled && runtime && !runtime->hasStopped() ? NativeInteropProfile : NativeInteropCaps{};
     }
+    NativeGpuBufferCaps nativeGpuBufferCaps() const override {
+        return gpu_diagnostic::HighResolution && nativeMetadataEnabled && sharedResourcesEnabled &&
+               allocationsEnabled && runtime && !runtime->hasStopped() ? NativeGpuBufferProfile : NativeGpuBufferCaps{};
+    }
+    VendorResourceResult createNativeSharedGpuBufferAllocation(std::uint32_t device, NativeSharedGpuBufferAllocationDesc desc, std::vector<std::uint8_t>& data) override {
+        if (!validNativeGpuBufferCaps(nativeGpuBufferCaps()) || !validNativeSharedGpuBufferAllocation(desc)) return {{Invalid, 0, 0}, 0};
+        const auto result = createVendorAllocationImpl(device, desc.shared.allocation, data, true, desc.shared.runtimeBytes, nullptr, false, &desc.buffer);
+        return {result, result.ntstatus == 0 ? vendorAllocations.at(result.nativeHandle).resource : 0};
+    }
     VendorResourceResult createNativeInteropResource(std::uint32_t device, NativeSharedVendorAllocationDesc desc, std::vector<std::uint8_t>& data) override {
         if(!validNativeInteropCaps(nativeInteropCaps()) || !validNativeInteropAllocation(desc)) return {{Invalid,0,0},0};
         const auto result=createVendorAllocationImpl(device,desc.shared.allocation,data,true,desc.shared.runtimeBytes,&desc.texture,true);
@@ -1430,7 +1443,7 @@ public:
         const auto result = createVendorAllocationImpl(device, desc.shared.allocation, data, true, desc.shared.runtimeBytes, &desc.texture);
         return {result, result.ntstatus == 0 ? vendorAllocations.at(result.nativeHandle).resource : 0};
     }
-    Result createVendorAllocationImpl(std::uint32_t device, VendorAllocationDesc desc, std::vector<std::uint8_t>& data, bool withResource, std::uint32_t runtimeBytes = 0, const NativeTextureDesc* texture = nullptr, bool interop=false) {
+    Result createVendorAllocationImpl(std::uint32_t device, VendorAllocationDesc desc, std::vector<std::uint8_t>& data, bool withResource, std::uint32_t runtimeBytes = 0, const NativeTextureDesc* texture = nullptr, bool interop=false, const NativeGpuBufferDesc* bufferProfile = nullptr) {
         if (!allocationsEnabled || !validVendorAllocation(desc) || data.size() != desc.privateBytes + runtimeBytes ||
             (runtimeBytes && (!withResource || !sharedResourcesEnabled || !validSharedVendorAllocation({desc, runtimeBytes, 0})))) return {Invalid, 0, 0};
         if (!vendorObjectAdmission() || !reportedGpuUsageAcceptable())
@@ -1459,7 +1472,15 @@ public:
             nativeRuntime = driver_metadata::generate(luid, *texture,interop);
             a.pPrivateRuntimeData = nativeRuntime.data(); a.PrivateRuntimeDataSize = static_cast<UINT>(nativeRuntime.size());
         }
+        if (bufferProfile) {
+            if (texture || !runtimeBytes || !validNativeGpuBufferCaps(nativeGpuBufferCaps()) || !validNativeGpuBuffer(*bufferProfile)) return {Invalid, 0, 0};
+            nativeRuntime = driver_metadata::generateBuffer(luid, *bufferProfile, [this](std::uint64_t bytes) { return reportedGpuUsageAcceptable(bytes); });
+            a.pPrivateRuntimeData = nativeRuntime.data(); a.PrivateRuntimeDataSize = static_cast<UINT>(nativeRuntime.size());
+        }
         auto status = D3DKMTCreateAllocation2(&a);
+        if (bufferProfile) std::cerr << "{\"nativeGpuBufferMetadataApplied\":true,\"bytes\":" << bufferProfile->bytes
+            << ",\"flags\":" << bufferProfile->flags << ",\"guestRuntimeBytes\":" << runtimeBytes
+            << ",\"nativeRuntimeBytes\":" << nativeRuntime.size() << ",\"guestRuntimePreserved\":true,\"driverPrivateDataReused\":true,\"ntstatus\":" << status << "}\n";
         if (texture) std::cerr << "{\"nativeTextureMetadataApplied\":true,\"typedTexture\":true,\"guestRuntimeBytes\":" << runtimeBytes
             << ",\"nativeRuntimeBytes\":" << nativeRuntime.size() << ",\"guestRuntimePreserved\":true,\"driverPrivateDataReused\":true,\"ntstatus\":" << status << "}\n";
         if (desc.source == UninitializedDisplaySource)
@@ -1473,6 +1494,16 @@ public:
             if (!a.hResource) { release.phAllocationList = &info.hAllocation; release.AllocationCount = 1; }
             if (D3DKMTDestroyAllocation2(&release) < 0) ++cleanupFailures;
             throw std::runtime_error("Unexpected native vendor-allocation result");
+        }
+        if (bufferProfile && !probeSharedResource(a.hResource, a.PrivateRuntimeDataSize, bufferProfile)) {
+            // This allocation has never been returned or submitted. Retire it
+            // synchronously before publishing any guest/native ownership record.
+            D3DKMT_DESTROYALLOCATION2 release{}; release.hDevice = device; release.hResource = a.hResource;
+            release.Flags.SynchronousDestroy = 1;
+            const auto releaseStatus = D3DKMTDestroyAllocation2(&release);
+            std::cerr << "{\"nativeGpuBufferAdmissionRejected\":true,\"unpublished\":true,\"destroyNtstatus\":" << releaseStatus << "}\n";
+            if (releaseStatus) { ++cleanupFailures; throw std::runtime_error("Cannot retire rejected typed GPU buffer"); }
+            ++failedVendorAllocations; return {Invalid, 0, 0};
         }
         try {
             VendorAllocation owned{}; owned.device = device; owned.address = info.GpuVirtualAddress; owned.resource = a.hResource;
@@ -1497,7 +1528,7 @@ public:
         if (withResource) {
             ++completedVendorResources;
             if (runtimeBytes) {
-                const bool buffer = probeSharedResource(a.hResource, a.PrivateRuntimeDataSize);
+                const bool buffer = bufferProfile || probeSharedResource(a.hResource, a.PrivateRuntimeDataSize);
                 if (texture || buffer) sharedResourceIds.insert(a.hResource);
             }
             std::cerr << "{\"nativeVendorResourceCreated\":true,\"allocationCount\":1,\"shared\":" << (runtimeBytes ? "true" : "false")
@@ -1997,7 +2028,7 @@ public:
     }
     GpuVaResult mapVendorAllocation(std::uint32_t allocation, std::uint32_t queue, GpuVaDesc desc) override {
         const auto entry = vendorAllocations.find(allocation);
-        if (!gpuVaEnabled || !validGpuVa(desc) || entry == vendorAllocations.end() || !pagingFences.count(queue) ||
+        if (!gpuVaEnabled || entry == vendorAllocations.end() || !validImportedGpuVa(desc, entry->second.openedSharedResource) || !pagingFences.count(queue) ||
             entry->second.device != pagingFences.at(queue).device ||
             (desc.driverProtection && !entry->second.resource) || entry->second.pages || entry->second.address)
             return {{Invalid,0,0},0};
@@ -2052,7 +2083,7 @@ public:
             <<",\"totalPages\":"<<vendorMappedPages<<",\"standalonePages\":"<<standalonePages
             <<",\"standaloneLimitPages\":"<<standaloneLimit<<",\"reservationLimitPages\":"<<reservationByteLimit()/4096
             <<",\"residentUsageGuardBytes\":"<<reportedGpuUsageLimit()<<",\"ownedReservationChecked\":true}\n";
-        if ((status != 0 && status != 0x103) || !validGpuVaOutput(desc, a.VirtualAddress))
+        if ((status != 0 && status != 0x103) || !validImportedGpuVaOutput(desc, a.VirtualAddress, entry->second.openedSharedResource))
             throw std::runtime_error("Unexpected native GPU-address mapping output");
         if (!desc.base && !gpuStates.prepareRemove(a.VirtualAddress, desc.sizePages * 4096, statePlan))
             throw std::runtime_error("Native GPU state tracking quota after allocation mapping");
@@ -2073,6 +2104,12 @@ public:
             ++completedVendorDriverProtectionMaps;
             std::cerr << "{\"nativeVendorDriverProtectionMap\":true,\"driverProtection\":" << desc.driverProtection
                       << ",\"resourceOwned\":true,\"unchanged\":true,\"ntstatus\":" << status << "}\n";
+        }
+        if (desc.driverProtection == VendorImportedDriverProtection) {
+            std::cerr << "{\"nativeImportedResourceGpuVaMapped\":true,\"driverProtection\":" << desc.driverProtection
+                      << ",\"resourceOpened\":" << (entry->second.openedSharedResource ? "true" : "false")
+                      << ",\"bytes\":" << desc.sizePages * 4096 << ",\"pagingFence\":" << a.PagingFenceValue
+                      << ",\"ntstatus\":" << status << ",\"unchanged\":true,\"addressRangeValidated\":true}\n";
         }
         // Preserve STATUS_PENDING even though our native wait already retired
         // the fence. The Linux KMT thunk preserves positive ioctl statuses.

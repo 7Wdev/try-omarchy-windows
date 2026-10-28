@@ -310,22 +310,24 @@ static void viewPolicy() {
         if (corruption==5) reply=receipt(Op::CreateGuestPagingQueue,3,0,encode(PagingReply{4,0,4096}),0x103);
         denied([&]{invalid.observe(packet(Op::CreateGuestPagingQueue,2),reply);},EPROTO);
     }
-    auto allocation=base();
-    allocation.observe(packet(Op::CreateVendorResourceAllocation,2),receipt(Op::CreateVendorResourceAllocation,5,0,encode(VendorResourceReply{6,0})));
-    const auto lock=packet(Op::LockVendorAllocation,5,encode(VendorCpuDesc{2,0}));
-    const ViewRequest cpu{WDDM_APERTURE_ALLOCATION,0,1048576,4096,77};
-    allocation.observe(lock,receipt(Op::LockVendorAllocation,5,0,encode(VendorCpuReply{}),static_cast<std::int32_t>(0xc0000017u)));
-    denied([&]{allocation.acquire(cpu);},EPERM);
-    allocation.observe(lock,receipt(Op::LockVendorAllocation,5,cpu.offset,encode(VendorCpuReply{4096,0,77})));
-    allocation.acquire(cpu).cookie=9;
-    denied([&]{allocation.syncFile({9,0,1});},EPERM);
-    denied([&]{allocation.approve(packet(Op::UnlockVendorAllocation,5,encode(VendorCpuDesc{2,0})));},EBUSY);
-    denied([&]{allocation.approve(packet(Op::DestroyVendorResource,6,encode(std::uint32_t{2})));},EBUSY);
-    auto destroy=encode(DestroyVendorDesc{1,0}); const auto id=encode(std::uint32_t{5}); destroy.insert(destroy.end(),id.begin(),id.end());
-    denied([&]{allocation.approve(packet(Op::DestroyVendorAllocations,2,destroy));},EBUSY);
-    allocation.cookie(9).cookie=0;
-    allocation.observe(packet(Op::UnlockVendorAllocation,5,encode(VendorCpuDesc{2,0})),receipt(Op::UnlockVendorAllocation,5));
-    denied([&]{allocation.acquire(cpu);},EPERM);
+    for (const auto creating : {Op::CreateVendorResourceAllocation, Op::CreateNativeSharedGpuBufferAllocation}) {
+        auto allocation=base();
+        allocation.observe(packet(creating,2),receipt(creating,5,0,encode(VendorResourceReply{6,0})));
+        const auto lock=packet(Op::LockVendorAllocation,5,encode(VendorCpuDesc{2,0}));
+        const ViewRequest cpu{WDDM_APERTURE_ALLOCATION,0,1048576,4096,77};
+        allocation.observe(lock,receipt(Op::LockVendorAllocation,5,0,encode(VendorCpuReply{}),static_cast<std::int32_t>(0xc0000017u)));
+        denied([&]{allocation.acquire(cpu);},EPERM);
+        allocation.observe(lock,receipt(Op::LockVendorAllocation,5,cpu.offset,encode(VendorCpuReply{4096,0,77})));
+        allocation.acquire(cpu).cookie=9;
+        denied([&]{allocation.syncFile({9,0,1});},EPERM);
+        denied([&]{allocation.approve(packet(Op::UnlockVendorAllocation,5,encode(VendorCpuDesc{2,0})));},EBUSY);
+        denied([&]{allocation.approve(packet(Op::DestroyVendorResource,6,encode(std::uint32_t{2})));},EBUSY);
+        auto destroy=encode(DestroyVendorDesc{1,0}); const auto id=encode(std::uint32_t{5}); destroy.insert(destroy.end(),id.begin(),id.end());
+        denied([&]{allocation.approve(packet(Op::DestroyVendorAllocations,2,destroy));},EBUSY);
+        allocation.cookie(9).cookie=0;
+        allocation.observe(packet(Op::UnlockVendorAllocation,5,encode(VendorCpuDesc{2,0})),receipt(Op::UnlockVendorAllocation,5));
+        denied([&]{allocation.acquire(cpu);},EPERM);
+    }
     std::cout<<"BROKER_VIEW_POLICY checks="<<checks.load()<<" nativeReceipts=mock kernel=false gpu=false\n";
 }
 struct NativeMock {

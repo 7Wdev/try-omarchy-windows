@@ -93,6 +93,22 @@ struct Fake : Driver {
     bool nativeInteropEnabled=false;
     int badNativeInteropCaps=0;
     unsigned nativeInteropCalls=0;
+    bool nativeGpuBufferEnabled = false;
+    unsigned nativeGpuBufferCalls = 0;
+    int badNativeGpuBufferCaps = 0;
+    NativeGpuBufferCaps nativeGpuBufferCaps() const override {
+        auto c = nativeGpuBufferEnabled ? NativeGpuBufferProfile : NativeGpuBufferCaps{};
+        if (badNativeGpuBufferCaps == 1) ++c.version;
+        if (badNativeGpuBufferCaps == 2) ++c.flags;
+        if (badNativeGpuBufferCaps == 3) ++c.maxBytes;
+        if (badNativeGpuBufferCaps == 4) ++c.resourceFlags;
+        if (badNativeGpuBufferCaps == 5) ++c.reserved;
+        return c;
+    }
+    VendorResourceResult createNativeSharedGpuBufferAllocation(std::uint32_t device, NativeSharedGpuBufferAllocationDesc desc, std::vector<std::uint8_t>& data) override {
+        require(nativeGpuBufferEnabled && validNativeSharedGpuBufferAllocation(desc)); ++nativeGpuBufferCalls;
+        return createSharedVendorResourceAllocation(device, desc.shared, data);
+    }
     NativeInteropCaps nativeInteropCaps() const override {
         auto c=nativeInteropEnabled ? NativeInteropProfile : NativeInteropCaps{};
         if(badNativeInteropCaps==1) c.reserved=1;
@@ -512,6 +528,71 @@ static void applicationResourceReferences() {
 }
 int main() {
     applicationResourceReferences();
+    {
+        static_assert(static_cast<unsigned>(Op::QueryDeviceExecutionState) == 0x20b0);
+        static_assert(static_cast<unsigned>(Op::QueryNativeGpuBufferCaps) == 0x20c0);
+        Fake f; f.vendorEnabled = f.resourceEnabled = f.sharedResourceEnabled = true;
+        Session s(f), foreign(f);
+        const auto query = request(Op::QueryNativeGpuBufferCaps);
+        require(header(s.dispatch(query)).status == -71);
+        s.dispatch(hello()); foreign.dispatch(hello());
+        const auto adapter = header(s.dispatch(request(Op::OpenAdapter))).handle;
+        const auto device = header(s.dispatch(request(Op::CreateDevice, adapter))).handle;
+        NativeSharedGpuBufferAllocationDesc desc{{{4, 0x78100000, 0, 4, 0, 0}, 4, 0}, {65536, 0, 0}};
+        const auto create = [&](std::uint32_t parent, NativeSharedGpuBufferAllocationDesc d) {
+            auto p = request(Op::CreateNativeSharedGpuBufferAllocation, parent, d);
+            p.insert(p.end(), {37, 38, 39, 40, 5, 6, 7, 8}); return p;
+        };
+        require(header(s.dispatch(query)).status == -95);
+        require(header(s.dispatch(create(device, desc))).status == -95 && !f.nativeGpuBufferCalls);
+        f.nativeGpuBufferEnabled = true;
+        for (int n = 1; n <= 5; ++n) {
+            f.badNativeGpuBufferCaps = n;
+            require(header(s.dispatch(query)).status == -95);
+            require(header(s.dispatch(create(device, desc))).status == -95 && !f.nativeGpuBufferCalls);
+        }
+        f.badNativeGpuBufferCaps = 0;
+        auto out = s.dispatch(query); NativeGpuBufferCaps caps{};
+        require(!header(out).status && out.size() == sizeof(Header) + sizeof caps);
+        std::memcpy(&caps, out.data() + sizeof(Header), sizeof caps); require(validNativeGpuBufferCaps(caps));
+        require(!f.nativeTextureEnabled); // Separate queried buffer contract.
+        require(header(s.dispatch(request(Op::QueryNativeGpuBufferCaps, device))).status == -22);
+        auto extra = query; extra.push_back(0); require(header(s.dispatch(extra)).status == -22);
+        require(header(foreign.dispatch(create(device, desc))).status == -9);
+        require(header(s.dispatch(create(adapter, desc))).status == -9 && !f.nativeGpuBufferCalls);
+        for (unsigned n = 0; n < 12; ++n) {
+            auto d = desc;
+            if (n == 0) d.buffer.bytes = 0;
+            if (n == 1) d.buffer.bytes = NativeGpuBufferProfile.maxBytes + 1;
+            if (n == 2) d.buffer.bytes = UINT64_MAX;
+            if (n == 3) d.buffer.flags = 1;
+            if (n == 4) d.buffer.reserved = 1;
+            if (n == 5) d.shared.reserved = 1;
+            if (n == 6) d.shared.runtimeBytes = 0;
+            if (n == 7) d.shared.allocation.flags = 0;
+            if (n == 8) d.shared.allocation.privateBytes = UINT32_MAX;
+            if (n == 9) d.shared.runtimeBytes = 1025;
+            auto p = create(device, d);
+            if (n == 10) p.pop_back();
+            if (n == 11) p.push_back(0);
+            require(header(s.dispatch(p)).status == -22 && !f.nativeGpuBufferCalls);
+        }
+        f.fail = true; out = s.dispatch(create(device, desc));
+        require(!header(out).status && !header(out).handle && out.back() == 8 && f.vendorOwners.empty());
+        f.fail = false; f.badResourceReply = 1;
+        require(header(s.dispatch(create(device, desc))).status == -5 && f.vendorOwners.empty());
+        f.badResourceReply = 0;
+        for (const auto flags : {0u, 4u}) {
+            desc.buffer.flags = flags; out = s.dispatch(create(device, desc));
+            VendorResourceReply resource{};
+            require(!header(out).status && header(out).handle && out.back() == 8);
+            std::memcpy(&resource, out.data() + sizeof(Header) + sizeof(Reply), sizeof resource);
+            require(resource.resource && !resource.reserved && f.lastSharedRuntime == std::vector<std::uint8_t>({5,6,7,8}));
+            require(!header(s.dispatch(request(Op::DestroyVendorResource, resource.resource, device))).status);
+        }
+        require(f.nativeGpuBufferCalls == 4 && f.vendorOwners.empty() && f.vendorResources.empty());
+        std::cout << "NATIVE_GPU_BUFFER_WIRE_PASS queriedCaps=true invalidRequestsRejected=true ownedDevice=true originalRuntimePreserved=true failedNativeOwnershipRejected=true mock=true gpu=false\n";
+    }
     {
         Fake driver;Session session(driver),other(driver);
         require(header(session.dispatch(request(Op::QueryDeviceExecutionState,1))).status==-71);

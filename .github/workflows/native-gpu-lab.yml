@@ -145,6 +145,10 @@ jobs:
           c++ -std=c++17 -Wall -Wextra -Werror experimental/windows-native-gpu/driver_wire_test.cpp -o /tmp/driver-wire-test
           c++ -std=c++17 -Wall -Wextra -Werror experimental/windows-native-gpu/native_resource_preparation_test.cpp -o /tmp/native-resource-preparation-test
           /tmp/native-resource-preparation-test
+          c++ -std=c++17 -Wall -Wextra -Werror experimental/windows-native-gpu/native_buffer_preparation_test.cpp -o /tmp/native-buffer-preparation-test
+          /tmp/native-buffer-preparation-test
+          c++ -std=c++17 -Wall -Wextra -Werror experimental/windows-native-gpu/guest_eventfd_handle_test.cpp -o /tmp/guest-eventfd-handle-test
+          /tmp/guest-eventfd-handle-test
           /tmp/driver-wire-test
           c++ -std=c++17 -Wall -Wextra -Werror experimental/windows-native-gpu/driver_actor_router_test.cpp -o /tmp/driver-actor-router-test
           /tmp/driver-actor-router-test
@@ -174,9 +178,14 @@ jobs:
           python3 experimental/windows-native-gpu/test_background_shader_evidence.py -v
           python3 experimental/windows-native-gpu/test_async_cpu_wait_evidence.py -v
           python3 experimental/windows-native-gpu/test_vulkan_memory_fd_evidence.py -v
+          python3 experimental/windows-native-gpu/test_vulkan_memory_roundtrip_evidence.py -v
+          python3 experimental/windows-native-gpu/test_vulkan_typed_buffer_evidence.py -v
           python3 experimental/windows-native-gpu/mesa/test_dozen_memory_fd_evidence.py -v
+          python3 experimental/windows-native-gpu/mesa/test_dozen_memory_fd_import_evidence.py -v
           c++ -std=c++17 -O2 -Wall -Wextra -Werror experimental/windows-native-gpu/shared_buffer_profile_test.cpp -o /tmp/shared-buffer-profile-test
           /tmp/shared-buffer-profile-test
+          c++ -std=c++17 -O2 -Wall -Wextra -Werror experimental/windows-native-gpu/imported_gpuva_profile_test.cpp -o /tmp/imported-gpuva-profile-test
+          /tmp/imported-gpuva-profile-test
           /tmp/guest-trace-line-test
           c++ -std=c++17 -O2 -Wall -Wextra -Werror experimental/windows-native-gpu/guest_primary_identity_test.cpp -o /tmp/guest-primary-identity-test
           sudo install -o root -g root -m 0755 /tmp/guest-primary-identity-test /tmp/guest-primary-identity-owned-test
@@ -261,6 +270,9 @@ jobs:
           c++ -std=c++17 -Wall -Wextra -Werror -DWDDM_BRIDGE_4K_LAB=1 -isystem .runtime-headers/include -isystem .runtime-headers/include/wsl/stubs -c experimental/windows-native-gpu/umd_context_probe.cpp -o /tmp/runtime-probe-4k.o
           c++ -std=c++17 -Wall -Wextra -Werror -DWDDM_BRIDGE_4K_LAB=1 -DWDDM_BRIDGE_TEST_GPU_TIMELINE=1 -isystem .runtime-headers/include -isystem .runtime-headers/include/wsl/stubs -c experimental/windows-native-gpu/umd_context_probe.cpp -o /tmp/runtime-probe-timeline.o
           c++ -std=c++17 -O2 -Wall -Wextra -Werror -DWDDM_BRIDGE_4K_LAB=1 -DWDDM_BRIDGE_MANAGED_GPUVA=1 -DWDDM_BRIDGE_WIDE_KERNEL_LEASES=1 -DWDDM_BRIDGE_FOUR_ACTOR_OBJECTS=1 -DWDDM_BRIDGE_MULTIAPP_CPU=1 -DWDDM_BRIDGE_ASYNC_CPU_WAITS=1 -isystem .runtime-headers/include -isystem .runtime-headers/include/wsl/stubs -isystem .runtime-dxg/include -shared -fPIC experimental/windows-native-gpu/linux_ioctl_bridge.cpp -pthread -o /tmp/linux-ioctl-bridge-async-cpu.so
+          c++ -std=c++17 -O2 -Wall -Wextra -Werror experimental/windows-native-gpu/guest_eventfd_preload_test.cpp -o /tmp/guest-eventfd-preload-test
+          LD_PRELOAD=/tmp/linux-ioctl-bridge.so /tmp/guest-eventfd-preload-test 0
+          LD_PRELOAD=/tmp/linux-ioctl-bridge-async-cpu.so /tmp/guest-eventfd-preload-test 1
           c++ -std=c++17 -Wall -Wextra -Werror -DWDDM_BRIDGE_TEST_ASYNC_CPU_WAITS=1 -isystem .runtime-headers/include -isystem .runtime-headers/include/wsl/stubs -c experimental/windows-native-gpu/umd_context_probe.cpp -o /tmp/runtime-probe-async-cpu.o
           c++ -std=c++17 -Wall -Wextra -Werror -DWDDM_BRIDGE_TEST_ASYNC_CPU_WAITS=1 -DWDDM_BRIDGE_TEST_ASYNC_EXIT=1 -isystem .runtime-headers/include -isystem .runtime-headers/include/wsl/stubs -c experimental/windows-native-gpu/umd_context_probe.cpp -o /tmp/runtime-probe-async-exit.o
           python3 experimental/windows-native-gpu/test_linux_ioctl_bridge.py --shim /tmp/linux-ioctl-bridge.so --probe /tmp/linux-ioctl-bridge-test
@@ -353,7 +365,15 @@ jobs:
           python3 experimental/windows-native-gpu/mesa/apply_mesa_dozen_memory_fd.py /tmp/mesa-26.0.8
           python3 experimental/windows-native-gpu/mesa/test_dozen_memory_fd.py --source /tmp/mesa-26.0.8 --vulkan-include /tmp/mesa-26.0.8/include --output "$RUNNER_TEMP/dozen-fd-patched"
           python3 experimental/windows-native-gpu/mesa/verify_dozen_memory_fd_contract.py --baseline "$RUNNER_TEMP/dozen-fd-original" --patched "$RUNNER_TEMP/dozen-fd-patched"
+          python3 experimental/windows-native-gpu/mesa/apply_mesa_dozen_memory_fd_import.py /tmp/mesa-26.0.8
+          python3 experimental/windows-native-gpu/mesa/apply_mesa_dozen_memory_fd_import.py /tmp/mesa-26.0.8
+          python3 experimental/windows-native-gpu/mesa/test_dozen_memory_fd_import.py --source /tmp/mesa-26.0.8 --vulkan-include /tmp/mesa-26.0.8/include --output "$RUNNER_TEMP/dozen-fd-import"
+          python3 experimental/windows-native-gpu/mesa/verify_dozen_memory_fd_import_contract.py --source /tmp/mesa-26.0.8 --vulkan-include /tmp/mesa-26.0.8/include --contract "$RUNNER_TEMP/dozen-fd-import"
+          python3 experimental/windows-native-gpu/mesa/apply_mesa_dozen_native_gpu_buffer.py /tmp/mesa-26.0.8
+          python3 experimental/windows-native-gpu/mesa/apply_mesa_dozen_native_gpu_buffer.py /tmp/mesa-26.0.8
+          python3 experimental/windows-native-gpu/mesa/test_dozen_native_gpu_buffer.py --source /tmp/mesa-26.0.8 --directx-headers .runtime-headers --output "$RUNNER_TEMP/dozen-native-gpu-buffer"
           c++ -std=c++17 -Wall -Wextra -Werror -I /tmp/mesa-26.0.8/include -c experimental/windows-native-gpu/vulkan_memory_fd_probe.cpp -o /tmp/vulkan-memory-fd-probe.o
+          python3 experimental/windows-native-gpu/build_vulkan_memory_roundtrip_probe.py --vulkan-include /tmp/mesa-26.0.8/include --icd /opt/wddm-vulkan/libvulkan_dzn.so --output "$RUNNER_TEMP/vulkan-memory-roundtrip-probes"
       - name: Validate Vulkan compute shaders and compile their probes; no GPU workload
         run: |
           sudo apt-get update

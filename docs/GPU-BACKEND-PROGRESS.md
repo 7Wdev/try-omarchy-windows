@@ -8,12 +8,20 @@ graphics runtime.
 
 ## What is verified now?
 
+**Typed Vulkan GPU data — October 28, 2026:** four fresh guests each pass two
+complete 64 KiB GPU export/free/import/readback rounds using Windows-native buffer
+metadata, including FD zero and FD-exhaustion rollback/retry. A real GPU corruption
+is rejected. Both original 4K compute and shader workloads pass after correcting
+a retained broker build-profile failure. Earlier ownership leaks, native import
+failures and a forced-stop wait hang stay recorded. Daily use remains unaccepted;
+counts stay **4/8, 0/4, 3/3**. [Exact data proof, limits and failures](VULKAN-GPU-BUFFER-ROUNDTRIP.md).
+
 **Vulkan buffer/FD ownership — October 28, 2026:** two fresh guests each pass
 32 unique close-on-exec exports from a 64 KiB GPU-only buffer, including FD
 lifetime after the creator's memory is freed. Separate native buffer admission
 and Linux Dozen ownership fixes preserve the original failure controls. Both
 complete 4K compute rounds still pass, with byte guards unchanged and native
-resources/mappings retired before VM exit. Guest FD import/data contents,
+resources/mappings retired before VM exit. Subsequent scoped GPU import/readback checks are recorded above.
 Vulkan rasterization/windows and daily-use acceptance remain open. Counts stay
 **4/8, 0/4, 3/3**. [Exact matrix and source checks](VULKAN-MEMORY-FDS.md).
 
