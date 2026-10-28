@@ -2,8 +2,10 @@
 
 Original Mesa 26.0.8 Dozen now creates a Vulkan instance, selects the NVIDIA
 discrete adapter, creates a logical device/compute queue and completes
-`vkDeviceWaitIdle` through QEMU/WHPX and the Windows NVIDIA backend. **No Vulkan
-shader execution or window presentation has been verified.**
+`vkDeviceWaitIdle` through QEMU/WHPX and the Windows NVIDIA backend. These device
+tests do not exercise shaders or presentation. A later, separate
+[4K compute follow-up](VULKAN-4K-COMPUTE.md) now verifies shader execution and
+integer readback; Vulkan window presentation remains open.
 
 The unchanged [device probe](../experimental/windows-native-gpu/vulkan_device_probe.cpp)
 loads one explicitly selected Dozen ICD, rejects software/non-NVIDIA devices
@@ -30,7 +32,7 @@ Stock Dozen's Linux Wayland WSI initializes its software presentation path.
 That is not sufficient for this project's GPU-backed desktop requirement.
 Windowed Vulkan needs validated GPU buffer sharing and synchronization with
 the guest compositor; merely enabling Wayland or changing a software flag
-does not provide that integration. Vulkan shaders, presentation, conformance,
+does not provide that integration. Vulkan graphics rasterization, presentation, conformance,
 application compatibility and performance remain open.
 
 [Sanitized baseline/candidate comparison](evidence/VULKAN-DEVICE-BRINGUP-2026-10-28.json)

@@ -8,13 +8,22 @@ graphics runtime.
 
 ## What is verified now?
 
+**4K Vulkan compute — October 28, 2026:** two fresh guests each pass two shader
+rounds with every one of 8,294,400 output words verified. A GPU corruption
+control fails at exactly the final word. Selecting the existing 256-slot CPU
+aperture clears the retained 128-slot readback refusal without changing byte
+guards. That refusal also retains four reservations until VM exit; recovery
+remains open. This is offscreen compute, with no Vulkan rasterization or window
+presentation acceptance. Counts stay **4/8, 0/4, 3/3**.
+[Full integer checks, GPU controls and retained failures](VULKAN-4K-COMPUTE.md).
+
 **GPU waits and Vulkan initialization — October 28, 2026:** six background GPU
 wait controls pass, including ANY/ALL, descriptor reuse and capacity; all 69
 notifications retire normally. A separate process-exit control cancels its
 kernel wait but retains native mappings until VM exit, so live crash recovery
 remains unverified. Original Dozen also reaches Vulkan device creation and idle
-with the same opt-in bridge; Vulkan shaders and GPU-backed window presentation
-remain open. Counts stay **4/8, 0/4, 3/3**.
+with the same opt-in bridge; those initialization runs do not cover shaders.
+GPU-backed window presentation remains open. Counts stay **4/8, 0/4, 3/3**.
 [Wait controls and retained recovery failure](BACKGROUND-ASYNC-GPU-WAITS.md) ·
 [Vulkan baseline/candidate comparison](VULKAN-DEVICE-BRINGUP.md).
 

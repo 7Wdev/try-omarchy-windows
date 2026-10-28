@@ -97,7 +97,8 @@ with warnings treated as errors. The default transport fault suite passed
 invented GPU retirement, CPU-written fences, and erased exit-retention counters.
 Private NVIDIA libraries, VM images and raw native streams are not published.
 
-Next API work includes actual Vulkan shader execution with an independent
-result oracle and GPU-backed window-buffer integration. The normal launcher,
+The later [4K Vulkan compute follow-up](VULKAN-4K-COMPUTE.md) verifies shader
+execution and an independent integer oracle. GPU-backed window-buffer
+integration remains open. The normal launcher,
 official physical input, longer browsing/multiwindow sessions, recovery and
 matched-native performance still need product acceptance.

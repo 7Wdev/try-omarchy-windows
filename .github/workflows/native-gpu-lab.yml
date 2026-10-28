@@ -337,6 +337,12 @@ jobs:
           python3 experimental/windows-native-gpu/mesa/apply_mesa_native_images.py /tmp/mesa-26.0.8
           python3 experimental/windows-native-gpu/mesa/apply_mesa_native_render.py /tmp/mesa-26.0.8
           python3 experimental/windows-native-gpu/mesa/apply_mesa_native_render.py /tmp/mesa-26.0.8
+      - name: Validate Vulkan compute shaders and compile their probes; no GPU workload
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends glslang-tools spirv-tools
+          python3 experimental/windows-native-gpu/build_vulkan_compute_probe.py --glslang /usr/bin/glslangValidator --spirv-val /usr/bin/spirv-val --vulkan-include /tmp/mesa-26.0.8/include --icd /opt/wddm-vulkan/libvulkan_dzn.so --output "$RUNNER_TEMP/vulkan-compute-probes"
+          python3 experimental/windows-native-gpu/test_vulkan_compute_evidence.py -v
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: wddm-bridge-guest-probe
