@@ -694,6 +694,8 @@
   "recovery.gpu.cpu_always": "항상 CPU 렌더링 사용",
   "recovery.gpu.settings_failed": "CPU 렌더링 선택을 설정에 저장하지 못했습니다: {error}",
   "recovery.display.body": "가상 머신이 응답을 멈췄지만 아직 실행 중입니다. 이 세션을 유지하거나 다시 시작할 수 있습니다. 다시 시작하면 저장하지 않은 작업이 사라질 수 있습니다.",
+  "recovery.blank.title": "Omarchy 창에 데스크톱이 표시되지 않습니다",
+  "recovery.blank.body": "Omarchy는 실행 중이지만 2분 동안 창에 데스크톱이 표시되지 않았습니다. 일부 그래픽 드라이버에서는 GPU 렌더링이 Omarchy 안에서는 동작해도 화면까지 전달되지 않습니다. 창이 검거나 부팅 메시지가 계속 보이면 CPU 렌더링으로 다시 시작하세요. 데스크톱이 보이면 이 세션을 유지하세요.",
   "recovery.compositor.body": "가상 머신은 응답하지만 Omarchy 데스크톱이 약 1분 동안 상태 확인에 응답하지 않았습니다. 이 세션을 유지하거나 다시 시작할 수 있습니다. 다시 시작하면 저장하지 않은 작업이 사라질 수 있습니다.",
   "recovery.cpu.restart": "다시 시작",
   "tray.menu.resume": "Omarchy 재개",
