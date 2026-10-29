@@ -84,6 +84,10 @@ cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\owned_qemu_process_test.c
 if not "%errorlevel%"=="0" exit /b %errorlevel%
 owned-qemu-process-test.exe
 if not "%errorlevel%"=="0" exit /b %errorlevel%
+cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\launcher_lifetime_test.cpp" /Fe:launcher-lifetime-test.exe
+if not "%errorlevel%"=="0" exit /b %errorlevel%
+launcher-lifetime-test.exe
+if not "%errorlevel%"=="0" exit /b %errorlevel%
 cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\qemu_graphics_arguments_test.cpp" /Fe:qemu-graphics-arguments-test.exe
 if not "%errorlevel%"=="0" exit /b %errorlevel%
 qemu-graphics-arguments-test.exe

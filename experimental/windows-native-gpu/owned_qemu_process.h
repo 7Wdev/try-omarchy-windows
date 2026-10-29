@@ -16,6 +16,7 @@ struct Handle {
     HANDLE value = nullptr;
     Handle() = default;
     Handle(const Handle&) = delete;
+    Handle& operator=(const Handle&) = delete;
     ~Handle() { if (value && value != INVALID_HANDLE_VALUE) CloseHandle(value); }
 };
 inline std::uint64_t processCreationTime(HANDLE process) {
@@ -60,13 +61,20 @@ inline bool sameImageIdentity(const FILE_ID_INFO& a, const FILE_ID_INFO& b) {
         !std::memcmp(a.FileId.Identifier,b.FileId.Identifier,sizeof a.FileId.Identifier);
 }
 struct ProcessClaim { DWORD pid; std::uint64_t creationTime; };
+struct ProcessBinding {
+    DWORD pid, creator;
+    std::uint64_t creationTime;
+    bool heldProcess, privateJob, pinnedImage;
+};
 
 class OwnedProcess {
     // Closing this job is a final owner-death fallback. Explicit stop/reap
     // remains mandatory before releasing native allocations and mapped pages.
     Handle job, pinnedImage;
-    std::mutex stopGuard;
+    mutable std::mutex stopGuard;
     bool closed = false;
+    ProcessClaim bound{};
+    DWORD boundCreator = 0;
 public:
     Handle handle;
     DWORD exit = STILL_ACTIVE;
@@ -109,6 +117,11 @@ public:
         handle.value = owned.value; owned.value = nullptr;
         job.value = ownedJob.value; ownedJob.value = nullptr;
         pinnedImage.value = image.value; image.value = nullptr;
+        bound = claim; boundCreator = parent;
+    }
+    ProcessBinding binding() const {
+        std::lock_guard<std::mutex> lock(stopGuard);
+        return {bound.pid,boundCreator,bound.creationTime,handle.value != nullptr,job.value != nullptr,pinnedImage.value != nullptr};
     }
     void stop(DWORD grace = 5000) noexcept {
         std::lock_guard<std::mutex> lock(stopGuard);

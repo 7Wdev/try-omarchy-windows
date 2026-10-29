@@ -28,6 +28,7 @@
 #include "native_texture_metadata.h"
 #include "native_buffer_metadata.h"
 #include "qemu_runtime_host.h"
+#include "launcher_lifetime.h"
 #include "shared_texture_worker.h"
 #include "compositor_readback.h"
 #include "compositor_presenter.h"
@@ -3006,7 +3007,12 @@ int main(int argc, char** argv) {
         unsigned sdlFailureTest=0;
         bool virtioTrace=false,deferredResidency=false,userNetwork=false,mappedAdmission=false,applicationMemory=false,applicationObjects=false;
         const char* readonlyRoot = nullptr;
+        std::optional<std::uintptr_t> launcherCancellation;
         while (argc > 1) {
+            if (argc>2 && std::string(argv[argc-2])=="--driver-launcher-cancel-handle") {
+                if (launcherCancellation) throw std::runtime_error("Launcher cancellation handle must be specified once");
+                launcherCancellation=driver_launcher::parseHandle(argv[argc-1]);argc-=2;continue;
+            }
             if(argc>2 && std::string(argv[argc-2])=="--driver-resource-reference-slots") {
                 if(resourceReferencesConfigured || std::string(argv[argc-1])!="32")
                     throw std::runtime_error("Application resource reference slots must be specified once as 32");
@@ -3079,6 +3085,10 @@ int main(int argc, char** argv) {
             else break;
             --argc;
         }
+        if (launcherCancellation && (argc!=7 || std::string(argv[1])!="--run-qemu"))
+            throw std::runtime_error("Launcher lifetime requires the owned QEMU runtime");
+        if (launcherCancellation && (!contexts || !queries))
+            throw std::runtime_error("Launcher lifetime requires explicit query/context opt-ins");
         if (readonlyRoot && (!gpu_diagnostic::HighResolution || argc!=7 || std::string(argv[1])!="--run-qemu"))
             throw std::runtime_error("Read-only root image requires the diagnostic build and owned QEMU runtime");
         if(windowInput && !coordinated) throw std::runtime_error("Window input requires the owned read-only root desktop coordinator");
@@ -3179,7 +3189,7 @@ int main(int argc, char** argv) {
         if (!ownedRuntime && ((argc != 3 && argc != 7) || std::string(argv[1]) != "--listen")) {
             std::cerr << "Usage: driver-bridge.exe --stdio | --listen port [--guest-section name --guest-ram-bytes count] "
                 "[--driver-contexts] [--driver-queries] [--driver-allocations] [--driver-gpuva] [--driver-residency] [--driver-cpu] [--driver-cpu-slots 16|32|64|128|256|512|1024] [--driver-translation] [--driver-hwqueues] [--driver-syncs] [--driver-submit] [--driver-async-submit] [--driver-retirement] [--driver-reservation] [--driver-gpu-state] [--cpu-store-test | --cpu-eof-test | --cpu-span-eof-test | --hwqueue-eof-test | --hwqueue-no-broadcast-eof-test | --hwqueue-no-broadcast-wait-eof-test | --sync-eof-test | --sync-no-max-eof-test | --reservation-eof-test | --gpu-state-eof-test]\n"
-                "       driver-bridge.exe --run-qemu qemu firmware kernel initramfs fresh-log --driver-contexts --driver-queries [--driver-fence-slots 64|128|256] [--driver-coordinator]\n"; return 2;
+                "       driver-bridge.exe --run-qemu qemu firmware kernel initramfs fresh-log --driver-contexts --driver-queries [--driver-fence-slots 64|128|256] [--driver-coordinator] [--driver-launcher-cancel-handle inherited-handle]\n"; return 2;
         }
         if (ownedRuntime && (!contexts || !queries)) throw std::runtime_error("Owned QEMU runtime requires explicit query/context opt-ins");
         std::size_t end{}; const auto port = ownedRuntime ? 0ul : std::stoul(argv[2], &end);
@@ -3194,6 +3204,16 @@ int main(int argc, char** argv) {
             sectionBytes = static_cast<std::uint32_t>(bytes);
         }
         Winsock winsock; Socket listener;
+        std::unique_ptr<driver_qemu::Runtime> runtime;
+        // Destruction order joins the watcher before destroying Runtime; the
+        // callback may stop only its held guest process, not driver/map state.
+        std::unique_ptr<driver_launcher::Lifetime> launcherLifetime;
+        if (launcherCancellation) {
+            driver_qemu::Handle creator, cancellation;
+            driver_launcher::captureActualCreator(creator);
+            driver_launcher::takeInheritedCancellation(*launcherCancellation,cancellation);
+            launcherLifetime=std::make_unique<driver_launcher::Lifetime>(creator.value,cancellation.value);
+        }
         listener.value = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
         if (listener.value == INVALID_SOCKET) throw std::runtime_error("socket failed");
         const BOOL exclusive = TRUE;
@@ -3206,11 +3226,29 @@ int main(int argc, char** argv) {
         int length = sizeof address;
         if (getsockname(listener.value, reinterpret_cast<sockaddr*>(&address), &length)) throw std::runtime_error("getsockname failed");
         std::cout << "{\"port\":" << ntohs(address.sin_port) << ",\"transport\":\"tcp-loopback\"}\n" << std::flush;
-        std::unique_ptr<driver_qemu::Runtime> runtime;
         if (ownedRuntime) runtime = std::make_unique<driver_qemu::Runtime>(ntohs(address.sin_port),
             qemu_fence::Paths{argv[2], argv[3], argv[4], argv[5], argv[6]}, cpu, cpuStoreTest, cpuEofTest, hwQueueEofTest, cpuSlots, syncEofTest, reservationEofTest, gpuStateEofTest, cpuSpanEofTest, syncNoMaxEofTest, hwQueueNoBroadcastEofTest, hwQueueNoBroadcastWaitEofTest, fenceSlots,readonlyRoot,coordinated && fenceSlots==512,windowInput,inputSelfTest,sdlRelay,virtioTrace,userNetwork);
-        fd_set reads; FD_ZERO(&reads); FD_SET(listener.value, &reads); timeval timeout{60, 0};
-        if (select(0, &reads, nullptr, nullptr, &timeout) != 1) throw std::runtime_error("Connection timed out");
+        if (launcherLifetime) {
+            launcherLifetime->start([vm=runtime.get()](driver_launcher::End why) {
+                vm->stopGuest();
+                std::cerr << driver_qmp::Json{{"nativeLauncherStopAcknowledged",true},{"reason",driver_launcher::reason(why)},
+                    {"guestExited",vm->guestExited()},{"driverCleanupComplete",false}}.dump() << '\n';
+            });
+            if (runtime->guestExited()) throw std::runtime_error("Owned guest exited before launcher VM identity readiness");
+            std::cout << driver_launcher::ready(runtime->processBinding(),*launcherLifetime).dump() << '\n' << std::flush;
+            const auto deadline = GetTickCount64()+60000;
+            for (;;) {
+                if (launcherLifetime->cancelled() || launcherLifetime->callbackFailed()) throw std::runtime_error("Launcher lifetime ended before guest connection");
+                if (runtime->guestExited()) throw std::runtime_error("Owned guest exited before connection");
+                fd_set reads; FD_ZERO(&reads); FD_SET(listener.value,&reads); timeval slice{0,250000};
+                const auto selected = select(0,&reads,nullptr,nullptr,&slice);
+                if (selected == 1) break;
+                if (selected == SOCKET_ERROR || GetTickCount64() >= deadline) throw std::runtime_error("Connection failed or timed out");
+            }
+        } else {
+            fd_set reads; FD_ZERO(&reads); FD_SET(listener.value, &reads); timeval timeout{60, 0};
+            if (select(0, &reads, nullptr, nullptr, &timeout) != 1) throw std::runtime_error("Connection timed out");
+        }
         Socket client; client.value = accept(listener.value, nullptr, nullptr);
         if (client.value == INVALID_SOCKET) throw std::runtime_error("accept failed");
         const DWORD milliseconds = 30000;

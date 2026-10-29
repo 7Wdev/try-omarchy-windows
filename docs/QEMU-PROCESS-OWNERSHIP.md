@@ -61,7 +61,8 @@ binds frozen/current compiler inputs, executables, test logs, previous control
 receipts and the new GPU regressions. Earlier rejected pressure and input evidence
 remain retained in their original documents.
 
-Next is an authenticated launcher lifetime/control channel and an explicit
-handoff of the actual QEMU identity to the unchanged window/input supervision.
-Launcher-parent death recovery, normal session startup, live SDL/input validation,
-long browsing sessions and matched-native performance remain required work.
+The subsequent [native lifetime checkpoint](NATIVE-LAUNCHER-LIFETIME.md) adds an
+inherited cancellation capability, exact QEMU identity message and early
+creator-exit controls. Go launcher handoff, recovery during active rendering,
+normal session startup, live SDL/input validation, long browsing sessions and
+matched-native performance remain required work.

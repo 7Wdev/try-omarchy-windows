@@ -8,6 +8,14 @@ graphics runtime.
 
 ## What is verified now?
 
+**Native launcher lifetime — October 29, 2026:** an inherited cancellation
+capability, held creator process and exact QEMU identity message pass three
+unchanged-image hidden GPU workloads. Separate early-lifecycle controls reap the
+owned VM after cancellation or creator exit. No GPU mappings exist in those stop
+controls; recovery during rendering remains open. Go launcher activation and
+normal sessions remain incomplete; counts stay **4/8, 0/4, 3/3**.
+[Protocol, actual process-chain tests and limits](NATIVE-LAUNCHER-LIFETIME.md).
+
 **QEMU process ownership — October 29, 2026:** the native runtime binds a held
 Windows process object to the expected QEMU identity and creator before resuming
 the child. Hidden-child lifecycle controls and unchanged-image pressure/4K GPU

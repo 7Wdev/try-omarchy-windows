@@ -373,6 +373,11 @@ public:
         mapped = 0; stopped = true;
     }
     bool cleanExit() const { return stopped && !failed && !process.forced && process.exit == 0; }
+    driver_qemu::ProcessBinding processBinding() const { return process.binding(); }
+    bool guestExited() const { return process.exited(); }
+    // A launcher watcher may stop only the held process. Lease/GPU teardown
+    // stays on the existing serving thread after the owned guest has exited.
+    void stopGuest() noexcept { process.stop(0); }
     bool hasStopped() const { return stopped; }
     unsigned liveMappings() const { return mapped; }
     bool canMapFence() const {

@@ -14,6 +14,12 @@ Normal launcher integration and a stable interactive desktop remain in developme
 
 ![Three GPU apps complete 1800 handoffs; backend 4/8; desktop product 0/4](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/windows-nvgpu-lab/docs/images/gpu-backend-progress-three-apps-2026-10-27.svg)
 
+**Native launcher lifetime — October 29, 2026:** the bridge publishes a verified
+QEMU identity and reaps its owned VM on cancellation or creator exit. Three hidden
+GPU regressions retain the original data/pixel and cleanup checks. Go launcher
+activation, recovery during rendering and daily-use stability remain open;
+counts stay **4/8, 0/4, 3/3**. [Protocol and tested limits](docs/NATIVE-LAUNCHER-LIFETIME.md).
+
 **Vulkan buffer pressure — October 29, 2026:** two fresh guests recover from a
 real allocation refusal, retry the same 64 MiB GPU buffer and complete both
 original GPU data rounds with cleanup before VM exit. FD edge controls and the
