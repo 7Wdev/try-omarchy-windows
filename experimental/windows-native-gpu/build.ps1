@@ -88,6 +88,10 @@ cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\native_buffer_preparation
 if not "%errorlevel%"=="0" exit /b %errorlevel%
 native-buffer-preparation-test.exe
 if not "%errorlevel%"=="0" exit /b %errorlevel%
+cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\native_metadata_attempt_test.cpp" /Fe:native-metadata-attempt-test.exe
+if not "%errorlevel%"=="0" exit /b %errorlevel%
+native-metadata-attempt-test.exe
+if not "%errorlevel%"=="0" exit /b %errorlevel%
 cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\sync_sharing_wire_test.cpp" /Fe:sync-sharing-wire-test.exe
 if not "%errorlevel%"=="0" exit /b %errorlevel%
 sync-sharing-wire-test.exe

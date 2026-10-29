@@ -65,6 +65,15 @@ int main(int argc, char** argv) {
         require(argc == 1 || argc == 2, "usage: vulkan-device-probe [absolute Dozen ICD path]");
         const char* path = argc == 2 ? argv[1] : WDDM_BRIDGE_VULKAN_ICD_PATH;
         require(path[0] == '/', "ICD path must be absolute");
+#ifdef WDDM_BRIDGE_FD_ROUNDTRIP_GPU_PRESSURE
+        // Reuse the existing exact v2 capacity agreement before opening any
+        // adapter. It admits sixteen virtual reservations while retaining the
+        // current 96 MiB CPU / 256 MiB reported-GPU byte guards. The render API
+        // below remains Vulkan; no OpenGL context or display is created.
+        const auto capacity = reinterpret_cast<int (*)()>(dlsym(RTLD_DEFAULT, "wddm_bridge_begin_opengl_fences"));
+        require(capacity && capacity() == 0, "GPU pressure capacity agreement");
+        std::cout << "VULKAN_GPU_MEMORY_PRESSURE_CAPACITY version=2 reservations=16 cpuByteGuardUnchanged=true gpuByteGuardUnchanged=true renderApi=Vulkan" << std::endl;
+#endif
         Runtime runtime;
         runtime.library = dlopen(path, RTLD_NOW | RTLD_LOCAL);
         if (!runtime.library) {

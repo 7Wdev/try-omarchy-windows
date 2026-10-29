@@ -456,7 +456,8 @@ enum class Op : std::uint32_t {
     QueryMemoryBudget = 0x20a0, EvictVendorAllocations,
     CreateNativeInteropResource, QueryNativeInteropCaps, CaptureCompositorResource, QueueCompositorFrame,
     QueryDeviceExecutionState = 0x20b0,
-    QueryNativeGpuBufferCaps = 0x20c0, CreateNativeSharedGpuBufferAllocation
+    QueryNativeGpuBufferCaps = 0x20c0, CreateNativeSharedGpuBufferAllocation,
+    QueryNativeGpuBufferAdmission = 0x20d0
 };
 enum class Kind { Adapter, Device, PagingQueue, Allocation, Context, PagingSync, VendorAllocation, HwQueue, HwQueueSync, Sync, GpuReservation, VendorResource, SharedSync, SharedResource };
 // Closing an exported NT reference does not destroy a KMT allocation/sync or
@@ -569,6 +570,9 @@ public:
     }
     virtual NativeInteropCaps nativeInteropCaps() const { return {}; }
     virtual NativeGpuBufferCaps nativeGpuBufferCaps() const { return {}; }
+    virtual Result queryNativeGpuBufferAdmission(NativeGpuBufferDesc) {
+        return {static_cast<std::int32_t>(0xc00000bbu), 0, 0};
+    }
     virtual VendorResourceResult createNativeSharedGpuBufferAllocation(std::uint32_t, NativeSharedGpuBufferAllocationDesc, std::vector<std::uint8_t>&) {
         return {{static_cast<std::int32_t>(0xc00000bbu), 0, 0}, 0};
     }
@@ -1055,6 +1059,16 @@ public:
             if (!validNativeGpuBufferCaps(caps)) return reply(h, -95);
             auto out = reply(h, 0); out.resize(sizeof h + sizeof caps);
             std::memcpy(out.data() + sizeof h, &caps, sizeof caps); return out;
+        }
+        if (op == Op::QueryNativeGpuBufferAdmission) {
+            if (!negotiated) return reply(h, -71);
+            if (h.handle || packet.size() != sizeof h + sizeof(NativeGpuBufferDesc)) return reply(h, -22);
+            if (!validNativeGpuBufferCaps(driver.nativeGpuBufferCaps())) return reply(h, -95);
+            NativeGpuBufferDesc desc{}; std::memcpy(&desc, packet.data() + sizeof h, sizeof desc);
+            if (!validNativeGpuBuffer(desc)) return reply(h, -22);
+            const auto result = driver.queryNativeGpuBufferAdmission(desc);
+            if (result.nativeHandle || result.value || result.ntstatus > 0) return reply(h, -5);
+            return reply(h, 0, 0, &result);
         }
         if (op == Op::QueryNativeInteropCaps) {
             if(!negotiated) return reply(h,-71);

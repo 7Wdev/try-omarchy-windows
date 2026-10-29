@@ -95,6 +95,13 @@ struct Fake : Driver {
     unsigned nativeInteropCalls=0;
     bool nativeGpuBufferEnabled = false;
     unsigned nativeGpuBufferCalls = 0;
+    unsigned nativeGpuBufferAdmissionCalls = 0;
+    NativeGpuBufferDesc lastGpuBufferAdmission{};
+    Result nativeGpuBufferAdmissionResult{static_cast<std::int32_t>(0xc00000bbu), 0, 0};
+    Result queryNativeGpuBufferAdmission(NativeGpuBufferDesc desc) override {
+        require(nativeGpuBufferEnabled && validNativeGpuBuffer(desc));
+        ++nativeGpuBufferAdmissionCalls; lastGpuBufferAdmission = desc; return nativeGpuBufferAdmissionResult;
+    }
     int badNativeGpuBufferCaps = 0;
     NativeGpuBufferCaps nativeGpuBufferCaps() const override {
         auto c = nativeGpuBufferEnabled ? NativeGpuBufferProfile : NativeGpuBufferCaps{};
@@ -528,6 +535,43 @@ static void applicationResourceReferences() {
 }
 int main() {
     applicationResourceReferences();
+    {
+        static_assert(static_cast<unsigned>(Op::QueryNativeGpuBufferAdmission) == 0x20d0);
+        Fake f; Session s(f);
+        const NativeGpuBufferDesc desc{65536, 0, 0};
+        const auto query = request(Op::QueryNativeGpuBufferAdmission, 0, desc);
+        require(header(s.dispatch(query)).status == -71 && !f.nativeGpuBufferAdmissionCalls);
+        s.dispatch(hello());
+        require(header(s.dispatch(query)).status == -95 && !f.nativeGpuBufferAdmissionCalls);
+        f.nativeGpuBufferEnabled = true;
+        for (unsigned n = 0; n < 8; ++n) {
+            auto d = desc;
+            if (n == 0) d.bytes = 0;
+            if (n == 1) d.bytes = NativeGpuBufferProfile.maxBytes + 1;
+            if (n == 2) d.bytes = UINT64_MAX;
+            if (n == 3) d.flags = 1;
+            if (n == 4) d.reserved = 1;
+            auto p = request(Op::QueryNativeGpuBufferAdmission, n == 5 ? 1 : 0, d);
+            if (n == 6) p.pop_back();
+            if (n == 7) p.push_back(0);
+            require(header(s.dispatch(p)).status == -22 && !f.nativeGpuBufferAdmissionCalls);
+        }
+        for (const auto status : {static_cast<std::int32_t>(0xc00000bbu), static_cast<std::int32_t>(0xc0000017u),
+                                  static_cast<std::int32_t>(0xc0000001u), 0}) {
+            f.nativeGpuBufferAdmissionResult = {status, 0, 0};
+            const auto out = s.dispatch(query); Reply value{};
+            require(!header(out).status && !header(out).handle && out.size() == sizeof(Header) + sizeof value);
+            std::memcpy(&value, out.data() + sizeof(Header), sizeof value);
+            require(value.ntstatus == status && !value.value && !value.reserved);
+        }
+        require(f.lastGpuBufferAdmission.bytes == desc.bytes && f.vendorOwners.empty());
+        for (const auto bad : std::vector<Result>{{259,0,0}, {0,777,0}, {0,0,1}, {static_cast<std::int32_t>(0xc0000017u),0,1}}) {
+            f.nativeGpuBufferAdmissionResult = bad; require(header(s.dispatch(query)).status == -5);
+        }
+        f.nativeGpuBufferAdmissionResult = {0,0,0};
+        require(!header(s.dispatch(query)).status && f.vendorOwners.empty());
+        std::cout << "NATIVE_GPU_BUFFER_ADMISSION_WIRE_PASS negotiatedOnly=true invalidRequestsRejected=true memoryStatusPreserved=true retrySameSession=true noGpuObjects=true mock=true gpu=false\n";
+    }
     {
         static_assert(static_cast<unsigned>(Op::QueryDeviceExecutionState) == 0x20b0);
         static_assert(static_cast<unsigned>(Op::QueryNativeGpuBufferCaps) == 0x20c0);

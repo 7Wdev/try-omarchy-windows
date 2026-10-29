@@ -14,6 +14,13 @@ Normal launcher integration and a stable interactive desktop remain in developme
 
 ![Three GPU apps complete 1800 handoffs; backend 4/8; desktop product 0/4](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/windows-nvgpu-lab/docs/images/gpu-backend-progress-three-apps-2026-10-27.svg)
 
+**Vulkan buffer pressure — October 29, 2026:** two fresh guests recover from a
+real allocation refusal, retry the same 64 MiB GPU buffer and complete both
+original GPU data rounds with cleanup before VM exit. FD edge controls and the
+original 4K compute/shader regressions pass. This is advisory allocation preflight;
+concurrent pressure and full desktop stability remain open. Counts stay
+**4/8, 0/4, 3/3**. [Exact recovery scope and retained failures](docs/VULKAN-GPU-PRESSURE-RECOVERY.md).
+
 **Vulkan GPU data sharing — October 28, 2026:** four fresh guests pass both
 complete 64 KiB GPU export/free/import/readback rounds with typed Windows buffer
 metadata, including FD zero and FD-exhaustion recovery. The GPU corruption control

@@ -374,6 +374,8 @@ class KmtDriver : public Driver {
     std::uint32_t peakStandaloneMappedPages=0;
     unsigned completedVendorMaps = 0, failedVendorMaps = 0, completedVendorMapWaits = 0;
     unsigned completedVendorAllocations = 0, destroyedVendorAllocations = 0, failedVendorAllocations = 0, uninitializedSourceAllocations = 0;
+    unsigned nativeGpuBufferMetadataMemoryRefusals = 0;
+    unsigned nativeGpuBufferAdmissionQueries = 0, nativeGpuBufferAdmissionRefusals = 0, failedNativeGpuBufferAdmissionQueries = 0;
     std::size_t peakVendorAllocationObjects = 0;
     std::uint64_t peakReportedGpuUsage = 0;
     std::mutex reportedUsageGuard;
@@ -1428,6 +1430,23 @@ public:
         return gpu_diagnostic::HighResolution && nativeMetadataEnabled && sharedResourcesEnabled &&
                allocationsEnabled && runtime && !runtime->hasStopped() ? NativeGpuBufferProfile : NativeGpuBufferCaps{};
     }
+    Result queryNativeGpuBufferAdmission(NativeGpuBufferDesc desc) override {
+        if (!validNativeGpuBufferCaps(nativeGpuBufferCaps()) || !validNativeGpuBuffer(desc)) return {Invalid, 0, 0};
+        ++nativeGpuBufferAdmissionQueries;
+        bool known = false; std::uint64_t usage = 0;
+        // A necessary lower-bound check before the guest runtime starts its
+        // allocation. It reserves no capacity; native callback guards remain
+        // authoritative for actual requirements and concurrent usage changes.
+        const bool fits = reportedGpuUsageAcceptable(desc.bytes, nullptr, &usage, &known);
+        const auto status = !known ? static_cast<std::int32_t>(0xc0000001u) : fits ? 0 : static_cast<std::int32_t>(0xc0000017u);
+        if (!known) ++failedNativeGpuBufferAdmissionQueries;
+        else if (!fits) ++nativeGpuBufferAdmissionRefusals;
+        std::cerr << "{\"nativeGpuBufferAdmissionQueried\":true,\"bytes\":" << desc.bytes << ",\"flags\":" << desc.flags
+            << ",\"usageKnown\":" << (known ? "true" : "false") << ",\"usageBytes\":" << usage
+            << ",\"limitBytes\":" << reportedGpuUsageLimit() << ",\"accepted\":" << (known && fits ? "true" : "false")
+            << ",\"ntstatus\":" << status << ",\"advisoryOnly\":true,\"capacityReserved\":false,\"gpuObjectCreated\":false}\n";
+        return {status, 0, 0};
+    }
     VendorResourceResult createNativeSharedGpuBufferAllocation(std::uint32_t device, NativeSharedGpuBufferAllocationDesc desc, std::vector<std::uint8_t>& data) override {
         if (!validNativeGpuBufferCaps(nativeGpuBufferCaps()) || !validNativeSharedGpuBufferAllocation(desc)) return {{Invalid, 0, 0}, 0};
         const auto result = createVendorAllocationImpl(device, desc.shared.allocation, data, true, desc.shared.runtimeBytes, nullptr, false, &desc.buffer);
@@ -1474,7 +1493,24 @@ public:
         }
         if (bufferProfile) {
             if (texture || !runtimeBytes || !validNativeGpuBufferCaps(nativeGpuBufferCaps()) || !validNativeGpuBuffer(*bufferProfile)) return {Invalid, 0, 0};
-            nativeRuntime = driver_metadata::generateBuffer(luid, *bufferProfile, [this](std::uint64_t bytes) { return reportedGpuUsageAcceptable(bytes); });
+            auto attempt = driver_metadata::attemptBufferMetadata([&] {
+                return driver_metadata::generateBuffer(luid, *bufferProfile, [this](std::uint64_t bytes) {
+                    bool known = false;
+                    const bool fits = reportedGpuUsageAcceptable(bytes, nullptr, nullptr, &known);
+                    return !known ? driver_metadata::BudgetDecision::Unavailable : fits ?
+                        driver_metadata::BudgetDecision::Accepted : driver_metadata::BudgetDecision::QuotaRefused;
+                });
+            });
+            if (attempt.failure != driver_metadata::MemoryFailure::None) {
+                ++nativeGpuBufferMetadataMemoryRefusals;
+                std::cerr << "{\"nativeGpuBufferMetadataMemoryRefused\":true,\"reason\":\"" << driver_metadata::memoryFailureName(attempt.failure)
+                    << "\",\"bytes\":" << bufferProfile->bytes << ",\"flags\":" << bufferProfile->flags
+                    << ",\"originalNativeCode\":" << attempt.nativeCode
+                    << ",\"ntstatus\":" << static_cast<std::int32_t>(0xc0000017u)
+                    << ",\"temporaryOwnershipUnwound\":true,\"allocationPublished\":false,\"guestRuntimePreserved\":true}\n";
+                return {static_cast<std::int32_t>(0xc0000017u), 0, 0};
+            }
+            nativeRuntime = std::move(attempt.bytes);
             a.pPrivateRuntimeData = nativeRuntime.data(); a.PrivateRuntimeDataSize = static_cast<UINT>(nativeRuntime.size());
         }
         auto status = D3DKMTCreateAllocation2(&a);
@@ -2736,6 +2772,10 @@ public:
                   << ",\"allocationRetirementOptIn\":" << (retirementEnabled ? "true" : "false")
                   << ",\"vendorDestructionsWithHwQueues\":" << vendorDestructionsWithHwQueues
                   << ",\"failedVendorAllocations\":" << failedVendorAllocations
+                  << ",\"nativeGpuBufferMetadataMemoryRefusals\":" << nativeGpuBufferMetadataMemoryRefusals
+                  << ",\"nativeGpuBufferAdmissionQueries\":" << nativeGpuBufferAdmissionQueries
+                  << ",\"nativeGpuBufferAdmissionRefusals\":" << nativeGpuBufferAdmissionRefusals
+                  << ",\"failedNativeGpuBufferAdmissionQueries\":" << failedNativeGpuBufferAdmissionQueries
                   << ",\"completedVendorGpuVaMaps\":" << completedVendorMaps
                   << ",\"failedVendorGpuVaMaps\":" << failedVendorMaps
                   << ",\"completedVendorGpuVaWaits\":" << completedVendorMapWaits

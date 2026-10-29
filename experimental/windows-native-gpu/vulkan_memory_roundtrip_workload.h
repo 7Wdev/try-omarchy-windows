@@ -4,6 +4,9 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <iomanip>
+#ifdef WDDM_BRIDGE_FD_ROUNDTRIP_GPU_PRESSURE
+#include <array>
+#endif
 #ifdef WDDM_BRIDGE_FD_ROUNDTRIP_EXHAUSTION
 #include <algorithm>
 #include <cerrno>
@@ -51,6 +54,100 @@ void roundtripHash(std::uint64_t& hash, std::uint32_t word) {
         hash ^= (word >> shift) & 255u; hash *= UINT64_C(1099511628211);
     }
 }
+
+#ifdef WDDM_BRIDGE_FD_ROUNDTRIP_GPU_PRESSURE
+// Real owned GPU allocations, fills and retired fences create pressure. Only
+// this diagnostic guest is affected; the host's existing byte guard stays fixed.
+void gpuAllocationPressure(Runtime& runtime, VkQueue queue, VkCommandBuffer command,
+                           RoundtripObjects& original, VkExternalMemoryBufferCreateInfo& external,
+                           VkBufferUsageFlags usage, std::uint32_t gpuType) {
+    constexpr VkDeviceSize bytes = 64ull * 1024 * 1024;
+    struct PressureObjects {
+        Runtime& runtime; bool& pending;
+        std::array<VkBuffer, 6> buffers{};
+        std::array<VkDeviceMemory, 6> memories{};
+        void release(unsigned index) {
+            if (buffers[index]) runtime.proc<PFN_vkDestroyBuffer>("vkDestroyBuffer")(runtime.device, buffers[index], nullptr);
+            buffers[index] = VK_NULL_HANDLE;
+            if (memories[index]) runtime.proc<PFN_vkFreeMemory>("vkFreeMemory")(runtime.device, memories[index], nullptr);
+            memories[index] = VK_NULL_HANDLE;
+        }
+        ~PressureObjects() {
+            if (pending && runtime.proc<PFN_vkDeviceWaitIdle>("vkDeviceWaitIdle")(runtime.device) == VK_SUCCESS) pending = false;
+            for (unsigned i = 0; i < buffers.size(); ++i) release(i);
+        }
+    } owned{runtime, original.pending};
+    auto fill = [&](unsigned index) {
+        result("pressure-reset-command", runtime.proc<PFN_vkResetCommandBuffer>("vkResetCommandBuffer")(command, 0));
+        result("pressure-reset-fence", runtime.proc<PFN_vkResetFences>("vkResetFences")(runtime.device, 1, &original.fence));
+        VkCommandBufferBeginInfo begin{}; begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        result("pressure-begin-command", runtime.proc<PFN_vkBeginCommandBuffer>("vkBeginCommandBuffer")(command, &begin));
+        runtime.proc<PFN_vkCmdFillBuffer>("vkCmdFillBuffer")(command, owned.buffers[index], 0, bytes, UINT32_C(0x6b170001) ^ index);
+        result("pressure-end-command", runtime.proc<PFN_vkEndCommandBuffer>("vkEndCommandBuffer")(command));
+        VkSubmitInfo submit{}; submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submit.commandBufferCount = 1; submit.pCommandBuffers = &command;
+        original.pending = true;
+        result("pressure-submit", runtime.proc<PFN_vkQueueSubmit>("vkQueueSubmit")(queue, 1, &submit, original.fence));
+        result("pressure-wait", runtime.proc<PFN_vkWaitForFences>("vkWaitForFences")(
+            runtime.device, 1, &original.fence, VK_TRUE, UINT64_C(30000000000)));
+        original.pending = false;
+    };
+    unsigned refused = static_cast<unsigned>(owned.buffers.size());
+    VkMemoryRequirements refusedRequirements{};
+    std::cout << "VULKAN_GPU_MEMORY_PRESSURE_BEGIN allocationBytes=" << bytes
+        << " maxAttempts=" << owned.buffers.size() << " cpuWrites=false hostGuardChanged=false" << std::endl;
+    for (unsigned i = 0; i < owned.buffers.size(); ++i) {
+        VkBufferCreateInfo buffer{}; buffer.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        buffer.pNext = &external; buffer.size = bytes; buffer.usage = usage; buffer.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        result("pressure-buffer", runtime.proc<PFN_vkCreateBuffer>("vkCreateBuffer")(runtime.device, &buffer, nullptr, &owned.buffers[i]));
+        require(owned.buffers[i] != VK_NULL_HANDLE, "pressure buffer missing");
+        VkMemoryRequirements requirements{};
+        runtime.proc<PFN_vkGetBufferMemoryRequirements>("vkGetBufferMemoryRequirements")(runtime.device, owned.buffers[i], &requirements);
+        require(requirements.size == bytes && (requirements.memoryTypeBits & (1u << gpuType)), "unexpected pressure buffer requirements");
+        VkMemoryDedicatedAllocateInfo dedicated{}; dedicated.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO;
+        dedicated.buffer = owned.buffers[i];
+        VkExportMemoryAllocateInfo exported{}; exported.sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO;
+        exported.pNext = &dedicated; exported.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+        VkMemoryAllocateInfo allocate{}; allocate.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocate.pNext = &exported; allocate.allocationSize = requirements.size; allocate.memoryTypeIndex = gpuType;
+        VkDeviceMemory memory = VK_NULL_HANDLE;
+        const auto status = runtime.proc<PFN_vkAllocateMemory>("vkAllocateMemory")(runtime.device, &allocate, nullptr, &memory);
+        if (status != VK_SUCCESS) {
+            require((status == VK_ERROR_OUT_OF_DEVICE_MEMORY || status == VK_ERROR_OUT_OF_HOST_MEMORY) &&
+                memory == VK_NULL_HANDLE && i && original.callerOwnedFd >= 0 && fcntl(original.callerOwnedFd, F_GETFD) >= 0,
+                "pressure did not return a recoverable allocation refusal");
+            refused = i; refusedRequirements = requirements;
+            std::cout << "VULKAN_GPU_MEMORY_PRESSURE_REFUSED heldBuffers=" << i << " result=" << status
+                << " allocationBytes=" << bytes << " outputNull=true callerFdRetained=true" << std::endl;
+            break;
+        }
+        require(memory != VK_NULL_HANDLE, "pressure memory missing"); owned.memories[i] = memory;
+        result("pressure-bind", runtime.proc<PFN_vkBindBufferMemory>("vkBindBufferMemory")(runtime.device, owned.buffers[i], memory, 0));
+        fill(i);
+        std::cout << "VULKAN_GPU_MEMORY_PRESSURE_HELD index=" << i << " allocationBytes=" << bytes << " gpuFillRetired=true" << std::endl;
+    }
+    require(refused < owned.buffers.size(), "bounded GPU pressure did not reach the existing guard");
+    for (unsigned i = 0; i < refused; ++i) owned.release(i);
+    result("pressure-device-idle", runtime.proc<PFN_vkDeviceWaitIdle>("vkDeviceWaitIdle")(runtime.device));
+    VkMemoryDedicatedAllocateInfo dedicated{}; dedicated.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO;
+    dedicated.buffer = owned.buffers[refused];
+    VkExportMemoryAllocateInfo exported{}; exported.sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO;
+    exported.pNext = &dedicated; exported.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+    VkMemoryAllocateInfo retry{}; retry.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    retry.pNext = &exported; retry.allocationSize = refusedRequirements.size; retry.memoryTypeIndex = gpuType;
+    result("pressure-retry-memory", runtime.proc<PFN_vkAllocateMemory>("vkAllocateMemory")(
+        runtime.device, &retry, nullptr, &owned.memories[refused]));
+    require(owned.memories[refused] != VK_NULL_HANDLE, "pressure retry memory missing");
+    result("pressure-retry-bind", runtime.proc<PFN_vkBindBufferMemory>("vkBindBufferMemory")(
+        runtime.device, owned.buffers[refused], owned.memories[refused], 0));
+    fill(refused);
+    require(original.callerOwnedFd >= 0 && fcntl(original.callerOwnedFd, F_GETFD) >= 0, "GPU pressure lost original caller FD");
+    owned.release(refused);
+    std::cout << "VULKAN_GPU_MEMORY_PRESSURE_RECOVERED freedBuffers=" << refused
+        << " retrySameBuffer=true retrySameSize=true retrySameMemoryType=true retryGpuFillRetired=true callerFdRetained=true" << std::endl;
+}
+#endif
 
 void memoryRoundtripWorkload(Runtime& runtime, VkPhysicalDevice physical, std::uint32_t family, VkQueue queue) {
     std::cout << "VULKAN_MEMORY_ROUNDTRIP_BEGIN bufferBytes=65536 stripes=16 rounds=2 cpuWrites=false window=false" << std::endl;
@@ -168,6 +265,9 @@ void memoryRoundtripWorkload(Runtime& runtime, VkPhysicalDevice physical, std::u
         const auto originalRequirements = requirements;
         objects.releaseCreator();
         std::cout << "VULKAN_MEMORY_ROUNDTRIP_CREATOR_FREED round=" << round << " beforeImport=true gpuFillRetired=true" << std::endl;
+#ifdef WDDM_BRIDGE_FD_ROUNDTRIP_GPU_PRESSURE
+        if (!round) gpuAllocationPressure(runtime, queue, command, objects, external, externalInfo.usage, gpuType);
+#endif
         requirements = createBuffer(objects.imported, true, "roundtrip-import-buffer");
         require(requirements.size == originalRequirements.size && (requirements.memoryTypeBits & (1u << gpuType)), "incompatible import buffer");
         dedicated.buffer = objects.imported;

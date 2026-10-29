@@ -184,3 +184,18 @@ experimental/windows-native-gpu/mesa/dozen-native-gpu-buffer-patch.json text eol
 experimental/windows-native-gpu/vulkan_typed_buffer_evidence.py text eol=lf
 experimental/windows-native-gpu/test_vulkan_typed_buffer_evidence.py text eol=lf
 experimental/windows-native-gpu/verify_vulkan_typed_buffers.py text eol=lf
+
+experimental/windows-native-gpu/native_metadata_attempt.h text eol=lf
+experimental/windows-native-gpu/native_metadata_attempt_test.cpp text eol=lf
+
+experimental/windows-native-gpu/native_buffer_admission_reply.h text eol=lf
+experimental/windows-native-gpu/native_buffer_admission_reply_test.cpp text eol=lf
+experimental/windows-native-gpu/mesa/0008-linux-dozen-buffer-admission-errors.patch text eol=lf
+experimental/windows-native-gpu/mesa/apply_mesa_dozen_buffer_admission.py text eol=lf
+experimental/windows-native-gpu/mesa/dozen-buffer-admission-patch.json text eol=lf
+experimental/windows-native-gpu/mesa/dozen_native_gpu_buffer_admission_contract.cpp text eol=lf
+experimental/windows-native-gpu/mesa/dzn_wddm_native_gpu_buffer_admission.h text eol=lf
+experimental/windows-native-gpu/mesa/test_dozen_buffer_admission.py text eol=lf
+experimental/windows-native-gpu/vulkan_gpu_pressure_evidence.py text eol=lf
+experimental/windows-native-gpu/test_vulkan_gpu_pressure_evidence.py text eol=lf
+experimental/windows-native-gpu/verify_vulkan_gpu_pressure.py text eol=lf

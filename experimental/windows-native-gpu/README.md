@@ -1,5 +1,10 @@
 # Native Windows GPU experiment
 
+The opt-in [Vulkan GPU-buffer pressure recovery](../../docs/VULKAN-GPU-PRESSURE-RECOVERY.md)
+now passes two fresh refusal/free/retry/data/cleanup runs under unchanged byte
+guards. It is advisory external-buffer admission; general desktop pressure,
+concurrency and daily-use acceptance remain open.
+
 ## Application allocation metadata
 
 The default-off `--driver-application-objects` option and matching

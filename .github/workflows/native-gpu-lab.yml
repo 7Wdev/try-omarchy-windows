@@ -147,6 +147,10 @@ jobs:
           /tmp/native-resource-preparation-test
           c++ -std=c++17 -Wall -Wextra -Werror experimental/windows-native-gpu/native_buffer_preparation_test.cpp -o /tmp/native-buffer-preparation-test
           /tmp/native-buffer-preparation-test
+          c++ -std=c++17 -O2 -Wall -Wextra -Werror experimental/windows-native-gpu/native_metadata_attempt_test.cpp -o /tmp/native-metadata-attempt-test
+          /tmp/native-metadata-attempt-test
+          c++ -std=c++17 -O2 -Wall -Wextra -Werror experimental/windows-native-gpu/native_buffer_admission_reply_test.cpp -o /tmp/native-buffer-admission-reply-test
+          /tmp/native-buffer-admission-reply-test
           c++ -std=c++17 -Wall -Wextra -Werror experimental/windows-native-gpu/guest_eventfd_handle_test.cpp -o /tmp/guest-eventfd-handle-test
           /tmp/guest-eventfd-handle-test
           /tmp/driver-wire-test
@@ -180,6 +184,7 @@ jobs:
           python3 experimental/windows-native-gpu/test_vulkan_memory_fd_evidence.py -v
           python3 experimental/windows-native-gpu/test_vulkan_memory_roundtrip_evidence.py -v
           python3 experimental/windows-native-gpu/test_vulkan_typed_buffer_evidence.py -v
+          python3 experimental/windows-native-gpu/test_vulkan_gpu_pressure_evidence.py -v
           python3 experimental/windows-native-gpu/mesa/test_dozen_memory_fd_evidence.py -v
           python3 experimental/windows-native-gpu/mesa/test_dozen_memory_fd_import_evidence.py -v
           c++ -std=c++17 -O2 -Wall -Wextra -Werror experimental/windows-native-gpu/shared_buffer_profile_test.cpp -o /tmp/shared-buffer-profile-test
@@ -372,6 +377,9 @@ jobs:
           python3 experimental/windows-native-gpu/mesa/apply_mesa_dozen_native_gpu_buffer.py /tmp/mesa-26.0.8
           python3 experimental/windows-native-gpu/mesa/apply_mesa_dozen_native_gpu_buffer.py /tmp/mesa-26.0.8
           python3 experimental/windows-native-gpu/mesa/test_dozen_native_gpu_buffer.py --source /tmp/mesa-26.0.8 --directx-headers .runtime-headers --output "$RUNNER_TEMP/dozen-native-gpu-buffer"
+          python3 experimental/windows-native-gpu/mesa/apply_mesa_dozen_buffer_admission.py /tmp/mesa-26.0.8
+          python3 experimental/windows-native-gpu/mesa/apply_mesa_dozen_buffer_admission.py /tmp/mesa-26.0.8
+          python3 experimental/windows-native-gpu/mesa/test_dozen_buffer_admission.py --source /tmp/mesa-26.0.8 --directx-headers .runtime-headers --output "$RUNNER_TEMP/dozen-buffer-admission"
           c++ -std=c++17 -Wall -Wextra -Werror -I /tmp/mesa-26.0.8/include -c experimental/windows-native-gpu/vulkan_memory_fd_probe.cpp -o /tmp/vulkan-memory-fd-probe.o
           python3 experimental/windows-native-gpu/build_vulkan_memory_roundtrip_probe.py --vulkan-include /tmp/mesa-26.0.8/include --icd /opt/wddm-vulkan/libvulkan_dzn.so --output "$RUNNER_TEMP/vulkan-memory-roundtrip-probes"
       - name: Validate Vulkan compute shaders and compile their probes; no GPU workload

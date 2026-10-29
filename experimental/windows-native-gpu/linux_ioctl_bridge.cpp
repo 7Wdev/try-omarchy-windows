@@ -10,6 +10,7 @@
 #include "guest_kernel_object.h"
 #include "native_resource_preparation.h"
 #include "native_buffer_preparation.h"
+#include "native_buffer_admission_reply.h"
 #include "guest_eventfd_handle.h"
 #include <sys/ioctl.h>
 #include <sys/mman.h>
@@ -287,6 +288,7 @@ class Bridge {
     bool nativeInteropQueried=false, nativeInteropSupported=false;
     NativeBufferPreparations nativeBufferPreparations;
     bool nativeGpuBufferQueried = false, nativeGpuBufferSupported = false;
+    bool nativeGpuBufferAdmissionUnsupported = false;
     std::uint32_t lastHwSignalSync = 0;
     struct BorrowedFence { std::uint32_t owner, device; bool hardware; };
     std::map<std::uint32_t, BorrowedFence> borrowedFences;
@@ -1795,6 +1797,22 @@ public:
         std::fprintf(stderr, "LINUX_BRIDGE nativeGpuBufferCaps=true version=1 maxBytes=67108864 allowedFlags=4\n");
         return true;
     }
+    void checkNativeGpuBufferAdmission(NativeGpuBufferDesc profile) {
+        if (nativeGpuBufferAdmissionUnsupported) return;
+        const auto packet = transport.exchange(request(Op::QueryNativeGpuBufferAdmission, 0, profile));
+        NativeBufferAdmissionReply response{};
+        try { response = parseNativeBufferAdmissionReply(packet); }
+        catch (...) { transport.fail(); throw Error(EPROTO); }
+        if (!response.supported) {
+            nativeGpuBufferAdmissionUnsupported = true;
+            std::fprintf(stderr, "LINUX_BRIDGE nativeGpuBufferAdmissionUnsupported=true legacyProfileRetained=true\n");
+            return;
+        }
+        if (response.transportStatus) throw Error(-response.transportStatus);
+        checkNt(response.nativeStatus);
+        std::fprintf(stderr, "LINUX_BRIDGE nativeGpuBufferAdmissionAccepted=true bytes=%llu advisoryOnly=true\n",
+            static_cast<unsigned long long>(profile.bytes));
+    }
     void prepareNativeGpuBuffer(NativeGpuBufferDesc profile) {
         if (!validNativeGpuBuffer(profile)) throw Error(EINVAL);
         if (!nativeGpuBufferAvailable()) throw Error(ENOSYS);
@@ -1802,6 +1820,8 @@ public:
         if ((caps.flags & required) != required) throw Error(ENOSYS);
         const auto thread = static_cast<std::uint64_t>(syscall(SYS_gettid));
         if (pendingNativeDevice || nativePreparations.contains(thread) || !nativeBufferPreparations.stage(thread, profile, deviceAdapters)) throw Error(EBUSY);
+        try { checkNativeGpuBufferAdmission(profile); }
+        catch (...) { nativeBufferPreparations.cancel(thread); throw; }
     }
     void cancelNativeGpuBuffer() { nativeBufferPreparations.cancel(static_cast<std::uint64_t>(syscall(SYS_gettid))); }
     void beginStreaming() {

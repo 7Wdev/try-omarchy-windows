@@ -19,7 +19,7 @@ def build(args):
     compiler = Path(shutil.which(args.cxx) or args.cxx).resolve(strict=True)
     rows, commands = [], []
     with (out / 'build.log').open('x') as log:
-        for profile in ('normal', 'corrupt-last', 'import-zero', 'fd-exhaustion'):
+        for profile in ('normal', 'corrupt-last', 'import-zero', 'fd-exhaustion', 'gpu-pressure'):
             folder = out / profile; folder.mkdir()
             binary = folder / 'vulkan-memory-roundtrip-probe'
             command = [str(compiler), '-std=c++17', '-O2', '-Wall', '-Wextra', '-Werror',
@@ -27,11 +27,12 @@ def build(args):
             if profile == 'corrupt-last': command.append('-DWDDM_BRIDGE_FD_ROUNDTRIP_CORRUPT=1')
             if profile == 'import-zero': command.append('-DWDDM_BRIDGE_FD_ROUNDTRIP_IMPORT_ZERO=1')
             if profile == 'fd-exhaustion': command.append('-DWDDM_BRIDGE_FD_ROUNDTRIP_EXHAUSTION=1')
+            if profile == 'gpu-pressure': command.append('-DWDDM_BRIDGE_FD_ROUNDTRIP_GPU_PRESSURE=1')
             command += [str(frozen / names[0]), '-ldl', '-o', str(binary)]
             commands.append(command)
             subprocess.run(command, check=True, stdout=log, stderr=subprocess.STDOUT)
             rows.append(dict(profile=profile, probeSha256=sha(binary)))
-    if len({row['probeSha256'] for row in rows}) != 4: raise ValueError('Control ineffective')
+    if len({row['probeSha256'] for row in rows}) != 5: raise ValueError('Control ineffective')
     receipt = dict(schema=1, sourceHashes={name: sha(frozen / name) for name in names}, profiles=rows,
         commands=commands, compilerSha256=sha(compiler), builderSha256=sha(Path(__file__)),
         guestIcdPath=str(args.icd), bufferBytes=65536, rounds=2, wordsPerRound=16384,
@@ -49,4 +50,4 @@ if __name__ == '__main__':
     args = parser.parse_args()
     if not args.icd.is_absolute() or any(c in str(args.icd) for c in ('"', '\n', '\r')): parser.error('Invalid absolute ICD path')
     build(args)
-    print('PASS: normal/corrupt/zero/exhaustion FD probes compiled; no GPU workload launched')
+    print('PASS: normal/corrupt/zero/FD-exhaustion/GPU-pressure probes compiled; no GPU workload launched')

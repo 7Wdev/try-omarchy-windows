@@ -3,6 +3,7 @@
 // The Linux runtime bytes remain independently owned by the guest resource.
 #pragma once
 #include "native_texture_metadata.h"
+#include "native_metadata_attempt.h"
 
 namespace driver_metadata {
 template<class Admit>
@@ -14,6 +15,7 @@ inline std::vector<std::uint8_t> generateBuffer(LUID luid, driver_bridge::Native
     auto hr = CreateDXGIFactory1(IID_PPV_ARGS(&factory));
     if (SUCCEEDED(hr)) hr = factory->EnumAdapterByLuid(luid, IID_PPV_ARGS(&adapter));
     if (SUCCEEDED(hr)) hr = D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device));
+    checkMetadataMemoryCode(hr);
     if (FAILED(hr)) throw std::runtime_error("Cannot create native buffer metadata device");
     D3D12_HEAP_PROPERTIES heap{}; heap.Type = D3D12_HEAP_TYPE_DEFAULT;
     heap.CreationNodeMask = heap.VisibleNodeMask = 1;
@@ -23,13 +25,16 @@ inline std::vector<std::uint8_t> generateBuffer(LUID luid, driver_bridge::Native
     desc.Flags = static_cast<D3D12_RESOURCE_FLAGS>(profile.flags);
     const auto info = device->GetResourceAllocationInfo(0, 1, &desc);
     if (!info.SizeInBytes || info.SizeInBytes > driver_bridge::NativeGpuBufferProfile.maxBytes ||
-        info.Alignment != D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT || !admit(info.SizeInBytes))
-        throw std::runtime_error("Native buffer template exceeds existing allocation budget");
+        info.Alignment != D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT)
+        throw std::runtime_error("Unexpected native buffer template allocation requirements");
+    requireMetadataBudget(admit(info.SizeInBytes), MemoryFailure::BeforeTemplate);
     hr = device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_SHARED, &desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&prototype));
+    checkMetadataMemoryCode(hr);
     if (FAILED(hr)) throw std::runtime_error("Cannot create native buffer metadata template");
-    if (!admit(0)) throw std::runtime_error("Native buffer template exceeds reported usage budget");
+    requireMetadataBudget(admit(0), MemoryFailure::AfterTemplate);
     Lease owned;
     hr = device->CreateSharedHandle(prototype.Get(), nullptr, GENERIC_ALL, nullptr, &owned.shared);
+    checkMetadataMemoryCode(hr);
     if (FAILED(hr) || !owned.shared) throw std::runtime_error("Cannot share native buffer metadata template");
     D3DKMT_OPENADAPTERFROMLUID kmtAdapter{}; kmtAdapter.AdapterLuid = luid;
     const auto adapterStatus = D3DKMTOpenAdapterFromLuid(&kmtAdapter); owned.adapter = kmtAdapter.hAdapter;
@@ -65,7 +70,10 @@ inline std::vector<std::uint8_t> generateBuffer(LUID luid, driver_bridge::Native
         << ",\"resourceDestroyedNtstatus\":" << owned.resourceStatus << ",\"deviceDestroyedNtstatus\":" << owned.deviceStatus
         << ",\"adapterClosedNtstatus\":" << owned.adapterStatus << ",\"sharedHandleClosed\":" << (owned.handleClosed ? "true" : "false")
         << ",\"prototypeReleased\":true,\"reportedUsageChecked\":true,\"privateBytesExported\":false}\n";
-    if (!success) throw std::runtime_error("Native Windows buffer metadata extraction failed");
+    if (!success) {
+        for (const auto code : {adapterStatus, deviceStatus, queryStatus, openStatus}) checkMetadataMemoryCode(code);
+        throw std::runtime_error("Native Windows buffer metadata extraction failed");
+    }
     return result;
 }
 }
