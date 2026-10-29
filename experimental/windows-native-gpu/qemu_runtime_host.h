@@ -8,6 +8,7 @@
 #include "driver_wire.h"
 #include "cpu_aperture.h"
 #include "qemu_fence_test.h"
+#include "qemu_graphics_arguments.h"
 #include "readonly_rootfs_args.h"
 #include "bounded_input_channel.h"
 #include "tcp_peer_owner.h"
@@ -239,6 +240,8 @@ public:
         auto attributes = static_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(HeapAlloc(GetProcessHeap(), 0, size));
         bool initialized = attributes && InitializeProcThreadAttributeList(attributes, 1, 0, &size);
         bool ready = initialized && UpdateProcThreadAttribute(attributes, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, inherited, sizeof inherited, nullptr, nullptr);
+        const driver_qemu_args::Transport transport{reinterpret_cast<std::uintptr_t>(source.value), driverPort,
+            fenceSlots, static_cast<unsigned>(allocationSlots)};
         std::vector<std::wstring> args{executable, L"-machine", L"q35,accel=whpx", L"-cpu", L"host", L"-m", std::to_wstring(memoryMiB), L"-smp", readonlyRoot ? L"2" : L"1",
             L"-display", enableSdl?L"sdl,gl=on,show-cursor=off,window-close=off":L"none", L"-monitor", L"none", L"-serial", L"stdio", L"-nodefaults", L"-no-reboot",
             L"-L", std::filesystem::absolute(paths.firmware).wstring(), L"-kernel", std::filesystem::absolute(paths.kernel).wstring(),
@@ -255,11 +258,8 @@ public:
             hwQueueEofTest ? L"console=ttyS0 rdinit=/init panic=1 wddm_hwqueue_eof_test=1" :
             cpuEofTest ? L"console=ttyS0 rdinit=/init panic=1 wddm_cpu_eof_test=1" : L"console=ttyS0 rdinit=/init panic=1",
             L"-name", std::wstring(name.begin(), name.end()), L"-qmp", L"tcp:127.0.0.1:" + std::to_wstring(qmpPort) + L",server=on,wait=off",
-            L"-device", L"wddm-fence-hub,id=wddm-fences,source-process=" + std::to_wstring(reinterpret_cast<std::uintptr_t>(source.value)) +
-                (fenceSlots == driver_bridge::DefaultFenceSlots ? L"" : L",slot-count=" + std::to_wstring(fenceSlots)),
-            L"-device", L"virtio-serial-pci,id=bridge-serial", L"-chardev",
-            L"socket,id=wddm,host=127.0.0.1,nodelay=on,port=" + std::to_wstring(driverPort), L"-device",
-            L"virtserialport,bus=bridge-serial.0,chardev=wddm,name=org.7wdev.wddm"};
+            L"-device", driver_qemu_args::fenceDevice(transport)};
+        driver_qemu_args::append(args, driver_qemu_args::guestTransport(transport));
         args.insert(args.end(),rootArguments.begin(),rootArguments.end());
         if(userNetwork) {
             args.insert(args.end(),{L"-netdev",L"user,id=browser-net",
@@ -278,13 +278,10 @@ public:
                 <<",\"port\":2,\"liveHostCapture\":true,\"inputImplementationChanged\":false,\"gpuProtocolChanged\":false}\n";
         }
         if(enableSdl) {
-            std::wstring audit;
-            for(const auto c:driver_capture::directory().wstring()) { audit+=c;if(c==L',') audit+=c; }
             const auto session=std::wstring(sdlGraphics->session.begin(),sdlGraphics->session.end());
             const auto luid=std::wstring(sdlGraphics->adapterLuid.begin(),sdlGraphics->adapterLuid.end());
             args.insert(args.end(),{L"-vga",L"none",L"-qmp",L"tcp:127.0.0.1:"+std::to_wstring(graphicsPort)+L",server=on,wait=off",
-                L"-device",L"wddm-sdl-relay,id=relay,session="+session+L",generation=1,adapter-luid="+luid+
-                    L",audit-directory="+audit+L",source-format=bgra8"});
+                L"-device",driver_qemu_args::relayDevice(session,luid,driver_capture::directory().wstring())});
         }
         if(enableWindowInput) args.insert(args.end(),{L"-qmp",L"tcp:127.0.0.1:"+std::to_wstring(inputPort)+L",server=on,wait=off"});
         if(readonlyRoot) {
@@ -293,9 +290,7 @@ public:
         }
         if (allocationsEnabled) {
             args.push_back(L"-device");
-            args.push_back(L"wddm-allocation-hub,id=wddm-allocations,source-process=" +
-                           std::to_wstring(reinterpret_cast<std::uintptr_t>(source.value)) +
-                           (allocationSlots == driver_bridge::DefaultVendorCpuSlots ? L"" : L",slot-count=" + std::to_wstring(allocationSlots)));
+            args.push_back(driver_qemu_args::allocationDevice(transport));
         }
         std::wstring command;
         for (const auto& argument : args) { if (!command.empty()) command += L' '; command += qemu_fence::quote(argument); }
