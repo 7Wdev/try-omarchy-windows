@@ -111,3 +111,9 @@ normal account/session startup, ordinary input, long browsing sessions, broad
 application compatibility, failure recovery and matched-native performance are
 still required. CUDA, video acceleration, DLSS, hardware ray tracing and the
 93% performance target remain part of the full goal and are unverified.
+
+The subsequent [original-argument profile checkpoint](ORIGINAL-LAUNCHER-GPU-PROFILE.md)
+implements that argument/runtime path and an early VM binding before private QMP
+readiness. Its current proof is CPU/helper coverage plus separate legacy GPU
+regressions; VM execution in the new mode and normal session acceptance remain
+unverified.

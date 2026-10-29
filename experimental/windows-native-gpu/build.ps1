@@ -88,6 +88,12 @@ cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\launcher_lifetime_test.cp
 if not "%errorlevel%"=="0" exit /b %errorlevel%
 launcher-lifetime-test.exe
 if not "%errorlevel%"=="0" exit /b %errorlevel%
+cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\launcher_profile_test.cpp" /Fe:launcher-profile-test.exe
+if not "%errorlevel%"=="0" exit /b %errorlevel%
+launcher-profile-test.exe
+if not "%errorlevel%"=="0" exit /b %errorlevel%
+cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\launcher_binding_fixture.cpp" /Fe:launcher-binding-fixture.exe
+if not "%errorlevel%"=="0" exit /b %errorlevel%
 cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\qemu_graphics_arguments_test.cpp" /Fe:qemu-graphics-arguments-test.exe
 if not "%errorlevel%"=="0" exit /b %errorlevel%
 qemu-graphics-arguments-test.exe

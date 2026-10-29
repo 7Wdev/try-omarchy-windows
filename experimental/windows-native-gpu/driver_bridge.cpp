@@ -3007,8 +3007,14 @@ int main(int argc, char** argv) {
         unsigned sdlFailureTest=0;
         bool virtioTrace=false,deferredResidency=false,userNetwork=false,mappedAdmission=false,applicationMemory=false,applicationObjects=false;
         const char* readonlyRoot = nullptr;
+        const char* launcherProfileJson = nullptr;
+        std::optional<driver_launcher::Profile> launcherProfile;
         std::optional<std::uintptr_t> launcherCancellation;
         while (argc > 1) {
+            if (argc>2 && std::string(argv[argc-2])=="--driver-launcher-profile") {
+                if (launcherProfileJson) throw std::runtime_error("Launcher profile must be specified once");
+                launcherProfileJson=argv[argc-1];argc-=2;continue;
+            }
             if (argc>2 && std::string(argv[argc-2])=="--driver-launcher-cancel-handle") {
                 if (launcherCancellation) throw std::runtime_error("Launcher cancellation handle must be specified once");
                 launcherCancellation=driver_launcher::parseHandle(argv[argc-1]);argc-=2;continue;
@@ -3089,6 +3095,18 @@ int main(int argc, char** argv) {
             throw std::runtime_error("Launcher lifetime requires the owned QEMU runtime");
         if (launcherCancellation && (!contexts || !queries))
             throw std::runtime_error("Launcher lifetime requires explicit query/context opt-ins");
+        if (launcherProfileJson) {
+            if (!launcherCancellation) throw std::runtime_error("Launcher profile requires inherited lifetime control");
+            launcherProfile=driver_launcher::Profile::parse(launcherProfileJson);
+            if (!gpu_diagnostic::HighResolution || !coordinated || !sdlRelay || readonlyRoot || windowInput || inputSelfTest ||
+                virtioTrace || userNetwork || sdlFailureTest || consumeProcess || cpuStoreTest || cpuEofTest || cpuSpanEofTest ||
+                hwQueueEofTest || syncEofTest || syncNoMaxEofTest || reservationEofTest || gpuStateEofTest ||
+                hwQueueNoBroadcastEofTest || hwQueueNoBroadcastWaitEofTest || cpuSlots!=DesktopVendorCpuSlots || fenceSlots!=512 ||
+                !actorSlotsConfigured || actorSlots!=8 || !resourceReferencesConfigured || resourceReferences!=32 ||
+                !mappedAdmission || !applicationMemory || !applicationObjects || !deferredResidency)
+                throw std::runtime_error("Launcher profile requires its complete native desktop contract and official input");
+            driver_capture::configureProfileDirectory(launcherProfile->auditDirectory);
+        }
         if (readonlyRoot && (!gpu_diagnostic::HighResolution || argc!=7 || std::string(argv[1])!="--run-qemu"))
             throw std::runtime_error("Read-only root image requires the diagnostic build and owned QEMU runtime");
         if(windowInput && !coordinated) throw std::runtime_error("Window input requires the owned read-only root desktop coordinator");
@@ -3101,7 +3119,7 @@ int main(int argc, char** argv) {
             throw std::runtime_error("Virtio trace requires the explicit high-resolution owned SDL coordinator and read-only root");
         if(userNetwork && (!gpu_diagnostic::HighResolution || !sdlRelay || !coordinated || !readonlyRoot))
             throw std::runtime_error("User networking requires the explicit high-resolution owned SDL coordinator and read-only root");
-        if(actorSlotsConfigured && (!gpu_diagnostic::HighResolution || !sdlRelay || !coordinated || !readonlyRoot || cpuSlots!=DesktopVendorCpuSlots || fenceSlots!=512))
+        if(actorSlotsConfigured && (!gpu_diagnostic::HighResolution || !sdlRelay || !coordinated || (!readonlyRoot && !launcherProfile) || cpuSlots!=DesktopVendorCpuSlots || fenceSlots!=512))
             throw std::runtime_error("Application actor capacity requires the explicit full owned SDL desktop and read-only root");
         if(resourceReferencesConfigured && !actorSlotsConfigured)
             throw std::runtime_error("Application resource references require the explicit application actor capacity");
@@ -3111,7 +3129,7 @@ int main(int argc, char** argv) {
             throw std::runtime_error("Application memory requires explicit mapped residency admission and application capacity");
         if(mappedAdmission && (!deferredResidency || !resourceReferencesConfigured || !actorSlotsConfigured))
             throw std::runtime_error("Mapped residency admission requires explicit application actors, references and retaining residency");
-        if(deferredResidency && (!gpu_diagnostic::HighResolution || !sdlRelay || !coordinated || !readonlyRoot || !residency || !retirement))
+        if(deferredResidency && (!gpu_diagnostic::HighResolution || !sdlRelay || !coordinated || (!readonlyRoot && !launcherProfile) || !residency || !retirement))
             throw std::runtime_error("Deferred residency requires the explicit high-resolution owned SDL coordinator, residency, retirement and read-only root");
         if (readonlyRoot && (cpuStoreTest || cpuEofTest || cpuSpanEofTest || hwQueueEofTest || syncEofTest || syncNoMaxEofTest ||
             reservationEofTest || gpuStateEofTest || hwQueueNoBroadcastEofTest || hwQueueNoBroadcastWaitEofTest))
@@ -3120,7 +3138,7 @@ int main(int argc, char** argv) {
         if(fenceSlots==512 && !coordinated) throw std::runtime_error("512 fence slots require the explicit owned coordinator");
         if (cpuSlots==SparseVendorCpuSlots && (!cpu || (fenceSlots!=256 && !(coordinated && fenceSlots==512)) || argc!=7 || std::string(argv[1])!="--run-qemu"))
             throw std::runtime_error("Sparse CPU aperture requires CPU locks, explicit 256 fence slots and an owned QEMU runtime");
-        if(coordinated && (!gpu_diagnostic::HighResolution || argc!=7 || std::string(argv[1])!="--run-qemu" || !readonlyRoot ||
+        if(coordinated && (!gpu_diagnostic::HighResolution || argc!=7 || std::string(argv[1])!="--run-qemu" || (!readonlyRoot && !launcherProfile) ||
             (cpuSlots!=SparseVendorCpuSlots && cpuSlots!=DesktopVendorCpuSlots) || (fenceSlots!=256 && fenceSlots!=512) || !nativeMetadata || !presentShared || !consumeShared || !sharedResources ||
             !asyncSubmit || !sync || !gpuState || !retirement || consumeProcess || cpuStoreTest || cpuEofTest || cpuSpanEofTest ||
             hwQueueEofTest || syncEofTest || syncNoMaxEofTest || reservationEofTest || gpuStateEofTest || hwQueueNoBroadcastEofTest || hwQueueNoBroadcastWaitEofTest))
@@ -3189,7 +3207,7 @@ int main(int argc, char** argv) {
         if (!ownedRuntime && ((argc != 3 && argc != 7) || std::string(argv[1]) != "--listen")) {
             std::cerr << "Usage: driver-bridge.exe --stdio | --listen port [--guest-section name --guest-ram-bytes count] "
                 "[--driver-contexts] [--driver-queries] [--driver-allocations] [--driver-gpuva] [--driver-residency] [--driver-cpu] [--driver-cpu-slots 16|32|64|128|256|512|1024] [--driver-translation] [--driver-hwqueues] [--driver-syncs] [--driver-submit] [--driver-async-submit] [--driver-retirement] [--driver-reservation] [--driver-gpu-state] [--cpu-store-test | --cpu-eof-test | --cpu-span-eof-test | --hwqueue-eof-test | --hwqueue-no-broadcast-eof-test | --hwqueue-no-broadcast-wait-eof-test | --sync-eof-test | --sync-no-max-eof-test | --reservation-eof-test | --gpu-state-eof-test]\n"
-                "       driver-bridge.exe --run-qemu qemu firmware kernel initramfs fresh-log --driver-contexts --driver-queries [--driver-fence-slots 64|128|256] [--driver-coordinator] [--driver-launcher-cancel-handle inherited-handle]\n"; return 2;
+                "       driver-bridge.exe --run-qemu qemu firmware kernel initramfs fresh-log --driver-contexts --driver-queries [--driver-fence-slots 64|128|256] [--driver-coordinator] [--driver-launcher-cancel-handle inherited-handle] [--driver-launcher-profile ascii-json]\n"; return 2;
         }
         if (ownedRuntime && (!contexts || !queries)) throw std::runtime_error("Owned QEMU runtime requires explicit query/context opt-ins");
         std::size_t end{}; const auto port = ownedRuntime ? 0ul : std::stoul(argv[2], &end);
@@ -3227,7 +3245,12 @@ int main(int argc, char** argv) {
         if (getsockname(listener.value, reinterpret_cast<sockaddr*>(&address), &length)) throw std::runtime_error("getsockname failed");
         std::cout << "{\"port\":" << ntohs(address.sin_port) << ",\"transport\":\"tcp-loopback\"}\n" << std::flush;
         if (ownedRuntime) runtime = std::make_unique<driver_qemu::Runtime>(ntohs(address.sin_port),
-            qemu_fence::Paths{argv[2], argv[3], argv[4], argv[5], argv[6]}, cpu, cpuStoreTest, cpuEofTest, hwQueueEofTest, cpuSlots, syncEofTest, reservationEofTest, gpuStateEofTest, cpuSpanEofTest, syncNoMaxEofTest, hwQueueNoBroadcastEofTest, hwQueueNoBroadcastWaitEofTest, fenceSlots,readonlyRoot,coordinated && fenceSlots==512,windowInput,inputSelfTest,sdlRelay,virtioTrace,userNetwork);
+            qemu_fence::Paths{argv[2], argv[3], argv[4], argv[5], argv[6]}, cpu, cpuStoreTest, cpuEofTest, hwQueueEofTest, cpuSlots, syncEofTest, reservationEofTest, gpuStateEofTest, cpuSpanEofTest, syncNoMaxEofTest, hwQueueNoBroadcastEofTest, hwQueueNoBroadcastWaitEofTest, fenceSlots,readonlyRoot,coordinated && fenceSlots==512,windowInput,inputSelfTest,sdlRelay,virtioTrace,userNetwork,
+            launcherProfile ? &*launcherProfile : nullptr,[watch=launcherLifetime.get()] { if(watch) watch->requireLive(); },
+            [watch=launcherLifetime.get()](const driver_qemu::ProcessBinding& binding) {
+                if(!watch) throw std::runtime_error("Launcher process binding requires lifetime control");
+                std::cout<<driver_launcher::bound(binding,*watch).dump()<<'\n'<<std::flush;
+            });
         if (launcherLifetime) {
             launcherLifetime->start([vm=runtime.get()](driver_launcher::End why) {
                 vm->stopGuest();

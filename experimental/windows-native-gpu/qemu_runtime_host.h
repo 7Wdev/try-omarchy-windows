@@ -10,6 +10,7 @@
 #include "qemu_fence_test.h"
 #include "qemu_graphics_arguments.h"
 #include "owned_qemu_process.h"
+#include "launcher_profile.h"
 #include "readonly_rootfs_args.h"
 #include "bounded_input_channel.h"
 #include "tcp_peer_owner.h"
@@ -155,15 +156,17 @@ class Runtime {
         throw std::runtime_error("SDL relay requires a hardware NVIDIA adapter");
     }
 public:
-    Runtime(unsigned short driverPort, const qemu_fence::Paths& paths, bool enableCpu = false, bool cpuStoreTest = false, bool cpuEofTest = false, bool hwQueueEofTest = false, std::size_t cpuSlots = driver_bridge::DefaultVendorCpuSlots, bool syncEofTest = false, bool reservationEofTest = false, bool gpuStateEofTest = false, bool cpuSpanEofTest = false, bool syncNoMaxEofTest = false, bool hwQueueNoBroadcastEofTest = false, bool hwQueueNoBroadcastWaitEofTest = false, std::uint32_t configuredFenceSlots = 0, const char* readonlyRoot = nullptr, bool desktopFences = false, bool enableWindowInput = false, bool inputSelfTest = false, bool enableSdl = false, bool virtioTrace = false, bool userNetwork = false)
+    Runtime(unsigned short driverPort, const qemu_fence::Paths& paths, bool enableCpu = false, bool cpuStoreTest = false, bool cpuEofTest = false, bool hwQueueEofTest = false, std::size_t cpuSlots = driver_bridge::DefaultVendorCpuSlots, bool syncEofTest = false, bool reservationEofTest = false, bool gpuStateEofTest = false, bool cpuSpanEofTest = false, bool syncNoMaxEofTest = false, bool hwQueueNoBroadcastEofTest = false, bool hwQueueNoBroadcastWaitEofTest = false, std::uint32_t configuredFenceSlots = 0, const char* readonlyRoot = nullptr, bool desktopFences = false, bool enableWindowInput = false, bool inputSelfTest = false, bool enableSdl = false, bool virtioTrace = false, bool userNetwork = false, const driver_launcher::Profile* launcherProfile = nullptr, std::function<void()> requireLauncherLive = {}, std::function<void(const ProcessBinding&)> onBound = {})
         : fenceSlots(configuredFenceSlots ? configuredFenceSlots : cpuSlots >= driver_bridge::ExpandedVendorCpuSlots ? driver_bridge::ExpandedFenceSlots : driver_bridge::DefaultFenceSlots),
-          allocationSlots(cpuSlots), allocationAperture(cpuSlots,desktopFences), allocationsEnabled(enableCpu), logfile(std::filesystem::absolute(paths.log)) {
+          allocationSlots(cpuSlots), allocationAperture(cpuSlots,desktopFences), allocationsEnabled(enableCpu), logfile(launcherProfile ? std::filesystem::path{} : std::filesystem::absolute(paths.log)) {
+        if (launcherProfile && (!desktopFences || !enableSdl || readonlyRoot || enableWindowInput || inputSelfTest || virtioTrace || userNetwork))
+            throw std::runtime_error("Launcher runtime requires its original devices and official SDL input");
         if (!driver_bridge::validFenceSlots(fenceSlots,desktopFences) || !driver_bridge::validVendorCpuSlots(cpuSlots,gpu_diagnostic::HighResolution,desktopFences) || (cpuSlots==driver_bridge::SparseVendorCpuSlots && fenceSlots!=(desktopFences ? 512u : 256u)) || (cpuSlots==driver_bridge::DesktopVendorCpuSlots && (!desktopFences || fenceSlots!=512)) || (!enableCpu && cpuSlots != driver_bridge::DefaultVendorCpuSlots))
             throw std::runtime_error("Invalid configured allocation aperture capacity");
         std::vector<std::wstring> rootArguments;
         inputDiagnostic=inputSelfTest;if(inputDiagnostic && !enableWindowInput) throw std::runtime_error("Input self-test requires window input");
         if(enableWindowInput && (!readonlyRoot || !desktopFences)) throw std::runtime_error("Window input requires the owned desktop root runtime");
-        if(enableSdl && (!readonlyRoot || !desktopFences || (enableWindowInput && !inputSelfTest)))
+        if(enableSdl && ((!readonlyRoot && !launcherProfile) || !desktopFences || (enableWindowInput && !inputSelfTest)))
             throw std::runtime_error("SDL graphics requires the owned desktop root; optional input is isolated QMP diagnostic only");
         if(virtioTrace && (!enableSdl || !readonlyRoot || !desktopFences))
             throw std::runtime_error("Virtio graphics trace requires the owned SDL root runtime");
@@ -178,8 +181,8 @@ public:
             if (readonlyBase.value==INVALID_HANDLE_VALUE)
                 throw std::runtime_error("Cannot hold read-only root image without write sharing");
         }
-        const unsigned memoryMiB=readonlyRoot ? 3072u : gpu_diagnostic::GuestMemoryMiB;
-        const auto executable = std::filesystem::absolute(paths.qemu).wstring();
+        const unsigned memoryMiB=launcherProfile ? launcherProfile->memoryMiB : readonlyRoot ? 3072u : gpu_diagnostic::GuestMemoryMiB;
+        const auto executable = launcherProfile ? launcherProfile->executable : std::filesystem::absolute(paths.qemu).wstring();
         Socket reservation; const auto qmpPort = reservePort(reservation);
         Socket inputReservation;const auto inputPort=enableWindowInput?reservePort(inputReservation):static_cast<unsigned short>(0);
         Socket graphicsReservation;const auto graphicsPort=enableSdl?reservePort(graphicsReservation):static_cast<unsigned short>(0);
@@ -188,6 +191,7 @@ public:
             throw std::runtime_error("Cannot create owned QEMU name");
         std::string name = "wddm-"; const char hex[] = "0123456789abcdef";
         for (const auto byte : random) { name += hex[byte >> 4]; name += hex[byte & 15]; }
+        const auto qmpName = launcherProfile ? launcherProfile->machineName : name;
         if(enableSdl) {
             sdlGraphics=std::make_shared<driver_sdl::Control>();sdlGraphics->session=name.substr(5);
             sdlGraphics->adapterLuid=nvidiaLuid();
@@ -197,7 +201,17 @@ public:
                 PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_VM_OPERATION, TRUE, 0))
             throw std::runtime_error("Cannot create inherited source process handle");
         SECURITY_ATTRIBUTES security{sizeof security, nullptr, TRUE};
-        log.value = CreateFileW(logfile.c_str(), GENERIC_WRITE, FILE_SHARE_READ, &security, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (launcherProfile) {
+            // The Go launcher already opened its per-attempt QEMU log. The
+            // bridge's stdout is a protocol pipe; QEMU keeps the original log
+            // through its separately inherited stderr-file entry.
+            const auto originalLog = GetStdHandle(STD_ERROR_HANDLE);
+            if (!originalLog || originalLog == INVALID_HANDLE_VALUE || GetFileType(originalLog) != FILE_TYPE_DISK ||
+                !DuplicateHandle(GetCurrentProcess(),originalLog,GetCurrentProcess(),&log.value,0,TRUE,DUPLICATE_SAME_ACCESS))
+                throw std::runtime_error("Launcher runtime requires its inherited QEMU log file");
+        } else {
+            log.value = CreateFileW(logfile.c_str(), GENERIC_WRITE, FILE_SHARE_READ, &security, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+        }
         input.value = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &security, OPEN_EXISTING, 0, nullptr);
         if (log.value == INVALID_HANDLE_VALUE || input.value == INVALID_HANDLE_VALUE) throw std::runtime_error("Cannot create fresh QEMU log and input");
         HANDLE inherited[]{source.value, log.value, input.value};
@@ -207,7 +221,13 @@ public:
         bool ready = initialized && UpdateProcThreadAttribute(attributes, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, inherited, sizeof inherited, nullptr, nullptr);
         const driver_qemu_args::Transport transport{reinterpret_cast<std::uintptr_t>(source.value), driverPort,
             fenceSlots, static_cast<unsigned>(allocationSlots)};
-        std::vector<std::wstring> args{executable, L"-machine", L"q35,accel=whpx", L"-cpu", L"host", L"-m", std::to_wstring(memoryMiB), L"-smp", readonlyRoot ? L"2" : L"1",
+        std::vector<std::wstring> args;
+        if (launcherProfile) {
+            const auto session=std::wstring(sdlGraphics->session.begin(),sdlGraphics->session.end());
+            const auto luid=std::wstring(sdlGraphics->adapterLuid.begin(),sdlGraphics->adapterLuid.end());
+            args=launcherProfile->compose(transport,session,luid,qmpPort,graphicsPort);
+        } else {
+        args={executable, L"-machine", L"q35,accel=whpx", L"-cpu", L"host", L"-m", std::to_wstring(memoryMiB), L"-smp", readonlyRoot ? L"2" : L"1",
             L"-display", enableSdl?L"sdl,gl=on,show-cursor=off,window-close=off":L"none", L"-monitor", L"none", L"-serial", L"stdio", L"-nodefaults", L"-no-reboot",
             L"-L", std::filesystem::absolute(paths.firmware).wstring(), L"-kernel", std::filesystem::absolute(paths.kernel).wstring(),
             L"-initrd", std::filesystem::absolute(paths.initramfs).wstring(), L"-append",
@@ -257,8 +277,10 @@ public:
             args.push_back(L"-device");
             args.push_back(driver_qemu_args::allocationDevice(transport));
         }
+        }
         std::wstring command;
         for (const auto& argument : args) { if (!command.empty()) command += L' '; command += qemu_fence::quote(argument); }
+        if (command.size() >= 32767) throw std::runtime_error("Owned QEMU command exceeds the Windows command-line bound");
         STARTUPINFOEXW startup{}; startup.StartupInfo.cb = sizeof startup; startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
         startup.StartupInfo.hStdInput = input.value; startup.StartupInfo.hStdOutput = log.value; startup.StartupInfo.hStdError = log.value;
         startup.lpAttributeList = attributes;
@@ -278,12 +300,15 @@ public:
         process.adoptVerified(child.hProcess,GetCurrentProcess(),
             {child.dwProcessId,processCreationTime(child.hProcess)},executable);
         pending.handle.value = nullptr; CloseHandle(child.hProcess);
+        if (launcherProfile && onBound) onBound(process.binding());
+        if (launcherProfile && requireLauncherLive) requireLauncherLive();
         const bool resumed = ResumeThread(mainThread.value) != static_cast<DWORD>(-1);
         CloseHandle(mainThread.value); mainThread.value = nullptr;
         if (!resumed) throw std::runtime_error("Cannot start QEMU within its owned job");
         std::cout << "{\"ownedQemuPid\":" << child.dwProcessId << ",\"guestMemoryMiB\":" << memoryMiB << "}\n" << std::flush;
         if (readonlyRoot) std::cout << "{\"ownedQemuReadonlyRootAttached\":true,\"fileNodeReadonly\":true,\"rawNodeReadonly\":true,\"sourceWriteSharingDenied\":true}\n" << std::flush;
-        qmp = std::make_unique<Qmp>(qmpPort, process, name);
+        if (launcherProfile) driver_launcher::bootHeadStart(process.handle.value,10000,requireLauncherLive);
+        qmp = std::make_unique<Qmp>(qmpPort, process, qmpName);
         if(userNetwork) {
             const auto backend=qmp->call("qom-get",{{"path","/machine/peripheral/browser-nic"},{"property","netdev"}});
             if(backend!="browser-net") throw std::runtime_error("Owned virtio NIC has an unexpected network backend");
@@ -291,9 +316,9 @@ public:
                 <<"\"internetConnectivityVerified\":false,\"browserRenderingVerified\":false}\n"<<std::flush;
         }
         if(enableSdl) {
-            auto graphicsQmp=std::make_shared<Qmp>(graphicsPort,process,name);
+            auto graphicsQmp=std::make_shared<Qmp>(graphicsPort,process,qmpName);
             const auto options=graphicsQmp->call("query-display-options");
-            if(options!=driver_qmp::Json{{"gl","on"},{"window-close",false},{"type","sdl"},{"show-cursor",false}})
+            if(options!=driver_qmp::Json{{"gl","on"},{"window-close",false},{"type","sdl"},{"show-cursor",launcherProfile && launcherProfile->hostCursor}})
                 throw std::runtime_error("Owned SDL display options differ");
             sdlGraphics->command=[graphicsQmp](const std::string& instruction) {
                 const auto acknowledgement=graphicsQmp->call("qom-set",{{"path","/machine/peripheral/relay"},

@@ -106,18 +106,20 @@ public:
     ~Lifetime() { cancelAndJoin(); }
 };
 
-inline nlohmann::json ready(const driver_qemu::ProcessBinding& binding, const Lifetime& lifetime) {
+inline nlohmann::json identityMessage(const driver_qemu::ProcessBinding& binding, const Lifetime& lifetime, bool qmpReady) {
     if (!binding.pid || binding.pid == GetCurrentProcessId() || binding.pid == lifetime.creatorId() ||
         !binding.creationTime || binding.creator != GetCurrentProcessId() ||
         lifetime.creatorId() == GetCurrentProcessId() || driver_qemu::creatorPid(GetCurrentProcessId()) != lifetime.creatorId() ||
         !binding.heldProcess || !binding.privateJob || !binding.pinnedImage)
         throw std::runtime_error("VM identity is not bound to this backend");
     lifetime.requireLive();
-    return {{"nativeLauncherVmReady",true},{"protocol",1},{"launchMode","backend-owned"},
+    return {{qmpReady ? "nativeLauncherVmReady" : "nativeLauncherVmBound",true},{"protocol",1},{"launchMode","backend-owned"},
         {"bridgePid",GetCurrentProcessId()},{"launcherPid",lifetime.creatorId()},
         {"launcherCreationTime100ns",std::to_string(lifetime.creatorTime())},
         {"qemuPid",binding.pid},{"qemuCreatorPid",binding.creator},{"qemuCreationTime100ns",std::to_string(binding.creationTime)},
-        {"heldProcessHandle",true},{"privateJobAssigned",true},{"imageFilePinned",true},{"qmpReady",true},
+        {"heldProcessHandle",true},{"privateJobAssigned",true},{"imageFilePinned",true},{"qmpReady",qmpReady},
         {"guestGraphicsVerified",false},{"launcherInputVerified",false},{"dailyUseAccepted",false}};
 }
+inline nlohmann::json ready(const driver_qemu::ProcessBinding& binding, const Lifetime& lifetime) { return identityMessage(binding,lifetime,true); }
+inline nlohmann::json bound(const driver_qemu::ProcessBinding& binding, const Lifetime& lifetime) { return identityMessage(binding,lifetime,false); }
 }

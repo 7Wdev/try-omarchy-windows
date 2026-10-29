@@ -99,8 +99,10 @@ identity through an internal prepared-profile branch and publishes the actual
 QEMU PID for its existing window/bridge checks. Hidden GPU and early lifecycle
 controls pass. Original input handlers remain unchanged; only `main.go`'s
 supervision boundary changes among the original 430 launcher files. The matching
-normal guest argument/runtime profile, activation and recovery during rendering
-remain open. [Implementation and precise tested scope](GO-NATIVE-GPU-SUPERVISION.md).
+normal guest graphics bootstrap, activation and recovery during rendering
+remain open. The original-argument runtime profile and early identity handoff
+now pass CPU/helper tests; its actual VM boot remains unverified.
+[Implementation and precise tested scope](ORIGINAL-LAUNCHER-GPU-PROFILE.md).
 
 A new default-off guest build option samples mapped-memory diagnostics twice
 instead of 10,000 times. Strict shims, transport fault tests and real Linux IPC

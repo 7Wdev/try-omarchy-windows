@@ -14,6 +14,13 @@ Normal launcher integration and a stable interactive desktop remain in developme
 
 ![Three GPU apps complete 1800 handoffs; backend 4/8; desktop product 0/4](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/windows-nvgpu-lab/docs/images/gpu-backend-progress-three-apps-2026-10-27.svg)
 
+**Original launcher profile — October 29, 2026:** the Go/native argument profile
+and early VM identity handoff preserve the original boot/input choices in CPU
+checks. Existing hidden 4K GPU regressions pass after the runtime refactor.
+VM execution with the new profile, matching normal guest startup and activation
+remain unverified; counts stay **4/8, 0/4, 3/3**.
+[Implementation and exact verification limits](docs/ORIGINAL-LAUNCHER-GPU-PROFILE.md).
+
 **Go supervisor boundary — October 29, 2026:** prepared native owners now use
 verified QEMU PID publication, cancellation and held-process exit checks in the
 launcher supervisor. Hidden pressure/4K GPU and early lifecycle controls pass.

@@ -9,7 +9,17 @@
 #include <string>
 #include <windows.h>
 namespace driver_capture {
+inline std::filesystem::path profileDirectory;
+inline void configureProfileDirectory(const std::filesystem::path& path) {
+    if (!profileDirectory.empty() || !path.is_absolute() || !std::filesystem::is_directory(path))
+        throw std::runtime_error("Launcher capture directory must be one existing absolute directory");
+    profileDirectory=path; // Set once by the owner before any worker starts.
+}
 inline std::filesystem::path directory() {
+    if (!profileDirectory.empty()) {
+        if (!std::filesystem::is_directory(profileDirectory)) throw std::runtime_error("Launcher capture directory disappeared");
+        return profileDirectory;
+    }
     const auto size = GetEnvironmentVariableW(L"WDDM_BRIDGE_CAPTURE_DIRECTORY", nullptr, 0);
     if (!size || size > 32768) throw std::runtime_error("4K capture requires WDDM_BRIDGE_CAPTURE_DIRECTORY");
     std::wstring value(size, L'\0');

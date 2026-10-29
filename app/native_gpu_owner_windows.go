@@ -35,7 +35,7 @@ func startSupervisedGuest(ctx context.Context, command *exec.Cmd, prepare native
 		return &supervisedGuest{command: command}, nil
 	}
 	image, directory, input, output, errorOutput := command.Path, command.Dir, command.Stdin, command.Stdout, command.Stderr
-	environment := append([]string(nil), command.Env...)
+	environment := cloneNativeEnvironment(command.Env)
 	prepared, err := prepare(command)
 	if err != nil {
 		return nil, err
@@ -56,8 +56,22 @@ func startSupervisedGuest(ctx context.Context, command *exec.Cmd, prepare native
 	return &supervisedGuest{command: prepared, owner: owner}, nil
 }
 
+func cloneNativeEnvironment(environment []string) []string {
+	if environment == nil {
+		return nil
+	}
+	result := make([]string, len(environment))
+	copy(result, environment)
+	return result
+}
+
 func (g *supervisedGuest) pid() int {
 	if g.owner != nil {
+		g.owner.Lock()
+		defer g.owner.Unlock()
+		if g.owner.qemuReaped {
+			return 0
+		}
 		return int(g.owner.identity.QEMUPID)
 	}
 	return g.command.Process.Pid
@@ -111,7 +125,8 @@ func stopSupervisedGuest(pid uint32) error {
 }
 
 type nativeVMIdentity struct {
-	Ready           bool   `json:"nativeLauncherVmReady"`
+	Ready           bool   `json:"nativeLauncherVmReady,omitempty"`
+	Bound           bool   `json:"nativeLauncherVmBound,omitempty"`
 	Protocol        uint32 `json:"protocol"`
 	LaunchMode      string `json:"launchMode"`
 	BridgePID       uint32 `json:"bridgePid"`
@@ -132,6 +147,10 @@ type nativeVMIdentity struct {
 // Reject duplicate, unknown and missing fields; false acceptance flags are
 // mandatory. Creation times remain canonical decimal strings beyond 2**53.
 func decodeNativeVMIdentity(line []byte) (nativeVMIdentity, error) {
+	return decodeNativeVMRecord(line, false)
+}
+
+func decodeNativeVMRecord(line []byte, binding bool) (nativeVMIdentity, error) {
 	var identity nativeVMIdentity
 	decoder := json.NewDecoder(bytes.NewReader(line))
 	token, err := decoder.Token()
@@ -145,6 +164,10 @@ func decodeNativeVMIdentity(line []byte) (nativeVMIdentity, error) {
 		"launcherCreationTime100ns", "qemuPid", "qemuCreatorPid", "qemuCreationTime100ns", "heldProcessHandle",
 		"privateJobAssigned", "imageFilePinned", "qmpReady", "guestGraphicsVerified", "launcherInputVerified", "dailyUseAccepted"} {
 		allowed[key] = true
+	}
+	if binding {
+		delete(allowed, "nativeLauncherVmReady")
+		allowed["nativeLauncherVmBound"] = true
 	}
 	for decoder.More() {
 		token, err = decoder.Token()
@@ -170,6 +193,9 @@ func decodeNativeVMIdentity(line []byte) (nativeVMIdentity, error) {
 			return identity, errors.New("native VM acceptance flags must be explicit false")
 		}
 	}
+	if binding && !bytes.Equal(bytes.TrimSpace(values["qmpReady"]), []byte("false")) {
+		return identity, errors.New("bound VM must explicitly keep QMP readiness false")
+	}
 	decoder = json.NewDecoder(bytes.NewReader(line))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&identity); err != nil {
@@ -179,8 +205,9 @@ func decodeNativeVMIdentity(line []byte) (nativeVMIdentity, error) {
 	if err := decoder.Decode(&extra); err != io.EOF {
 		return identity, errors.New("trailing native VM identity data")
 	}
-	if !identity.Ready || identity.Protocol != 1 || identity.LaunchMode != "backend-owned" ||
-		!identity.Held || !identity.Job || !identity.Pinned || !identity.QMP || identity.Graphics || identity.Input || identity.Daily ||
+	if (binding && (!identity.Bound || identity.Ready || identity.QMP)) || (!binding && (!identity.Ready || identity.Bound || !identity.QMP)) ||
+		identity.Protocol != 1 || identity.LaunchMode != "backend-owned" ||
+		!identity.Held || !identity.Job || !identity.Pinned || identity.Graphics || identity.Input || identity.Daily ||
 		identity.BridgePID == 0 || identity.LauncherPID == 0 || identity.QEMUPID == 0 ||
 		identity.BridgePID == identity.LauncherPID || identity.QEMUPID == identity.LauncherPID || identity.QEMUPID == identity.BridgePID ||
 		identity.QEMUCreatorPID != identity.BridgePID {
@@ -236,20 +263,22 @@ func nativeProcessImage(process syscall.Handle) (string, error) {
 
 type nativeGPUOwner struct {
 	sync.Mutex
-	command     *exec.Cmd
-	event       syscall.Handle
-	qemu        syscall.Handle
-	qemuExit    uint32
-	qemuReaped  bool
-	identity    nativeVMIdentity
-	ready       chan error
-	done        chan struct{}
-	result      error
-	observed    bool
-	output      io.Writer
-	outputOwned io.Closer
-	pending     []byte
-	failed      error
+	command      *exec.Cmd
+	event        syscall.Handle
+	qemu         syscall.Handle
+	qemuExit     uint32
+	qemuReaped   bool
+	identity     nativeVMIdentity
+	ready        chan error
+	done         chan struct{}
+	result       error
+	observed     bool
+	bindingSeen  bool
+	controlReady bool
+	output       io.Writer
+	outputOwned  io.Closer
+	pending      []byte
+	failed       error
 }
 
 func startNativeGPUOwner(ctx context.Context, command *exec.Cmd, qemuImage string) (*nativeGPUOwner, error) {
@@ -319,6 +348,11 @@ func startNativeGPUOwner(ctx context.Context, command *exec.Cmd, qemuImage strin
 	case <-time.After(45 * time.Second):
 		return nil, owner.failedStartup(errors.New("native GPU VM identity deadline exceeded"))
 	case <-owner.done:
+		if owner.identity.QEMUPID != 0 && owner.qemuReaped && owner.failed == nil {
+			// The VM was genuinely started and already exited. Let supervise's
+			// existing early-exit/memory/audio/runtime retry logic handle it.
+			return owner, nil
+		}
 		return nil, errors.Join(errors.New("native GPU owner exited before VM identity publication"), owner.result)
 	}
 }
@@ -441,10 +475,11 @@ func (writer *nativeOwnerOutput) line(line []byte) {
 		writer.reject(err)
 		return
 	}
-	if _, ok := fields["nativeLauncherVmReady"]; !ok {
+	_, binding := fields["nativeLauncherVmBound"]
+	if _, ok := fields["nativeLauncherVmReady"]; !ok && !binding {
 		return // Existing native status records are forwarded unchanged.
 	}
-	identity, err := decodeNativeVMIdentity(line)
+	identity, err := decodeNativeVMRecord(line, binding)
 	if err != nil {
 		writer.reject(err)
 		return
@@ -498,12 +533,25 @@ func (writer *nativeOwnerOutput) line(line []byte) {
 		return
 	}
 	owner.Lock()
+	if owner.observed && owner.bindingSeen && !owner.controlReady && !binding && owner.failed == nil {
+		before := owner.identity
+		before.Ready, before.Bound, before.QMP = true, false, true
+		if before != identity {
+			owner.Unlock()
+			writer.reject(errors.New("native control readiness changed the bound VM identity"))
+			return
+		}
+		owner.identity, owner.controlReady = identity, true
+		owner.Unlock()
+		return // Keep the original process handle and single start notification.
+	}
 	if owner.observed || owner.failed != nil {
 		owner.Unlock()
 		writer.reject(errors.New("duplicate native VM identity"))
 		return
 	}
 	owner.identity, owner.qemu, owner.observed = identity, process, true
+	owner.bindingSeen, owner.controlReady = binding, !binding
 	keep = true
 	owner.ready <- nil
 	owner.Unlock()

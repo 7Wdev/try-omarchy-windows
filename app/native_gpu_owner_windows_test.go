@@ -155,7 +155,7 @@ func TestNativeGPUProcessHost(t *testing.T) {
 		t.Fatal(err)
 	}
 	published := qemuPid.Load()
-	if published != guest.owner.identity.QEMUPID || published == uint32(guest.command.Process.Pid) {
+	if published != uint32(guest.pid()) || published == uint32(guest.command.Process.Pid) {
 		t.Fatal("supervisor published the GPU owner instead of QEMU")
 	}
 	// A caller confusing bridge PID with QEMU must not kill the GPU page owner.
