@@ -205,3 +205,6 @@ experimental/windows-native-gpu/qemu_launcher_arguments_test.cpp text eol=lf
 experimental/windows-native-gpu/test_launcher_graphics_arguments.py text eol=lf
 experimental/windows-native-gpu/launcher-args-probe/export_test.go text eol=lf
 experimental/windows-native-gpu/verify_graphics_launch_arguments.py text eol=lf
+experimental/windows-native-gpu/owned_qemu_process.h text eol=lf
+experimental/windows-native-gpu/owned_qemu_process_test.cpp text eol=lf
+experimental/windows-native-gpu/verify_owned_qemu_process.py text eol=lf

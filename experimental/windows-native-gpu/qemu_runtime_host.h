@@ -9,6 +9,7 @@
 #include "cpu_aperture.h"
 #include "qemu_fence_test.h"
 #include "qemu_graphics_arguments.h"
+#include "owned_qemu_process.h"
 #include "readonly_rootfs_args.h"
 #include "bounded_input_channel.h"
 #include "tcp_peer_owner.h"
@@ -20,41 +21,11 @@
 #include <mutex>
 
 namespace driver_qemu {
-struct Handle {
-    HANDLE value = nullptr;
-    Handle() = default;
-    Handle(const Handle&) = delete;
-    ~Handle() { if (value && value != INVALID_HANDLE_VALUE) CloseHandle(value); }
-};
 struct Socket {
     SOCKET value = INVALID_SOCKET;
     Socket() = default;
     Socket(const Socket&) = delete;
     ~Socket() { if (value != INVALID_SOCKET) closesocket(value); }
-};
-struct OwnedProcess {
-    std::mutex stopGuard;
-    Handle handle;
-    DWORD exit = STILL_ACTIVE;
-    bool forced = false, reaped = false;
-    bool exited() const { return handle.value && WaitForSingleObject(handle.value, 0) == WAIT_OBJECT_0; }
-    void stop(DWORD grace = 5000) noexcept {
-        std::lock_guard<std::mutex> lock(stopGuard);
-        if (!handle.value || reaped) return;
-        if (WaitForSingleObject(handle.value, grace) != WAIT_OBJECT_0) {
-            forced = true;
-            TerminateProcess(handle.value, 90);
-            if (WaitForSingleObject(handle.value, 10000) != WAIT_OBJECT_0) {
-                // Holding the native driver objects is safer than returning
-                // while this owned VM could still access their mapped pages.
-                std::fprintf(stderr, "QEMU_OWNER_STOP_PENDING nativeObjectsRetained=true\n");
-                WaitForSingleObject(handle.value, INFINITE);
-            }
-        }
-        GetExitCodeProcess(handle.value, &exit);
-        reaped = true;
-    }
-    ~OwnedProcess() { stop(0); }
 };
 inline unsigned short reservePort(Socket& socket) {
     socket.value = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
@@ -156,7 +127,6 @@ using AllocationLease = driver_cpu::Lease;
 class Runtime {
     // Keep a read handle denying write sharing until QEMU and its job close.
     Handle readonlyBase;
-    Handle job;
     OwnedProcess process;
     std::unique_ptr<Qmp> qmp;
     std::shared_ptr<driver_input::Channel> windowInput;
@@ -210,11 +180,6 @@ public:
         }
         const unsigned memoryMiB=readonlyRoot ? 3072u : gpu_diagnostic::GuestMemoryMiB;
         const auto executable = std::filesystem::absolute(paths.qemu).wstring();
-        job.value = CreateJobObjectW(nullptr, nullptr);
-        JOBOBJECT_EXTENDED_LIMIT_INFORMATION limit{};
-        limit.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-        if (!job.value || !SetInformationJobObject(job.value, JobObjectExtendedLimitInformation, &limit, sizeof limit))
-            throw std::runtime_error("Cannot create owned QEMU process job");
         Socket reservation; const auto qmpPort = reservePort(reservation);
         Socket inputReservation;const auto inputPort=enableWindowInput?reservePort(inputReservation):static_cast<unsigned short>(0);
         Socket graphicsReservation;const auto graphicsPort=enableSdl?reservePort(graphicsReservation):static_cast<unsigned short>(0);
@@ -306,10 +271,15 @@ public:
         if (initialized) DeleteProcThreadAttributeList(attributes);
         if (attributes) HeapFree(GetProcessHeap(), 0, attributes);
         if (!started) throw std::runtime_error("Cannot start owned QEMU runtime");
-        process.handle.value = child.hProcess;
-        const bool assigned = AssignProcessToJobObject(job.value, child.hProcess) != FALSE;
-        const bool resumed = assigned && ResumeThread(child.hThread) != static_cast<DWORD>(-1);
-        CloseHandle(child.hThread);
+        // A failed identity/job attachment must still reap the child we just
+        // created suspended. It must not leave an unowned suspended process.
+        OwnedProcess pending; pending.handle.value = child.hProcess;
+        Handle mainThread; mainThread.value = child.hThread;
+        process.adoptVerified(child.hProcess,GetCurrentProcess(),
+            {child.dwProcessId,processCreationTime(child.hProcess)},executable);
+        pending.handle.value = nullptr; CloseHandle(child.hProcess);
+        const bool resumed = ResumeThread(mainThread.value) != static_cast<DWORD>(-1);
+        CloseHandle(mainThread.value); mainThread.value = nullptr;
         if (!resumed) throw std::runtime_error("Cannot start QEMU within its owned job");
         std::cout << "{\"ownedQemuPid\":" << child.dwProcessId << ",\"guestMemoryMiB\":" << memoryMiB << "}\n" << std::flush;
         if (readonlyRoot) std::cout << "{\"ownedQemuReadonlyRootAttached\":true,\"fileNodeReadonly\":true,\"rawNodeReadonly\":true,\"sourceWriteSharingDenied\":true}\n" << std::flush;

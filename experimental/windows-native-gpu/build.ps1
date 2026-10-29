@@ -80,6 +80,10 @@ cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\readonly_rootfs_args_test
 if not "%errorlevel%"=="0" exit /b %errorlevel%
 readonly-rootfs-args-test.exe
 if not "%errorlevel%"=="0" exit /b %errorlevel%
+cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\owned_qemu_process_test.cpp" /Fe:owned-qemu-process-test.exe
+if not "%errorlevel%"=="0" exit /b %errorlevel%
+owned-qemu-process-test.exe
+if not "%errorlevel%"=="0" exit /b %errorlevel%
 cl /nologo /std:c++17 /EHsc /W4 /WX /O2 "$PSScriptRoot\qemu_graphics_arguments_test.cpp" /Fe:qemu-graphics-arguments-test.exe
 if not "%errorlevel%"=="0" exit /b %errorlevel%
 qemu-graphics-arguments-test.exe
