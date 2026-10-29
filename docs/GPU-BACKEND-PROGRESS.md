@@ -8,6 +8,14 @@ graphics runtime.
 
 ## What is verified now?
 
+**Go supervisor boundary — October 29, 2026:** the normal supervisor's internal
+native branch validates and publishes QEMU's actual identity, retains its process
+object, and signals the native owner during shutdown. Three hidden GPU workloads
+pass the unchanged full data/pixel and cleanup checks; cancellation and controller
+exit pass separately. Original input handlers remain unchanged. The normal guest
+argument/runtime profile and activation remain open; counts stay **4/8, 0/4, 3/3**.
+[Exact source boundary, process-chain evidence and limits](GO-NATIVE-GPU-SUPERVISION.md).
+
 **Native launcher lifetime — October 29, 2026:** an inherited cancellation
 capability, held creator process and exact QEMU identity message pass three
 unchanged-image hidden GPU workloads. Separate early-lifecycle controls reap the

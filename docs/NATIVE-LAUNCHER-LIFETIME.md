@@ -102,9 +102,8 @@ controls and the actual command boundary. All **430 Go/module launcher sources
 remain unchanged**, including keyboard, cursor, window and QMP input routing.
 No visible VM/renderer, host input or desktop control was used.
 
-Next is the Go supervisor consumer: it must validate and hold the actual QEMU
-identity, publish that PID to the official window/input supervision and signal
-cancellation before waiting for native cleanup. The native owner must stay alive
-until VM exit is proven. Original-launcher argument composition, matching normal
-guest startup and end-to-end session validation remain required before enabling
-this backend in the product.
+The subsequent [Go supervisor checkpoint](GO-NATIVE-GPU-SUPERVISION.md) consumes
+this identity, publishes the actual QEMU PID and uses cancellation while retaining
+the native owner through verified VM exit. Original-launcher argument composition,
+matching normal guest startup and end-to-end session validation remain required
+before enabling this backend in the product.

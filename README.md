@@ -14,6 +14,12 @@ Normal launcher integration and a stable interactive desktop remain in developme
 
 ![Three GPU apps complete 1800 handoffs; backend 4/8; desktop product 0/4](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/windows-nvgpu-lab/docs/images/gpu-backend-progress-three-apps-2026-10-27.svg)
 
+**Go supervisor boundary — October 29, 2026:** prepared native owners now use
+verified QEMU PID publication, cancellation and held-process exit checks in the
+launcher supervisor. Hidden pressure/4K GPU and early lifecycle controls pass.
+The normal guest argument/runtime profile and user activation remain incomplete;
+counts stay **4/8, 0/4, 3/3**. [Implementation and tested limits](docs/GO-NATIVE-GPU-SUPERVISION.md).
+
 **Native launcher lifetime — October 29, 2026:** the bridge publishes a verified
 QEMU identity and reaps its owned VM on cancellation or creator exit. Three hidden
 GPU regressions retain the original data/pixel and cleanup checks. Go launcher

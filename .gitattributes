@@ -214,3 +214,7 @@ experimental/windows-native-gpu/test_launcher_lifetime_cli.py text eol=lf
 experimental/windows-native-gpu/launcher_lifetime_runtime_qemu.py text eol=lf
 experimental/windows-native-gpu/test_launcher_lifetime_protocol.py text eol=lf
 experimental/windows-native-gpu/verify_launcher_lifetime.py text eol=lf
+app/native_gpu_owner_windows.go text eol=lf
+app/native_gpu_owner_windows_test.go text eol=lf
+experimental/windows-native-gpu/go_owner_runtime_qemu.py text eol=lf
+experimental/windows-native-gpu/verify_go_native_owner.py text eol=lf

@@ -93,12 +93,14 @@ the required input path. Physical input latency, physical scanout cadence and
 matched-native performance must be measured. Backend stage counts (4/8) and
 desktop product gates (0/4) are checklists, not percentages of engineering effort.
 
-The native bridge now has an inherited cancellation capability, held creator
-monitor and exact owned-QEMU identity message. Hidden GPU regressions and early
-three-process cancellation/creator-exit controls pass. All 430 launcher sources
-remain unchanged. The Go supervisor must still consume that identity and use
-the real QEMU PID for the official window/input route; normal guest boot and
-recovery during rendering remain open. [Protocol and precise tested scope](NATIVE-LAUNCHER-LIFETIME.md).
+The native bridge has an inherited cancellation capability, held creator monitor
+and exact owned-QEMU identity message. The Go supervisor now consumes that
+identity through an internal prepared-profile branch and publishes the actual
+QEMU PID for its existing window/bridge checks. Hidden GPU and early lifecycle
+controls pass. Original input handlers remain unchanged; only `main.go`'s
+supervision boundary changes among the original 430 launcher files. The matching
+normal guest argument/runtime profile, activation and recovery during rendering
+remain open. [Implementation and precise tested scope](GO-NATIVE-GPU-SUPERVISION.md).
 
 A new default-off guest build option samples mapped-memory diagnostics twice
 instead of 10,000 times. Strict shims, transport fault tests and real Linux IPC
