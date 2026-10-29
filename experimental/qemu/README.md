@@ -27,6 +27,13 @@ GPU renderer or prove guest GPU scanout.
 
 ## Shared-memory and aperture diagnostics
 
+The experimental runtime also backports upstream QEMU
+[`ddf5738503e2`](https://github.com/qemu/qemu/commit/ddf5738503e2ba6adb74359abf3b6e7aa81af420)
+to avoid aborting after a refused asynchronous socket connection. The build's
+paused, disk-free reconnect test covers a late listener, peer disconnect and
+owned yank/reconnect. This change leaves official input patches intact.
+[Observed launcher-profile failure and verification scope](../../docs/QEMU-SOCKET-RECONNECT.md).
+
 The fence hub now accepts an explicit `slot-count=512` layout for upcoming
 concurrent desktop-client tests. Its BAR uses the requested count; existing
 64/128/256 layouts keep their extents, bounds and generation checks. This is

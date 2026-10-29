@@ -101,7 +101,10 @@ controls pass. Original input handlers remain unchanged; only `main.go`'s
 supervision boundary changes among the original 430 launcher files. The matching
 normal guest graphics bootstrap, activation and recovery during rendering
 remain open. The original-argument runtime profile and early identity handoff
-now pass CPU/helper tests; its actual VM boot remains unverified.
+now pass CPU/helper tests. First real VM attempts reach binding but expose a QEMU
+socket reconnect crash before boot; an upstream backport is prepared.
+[Failure and required verification](QEMU-SOCKET-RECONNECT.md). Successful normal
+VM boot remains unverified.
 [Implementation and precise tested scope](ORIGINAL-LAUNCHER-GPU-PROFILE.md).
 
 A new default-off guest build option samples mapped-memory diagnostics twice

@@ -17,8 +17,10 @@ Normal launcher integration and a stable interactive desktop remain in developme
 **Original launcher profile — October 29, 2026:** the Go/native argument profile
 and early VM identity handoff preserve the original boot/input choices in CPU
 checks. Existing hidden 4K GPU regressions pass after the runtime refactor.
-VM execution with the new profile, matching normal guest startup and activation
-remain unverified; counts stay **4/8, 0/4, 3/3**.
+First VM attempts reach process binding on a private inactive Windows desktop,
+but expose a QEMU socket reconnect crash before boot. An upstream backport is
+prepared; matching normal guest startup and activation remain unverified.
+Counts stay **4/8, 0/4, 3/3**. [Failure and backport](docs/QEMU-SOCKET-RECONNECT.md).
 [Implementation and exact verification limits](docs/ORIGINAL-LAUNCHER-GPU-PROFILE.md).
 
 **Go supervisor boundary — October 29, 2026:** prepared native owners now use

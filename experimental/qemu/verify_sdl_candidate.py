@@ -15,6 +15,10 @@ def verify(source, header):
     for name, digest in value.get('graphicsRelaySources', {}).items():
         if hashlib.sha256((source / 'hw/display' / name).read_bytes()).hexdigest() != digest:
             raise RuntimeError('Graphics relay source changed during compilation: ' + name)
+    reconnect = value.get('socketReconnectFix')
+    if (not reconnect or reconnect.get('upstreamCommit') != 'ddf5738503e2ba6adb74359abf3b6e7aa81af420' or
+            hashlib.sha256((source/'chardev/char-socket.c').read_bytes()).hexdigest() != reconnect.get('sourceSha256')):
+        raise RuntimeError('Socket reconnect backport missing or changed during compilation')
     lines = header.read_text(encoding='utf-8').splitlines()
     if not any(re.fullmatch(r'#define\s+CONFIG_OPENGL(?:\s+1)?', line.strip()) for line in lines):
         raise RuntimeError('Candidate was not compiled with OpenGL support')

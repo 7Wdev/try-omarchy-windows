@@ -6,12 +6,17 @@ and adds private graphics/QMP transport while preserving the original boot,
 disk, network, audio, cursor, keyboard/tablet and official QMP arguments.
 The Go profile producer and native runtime consumer are implemented.
 
-**VM execution with this new profile remains unverified.** Its current evidence
+**Successful VM boot with this new profile remains unverified.** Its initial evidence
 covers real Go/native argument roundtrips, real hidden helper-process ownership
 and separate regressions of the existing hidden GPU path. Released settings
 still leave native activation unset. Normal guest graphics bootstrap, account
 startup, end-to-end interaction and daily use remain open. Counts stay **4/8,
 0/4, 3/3**.
+
+The first subsequent real VM attempts reach the new process binding on an
+inactive private Windows desktop but fail before guest boot. The observed socket
+reconnect crash matches an upstream QEMU fix, now backported into the experimental
+runtime recipe. [Failure, isolation controls and remaining checks](QEMU-SOCKET-RECONNECT.md).
 
 ## Argument and ownership contract
 

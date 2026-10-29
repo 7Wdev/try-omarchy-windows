@@ -17,9 +17,10 @@ def prepare(source):
     if subprocess.check_output(['git', '-C', str(source), 'status', '--porcelain'], text=True).strip():
         raise RuntimeError('QEMU checkout must be clean')
     patches = [recipe / name for name in (
-        'external-shared-ram.patch', 'object-schema.patch', 'foreign-fence.patch')]
-    subprocess.run(['git', '-C', str(source), 'apply', '--check', *map(str, patches)], check=True)
-    subprocess.run(['git', '-C', str(source), 'apply', *map(str, patches)], check=True)
+        'external-shared-ram.patch', 'object-schema.patch', 'foreign-fence.patch',
+        'socket-reconnect-yank.patch')]
+    subprocess.run(['git', '-c', 'core.autocrlf=false', '-C', str(source), 'apply', '--check', *map(str, patches)], check=True)
+    subprocess.run(['git', '-c', 'core.autocrlf=false', '-C', str(source), 'apply', *map(str, patches)], check=True)
     shutil.copyfile(recipe / 'hostmem-win32-section.c', source / 'backends/hostmem-win32-section.c')
     shutil.copyfile(recipe / 'wddm-fence-lab.c', source / 'hw/misc/wddm-fence-lab.c')
     shutil.copyfile(recipe / 'wddm-fence-lab.h', source / 'include/hw/misc/wddm-fence-lab.h')

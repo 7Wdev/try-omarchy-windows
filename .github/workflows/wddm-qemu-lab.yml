@@ -79,6 +79,9 @@ jobs:
         if: matrix.variant == 'sdl-opengl'
         shell: pwsh
         run: python experimental/qemu/test_user_network_cli.py --qemu qemu-lab/bin/qemu-system-x86_64.exe --firmware qemu-lab/share/qemu --report qemu-lab/user-network-capability.json
+      - name: Verify refused and repeated socket reconnects
+        shell: pwsh
+        run: python experimental/qemu/test_socket_reconnect.py --qemu qemu-lab/bin/qemu-system-x86_64.exe --firmware qemu-lab/share/qemu --report qemu-lab/socket-reconnect-capability.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         with:
@@ -95,3 +98,4 @@ jobs:
             qemu-lab/sdl-input-controls.log
             qemu-lab/ccache-stats.txt
             qemu-lab/user-network-capability.json
+            qemu-lab/socket-reconnect-capability.json

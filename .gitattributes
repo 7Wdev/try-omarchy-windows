@@ -2,6 +2,8 @@ app/testdata/SHA256SUMS.* text eol=lf
 
 # Runtime patches are digest-pinned and must be byte-identical on Windows.
 runtime-build/patches/**/*.patch text eol=lf whitespace=-blank-at-eol,-blank-at-eof
+experimental/qemu/socket-reconnect-yank.patch text eol=lf whitespace=-blank-at-eol,-blank-at-eof
+experimental/qemu/test_socket_reconnect.py text eol=lf
 # Frozen audit source and evidence hashes use the committed LF bytes.
 experimental/windows-native-gpu/**/*.py text eol=lf
 docs/evidence/*.json text eol=lf

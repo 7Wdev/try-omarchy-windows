@@ -13,8 +13,10 @@ original Go argument vector through a bounded Unicode-safe profile, preserves
 boot/input/QMP choices and supplies an early held-process binding before QMP
 readiness. Six cross-language profiles and five hidden helper-process controls
 pass. Existing hidden GPU workloads pass with the new mode disabled. The new
-mode's VM execution, matching guest bootstrap and normal account/session remain
-unverified; counts stay **4/8, 0/4, 3/3**.
+mode's first VM attempts reach process binding on an inactive private desktop,
+then expose a QEMU socket reconnect crash before guest boot. An upstream backport
+is prepared; matching guest bootstrap and normal account/session remain unverified.
+Counts stay **4/8, 0/4, 3/3**. [Failure and backport](QEMU-SOCKET-RECONNECT.md).
 [Argument/runtime implementation and precise evidence](ORIGINAL-LAUNCHER-GPU-PROFILE.md).
 
 **Go supervisor boundary — October 29, 2026:** the normal supervisor's internal
