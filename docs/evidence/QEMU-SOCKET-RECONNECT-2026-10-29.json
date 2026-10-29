@@ -101,7 +101,8 @@
     "pinnedBaseFileGitBlob": "e064b105c50b6bb46e258c6b476264a23ab29c0b",
     "fixedFileGitBlob": "99e01a4875a27a57e3bd9ef0c063cb2809c0c12e",
     "patchSha256": "8536cbc83262cf4e6ec5685082c9bdbb3b0193dc9d521cbcd3da377c786234ca",
-    "fixedRuntimeVerified": false
+    "fixedRuntimeVerified": true,
+    "verificationScope": "local paused display-free socket/QMP transport; no guest boot or desktop acceptance"
   },
   "negativeControl": {
     "schema": 1,
@@ -121,9 +122,92 @@
     "acceptedAsFinal": false
   },
   "requiredNext": [
-    "rebuilt reconnect regression",
+    "corrected CI transport regression",
     "new-profile background guest boot",
     "matching normal guest bootstrap and session",
     "ordinary official input and sustained product acceptance"
-  ]
+  ],
+  "rebuiltCandidate": {
+    "artifactId": 12915701359,
+    "runId": 40911629131,
+    "revision": "00a06bc5c86d4a980102da60664a11fe798f890b",
+    "archiveSha256": "137fd3c77da064c342cdfd4bec08b947a6ebad8bc54bd3039d54eea3ae943c00",
+    "qemuSha256": "2c370c9cbd470885383f88d6640ca3a80c18841bc0d8d3b08ecd75a70c00ef96",
+    "artifactReceiptSha256": "22847e800513325d3f4153b90182ff12a3965e160bddabc1b2fd29f994cb808b",
+    "ciBuildPassed": true,
+    "initialCiReconnectPassed": false,
+    "initialCiRejectedStep": "peer disconnect with paused virtserialport and no guest consumer",
+    "sourceEntryCount": 11862,
+    "sourceChanges": [
+      "source/chardev/char-socket.c",
+      "source/sdl-candidate-provenance.json"
+    ],
+    "pythonCacheTimestampOnlyChanges": 23,
+    "changedDlls": {
+      "bin/libslirp-0.dll": {
+        "old": "4b547f2324ddba5bf5222ea31530b621e8ca7baf4884c5c52059aa88b64af782",
+        "new": "cc6815664e406becebe599cc82e31cc7513dda2ec5d848182f6f16ff7d433f15"
+      },
+      "bin/libwinpthread-1.dll": {
+        "old": "d837ef67644c195210daebe7612ccebebc47773f66085eeedd4892800dac8634",
+        "new": "ee4f503512b09d7e2668518c41d6c176755a354523ae15aa4d36220c9cb31791"
+      }
+    },
+    "officialInputSourcesUnchanged": true
+  },
+  "localPositiveControl": {
+    "receiptSha256": "1fb5b8ee2ad215d47d2d4b468d666f6fb19f71cc90be4baacde5a52125bd87ae",
+    "reconnect": {
+      "schema": 1,
+      "display": "none",
+      "sourceDiskAttached": false,
+      "guestBooted": false,
+      "hostInputSent": false,
+      "privateLoopbackOnly": true,
+      "refusedConnectionMessageObserved": true,
+      "frontend": "qmp-monitor",
+      "greetingsObserved": 3,
+      "connectionCount": 3,
+      "observations": [
+        "refused connection survives with QMP responsive",
+        "late listener connects",
+        "peer disconnect reconnects",
+        "yank disconnect reconnects"
+      ],
+      "naturalQemuExit": 0,
+      "normalLauncherBootVerified": false,
+      "desktopRenderingVerified": false,
+      "dailyUseAccepted": false
+    },
+    "whpxCompiled": true,
+    "userNetworkCapability": {
+      "userBackendCompiled": true,
+      "virtioNicRealized": true,
+      "restrictedProbe": true,
+      "hostForwards": [],
+      "internetConnectivityVerified": false,
+      "browserRenderingVerified": false
+    },
+    "packageFilesUnchanged": true,
+    "testSha256": "78029498f3b8317912e0efe4af4ee9d4f5fa2d7063a9fdc74d2d241542ba7461"
+  },
+  "correctedNegativeControl": {
+    "schema": 1,
+    "frontend": "qmp-monitor",
+    "oldRuntimeRejected": true,
+    "oldQemuExit": 3221226505,
+    "oldQemuSha256": "5404287396eb03a181941f66f09afaee2bc5859a9b87830d64ea1e9eaa91a87c",
+    "testSha256": "78029498f3b8317912e0efe4af4ee9d4f5fa2d7063a9fdc74d2d241542ba7461",
+    "oldTestExit": 1,
+    "logSha256": "c866951e2fc6d45e91401aec78fd6ba5a602fb0c29516d4c10740dfa8bafc054",
+    "hostInputSent": false,
+    "display": "none",
+    "guestDiskAttached": false
+  },
+  "laterPrivateDesktopRetirement": {
+    "receiptSha256": "c2e2244a3d32b5ac94f0ccefb535a1187bf9aeb08f2e342a23f5e92a3d731090",
+    "previouslyOwnedNamesChecked": 5,
+    "stillOpenable": 0,
+    "immediateRetirementVerified": false
+  }
 }

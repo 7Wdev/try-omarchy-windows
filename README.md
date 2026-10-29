@@ -18,8 +18,8 @@ Normal launcher integration and a stable interactive desktop remain in developme
 and early VM identity handoff preserve the original boot/input choices in CPU
 checks. Existing hidden 4K GPU regressions pass after the runtime refactor.
 First VM attempts reach process binding on a private inactive Windows desktop,
-but expose a QEMU socket reconnect crash before boot. An upstream backport is
-prepared; matching normal guest startup and activation remain unverified.
+but expose a QEMU socket reconnect crash before boot. The upstream backport now
+passes local transport controls; normal guest startup and activation remain unverified.
 Counts stay **4/8, 0/4, 3/3**. [Failure and backport](docs/QEMU-SOCKET-RECONNECT.md).
 [Implementation and exact verification limits](docs/ORIGINAL-LAUNCHER-GPU-PROFILE.md).
 

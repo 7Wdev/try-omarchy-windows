@@ -22,8 +22,10 @@ def verify(qemu, firmware):
         '-machine', 'q35,accel=tcg', '-m', '64M', '-nodefaults',
         '-display', 'none', '-monitor', 'none', '-serial', 'none', '-S', '-qmp', 'stdio',
         '-chardev', f'socket,id={label},host=127.0.0.1,port={port},reconnect-ms=100',
-        '-device', 'virtio-serial-pci,id=owned-serial',
-        '-device', f'virtserialport,chardev={label},name=dev.tryomarchy.reconnect-test']
+        # A control monitor keeps its frontend open without a guest driver.
+        # A paused virtserialport has no guest consumer and cannot certify
+        # ordinary disconnect notification in this display-free test.
+        '-mon', f'chardev={label},mode=control']
     monitor = None
     stderr = reader = None
     refused = threading.Event()
@@ -62,6 +64,21 @@ def verify(qemu, firmware):
                     raise TimeoutError('Socket connection state did not converge')
                 time.sleep(0.01)
 
+        def accept_greeting():
+            connection, _ = listener.accept()
+            connections.append(connection)
+            connection.settimeout(5)
+            greeting = bytearray()
+            while not greeting.endswith(b'\n'):
+                byte = connection.recv(1)
+                if not byte or len(greeting) >= 65536:
+                    raise RuntimeError('Reconnect did not deliver a bounded QMP greeting')
+                greeting.extend(byte)
+            if not isinstance(json.loads(greeting).get('QMP'), dict):
+                raise RuntimeError('Reconnect did not deliver a new QMP monitor')
+            wait_connected(True)
+            return connection
+
         # Wait for the actual refused-connect callback, not just a timer:
         # Winsock can keep connect() pending longer than reconnect-ms.
         wait_connected(False)
@@ -75,9 +92,7 @@ def verify(qemu, firmware):
             raise RuntimeError('QEMU did not survive the refused asynchronous connection')
         observations.append('refused connection survives with QMP responsive')
         listener.listen(4)
-        connection, _ = listener.accept()
-        connections.append(connection)
-        wait_connected(True)
+        connection = accept_greeting()
         observations.append('late listener connects')
         instance = {'type': 'chardev', 'id': label}
         if instance not in monitor.call('query-yank'):
@@ -88,9 +103,7 @@ def verify(qemu, firmware):
         # cached success flag from the original socket.
         connection.shutdown(socket.SHUT_RDWR)
         connection.close()
-        connection, _ = listener.accept()
-        connections.append(connection)
-        wait_connected(True)
+        connection = accept_greeting()
         observations.append('peer disconnect reconnects')
 
         # The registered cancellation function must still work after the
@@ -100,9 +113,7 @@ def verify(qemu, firmware):
         if connection.recv(1) != b'':
             raise RuntimeError('Yank did not shut down the owned peer connection')
         connection.close()
-        connection, _ = listener.accept()
-        connections.append(connection)
-        wait_connected(True)
+        connection = accept_greeting()
         if instance not in monitor.call('query-yank'):
             raise RuntimeError('Reconnect lost its yank instance')
         observations.append('yank disconnect reconnects')
@@ -113,6 +124,7 @@ def verify(qemu, firmware):
         return dict(schema=1, display='none', sourceDiskAttached=False,
             guestBooted=False, hostInputSent=False, privateLoopbackOnly=True,
             refusedConnectionMessageObserved=True,
+            frontend='qmp-monitor', greetingsObserved=len(connections),
             connectionCount=len(connections), observations=observations,
             naturalQemuExit=0, normalLauncherBootVerified=False,
             desktopRenderingVerified=False, dailyUseAccepted=False)

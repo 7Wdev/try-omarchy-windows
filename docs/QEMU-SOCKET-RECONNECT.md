@@ -4,7 +4,9 @@ The first real VM attempts through the new original-argument profile reach
 verified Go/native/QEMU process binding. They do **not** complete a normal boot
 or render a new desktop frame. They expose a socket reconnect crash in the
 pinned experimental QEMU runtime. A five-line upstream backport is now included
-in that runtime's build recipe; its rebuilt binary still needs verification.
+in that runtime's build recipe. The rebuilt SDL binary now passes the local
+refused/late/peer/yank reconnect controls and natural exit with an always-open
+QMP frontend. Successful new-profile guest boot still needs verification.
 Counts remain **4/8, 0/4, 3/3** and native activation stays unset.
 
 The existing Go argument producer includes reconnecting camera and authentication
@@ -73,11 +75,30 @@ provenance records its patch and compiled-source digests; verification checks
 that the source stays unchanged during compilation. All 24 official runtime
 patches and official input-source checks remain in place.
 
-The new CI regression waits for an actual refused connection callback, then
+The regression waits for an actual refused connection callback, then
 requires a late listener, peer disconnect/reconnect, owned QMP yank/reconnect and
 natural QEMU exit. It uses paused TCG, no display, no disk and no host input.
-The old binary fails with **3221226505 / 0xC0000409** before it can report the
-refused connection. A green rebuilt regression will still need the new profile's
-background VM boot, matching normal guest bootstrap and complete product checks.
+The original CI attempt builds both QEMU variants successfully, then rejects a
+peer-disconnect timeout with QEMU still alive. That test attached a virtio serial
+port without booting its guest consumer. The corrected transport test attaches
+an always-open QMP frontend and requires a fresh QMP greeting on each of three
+accepted connections. The original timeout stays recorded; ordinary guest
+camera/authentication reconnect behavior remains outside this paused test.
+
+The rebuilt SDL candidate passes the corrected test locally, compiled WHPX
+discovery and the restricted user-network/NIC control. The old binary still
+fails the corrected test with **3221226505 / 0xC0000409** before reporting the
+refused connection. CI is being repeated with the corrected frontend.
+
+The verified ZIP contains 11,862 source entries. Compared with the earlier
+runtime, only `chardev/char-socket.c` and source provenance change. Twenty-three
+Python cache files differ only in their four-byte timestamp fields; their
+remaining bytes are identical. `libslirp-0.dll` and `libwinpthread-1.dll` also
+differ between packages and are recorded rather than treated as byte-identical.
+The official input sources and patches remain unchanged. No shader, desktop or
+performance acceptance is inferred from these transport controls.
+
+The next check is the new profile's background VM boot, followed by matching
+normal guest bootstrap and complete product acceptance.
 
 [Structured evidence and artifact digests](evidence/QEMU-SOCKET-RECONNECT-2026-10-29.json).

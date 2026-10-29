@@ -102,7 +102,7 @@ supervision boundary changes among the original 430 launcher files. The matching
 normal guest graphics bootstrap, activation and recovery during rendering
 remain open. The original-argument runtime profile and early identity handoff
 now pass CPU/helper tests. First real VM attempts reach binding but expose a QEMU
-socket reconnect crash before boot; an upstream backport is prepared.
+socket reconnect crash before boot; its upstream backport passes local transport controls.
 [Failure and required verification](QEMU-SOCKET-RECONNECT.md). Successful normal
 VM boot remains unverified.
 [Implementation and precise tested scope](ORIGINAL-LAUNCHER-GPU-PROFILE.md).
