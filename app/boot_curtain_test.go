@@ -177,7 +177,7 @@ func TestDesktopStreakNeedsTheDesktopToStay(t *testing.T) {
 	}
 	// A desktop drawn later still counts once it stays.
 	later := start.Add(5 * time.Minute)
-	if streak.look(later, true) || streak.look(later.Add(desktopSteadyWait-time.Second), true) {
+	if streak.look(later, true) || streak.look(later.Add(5*time.Second), true) || streak.look(later.Add(desktopSteadyWait-time.Second), true) {
 		t.Fatal("counted before the steady wait")
 	}
 	if !streak.look(later.Add(desktopSteadyWait), true) {
@@ -186,5 +186,25 @@ func TestDesktopStreakNeedsTheDesktopToStay(t *testing.T) {
 	streak.reset()
 	if streak.look(later.Add(desktopSteadyWait+time.Second), true) {
 		t.Fatal("reset kept the earlier streak")
+	}
+}
+
+func TestDesktopStreakIgnoresTimeWithoutLooks(t *testing.T) {
+	start := time.Unix(1000, 0)
+	var streak desktopStreak
+	// One painted look, then nobody looked for a minute (a hidden window or
+	// a capture held up): that minute does not count.
+	streak.look(start, true)
+	if streak.look(start.Add(time.Minute), true) {
+		t.Fatal("unobserved time counted toward the streak")
+	}
+	restored := start.Add(time.Minute)
+	for i := 1; i < 3; i++ {
+		if streak.look(restored.Add(time.Duration(i)*5*time.Second), true) {
+			t.Fatal("counted before the steady wait after the gap")
+		}
+	}
+	if !streak.look(restored.Add(desktopSteadyWait), true) {
+		t.Fatal("looks after the gap did not count")
 	}
 }

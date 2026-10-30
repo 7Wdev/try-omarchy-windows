@@ -41,6 +41,9 @@ const (
 	// counts as having shown it. Some cards draw the wallpaper for about a
 	// second and then leave the window black (#358).
 	desktopSteadyWait = 15 * time.Second
+	// Looks further apart than this start the streak over, so time nobody
+	// looked at the window (hidden, or a capture held up) never counts.
+	desktopLookGap = 12 * time.Second
 )
 
 var (
@@ -55,8 +58,8 @@ var (
 // desktopStreak follows the looks at the window that showed the desktop
 // without a break.
 type desktopStreak struct {
-	mu    sync.Mutex
-	since time.Time
+	mu          sync.Mutex
+	since, last time.Time
 }
 
 // look records one look and reports whether the desktop has been on screen
@@ -65,12 +68,13 @@ func (s *desktopStreak) look(now time.Time, painted bool) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !painted {
-		s.since = time.Time{}
+		s.since, s.last = time.Time{}, time.Time{}
 		return false
 	}
-	if s.since.IsZero() {
+	if s.since.IsZero() || now.Sub(s.last) > desktopLookGap {
 		s.since = now
 	}
+	s.last = now
 	return now.Sub(s.since) >= desktopSteadyWait
 }
 
