@@ -237,7 +237,16 @@ func curtainTick(primary uintptr) {
 // minimized or hidden window is not looked at.
 func watchDesktop(primary uintptr) {
 	times := curtainTimes()
-	if desktopSeen.Load() || primary == 0 || !times.checkPaint() || time.Since(desktopCheckedAt) < desktopCheckInterval {
+	if desktopSeen.Load() {
+		return
+	}
+	// A hidden window is left out of the window list, so its time off
+	// screen must not count toward the streak either.
+	if primary == 0 {
+		desktopShown.reset()
+		return
+	}
+	if !times.checkPaint() || time.Since(desktopCheckedAt) < desktopCheckInterval {
 		return
 	}
 	visible, _, _ := procIsWindowVisible.Call(primary)
