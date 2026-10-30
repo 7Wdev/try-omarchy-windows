@@ -162,3 +162,29 @@ func TestBlankDesktopDue(t *testing.T) {
 		t.Fatal("asked without enough looks at the visible window")
 	}
 }
+
+func TestDesktopStreakNeedsTheDesktopToStay(t *testing.T) {
+	start := time.Unix(1000, 0)
+	var streak desktopStreak
+	// The wallpaper flashes for a second, then the window goes black (#358).
+	if streak.look(start, true) || streak.look(start.Add(time.Second), true) {
+		t.Fatal("a one-second flash counted as the desktop")
+	}
+	for i := 2; i < 30; i++ {
+		if streak.look(start.Add(time.Duration(i)*5*time.Second), false) {
+			t.Fatal("a black window counted as the desktop")
+		}
+	}
+	// A desktop drawn later still counts once it stays.
+	later := start.Add(5 * time.Minute)
+	if streak.look(later, true) || streak.look(later.Add(desktopSteadyWait-time.Second), true) {
+		t.Fatal("counted before the steady wait")
+	}
+	if !streak.look(later.Add(desktopSteadyWait), true) {
+		t.Fatal("a desktop that stayed on screen did not count")
+	}
+	streak.reset()
+	if streak.look(later.Add(desktopSteadyWait+time.Second), true) {
+		t.Fatal("reset kept the earlier streak")
+	}
+}
