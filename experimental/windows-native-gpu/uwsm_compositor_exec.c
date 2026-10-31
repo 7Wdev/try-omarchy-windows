@@ -12,6 +12,7 @@
 #include <sys/prctl.h>
 #include <sys/syscall.h>
 #include <unistd.h>
+#include "guest_graphics_port.h"
 
 static int compositor_environment(char* data,size_t bytes) {
     if(!bytes || data[bytes-1]!='\n' || memchr(data,0,bytes)) return -1;
@@ -40,9 +41,13 @@ int main(int argc,char** argv) {
     struct __user_cap_data_struct capabilities[2]={{0}};
     if(syscall(SYS_capget,&header,capabilities) || capabilities[0].effective || capabilities[1].effective ||
        prctl(PR_GET_NO_NEW_PRIVS,0,0,0,0)!=1) return 125;
-    const char* privileged[]={"/dev/wddm-aperture","/dev/vport0p1"};
+    char graphics_port[128];
+    if(wddm_graphics_port_resolve("/sys/class/virtio-ports","/dev",graphics_port,sizeof graphics_port)) {
+        perror("named graphics port for compositor");return 125;
+    }
+    const char* privileged[]={"/dev/wddm-aperture",graphics_port};
     for(unsigned index=0;index<2;++index) {
-        int probe=open(privileged[index],O_RDWR|O_CLOEXEC|O_NONBLOCK);
+        int probe=open(privileged[index],O_RDWR|O_CLOEXEC|O_NONBLOCK|O_NOFOLLOW);
         if(probe>=0) { close(probe);return 125; }
         if(errno!=EPERM && errno!=EACCES) return 125;
     }

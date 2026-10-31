@@ -14,14 +14,15 @@ Normal launcher integration and a stable interactive desktop remain in developme
 
 ![Three GPU apps complete 1800 handoffs; backend 4/8; desktop product 0/4](https://raw.githubusercontent.com/7Wdev/try-omarchy-windows/windows-nvgpu-lab/docs/images/gpu-backend-progress-three-apps-2026-10-27.svg)
 
-**Original launcher profile — October 29, 2026:** the Go/native argument profile
-and early VM identity handoff preserve the original boot/input choices in CPU
-checks. Existing hidden 4K GPU regressions pass after the runtime refactor.
-First VM attempts reach process binding on a private inactive Windows desktop,
-but expose a QEMU socket reconnect crash before boot. The upstream backport now
-passes local transport controls; normal guest startup and activation remain unverified.
-Counts stay **4/8, 0/4, 3/3**. [Failure and backport](docs/QEMU-SOCKET-RECONNECT.md).
-[Implementation and exact verification limits](docs/ORIGINAL-LAUNCHER-GPU-PROFILE.md).
+**Original launcher profile — October 31, 2026:** the preserved argument flow
+now boots a private guest and produces an actual **3840×2160 NVIDIA desktop
+frame**, with complete source/SDL pixels matching exactly. Named graphics-device
+discovery coexists with upstream camera/authentication devices. Only **three
+handoffs** complete; the 1,800-frame workload remains rejected. Normal account
+startup, launcher activation and ordinary input remain unverified. All tests stay
+on inactive private desktops without host input. Counts stay **4/8, 0/4, 3/3**.
+[Actual frame, fixes and retained failures](docs/LAUNCHER-GUEST-GRAPHICS-BOOTSTRAP.md).
+[Argument and ownership contract](docs/ORIGINAL-LAUNCHER-GPU-PROFILE.md).
 
 **Go supervisor boundary — October 29, 2026:** prepared native owners now use
 verified QEMU PID publication, cancellation and held-process exit checks in the

@@ -1,5 +1,12 @@
 # Daily-use readiness
 
+**October 31 launcher follow-up:** the original argument profile now boots a
+private guest and reaches an actual 4K NVIDIA desktop frame, with exact complete
+source/SDL pixels. It completes only three handoffs, leaving the existing
+1,800-frame regression rejected. Normal account/session flow, activation,
+official physical input and sustained operation remain unverified.
+[Actual first frame, fixes and retained failures](LAUNCHER-GUEST-GRAPHICS-BOOTSTRAP.md).
+
 The NVIDIA backend remains an engineering prototype. A complete 4K GPU desktop
 with wallpaper, bar and application windows is verified, including input response,
 application replacement, real device-health queries and live resource cleanup.

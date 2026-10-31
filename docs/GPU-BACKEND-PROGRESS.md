@@ -1,6 +1,6 @@
 # NVIDIA backend progress
 
-Updated **2026-10-29**. This page tracks the experimental QEMU/WHPX Windows-native
+Updated **2026-10-31**. This page tracks the experimental QEMU/WHPX Windows-native
 NVIDIA backend. The released Try Omarchy launcher continues using the upstream
 graphics runtime.
 
@@ -8,16 +8,16 @@ graphics runtime.
 
 ## What is verified now?
 
-**Original launcher profile — October 29, 2026:** the runtime consumes the
-original Go argument vector through a bounded Unicode-safe profile, preserves
-boot/input/QMP choices and supplies an early held-process binding before QMP
-readiness. Six cross-language profiles and five hidden helper-process controls
-pass. Existing hidden GPU workloads pass with the new mode disabled. The new
-mode's first VM attempts reach process binding on an inactive private desktop,
-then expose a QEMU socket reconnect crash before guest boot. The upstream backport
-passes local transport controls; matching guest bootstrap and normal account/session remain unverified.
-Counts stay **4/8, 0/4, 3/3**. [Failure and backport](QEMU-SOCKET-RECONNECT.md).
-[Argument/runtime implementation and precise evidence](ORIGINAL-LAUNCHER-GPU-PROFILE.md).
+**Original launcher profile — October 31, 2026:** the runtime now boots the
+private RAM-overlay probe through the original Go arguments and displays an
+actual 3840×2160 NVIDIA source through QEMU SDL. Complete first-frame pixels
+match exactly. Named graphics discovery preserves coexistence with upstream
+camera/authentication devices. Run 10 completes three handoffs, 772 submissions
+and natural VM exit with cleanup; the original 1,800-frame workload remains
+rejected. Earlier startup/profile failures stay recorded. Normal account/session,
+activation and ordinary input remain unverified. Counts stay **4/8, 0/4, 3/3**.
+[Actual frame, fixes and exact limits](LAUNCHER-GUEST-GRAPHICS-BOOTSTRAP.md).
+[Argument/runtime contract](ORIGINAL-LAUNCHER-GPU-PROFILE.md).
 
 **Go supervisor boundary — October 29, 2026:** the normal supervisor's internal
 native branch validates and publishes QEMU's actual identity, retains its process

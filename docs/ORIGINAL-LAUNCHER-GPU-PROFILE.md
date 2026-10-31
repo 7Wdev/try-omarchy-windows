@@ -6,12 +6,13 @@ and adds private graphics/QMP transport while preserving the original boot,
 disk, network, audio, cursor, keyboard/tablet and official QMP arguments.
 The Go profile producer and native runtime consumer are implemented.
 
-**Successful VM boot with this new profile remains unverified.** Its initial evidence
-covers real Go/native argument roundtrips, real hidden helper-process ownership
-and separate regressions of the existing hidden GPU path. Released settings
-still leave native activation unset. Normal guest graphics bootstrap, account
-startup, end-to-end interaction and daily use remain open. Counts stay **4/8,
-0/4, 3/3**.
+**October 31 follow-up:** a private RAM-overlay guest now boots through this
+profile and produces an actual 4K NVIDIA source/SDL frame with complete pixels
+matching exactly. Only three handoffs complete against the unchanged target of
+1,800, so the full regression remains rejected. Released settings still leave
+native activation unset. Normal account startup, end-to-end interaction and
+daily use remain open. Counts stay **4/8, 0/4, 3/3**.
+[Actual frame, named-device fixes and retained attempts](LAUNCHER-GUEST-GRAPHICS-BOOTSTRAP.md).
 
 The first subsequent real VM attempts reach the new process binding on an
 inactive private Windows desktop but fail before guest boot. The observed socket
@@ -112,8 +113,8 @@ CPU contracts, helper transitions, prior raw regressions and complete GPU
 data/pixel checks. Earlier pre-binding builds and regression observations are
 retained separately. They do not count as final profile acceptance.
 
-Next is the matching normal guest graphics bootstrap and a background-safe
-way to exercise this original-argument runtime end to end. Normal account
+The background-safe argument/bootstrap follow-up above now reaches GPU work;
+its incomplete workload still needs diagnosis. Normal account
 startup, official Windows interaction, sustained browsing/multiple apps through
 4K, resource-pressure and active-GPU recovery, broad API support and at least
 93% matched-native performance remain required before daily-use readiness.

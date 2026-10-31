@@ -88,7 +88,9 @@ camera/authentication reconnect behavior remains outside this paused test.
 The rebuilt SDL candidate passes the corrected test locally, compiled WHPX
 discovery and the restricted user-network/NIC control. The old binary still
 fails the corrected test with **3221226505 / 0xC0000409** before reporting the
-refused connection. CI is being repeated with the corrected frontend.
+refused connection. Both Windows variants pass the corrected frontend test in
+[run 40916650181](https://github.com/7Wdev/try-omarchy-windows/actions/runs/40916650181),
+at commit `3d1b58cc621f0083364a6170cbca283be15d30d4`.
 
 The verified ZIP contains 11,862 source entries. Compared with the earlier
 runtime, only `chardev/char-socket.c` and source provenance change. Twenty-three
@@ -98,7 +100,9 @@ differ between packages and are recorded rather than treated as byte-identical.
 The official input sources and patches remain unchanged. No shader, desktop or
 performance acceptance is inferred from these transport controls.
 
-The next check is the new profile's background VM boot, followed by matching
-normal guest bootstrap and complete product acceptance.
+The new profile subsequently boots a guest and reaches a verified first 4K
+GPU source/SDL frame. Its full workload remains rejected after three handoffs;
+normal account/session and product acceptance are still open.
+[Guest bootstrap follow-up and retained failures](LAUNCHER-GUEST-GRAPHICS-BOOTSTRAP.md).
 
 [Structured evidence and artifact digests](evidence/QEMU-SOCKET-RECONNECT-2026-10-29.json).

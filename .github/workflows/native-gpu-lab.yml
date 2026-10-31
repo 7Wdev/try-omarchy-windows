@@ -114,6 +114,11 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - name: Check named graphics port discovery without opening devices
+        run: |
+          sudo python3 experimental/windows-native-gpu/test_guest_graphics_port.py --device-fixtures -v
+          python3 experimental/windows-native-gpu/launcher-guest-bootstrap/generate.py "$RUNNER_TEMP/launcher-guest-bootstrap"
+          cc -std=c11 -O2 -Wall -Wextra -Werror -Iexperimental/windows-native-gpu "$RUNNER_TEMP/launcher-guest-bootstrap/normal_root_graphics_service.c" -o "$RUNNER_TEMP/launcher-guest-bootstrap/service"
       - name: Check bounded SDL relay host command grammar
         run: |
           cc -std=c11 -O2 -Wall -Wextra -Werror experimental/qemu/sdl_command_test.c -o /tmp/sdl-command-test
