@@ -15,6 +15,7 @@ Start with the [quick start](../README.md#try-it). For supported hardware and cu
 | Install Omarchy for real and bring your trial along | [Moving to a real install](MIGRATION.md) |
 | Launch approved Windows apps | [Windows app bridge](WINDOWS-APP-BRIDGE.md) |
 | Open links from Windows in Omarchy | [Windows link bridge](WINDOWS-LINK-BRIDGE.md) |
+| Open shared files in Windows apps | [Windows file bridge](WINDOWS-FILE-BRIDGE.md) |
 | Approve `sudo` with Windows Hello | [Windows Hello for guest sudo](WINDOWS-HELLO.md) |
 | Zoom with a touchpad pinch | [Trackpad pinch](PINCH-ZOOM.md) |
 | Troubleshoot slow or unsupported graphics | [Performance](PERFORMANCE.md), [App compatibility](COMPATIBILITY.md) |
@@ -27,6 +28,11 @@ These guides describe their own limits and validation status. They are not a pro
 - [Portable USB installations](PORTABLE_USB.md)
 - [Nested virtualization](NESTED-VIRTUALIZATION.md)
 - [GPU application profiles](GPU-APPLICATIONS.md)
+- [Windows NVIDIA bridge shader diagnostic](LIVE-GPU-SHADER-TRIANGLE.md): verified guest drawing; desktop integration remains unfinished
+- [Guest shared texture and Windows resource import](LIVE-GPU-SHARED-RESOURCE.md): presentation prerequisite verified separately from drawing
+- [Windows GPU consumption of guest textures](LIVE-GPU-SHARED-TEXTURE-CONSUMPTION.md): fenced handoff and native GPU copies verified separately from presentation
+- [Native DXGI presentation of guest shader frames](LIVE-GPU-PRESENTATION.md): backbuffer bytes and presentation statistics verified; import stability and Omarchy display integration unfinished
+- [Typed textures with Windows-generated metadata](LIVE-GPU-NATIVE-METADATA.md): three repeated GPU consumption runs pass; two newer presentation-statistics failures preserved
 
 ## Development and testing
 

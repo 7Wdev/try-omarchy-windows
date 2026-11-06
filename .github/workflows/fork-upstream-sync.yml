@@ -67,6 +67,9 @@ jobs:
           python3 runtime-build/validate-lock.py
           c++ -std=c++17 -Wall -Wextra -Werror experimental/windows-native-gpu/wire_test.cpp -o /tmp/native-wire-test
           /tmp/native-wire-test
+          c++ -std=c++17 -Wall -Wextra -Werror experimental/windows-native-gpu/driver_wire_test.cpp -o /tmp/driver-wire-test
+          /tmp/driver-wire-test
+          sh experimental/windows-native-gpu/build_guest.sh
 
   validate-windows:
     needs: prepare
