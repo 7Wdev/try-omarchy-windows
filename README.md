@@ -51,8 +51,10 @@ releases below do not include them.
 and both legacy guest modules compiled against signed headers for
 `7.3.5-arch1-1`. The Mesa 26.2.6 build and the launcher and replay checks
 passed at `8381c1d`. The earlier Files result of 22–26 fps while scrolling
-3,000 files remains the baseline. Measuring Files, menu launches and frame
-pacing under load on the new kernel is still pending.
+3,000 files remains the baseline. The first headless run loaded DXG and
+announced 240 Hz, then stopped before timing Files. The launcher payload
+was mounted outside the guest installer’s root. The candidate now passes
+the open Mesa archive into the installer. Desktop measurements are pending.
 [Performance PR](https://github.com/7Wdev/try-omarchy-windows/pull/5) ·
 [Desktop measurements](virtio-dxg/bench/desktop/README.md).
 

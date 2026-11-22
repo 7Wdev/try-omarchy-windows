@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
@@ -58,6 +59,25 @@ class DesktopData(unittest.TestCase):
 
     def extract(self):
         return payload.extract(self.archive(), self.root / 'installed', self.recipe / 'recipe.json')
+
+    def test_boot_payload_visible_only_through_inherited_file(self):
+        archive = self.archive()
+        destination = self.root / 'from-descriptor'
+        with archive.open('rb') as source:
+            if os.name == 'posix':
+                archive.unlink()
+            subprocess.run([sys.executable, HERE / 'initcpio/desktop_payload.py', '-', destination,
+                            '--recipe', self.recipe / 'recipe.json'], stdin=source, check=True)
+        self.assertTrue((destination / 'lib/libvulkan_dzn.so').is_file())
+
+    def test_boot_payload_rejects_pipe(self):
+        destination = self.root / 'from-pipe'
+        result = subprocess.run([sys.executable, HERE / 'initcpio/desktop_payload.py', '-', destination,
+                                 '--recipe', self.recipe / 'recipe.json'], input=b'no archive',
+                                capture_output=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b'regular payload file', result.stderr)
+        self.assertFalse(destination.exists())
 
     def test_valid_cohort(self):
         self.assertEqual(self.extract(), '26.2.6')

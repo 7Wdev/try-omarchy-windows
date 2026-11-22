@@ -1,11 +1,13 @@
 """Prepare boot-local graphics data. Never import or execute a graphics library."""
 import argparse
+from contextlib import contextmanager
 import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
 import re
 import shutil
+import stat
 import tarfile
 import tempfile
 
@@ -21,13 +23,25 @@ def canonical(name):
     return path.as_posix()
 
 
+@contextmanager
+def open_payload(archive):
+    # The boot hook opens the mounted archive outside the chroot. Its file
+    # descriptor remains valid even when the mount is invisible inside it.
+    with (os.fdopen(os.dup(0), 'rb') if archive == Path('-') else archive.open('rb')) as source:
+        info = os.fstat(source.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_size > LIMIT:
+            raise ValueError('Expected a regular payload file within the size limit')
+        with tarfile.open(fileobj=source, mode='r:') as tar:
+            yield tar
+
+
 def extract(archive, destination, recipe):
     """Reject a partial/mixed cohort before it can select session libraries."""
     expected = json.loads(recipe.read_text(encoding='utf-8'))
-    if destination.exists() or archive.stat().st_size > LIMIT:
-        raise ValueError('Destination exists or archive exceeds limit')
+    if destination.exists():
+        raise ValueError('Destination exists')
     destination.parent.mkdir(parents=True, exist_ok=True)
-    with tarfile.open(archive, 'r:') as tar:
+    with open_payload(archive) as tar:
         entries = tar.getmembers()
         if len(entries) > 10000 or sum(m.size for m in entries) > LIMIT:
             raise ValueError('Expanded payload exceeds limit')

@@ -42,12 +42,10 @@ mount_share() {
 # environment that selects it (systemd reads /run/environment.d).
 setup_desktop() {
     m=/run/virtio-dxg-mesa
-    # Paths as the real system sees them (the tools below run in it).
     tarball=
     for f in /run/virtio-dxg/payload/mesa-virtio-dxg.tar \
-             /mnt/vdxgshare/out/mesa-virtio-dxg.tar; do
-        case $f in /run/*) src=$f ;; *) src=/new_root$f ;; esac
-        [ -f "$src" ] && { tarball=$f; break; }
+             /new_root/mnt/vdxgshare/out/mesa-virtio-dxg.tar; do
+        [ -f "$f" ] && { tarball=$f; break; }
     done
     if [ -z "$tarball" ]; then
         echo ":: virtio-dxg: no Mesa build; the desktop stays on CPU rendering" >&2
@@ -76,9 +74,11 @@ setup_desktop() {
     1*|*" virtio_dxg.chromium=wayland "*) ;;
     *) browser='--browser-wrapper /run/virtio-dxg/chromium-wrapper' ;;
     esac
+    # A plain bind of /run omits its nested 9p mount. Redirect the file
+    # while it is still visible to this shell, before entering the chroot.
     # shellcheck disable=SC2086
     if ! chroot /new_root /usr/bin/python3 /run/virtio-dxg/desktop_payload.py \
-            "$tarball" "$m" --recipe /run/virtio-dxg/mesa-recipe.json $browser; then
+            - "$m" --recipe /run/virtio-dxg/mesa-recipe.json $browser <"$tarball"; then
         umount /new_root/run
         echo ":: virtio-dxg: Mesa payload rejected; GPU environment not selected" >&2
         return 1

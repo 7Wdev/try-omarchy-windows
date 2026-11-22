@@ -104,6 +104,15 @@ The table below records the earlier desktop build.
 [Full-image run](https://github.com/7Wdev/try-omarchy-windows/actions/runs/44956203097) ·
 [Upstream image](https://github.com/omacom/try-omarchy-windows/actions/runs/44854721042).
 
+At `3c6f512` the reference and candidate DXG modules built together for the
+locked kernel. The factory disk and both boot images were staged and their
+hashes recorded. The first headless reference run loaded DXG and QEMU
+advertised 240 Hz. The Mesa installer then lost access to the launcher's
+nested payload mount inside the chroot. The guest test also stopped at an
+unsupported chmod on its Windows-backed results share. QEMU exited with
+code zero on guest shutdown. There was no Files frame or latency sample.
+[Matched driver build](https://github.com/7Wdev/try-omarchy-windows/actions/runs/44999790566).
+
 RTX 5090 Laptop GPU, 16 vCPUs, 240 Hz window. Before and after the boot
 hook's desktop priority, GTK's OpenGL renderer, app prefetch and browser
 boost, and the window-buffer leak fix.
