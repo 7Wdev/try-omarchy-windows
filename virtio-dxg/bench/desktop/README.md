@@ -19,6 +19,52 @@ phases. Discard the trace if the driver exits with an error.
 
 ### Files scrolling
 
+`navscroll.py` opens Files on a folder of 3,000 files, moves the pointer
+over the grid (from elsewhere first: a window that opens under a resting
+pointer gets no pointer focus) and scrolls with wheel notches through
+QEMU's input, every `NAVSCROLL_INTERVAL_MS` (25 by default). It counts the
+window's commits from `WAYLAND_DEBUG`: frames per second and the frame
+gaps. With `NAVSCROLL_SHOTS=DIR` it saves window captures during the
+scroll; `iconcheck.py DIR/*.png` (on the host, with PIL) finds icons that
+differ from the folder's common icon. Blurred icons (sub-pixel positions
+mid-scroll) and a notification over the grid show up too; look at the
+flagged cells before calling them corrupted. `iconruns.sh` repeats runs.
+Omarchy's notification layer takes pointer input over the right part of
+the screen while a notification shows, so the pointer goes left of it.
+
+| Files, 3,000 entries | Notches every 25 ms | every 8 ms | Corrupted icons |
+| --- | --- | --- | --- |
+| Before (d3d12 with threaded context, sync destroys) | 24–26 fps | 21–29 fps | rare (wrong scale or offset) |
+| Texture recycling, no threaded context, async destroys, polling lanes | 54–56 fps | 70–97 fps | none in thousands |
+
+Where a frame went before: 78 offscreen textures per frame (GTK offscreens
+clipped grid items), each a CreateAllocation, MapGpuVirtualAddress and
+DestroyAllocation on the host (~20 ms per frame), lane threads woken from
+sleep for each (a CreateAllocation blocked 6.5 ms), and destroys waited for.
+
+Then, in a larger window (second VM, Files 1896x1013, notches every 8 ms,
+kernel 7.3.5, Mesa 26.3.1):
+
+| Files, 3,000 entries, 1896x1013 | Frame rate | Corrupted icons |
+| --- | --- | --- |
+| Texture recycling, no threaded context | 41–42 fps | |
+| Constant-buffer views staged in a CPU heap | 54–65 fps | 0 of 879 |
+
+17% of Files' main thread was NVIDIA's `CreateConstantBufferView` reading
+back each descriptor it had just written into the shader-visible heap,
+GPU memory the guest maps write-combined: microseconds per read.
+A `perf record` while `navscroll.py` ran found it; a breakpoint on the hot instruction showed the 32-byte steps through
+the 256 KB heap. Mesa now builds those views in a CPU-only heap and copies
+them, as it already did for textures. `QMP_PORT` (default 4444) points
+`navscroll.py` at another VM's QMP, `NAVSCROLL_SECS` sets the scroll
+length, and `iconcheck.py` finds the icon columns itself.
+
+What is left per frame (off-CPU profile of Files' main thread): GTK's own
+work (layout, text shaping of items scrolling in, about 60% of its CPU),
+waits for the GPU at each window-buffer flush, CreateAllocation replies
+that sometimes arrive milliseconds late, and short GObject lock waits
+against Files' worker threads.
+
 In a disposable guest session, open Files on the same 3,000-entry directory
 for each build. Keep the viewport, icon theme, scale, sort mode, thumbnail
 cache and scroll sequence identical. Record the Nautilus process ID. During

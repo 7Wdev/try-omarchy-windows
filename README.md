@@ -47,14 +47,13 @@ launcher option `-render dxg` are described in
 [VIRTIO-DXG.md](docs/VIRTIO-DXG.md#starting-it-from-the-launcher); upstream
 releases below do not include them.
 
-**Linux 7.3.5 desktop performance candidate, November 22.** The DXG module
-and both legacy guest modules compiled against signed headers for
-`7.3.5-arch1-1`. The Mesa 26.2.6 build and the launcher and replay checks
-passed at `8381c1d`. The earlier Files result of 22–26 fps while scrolling
-3,000 files remains the baseline. The first headless run loaded DXG and
-announced 240 Hz, then stopped before timing Files. The launcher payload
-was mounted outside the guest installer’s root. The candidate now passes
-the open Mesa archive into the installer. Desktop measurements are pending.
+**Linux 7.3.5 and Mesa 26.3.1, November 22.** Claude’s development guest
+reported 54–56 fps scrolling 3,000 files with wheel events every 25 ms
+and 70–97 fps with events every 8 ms after texture recycling, asynchronous
+allocation destruction and transport polling.
+The performance branch also carries CPU-heap descriptor staging and the fix
+for loading Mesa across the launcher’s chroot. Scrolling and Files menu
+animation timings on the combined branch are still pending.
 [Performance PR](https://github.com/7Wdev/try-omarchy-windows/pull/5) ·
 [Desktop measurements](virtio-dxg/bench/desktop/README.md).
 

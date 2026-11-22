@@ -1,6 +1,6 @@
 --- a/src/gallium/auxiliary/util/u_upload_mgr.c
 +++ b/src/gallium/auxiliary/util/u_upload_mgr.c
-@@ -207,6 +207,7 @@
+@@ -236,6 +236,7 @@
     if (upload->map == NULL) {
        u_upload_release_buffer(upload);
        pipe_resource_release(upload->pipe, upload->buffer);
@@ -8,7 +8,7 @@
        return 0;
     }
  
-@@ -255,7 +256,6 @@
+@@ -284,7 +285,6 @@
        if (unlikely(!buffer_size)) {
           *out_offset = ~0;
           *ptr = NULL;
@@ -42,7 +42,7 @@
  
 --- a/src/gallium/drivers/d3d12/d3d12_batch.cpp
 +++ b/src/gallium/drivers/d3d12/d3d12_batch.cpp
-@@ -484,6 +484,9 @@
+@@ -489,6 +489,9 @@
     uint8_t new_data = write ? batch_bo_reference_written : batch_bo_reference_read;
     uint8_t old_data = (uint8_t)*state;
     *state = (old_data | new_data);
@@ -64,7 +64,182 @@
  bool
 --- a/src/gallium/drivers/d3d12/d3d12_bufmgr.cpp
 +++ b/src/gallium/drivers/d3d12/d3d12_bufmgr.cpp
-@@ -225,6 +225,8 @@
+@@ -33,6 +33,8 @@
+ #include "util/format/u_format.h"
+ #include "util/set.h"
+ #include "util/u_memory.h"
++#include "util/os_time.h"
++#include "util/u_debug.h"
+ 
+ #include <dxguids/dxguids.h>
+ 
+@@ -176,6 +178,150 @@
+    return bo;
+ }
+ 
++/*
++ * d3d12_texture_cache: textures kept for reuse. Creating a committed texture
++ * and freeing it again costs kernel calls (allocation, GPU virtual address,
++ * residency, destruction) that applications creating offscreen textures
++ * every frame, such as GTK 4's renderer, pay dozens of times per frame.
++ * Under virtualization each is a host round trip.
++ */
++struct d3d12_texture_cache_entry {
++   struct list_head link;
++   ID3D12Resource *res;
++   D3D12_RESOURCE_DESC desc;
++   D3D12_HEAP_FLAGS heap_flags;
++   const DXGI_FORMAT *casts;
++   uint32_t num_casts;
++   struct d3d12_resource_state state;
++   enum d3d12_residency_status residency;
++   uint64_t size;
++   int64_t freed;
++};
++
++#define D3D12_TEXTURE_CACHE_AGE_NS 1000000000ll
++
++static bool
++texture_desc_equal(const D3D12_RESOURCE_DESC *a, const D3D12_RESOURCE_DESC *b)
++{
++   return a->Dimension == b->Dimension && a->Alignment == b->Alignment &&
++          a->Width == b->Width && a->Height == b->Height &&
++          a->DepthOrArraySize == b->DepthOrArraySize && a->MipLevels == b->MipLevels &&
++          a->Format == b->Format && a->SampleDesc.Count == b->SampleDesc.Count &&
++          a->SampleDesc.Quality == b->SampleDesc.Quality && a->Layout == b->Layout &&
++          a->Flags == b->Flags;
++}
++
++/* Lock held. */
++static void
++texture_cache_drop(struct d3d12_screen *screen, struct d3d12_texture_cache_entry *e)
++{
++   list_del(&e->link);
++   screen->texture_cache_bytes -= e->size;
++   d3d12_resource_state_cleanup(&e->state);
++   e->res->Release();
++   FREE(e);
++}
++
++/* Lock held: drops what has not been reused for a while, oldest first. */
++static void
++texture_cache_expire(struct d3d12_screen *screen, int64_t now)
++{
++   list_for_each_entry_safe(struct d3d12_texture_cache_entry, e, &screen->texture_cache, link) {
++      if (now - e->freed < D3D12_TEXTURE_CACHE_AGE_NS)
++         break;
++      texture_cache_drop(screen, e);
++   }
++}
++
++void
++d3d12_texture_cache_init(struct d3d12_screen *screen)
++{
++   list_inithead(&screen->texture_cache);
++   mtx_init(&screen->texture_cache_lock, mtx_plain);
++   screen->texture_cache_bytes = 0;
++   screen->texture_cache_max = debug_get_num_option("D3D12_TEXTURE_CACHE_MB", 128) << 20;
++}
++
++void
++d3d12_texture_cache_destroy(struct d3d12_screen *screen)
++{
++   if (!screen->texture_cache.next)
++      return;
++   mtx_lock(&screen->texture_cache_lock);
++   list_for_each_entry_safe(struct d3d12_texture_cache_entry, e, &screen->texture_cache, link)
++      texture_cache_drop(screen, e);
++   mtx_unlock(&screen->texture_cache_lock);
++}
++
++/* Takes bo's texture, state and residency into the cache; false if it does
++ * not fit (the caller releases it). */
++static bool
++texture_cache_put(struct d3d12_bo *bo)
++{
++   struct d3d12_screen *screen = bo->screen;
++   uint64_t size = bo->estimated_size;
++   if (!screen->texture_cache_max || !size || size > screen->texture_cache_max / 4)
++      return false;
++   /* Only a texture nobody else holds: another wrapper of the same D3D12
++    * resource (an alias or a batch's object reference) keeps using its
++    * memory, which a new texture must not get. */
++   bo->res->AddRef();
++   if (bo->res->Release() != 1)
++      return false;
++   struct d3d12_texture_cache_entry *e = MALLOC_STRUCT(d3d12_texture_cache_entry);
++   if (!e)
++      return false;
++   e->res = bo->res;
++   e->desc = GetDesc(bo->res);
++   e->heap_flags = bo->recycle_heap_flags;
++   e->casts = bo->recycle_casts;
++   e->num_casts = bo->recycle_num_casts;
++   e->state = bo->global_state;
++   e->residency = bo->residency_status;
++   e->size = size;
++   e->freed = os_time_get_nano();
++
++   mtx_lock(&screen->texture_cache_lock);
++   texture_cache_expire(screen, e->freed);
++   while (screen->texture_cache_bytes + size > screen->texture_cache_max &&
++          !list_is_empty(&screen->texture_cache))
++      texture_cache_drop(screen, list_first_entry(&screen->texture_cache,
++                                                  struct d3d12_texture_cache_entry, link));
++   list_addtail(&e->link, &screen->texture_cache);
++   screen->texture_cache_bytes += size;
++   mtx_unlock(&screen->texture_cache_lock);
++   return true;
++}
++
++ID3D12Resource *
++d3d12_texture_cache_take(struct d3d12_screen *screen, const D3D12_RESOURCE_DESC *desc,
++                         D3D12_HEAP_FLAGS heap_flags, const DXGI_FORMAT *casts,
++                         uint32_t num_casts, struct d3d12_resource_state *state,
++                         enum d3d12_residency_status *residency)
++{
++   ID3D12Resource *res = NULL;
++   if (!screen->texture_cache_max)
++      return NULL;
++   mtx_lock(&screen->texture_cache_lock);
++   texture_cache_expire(screen, os_time_get_nano());
++   /* Most recently freed first: the likeliest to be resident. */
++   list_for_each_entry_from_rev(struct d3d12_texture_cache_entry, e,
++                                screen->texture_cache.prev, &screen->texture_cache, link) {
++      if (e->heap_flags == heap_flags && e->casts == casts && e->num_casts == num_casts &&
++          texture_desc_equal(&e->desc, desc)) {
++         list_del(&e->link);
++         screen->texture_cache_bytes -= e->size;
++         res = e->res;
++         *state = e->state;
++         *residency = e->residency;
++         FREE(e);
++         break;
++      }
++   }
++   mtx_unlock(&screen->texture_cache_lock);
++   return res;
++}
++
+ void
+ d3d12_bo_unreference(struct d3d12_bo *bo)
+ {
+@@ -207,9 +353,11 @@
+ 
+       mtx_unlock(&bo->screen->submit_mutex);
+ 
+-      d3d12_resource_state_cleanup(&bo->global_state);
+-      if (bo->res)
+-         bo->res->Release();
++      if (!(bo->res && bo->recyclable && texture_cache_put(bo))) {
++         d3d12_resource_state_cleanup(&bo->global_state);
++         if (bo->res)
++            bo->res->Release();
++      }
+ 
+       uint64_t mask = bo->local_context_state_mask;
+       while (mask) {
+@@ -225,6 +373,8 @@
  d3d12_screen_reclaim_completed(struct d3d12_screen *screen)
  {
     uint64_t completed = screen->fence->GetCompletedValue();
@@ -73,7 +248,7 @@
     struct list_head retired;
     list_inithead(&retired);
  
-@@ -265,14 +267,21 @@
+@@ -265,14 +415,21 @@
     if (!have_target)
        return false;
  
@@ -83,10 +258,6 @@
 +   uint64_t completed = screen->fence->GetCompletedValue();
 +   if (completed == UINT64_MAX)
        return false;
--   }
--
--   d3d12_screen_reclaim_completed(screen);
--   return true;
 +   if (completed < target) {
 +      if (FAILED(screen->fence->SetEventOnCompletion(target, nullptr))) {
 +         debug_printf("D3D12: failed to wait for pending resource reclamation\n");
@@ -95,13 +266,53 @@
 +      completed = screen->fence->GetCompletedValue();
 +      if (completed == UINT64_MAX || completed < target)
 +         return false;
-+   }
-+
+    }
+ 
+-   d3d12_screen_reclaim_completed(screen);
+-   return true;
 +   /* Allocation retries need actual progress, not merely a wake-up. */
 +   return d3d12_screen_reclaim_completed(screen);
  }
  
  void *
+--- a/src/gallium/drivers/d3d12/d3d12_bufmgr.h
++++ b/src/gallium/drivers/d3d12/d3d12_bufmgr.h
+@@ -72,6 +72,13 @@
+    enum d3d12_residency_status residency_status;
+    uint16_t local_needs_resolve_state;
+ 
++   /* d3d12_texture_cache: a committed, non-shared texture that may be
++    * recycled when its last reference goes, with what created it. */
++   bool recyclable;
++   D3D12_HEAP_FLAGS recycle_heap_flags;
++   const DXGI_FORMAT *recycle_casts;
++   uint32_t recycle_num_casts;
++
+    unsigned local_context_state_mask;
+    uint8_t local_reference_mask[16];
+ 
+@@ -152,6 +159,21 @@
+ void
+ d3d12_bo_unreference(struct d3d12_bo *bo);
+ 
++/* d3d12_texture_cache: a recycled texture matching what init_texture would
++ * create (its state and residency moved to *state and *residency), or
++ * NULL. */
++ID3D12Resource *
++d3d12_texture_cache_take(struct d3d12_screen *screen, const D3D12_RESOURCE_DESC *desc,
++                         D3D12_HEAP_FLAGS heap_flags, const DXGI_FORMAT *casts,
++                         uint32_t num_casts, struct d3d12_resource_state *state,
++                         enum d3d12_residency_status *residency);
++
++void
++d3d12_texture_cache_init(struct d3d12_screen *screen);
++
++void
++d3d12_texture_cache_destroy(struct d3d12_screen *screen);
++
+ void *
+ d3d12_bo_map(struct d3d12_bo *bo, D3D12_RANGE *range);
+ 
 --- a/src/gallium/drivers/d3d12/d3d12_context.h
 +++ b/src/gallium/drivers/d3d12/d3d12_context.h
 @@ -168,6 +168,7 @@
@@ -112,9 +323,37 @@
     struct slab_child_pool transfer_pool;
     struct slab_child_pool transfer_pool_unsync;
     struct list_head context_list_entry;
+@@ -272,6 +273,10 @@
+ 
+    struct d3d12_descriptor_pool *sampler_pool;
+    struct d3d12_descriptor_handle null_sampler;
++   /* CPU-only staging for views made per draw (CBVs, UAVs): drivers may
++    * read a new descriptor back, which is slow in a shader-visible heap.
++    * Filled and copied to the batch heap within one fill_*_descriptors. */
++   struct d3d12_descriptor_heap *view_staging;
+ 
+    PFN_D3D12_SERIALIZE_VERSIONED_ROOT_SIGNATURE D3D12SerializeVersionedRootSignature;
+ #ifndef _GAMING_XBOX
 --- a/src/gallium/drivers/d3d12/d3d12_context_common.cpp
 +++ b/src/gallium/drivers/d3d12/d3d12_context_common.cpp
-@@ -157,6 +157,10 @@
+@@ -55,6 +55,7 @@
+ #include "util/u_helpers.h"
+ #include "util/u_inlines.h"
+ #include "util/u_memory.h"
++#include "util/u_debug.h"
+ #include "util/u_upload_mgr.h"
+ #include "util/u_sample_positions.h"
+ #include "util/u_dl.h"
+@@ -138,6 +139,8 @@
+       d3d12_cmd_signature_cache_destroy(ctx);
+       d3d12_compute_transform_cache_destroy(ctx);
+       d3d12_descriptor_pool_free(ctx->sampler_pool);
++      if (ctx->view_staging)
++         d3d12_descriptor_heap_free(ctx->view_staging);
+       d3d12_gs_variant_cache_destroy(ctx);
+       d3d12_tcs_variant_cache_destroy(ctx);
+       d3d12_gfx_pipeline_state_cache_destroy(ctx);
+@@ -153,6 +156,10 @@
     }
  #endif // HAVE_GALLIUM_D3D12_GRAPHICS
  
@@ -125,7 +364,7 @@
     slab_destroy_child(&ctx->transfer_pool);
     slab_destroy_child(&ctx->transfer_pool_unsync);
     d3d12_context_state_table_destroy(ctx);
-@@ -200,6 +204,8 @@
+@@ -196,6 +203,8 @@
     struct d3d12_context *ctx = d3d12_context(pipe);
     struct d3d12_batch *batch = d3d12_current_batch(ctx);
  
@@ -134,7 +373,7 @@
     bool flushed = d3d12_flush_cmdlist(ctx);
  
     if (fence) {
-@@ -606,6 +612,9 @@
+@@ -602,6 +611,9 @@
     ctx->base.flush_resource = d3d12_flush_resource;
     ctx->base.fence_server_signal = d3d12_signal;
     ctx->base.fence_server_sync = d3d12_wait;
@@ -144,7 +383,23 @@
     ctx->base.memory_barrier = d3d12_memory_barrier;
     ctx->base.texture_barrier = d3d12_texture_barrier;
  
-@@ -726,9 +735,11 @@
+@@ -687,6 +699,15 @@
+       }
+       d3d12_init_null_sampler(ctx);
+ 
++      ctx->view_staging = d3d12_descriptor_heap_new(screen->dev,
++                                                    D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
++                                                    D3D12_DESCRIPTOR_HEAP_FLAG_NONE,
++                                                    PIPE_MAX_SHADER_IMAGES);
++      if (!ctx->view_staging) {
++         FREE(ctx);
++         return NULL;
++      }
++
+       ctx->blitter = util_blitter_create(&ctx->base);
+       if (!ctx->blitter)
+          return NULL;
+@@ -717,12 +738,19 @@
        ctx->id = D3D12_CONTEXT_NO_ID;
     mtx_unlock(&screen->submit_mutex);
  
@@ -155,7 +410,128 @@
 +      ctx->batches[i].ctx = ctx;
     }
  
-    if (flags & PIPE_CONTEXT_PREFER_THREADED) {
+-   if (flags & PIPE_CONTEXT_PREFER_THREADED) {
++   /* The threaded context races with this driver's buffer handling: GTK 4
++    * draws then use another draw's data (corrupted icons in Files, more
++    * often at higher frame rates). It buys no measurable GL throughput
++    * here, so it is opt-in (D3D12_THREADED=1). */
++   if ((flags & PIPE_CONTEXT_PREFER_THREADED) &&
++       debug_get_bool_option("D3D12_THREADED", false)) {
+       struct pipe_context *ret = threaded_context_create(&ctx->base,
+          &screen->transfer_pool,
+          d3d12_replace_buffer_storage,
+--- a/src/gallium/drivers/d3d12/d3d12_descriptor_pool.cpp
++++ b/src/gallium/drivers/d3d12/d3d12_descriptor_pool.cpp
+@@ -184,6 +184,16 @@
+    heap->next += num_handles * heap->desc_size;
+ }
+ 
++D3D12_CPU_DESCRIPTOR_HANDLE
++d3d12_descriptor_heap_cpu_handle(struct d3d12_descriptor_heap *heap,
++                                 unsigned index)
++{
++   D3D12_CPU_DESCRIPTOR_HANDLE handle;
++   assert(index < heap->desc.NumDescriptors);
++   handle.ptr = heap->cpu_base + (size_t)index * heap->desc_size;
++   return handle;
++}
++
+ void
+ d3d12_descriptor_heap_clear(struct d3d12_descriptor_heap *heap)
+ {
+--- a/src/gallium/drivers/d3d12/d3d12_descriptor_pool.h
++++ b/src/gallium/drivers/d3d12/d3d12_descriptor_pool.h
+@@ -92,4 +92,9 @@
+ void
+ d3d12_descriptor_heap_clear(struct d3d12_descriptor_heap *heap);
+ 
++/* The CPU handle of descriptor INDEX of HEAP (no allocation). */
++D3D12_CPU_DESCRIPTOR_HANDLE
++d3d12_descriptor_heap_cpu_handle(struct d3d12_descriptor_heap *heap,
++                                 unsigned index);
++
+ #endif
+--- a/src/gallium/drivers/d3d12/d3d12_draw.cpp
++++ b/src/gallium/drivers/d3d12/d3d12_draw.cpp
+@@ -58,6 +58,8 @@
+ {
+    struct d3d12_batch *batch = d3d12_current_batch(ctx);
+    struct d3d12_descriptor_handle table_start;
++   D3D12_CPU_DESCRIPTOR_HANDLE staged[PIPE_MAX_CONSTANT_BUFFERS];
++   unsigned num_staged = 0;
+    d2d12_descriptor_heap_get_next_handle(batch->view_heap, &table_start);
+ 
+    for (unsigned i = shader->begin_ubo_binding; i < shader->end_ubo_binding; i++) {
+@@ -73,10 +75,12 @@
+          d3d12_batch_reference_resource(batch, res, false);
+       }
+ 
+-      struct d3d12_descriptor_handle handle;
+-      d3d12_descriptor_heap_alloc_handle(batch->view_heap, &handle);
+-      d3d12_screen(ctx->base.screen)->dev->CreateConstantBufferView(&cbv_desc, handle.cpu_handle);
++      staged[num_staged] = d3d12_descriptor_heap_cpu_handle(ctx->view_staging, num_staged);
++      d3d12_screen(ctx->base.screen)->dev->CreateConstantBufferView(&cbv_desc, staged[num_staged]);
++      num_staged++;
+    }
++   if (num_staged)
++      d3d12_descriptor_heap_append_handles(batch->view_heap, staged, num_staged);
+ 
+    return table_start.gpu_handle;
+ }
+@@ -143,6 +147,8 @@
+    struct d3d12_batch *batch = d3d12_current_batch(ctx);
+    struct d3d12_descriptor_handle table_start;
+ 
++   D3D12_CPU_DESCRIPTOR_HANDLE staged[PIPE_MAX_SHADER_BUFFERS];
++   unsigned num_staged = 0;
+    d2d12_descriptor_heap_get_next_handle(batch->view_heap, &table_start);
+ 
+    for (unsigned i = 0; i < shader->nir->info.num_ssbos; i++)
+@@ -168,10 +174,12 @@
+          d3d12_batch_reference_resource(batch, res, true);
+       }
+ 
+-      struct d3d12_descriptor_handle handle;
+-      d3d12_descriptor_heap_alloc_handle(batch->view_heap, &handle);
+-      d3d12_screen(ctx->base.screen)->dev->CreateUnorderedAccessView(d3d12_res, nullptr, &uav_desc, handle.cpu_handle);
++      staged[num_staged] = d3d12_descriptor_heap_cpu_handle(ctx->view_staging, num_staged);
++      d3d12_screen(ctx->base.screen)->dev->CreateUnorderedAccessView(d3d12_res, nullptr, &uav_desc, staged[num_staged]);
++      num_staged++;
+    }
++   if (num_staged)
++      d3d12_descriptor_heap_append_handles(batch->view_heap, staged, num_staged);
+ 
+    return table_start.gpu_handle;
+ }
+@@ -249,6 +257,8 @@
+    struct d3d12_batch *batch = d3d12_current_batch(ctx);
+    struct d3d12_descriptor_handle table_start;
+ 
++   D3D12_CPU_DESCRIPTOR_HANDLE staged[PIPE_MAX_SHADER_IMAGES];
++   unsigned num_staged = 0;
+    d2d12_descriptor_heap_get_next_handle(batch->view_heap, &table_start);
+ 
+    for (unsigned i = 0; i < shader->nir->info.num_images; i++)
+@@ -333,13 +343,15 @@
+          }
+          d3d12_batch_reference_resource(batch, res, true);
+ 
+-         struct d3d12_descriptor_handle handle;
+-         d3d12_descriptor_heap_alloc_handle(batch->view_heap, &handle);
+-         d3d12_screen(ctx->base.screen)->dev->CreateUnorderedAccessView(d3d12_res, nullptr, &uav_desc, handle.cpu_handle);
++         staged[num_staged] = d3d12_descriptor_heap_cpu_handle(ctx->view_staging, num_staged);
++         d3d12_screen(ctx->base.screen)->dev->CreateUnorderedAccessView(d3d12_res, nullptr, &uav_desc, staged[num_staged]);
+       } else {
+-         d3d12_descriptor_heap_append_handles(batch->view_heap, &screen->null_uavs[shader->uav_bindings[i].dimension].cpu_handle, 1);
++         staged[num_staged] = screen->null_uavs[shader->uav_bindings[i].dimension].cpu_handle;
+       }
++      num_staged++;
+    }
++   if (num_staged)
++      d3d12_descriptor_heap_append_handles(batch->view_heap, staged, num_staged);
+ 
+    return table_start.gpu_handle;
+ }
 --- a/src/gallium/drivers/d3d12/d3d12_fence.cpp
 +++ b/src/gallium/drivers/d3d12/d3d12_fence.cpp
 @@ -27,12 +27,29 @@
@@ -351,11 +727,10 @@
  {
     pscreen->fence_reference = fence_reference;
     pscreen->fence_finish = fence_finish;
--}
 +#ifndef _WIN32
 +   pscreen->fence_get_fd = fence_get_fd;
 +#endif
-+}
+ }
 --- a/src/gallium/drivers/d3d12/d3d12_fence.h
 +++ b/src/gallium/drivers/d3d12/d3d12_fence.h
 @@ -93,6 +93,9 @@
@@ -462,7 +837,56 @@
     FREE(resource);
  }
  
-@@ -540,10 +584,726 @@
+@@ -324,7 +368,25 @@
+ 
+    HRESULT hres = E_FAIL;
+    enum d3d12_residency_status init_residency;
+-   do {
++
++   /* d3d12_texture_cache: committed, non-shared textures are recycled. */
++   const bool recyclable = !heap && desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER &&
++      !(templ->bind & (PIPE_BIND_SHARED | PIPE_BIND_DISPLAY_TARGET | PIPE_BIND_SCANOUT |
++                       PIPE_BIND_VIDEO_DECODE_DPB | PIPE_BIND_VIDEO_ENCODE_DPB));
++   const D3D12_HEAP_FLAGS recycle_heap_flags = screen->support_create_not_resident ?
++      D3D12_HEAP_FLAG_CREATE_NOT_RESIDENT : D3D12_HEAP_FLAG_NONE;
++   const DXGI_FORMAT *recycle_casts = screen->opts12.RelaxedFormatCastingSupported ?
++      format_cast_list : NULL;
++   const uint32_t recycle_num_casts = screen->opts12.RelaxedFormatCastingSupported ?
++      num_castable_formats : 0;
++   struct d3d12_resource_state recycled_state = {};
++   ID3D12Resource *recycled = recyclable ?
++      d3d12_texture_cache_take(screen, &desc, recycle_heap_flags, recycle_casts,
++                               recycle_num_casts, &recycled_state, &init_residency) : NULL;
++   if (recycled) {
++      d3d12_res = recycled;
++      hres = S_OK;
++   } else do {
+ #ifndef _GAMING_XBOX
+ 
+    if (heap && screen->max_feature_level == D3D_FEATURE_LEVEL_1_0_GENERIC) {
+@@ -440,6 +502,21 @@
+    }
+ 
+    res->bo = d3d12_bo_wrap_res(screen, d3d12_res, init_residency);
++   if (!res->bo) {
++      if (recycled)
++         d3d12_resource_state_cleanup(&recycled_state);
++      d3d12_res->Release();
++      return false;
++   }
++   if (recycled) {
++      /* The texture's actual state, as tracked when it was freed. */
++      d3d12_resource_state_cleanup(&res->bo->global_state);
++      res->bo->global_state = recycled_state;
++   }
++   res->bo->recyclable = recyclable;
++   res->bo->recycle_heap_flags = recycle_heap_flags;
++   res->bo->recycle_casts = recycle_casts;
++   res->bo->recycle_num_casts = recycle_num_casts;
+ 
+    return true;
+ }
+@@ -540,10 +617,726 @@
     return &res->base.b;
  }
  
@@ -1189,7 +1613,7 @@
     struct d3d12_resource *res = CALLOC_STRUCT(d3d12_resource);
     if (!res)
        return NULL;
-@@ -557,6 +1317,13 @@
+@@ -581,6 +1374,13 @@
                            struct winsys_handle *handle, unsigned usage)
  {
     struct d3d12_screen *screen = d3d12_screen(pscreen);
@@ -1203,7 +1627,7 @@
     if (handle->type != WINSYS_HANDLE_TYPE_D3D12_RES &&
         handle->type != WINSYS_HANDLE_TYPE_FD &&
         handle->type != WINSYS_HANDLE_TYPE_WIN32_NAME)
-@@ -846,6 +1613,36 @@
+@@ -871,6 +1671,36 @@
     struct d3d12_resource *res = d3d12_resource(pres);
     struct d3d12_screen *screen = d3d12_screen(pscreen);
  
@@ -1240,7 +1664,7 @@
     switch (handle->type) {
     case WINSYS_HANDLE_TYPE_D3D12_RES:
        handle->com_obj = d3d12_resource_resource(res);
-@@ -985,6 +1782,13 @@
+@@ -1010,6 +1840,13 @@
  
  static constexpr unsigned d3d12_max_planes = 3;
  
@@ -1254,7 +1678,7 @@
  /**
   * Get stride and offset for the given pipe resource without the need to get
   * a winsys_handle.
-@@ -1003,6 +1807,41 @@
+@@ -1028,6 +1865,41 @@
     struct d3d12_resource* res = d3d12_resource(pres);
     unsigned num_planes = util_format_get_num_planes(res->overall_format);
  
@@ -1296,7 +1720,7 @@
     pipe_resource *planes[d3d12_max_planes];
     unsigned int strides[d3d12_max_planes];
     unsigned int layer_strides[d3d12_max_planes];
-@@ -1273,6 +2112,142 @@
+@@ -1298,6 +2170,142 @@
     ctx->has_commands = true;
  }
  
@@ -1513,20 +1937,28 @@
     caps->timeline_semaphore_import = true;
     caps->clip_halfz = true;
     caps->vs_layer_viewport = true;
-@@ -419,6 +422,12 @@
- #ifndef _GAMING_XBOX
+@@ -420,6 +423,12 @@
     caps->query_memory_info = true;
  #endif
-+
+ 
 +   /* kms_swrast: scanout and shared images are dumb buffers mirrored from
 +    * GPU textures (see d3d12_resource.cpp), so they import and export as
 +    * dma-bufs like llvmpipe's. DRM_PRIME_CAP_IMPORT | DRM_PRIME_CAP_EXPORT. */
 +   if (screen->winsys && screen->winsys->get_fd)
 +      caps->dmabuf = 0x1 | 0x2;
- 
++
     caps->min_line_width =
     caps->min_line_width_aa =
-@@ -670,6 +679,10 @@
+    caps->min_point_size =
+@@ -601,6 +610,7 @@
+ void
+ d3d12_deinit_screen(struct d3d12_screen *screen)
+ {
++   d3d12_texture_cache_destroy(screen);
+    while (d3d12_screen_reclaim_one(screen))
+       ;
+ 
+@@ -670,6 +680,10 @@
  void
  d3d12_destroy_screen(struct d3d12_screen *screen)
  {
@@ -1537,7 +1969,7 @@
     slab_destroy_parent(&screen->transfer_pool);
     mtx_destroy(&screen->submit_mutex);
     mtx_destroy(&screen->pending_free_lock);
-@@ -1377,6 +1390,9 @@
+@@ -1377,10 +1391,14 @@
     d3d12_debug = static_cast<uint32_t>(debug_get_option_d3d12_debug());
  
     screen->winsys = winsys;
@@ -1547,6 +1979,11 @@
     if (adapter_luid)
        screen->adapter_luid = *adapter_luid;
     mtx_init(&screen->descriptor_pool_mutex, mtx_plain);
+    mtx_init(&screen->submit_mutex, mtx_plain);
++   d3d12_texture_cache_init(screen);
+    mtx_init(&screen->pending_free_lock, mtx_plain);
+    list_inithead(&screen->pending_free_list);
+ 
 --- a/src/gallium/drivers/d3d12/d3d12_screen.h
 +++ b/src/gallium/drivers/d3d12/d3d12_screen.h
 @@ -70,6 +70,9 @@
@@ -1559,9 +1996,22 @@
     LUID adapter_luid;
     char driver_uuid[PIPE_UUID_SIZE];
     char device_uuid[PIPE_UUID_SIZE];
+@@ -91,6 +94,12 @@
+    struct list_head pending_free_list;
+ 
+    struct list_head residency_list;
++
++   /* d3d12_texture_cache (d3d12_bufmgr.cpp) */
++   struct list_head texture_cache;
++   mtx_t texture_cache_lock;
++   uint64_t texture_cache_bytes;
++   uint64_t texture_cache_max;
+    ID3D12Fence *residency_fence;
+    uint64_t residency_fence_value;
+    unsigned num_evictions;
 --- a/src/glx/dri_common.c
 +++ b/src/glx/dri_common.c
-@@ -952,7 +952,9 @@
+@@ -1036,7 +1036,9 @@
     enum dri_screen_type type;
     switch (psc->display->driver) {
     case GLX_DRIVER_DRI3:
@@ -1597,7 +2047,7 @@
           if (uniform_bytes)
 --- a/src/microsoft/compiler/nir_to_dxil.c
 +++ b/src/microsoft/compiler/nir_to_dxil.c
-@@ -3662,7 +3662,10 @@
+@@ -3663,7 +3663,10 @@
     if (ctx->mod.shader_kind == DXIL_PIXEL_SHADER &&
        ctx->opts->interpolate_at_vertex &&
        ctx->opts->provoking_vertex != 0 &&
@@ -1803,7 +2253,7 @@
           dzn_graphics_pipeline_get_state(gfx, &cmdbuf->state.pipeline_variant);
           if (gfx->multiview.native_view_instancing)
              view_instance_mask = gfx->multiview.view_mask;
-@@ -3460,11 +3461,15 @@
+@@ -3465,11 +3466,15 @@
     const struct dzn_graphics_pipeline *pipeline =
        (const struct dzn_graphics_pipeline *)cmdbuf->state.pipeline;
  
@@ -1822,7 +2272,7 @@
  }
  
  static void
-@@ -3476,7 +3481,12 @@
+@@ -3481,7 +3486,12 @@
     if (!(cmdbuf->state.dirty & DZN_CMD_DIRTY_SCISSORS))
        return;
  
@@ -1836,7 +2286,7 @@
        /* Apply a scissor delimiting the render area. */
        ID3D12GraphicsCommandList1_RSSetScissorRects(cmdbuf->cmdlist, 1, &cmdbuf->state.render.area);
        return;
-@@ -3484,15 +3494,15 @@
+@@ -3489,15 +3499,15 @@
  
     D3D12_RECT scissors[MAX_SCISSOR];
  
@@ -1855,7 +2305,7 @@
  }
  
  static void
-@@ -3587,10 +3597,17 @@
+@@ -3592,10 +3602,17 @@
  {
     if (cmdbuf->state.dirty & DZN_CMD_DIRTY_DEPTH_BIAS) {
        assert(cmdbuf->cmdlist9);
@@ -1876,7 +2326,7 @@
     }
  }
  
-@@ -3728,9 +3745,103 @@
+@@ -3733,9 +3750,103 @@
     return VK_SUCCESS;
  }
  
@@ -1972,7 +2422,7 @@
 +                             VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN;
 +}
 +
- static void
+ static VkResult
  dzn_cmd_buffer_prepare_draw(struct dzn_cmd_buffer *cmdbuf, bool indexed)
  {
 +   dzn_cmd_buffer_update_eds(cmdbuf);
@@ -1980,7 +2430,7 @@
     if (indexed)
        dzn_cmd_buffer_update_ibview(cmdbuf);
  
-@@ -4025,6 +4136,7 @@
+@@ -4035,6 +4146,7 @@
                               uint32_t draw_buf_stride,
                               bool indexed)
  {
@@ -1988,7 +2438,7 @@
     struct dzn_device *device = container_of(cmdbuf->vk.base.device, struct dzn_device, vk);
     struct dzn_physical_device *pdev = container_of(device->vk.physical, struct dzn_physical_device, vk);
     struct dzn_graphics_pipeline *pipeline = (struct dzn_graphics_pipeline *)
-@@ -5145,8 +5257,10 @@
+@@ -5163,8 +5275,10 @@
           cmdbuf->state.dirty |= DZN_CMD_DIRTY_BLEND_CONSTANTS;
        }
  
@@ -2001,7 +2451,7 @@
  
        if (gfx->vb.count > 0)
           BITSET_SET_COUNT(cmdbuf->state.vb.dirty, 0, gfx->vb.count);
-@@ -5231,6 +5345,31 @@
+@@ -5249,6 +5363,31 @@
     }
  }
  
@@ -2033,7 +2483,7 @@
  VKAPI_ATTR void VKAPI_CALL
  dzn_CmdSetScissor(VkCommandBuffer commandBuffer,
                    uint32_t firstScissor,
-@@ -5278,6 +5417,7 @@
+@@ -5296,6 +5435,7 @@
  {
     VK_FROM_HANDLE(dzn_cmd_buffer, cmdbuf, commandBuffer);
  
@@ -2041,7 +2491,7 @@
     const struct dzn_graphics_pipeline *pipeline = (const struct dzn_graphics_pipeline *)
        cmdbuf->state.bindpoint[VK_PIPELINE_BIND_POINT_GRAPHICS].pipeline;
  
-@@ -5333,6 +5473,7 @@
+@@ -5353,6 +5493,7 @@
  {
     VK_FROM_HANDLE(dzn_cmd_buffer, cmdbuf, commandBuffer);
  
@@ -2049,7 +2499,7 @@
     const struct dzn_graphics_pipeline *pipeline = (const struct dzn_graphics_pipeline *)
        cmdbuf->state.bindpoint[VK_PIPELINE_BIND_POINT_GRAPHICS].pipeline;
  
-@@ -5490,6 +5631,42 @@
+@@ -5511,6 +5652,42 @@
     }
  
     BITSET_SET_COUNT(cmdbuf->state.vb.dirty, firstBinding, bindingCount);
@@ -2572,7 +3022,7 @@
     };
  }
  
-@@ -676,8 +715,9 @@
+@@ -688,8 +727,9 @@
        .geometryShader = true,
        .tessellationShader = false,
        .sampleRateShading = true,
@@ -2584,7 +3034,7 @@
        .multiDrawIndirect = true,
        .drawIndirectFirstInstance = true,
        .depthClamp = true,
-@@ -687,7 +727,7 @@
+@@ -699,7 +739,7 @@
        .wideLines = instance->drirc.debug.claim_wide_lines,
        .largePoints = false,
        .alphaToOne = false,
@@ -2593,7 +3043,7 @@
        .samplerAnisotropy = true,
        .textureCompressionETC2 = false,
        .textureCompressionASTC_LDR = false,
-@@ -781,33 +821,46 @@
+@@ -793,33 +833,46 @@
        .bufferDeviceAddress                = pdev->shader_model >= D3D_SHADER_MODEL_6_6,
        .bufferDeviceAddressCaptureReplay   = false,
        .bufferDeviceAddressMultiDevice     = false,
@@ -2652,7 +3102,7 @@
     };
  }
  
-@@ -898,7 +951,7 @@
+@@ -910,7 +963,7 @@
        .maxGeometryTotalOutputComponents = D3D12_REQ_GS_INVOCATION_32BIT_OUTPUT_COMPONENT_LIMIT,
        .maxFragmentInputComponents = D3D12_PS_INPUT_REGISTER_COUNT * D3D12_PS_INPUT_REGISTER_COMPONENTS,
        .maxFragmentOutputAttachments = D3D12_PS_OUTPUT_REGISTER_COUNT,
@@ -2661,7 +3111,7 @@
        .maxFragmentCombinedOutputResources = D3D12_PS_OUTPUT_REGISTER_COUNT,
        .maxComputeSharedMemorySize = D3D12_CS_TGSM_REGISTER_COUNT * sizeof(float),
        .maxComputeWorkGroupCount = { D3D12_CS_DISPATCH_MAX_THREAD_GROUPS_PER_DIMENSION,
-@@ -1064,6 +1117,22 @@
+@@ -1076,6 +1129,22 @@
        .integerDotProduct4x8BitPackedUnsignedAccelerated = pdev->shader_model >= D3D_SHADER_MODEL_6_4,
        .integerDotProductAccumulatingSaturating4x8BitPackedSignedAccelerated = pdev->shader_model >= D3D_SHADER_MODEL_6_4,
        .integerDotProductAccumulatingSaturating4x8BitPackedUnsignedAccelerated = pdev->shader_model >= D3D_SHADER_MODEL_6_4,
@@ -2684,7 +3134,7 @@
  
        /* VkPhysicalDeviceVertexAttributeDivisorPropertiesEXT */
        .maxVertexAttribDivisor = UINT32_MAX,
-@@ -1073,6 +1142,11 @@
+@@ -1085,6 +1154,11 @@
  
        /* VkPhysicalDeviceLayeredDriverPropertiesMSFT */
        .underlyingAPI = VK_LAYERED_DRIVER_UNDERLYING_API_D3D12_MSFT,
@@ -2696,7 +3146,7 @@
     };
  
     if (strlen(instance->drirc.debug.force_vk_devicename) > 0) {
-@@ -1629,6 +1703,26 @@
+@@ -1645,6 +1719,26 @@
     VK_FROM_HANDLE(dzn_physical_device, pdev, physicalDevice);
  
     dzn_physical_device_get_format_properties(pdev, format, pFormatProperties);
@@ -2723,7 +3173,7 @@
  }
  
  VKAPI_ATTR VkResult VKAPI_CALL
-@@ -2567,6 +2661,8 @@
+@@ -2603,6 +2697,8 @@
  #else
     if ((intptr_t)mem->export_handle >= 0)
        close((int)(intptr_t)mem->export_handle);
@@ -2732,7 +3182,7 @@
  #endif
  
     vk_object_base_finish(&mem->base);
-@@ -2593,6 +2689,128 @@
+@@ -2629,6 +2725,128 @@
     return properties;
  }
  
@@ -2861,7 +3311,7 @@
  static VkResult
  dzn_device_memory_create(struct dzn_device *device,
                           const VkMemoryAllocateInfo *pAllocateInfo,
-@@ -2607,6 +2825,10 @@
+@@ -2643,6 +2861,10 @@
  
     VkExternalMemoryHandleTypeFlags export_flags = 0;
     HANDLE import_handle = NULL;
@@ -2872,7 +3322,7 @@
     bool imported_from_d3d11 = false;
     void *host_pointer = NULL;
  #ifdef _WIN32
-@@ -2662,7 +2884,9 @@
+@@ -2698,7 +2920,9 @@
           default:
              return vk_error(device, VK_ERROR_INVALID_EXTERNAL_HANDLE);
           }
@@ -2883,7 +3333,7 @@
           break;
        }
  #endif
-@@ -2711,6 +2935,10 @@
+@@ -2747,6 +2971,10 @@
         VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D12_HEAP_BIT);
     if (image && imported_from_d3d11)
        valid_flags |= VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_BIT;
@@ -2894,7 +3344,7 @@
  
     if (export_flags & ~valid_flags)
        return vk_error(device, VK_ERROR_INVALID_EXTERNAL_HANDLE);
-@@ -2778,7 +3006,17 @@
+@@ -2814,7 +3042,17 @@
  #else
        goto cleanup;
  #endif
@@ -2912,7 +3362,7 @@
        error = VK_ERROR_INVALID_EXTERNAL_HANDLE;
        if (image || buffer) {
           if (FAILED(ID3D12Device_OpenSharedHandle(device->dev, import_handle, &IID_ID3D12Resource, (void **)&mem->dedicated_res)))
-@@ -2921,10 +3159,27 @@
+@@ -2957,10 +3195,27 @@
           goto cleanup;
     }
  
@@ -2940,7 +3390,7 @@
  #ifdef _WIN32
     if (handle_from_name)
        CloseHandle(handle_from_name);
-@@ -3691,6 +3946,56 @@
+@@ -3730,6 +3985,56 @@
     *pPeerMemoryFeatures = 0;
  }
  
@@ -2997,7 +3447,7 @@
  VKAPI_ATTR void VKAPI_CALL
  dzn_GetImageSparseMemoryRequirements2(VkDevice device,
                                        const VkImageSparseMemoryRequirementsInfo2* pInfo,
-@@ -3772,16 +4077,33 @@
+@@ -3811,16 +4116,33 @@
                     int *pFd)
  {
     VK_FROM_HANDLE(dzn_device_memory, mem, pGetFdInfo->memory);
@@ -3035,6 +3485,35 @@
     default:
        return vk_error(device, VK_ERROR_INVALID_EXTERNAL_HANDLE);
     }
+--- a/src/microsoft/vulkan/dzn_image.c
++++ b/src/microsoft/vulkan/dzn_image.c
+@@ -224,6 +224,15 @@
+        !pdev->options12.RelaxedFormatCastingSupported)
+       image->desc.Format = dzn_get_typeless_dxgi_format(image->desc.Format);
+ 
++#ifndef _WIN32
++   /* virtio-dxg: typeless window buffers. A dma-buf image is opened by
++    * another process in the dma-buf's format (UNORM for an sRGB swapchain). */
++   const VkExternalMemoryImageCreateInfo *dxg_ext =
++      vk_find_struct_const(pCreateInfo->pNext, EXTERNAL_MEMORY_IMAGE_CREATE_INFO);
++   if (dxg_ext && (dxg_ext->handleTypes & VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT))
++      image->desc.Format = dzn_get_typeless_dxgi_format(image->desc.Format);
++#endif
++
+    if (image->desc.SampleDesc.Count > 1)
+       image->desc.Alignment = D3D12_DEFAULT_MSAA_RESOURCE_PLACEMENT_ALIGNMENT;
+    else
+@@ -1441,7 +1450,9 @@
+                                                    false, false,
+                                                    iview);
+       }
+-      if (iview->vk.usage & VK_IMAGE_USAGE_STORAGE_BIT) {
++      /* virtio-dxg: no sRGB UAVs */
++      if ((iview->vk.usage & VK_IMAGE_USAGE_STORAGE_BIT) &&
++          !vk_format_is_srgb(iview->vk.view_format)) {
+          iview->uav_bindless_slot = dzn_device_descriptor_heap_alloc_slot(device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+          if (iview->uav_bindless_slot < 0) {
+             dzn_image_view_destroy(iview, pAllocator);
 --- /dev/null
 +++ b/src/microsoft/vulkan/dzn_imported_memory_fd.h
 @@ -0,0 +1,44 @@
@@ -3082,35 +3561,6 @@
 +      close(source);
 +}
 +#endif
---- a/src/microsoft/vulkan/dzn_image.c
-+++ b/src/microsoft/vulkan/dzn_image.c
-@@ -207,6 +207,15 @@
-        !pdev->options12.RelaxedFormatCastingSupported)
-       image->desc.Format = dzn_get_typeless_dxgi_format(image->desc.Format);
- 
-+#ifndef _WIN32
-+   /* virtio-dxg: typeless window buffers. A dma-buf image is opened by
-+    * another process in the dma-buf's format (UNORM for an sRGB swapchain). */
-+   const VkExternalMemoryImageCreateInfo *dxg_ext =
-+      vk_find_struct_const(pCreateInfo->pNext, EXTERNAL_MEMORY_IMAGE_CREATE_INFO);
-+   if (dxg_ext && (dxg_ext->handleTypes & VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT))
-+      image->desc.Format = dzn_get_typeless_dxgi_format(image->desc.Format);
-+#endif
-+
-    if (image->desc.SampleDesc.Count > 1)
-       image->desc.Alignment = D3D12_DEFAULT_MSAA_RESOURCE_PLACEMENT_ALIGNMENT;
-    else
-@@ -1427,7 +1436,9 @@
-                                                    false, false,
-                                                    iview);
-       }
--      if (iview->vk.usage & VK_IMAGE_USAGE_STORAGE_BIT) {
-+      /* virtio-dxg: no sRGB UAVs */
-+      if ((iview->vk.usage & VK_IMAGE_USAGE_STORAGE_BIT) &&
-+          !vk_format_is_srgb(iview->vk.view_format)) {
-          iview->uav_bindless_slot = dzn_device_descriptor_heap_alloc_slot(device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-          if (iview->uav_bindless_slot < 0) {
-             dzn_image_view_destroy(iview, pAllocator);
 --- a/src/microsoft/vulkan/dzn_pipeline.c
 +++ b/src/microsoft/vulkan/dzn_pipeline.c
 @@ -412,6 +412,7 @@
@@ -3719,7 +4169,7 @@
  struct dzn_compute_pipeline {
     struct dzn_pipeline base;
     struct {
-@@ -1232,6 +1301,11 @@
+@@ -1233,6 +1302,11 @@
             if (mask & aspect)
  
  VkResult dzn_wsi_init(struct dzn_physical_device *physical_device);
@@ -3750,7 +4200,7 @@
     return VK_SUCCESS;
 --- a/src/vulkan/wsi/wsi_common.h
 +++ b/src/vulkan/wsi/wsi_common.h
-@@ -157,6 +157,11 @@
+@@ -165,6 +165,11 @@
  
     bool sw;
  
@@ -3795,7 +4245,7 @@
     struct u_vector modifiers;
     if (!u_vector_init_pow2(&modifiers, 4, sizeof(uint64_t)))
        return NULL;
-@@ -1255,12 +1262,11 @@
+@@ -1270,12 +1277,11 @@
  static bool
  needs_color_surface(struct wsi_wl_display *display, VkColorSpaceKHR colorspace)
  {
@@ -3813,7 +4263,7 @@
     return colorspace != VK_COLOR_SPACE_PASS_THROUGH_EXT;
  }
  
-@@ -1792,7 +1798,7 @@
+@@ -1838,7 +1844,7 @@
  
     struct wsi_wl_display display;
     VkResult ret = wsi_wl_display_init(wsi, &display, wl_display, false,
@@ -3822,7 +4272,7 @@
     if (ret == VK_SUCCESS)
        wsi_wl_display_finish(&display);
  
-@@ -1868,7 +1874,7 @@
+@@ -1914,7 +1920,7 @@
  
     if (!wsi_wl_surface->display) {
        if (wsi_wl_display_init(wsi, &temp_display, surface->display, true,
@@ -3831,7 +4281,7 @@
           return VK_ERROR_SURFACE_LOST_KHR;
        display = &temp_display;
     }
-@@ -1929,7 +1935,7 @@
+@@ -1971,7 +1977,7 @@
     struct wsi_wl_display display;
  
     if (wsi_wl_display_init(wsi, &display, surface->display, true,
@@ -3840,7 +4290,7 @@
        return VK_ERROR_SURFACE_LOST_KHR;
  
     if (has_wp_presentation)
-@@ -1963,7 +1969,7 @@
+@@ -2005,7 +2011,7 @@
  
     struct wsi_wl_display display;
     if (wsi_wl_display_init(wsi, &display, surface->display, true,
@@ -3849,7 +4299,7 @@
        return VK_ERROR_SURFACE_LOST_KHR;
  
     VkPresentModeKHR present_modes[WSI_WL_MAX_PRESENT_MODES];
-@@ -2171,7 +2177,7 @@
+@@ -2237,7 +2243,7 @@
  
     struct wsi_wl_display display;
     if (wsi_wl_display_init(wsi, &display, surface->display, true,
@@ -3858,7 +4308,7 @@
        return VK_ERROR_SURFACE_LOST_KHR;
  
     VK_OUTARRAY_MAKE_TYPED(VkSurfaceFormatKHR, out,
-@@ -2179,6 +2185,11 @@
+@@ -2245,6 +2251,11 @@
  
     VkColorSpaceKHR *cs;
     u_vector_foreach(cs, &display.colorspaces) {
@@ -3870,7 +4320,7 @@
        struct wsi_wl_format *disp_fmt;
        u_vector_foreach(disp_fmt, &display.formats) {
           /* Skip formats for which we can't support both alpha & opaque
-@@ -2216,7 +2227,7 @@
+@@ -2282,7 +2293,7 @@
  
     struct wsi_wl_display display;
     if (wsi_wl_display_init(wsi, &display, surface->display, true,
@@ -3879,7 +4329,7 @@
        return VK_ERROR_SURFACE_LOST_KHR;
  
     VK_OUTARRAY_MAKE_TYPED(VkSurfaceFormat2KHR, out,
-@@ -2224,6 +2235,11 @@
+@@ -2290,6 +2301,11 @@
  
     VkColorSpaceKHR *cs;
     u_vector_foreach(cs, &display.colorspaces) {
@@ -3891,7 +4341,7 @@
        struct wsi_wl_format *disp_fmt;
        u_vector_foreach(disp_fmt, &display.formats) {
           /* Skip formats for which we can't support both alpha & opaque
-@@ -2509,7 +2525,7 @@
+@@ -2575,7 +2591,7 @@
        return VK_SUCCESS;
  
     result = wsi_wl_display_create(wsi, wsi_wl_surface->base.display,
@@ -3900,7 +4350,7 @@
     if (result != VK_SUCCESS)
        goto fail;
  
-@@ -3309,6 +3325,15 @@
+@@ -3375,6 +3391,15 @@
     if (chain->retired)
        return VK_ERROR_OUT_OF_DATE_KHR;
  
@@ -3916,7 +4366,7 @@
     struct wsi_wl_surface *wsi_wl_surface = chain->wsi_wl_surface;
     bool mode_fifo = chain->base.present_mode == VK_PRESENT_MODE_FIFO_KHR;
  
-@@ -3866,7 +3891,7 @@
+@@ -3943,7 +3968,7 @@
     struct wsi_drm_image_params drm_image_params;
     uint32_t num_drm_modifiers = 0;
     const uint64_t *drm_modifiers = NULL;
