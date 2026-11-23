@@ -2301,16 +2301,16 @@
     ID3D12Resource *res;
 --- a/src/gallium/drivers/d3d12/d3d12_screen.cpp
 +++ b/src/gallium/drivers/d3d12/d3d12_screen.cpp
-@@ -22,6 +22,9 @@
-  */
+@@ -60,6 +60,9 @@
+ #include <vector>
  
- #include "d3d12_screen.h"
+ #include <dxguids/dxguids.h>
 +#ifndef _GAMING_XBOX
 +#include "d3d12_live_pipeline_library.h"
 +#endif
+ static GUID OpenGLOn12CreatorID = { 0x6bb3cd34, 0x0d19, 0x45ab, { 0x97, 0xed, 0xd7, 0x20, 0xba, 0x3d, 0xfc, 0x80 } };
  
- #include "d3d12_bufmgr.h"
- #ifdef HAVE_GALLIUM_D3D12_GRAPHICS
+ static const struct debug_named_value
 @@ -384,6 +387,9 @@
     caps->robust_buffer_access_behavior = true;
     caps->memobj = true;
@@ -4945,16 +4945,16 @@
  depth = 1
 --- a/src/gallium/drivers/d3d12/d3d12_pipeline_state.cpp
 +++ b/src/gallium/drivers/d3d12/d3d12_pipeline_state.cpp
-@@ -33,6 +33,9 @@
- #include "d3d12_compiler.h"
- #include "d3d12_context.h"
- #include "d3d12_screen.h"
+@@ -43,6 +43,9 @@
+ #include "util/u_prim.h"
+ 
+ #include <dxguids/dxguids.h>
 +#ifndef _GAMING_XBOX
 +#include "d3d12_live_pipeline_library.h"
 +#endif
- #ifndef _GAMING_XBOX
- #include <directx/d3dx12_pipeline_state_stream.h>
- #endif
+ #include <cstdlib>
+ 
+ struct d3d12_gfx_pso_entry {
 @@ -407,6 +410,16 @@
  
     pso_desc.Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
