@@ -64,6 +64,10 @@ setup_desktop() {
     chmod 0755 /run/virtio-dxg/desktop-boost /run/virtio-dxg/xdg-settings-fast \
         /run/virtio-dxg/app-prefetch /run/virtio-dxg/browser-boost 2>/dev/null || true
     mount -o bind /run /new_root/run || return 1
+    payload_bound=
+    if [ -f /run/virtio-dxg/payload/mesa-virtio-dxg.tar ]; then
+        mount -o bind /run/virtio-dxg/payload /new_root/run/virtio-dxg/payload && payload_bound=1
+    fi
     # Window buffers (the guest module offers them unless
     # virtio_dxg.winbuf=0): applications hand the compositor GPU textures,
     # and Chromium runs on the GPU as a native Wayland client. Without them
@@ -83,10 +87,12 @@ setup_desktop() {
     if ! chroot /new_root /usr/bin/python3 /run/virtio-dxg/desktop_payload.py \
             "$tarball" "$m" --recipe /run/virtio-dxg/mesa-recipe.json \
             --xdg-settings-fast /run/virtio-dxg/xdg-settings-fast $browser; then
+        [ -n "$payload_bound" ] && umount /new_root/run/virtio-dxg/payload
         umount /new_root/run
         echo ":: virtio-dxg: Mesa payload rejected; GPU environment not selected" >&2
         return 1
     fi
+    [ -n "$payload_bound" ] && umount /new_root/run/virtio-dxg/payload
     umount /new_root/run || return 1
 
     mkdir -p /run/environment.d || return 1
@@ -193,7 +199,6 @@ PartOf=graphical-session.target
 [Service]
 Type=exec
 ExecStart=/bin/bash /run/virtio-dxg/desktop-boost psocache
-Slice=app-graphical.slice
 UNIT
         ln -sf ../virtio-dxg-pso-cache.service \
             /run/systemd/user/graphical-session.target.wants/ || return 1
@@ -204,10 +209,8 @@ After=graphical-session.target
 PartOf=graphical-session.target
 
 [Service]
-Type=simple
+Type=exec
 ExecStart=/bin/bash /run/virtio-dxg/desktop-boost files
-Restart=always
-RestartSec=2
 Slice=app-graphical.slice
 UNIT
         ln -sf ../virtio-dxg-files-boost.service \

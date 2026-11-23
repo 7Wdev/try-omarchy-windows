@@ -172,16 +172,12 @@ warm_files() {
     local tag=$1; shift
     [ "$#" -gt 0 ] || return 0
     if command -v python3 >/dev/null 2>&1; then
-        printf '%s\0' "$@" | python3 - "$tag" <<'PY'
-import concurrent.futures
-import os
-import sys
-import time
-
+        printf '%s\0' "$@" | python3 -c '
+import concurrent.futures, os, sys, time
 tag = sys.argv[1]
-paths = [p for p in sys.stdin.buffer.read().split(b'\0') if p]
-fadvise = getattr(os, 'posix_fadvise', None)
-willneed = getattr(os, 'POSIX_FADV_WILLNEED', None)
+paths = [p for p in sys.stdin.buffer.read().split(b"\0") if p]
+fadvise = getattr(os, "posix_fadvise", None)
+willneed = getattr(os, "POSIX_FADV_WILLNEED", None)
 t0 = time.monotonic()
 
 def warm(path):
@@ -216,8 +212,8 @@ with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
         count += ok
         nbytes += n
 ms = int((time.monotonic() - t0) * 1000)
-print(f'app-prefetch ({tag}): {count} files, {nbytes // 1048576} MiB in {ms} ms')
-PY
+print(f"app-prefetch ({tag}): {count} files, {nbytes // 1048576} MiB in {ms} ms")
+' "$tag"
     else
         local start bytes
         start=$(date +%s%N)

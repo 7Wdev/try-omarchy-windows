@@ -18,6 +18,7 @@ APPS = [  # label, command, window class (substring, lower case)
     ('foot', 'foot', 'foot'),
     ('nautilus', 'nautilus --new-window', 'nautilus'),
     ('gnome-calculator', 'gnome-calculator', 'calculator'),
+    ('omacalc', 'omacalc', 'omacalc'),
     ('chromium', 'chromium --new-window about:blank', 'chromium'),
     ('code', 'code --new-window', 'code'),
     ('vkcube', 'vkcube', 'vkcube'),
@@ -52,6 +53,8 @@ def launch(sock_path, cmd, cls, timeout=20.0):
     ms = (time.monotonic() - t0) * 1000 if addr else None
     s.close()
     if addr:
+        time.sleep(0.15)
+        addr = addr.removeprefix('0x')
         subprocess.run(['hyprctl', 'dispatch', 'closewindow', 'address:0x' + addr],
                        capture_output=True)
     try:
