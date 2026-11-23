@@ -2301,16 +2301,16 @@
     ID3D12Resource *res;
 --- a/src/gallium/drivers/d3d12/d3d12_screen.cpp
 +++ b/src/gallium/drivers/d3d12/d3d12_screen.cpp
-@@ -60,6 +60,9 @@
- #include <vector>
+@@ -22,6 +22,9 @@
+  */
  
- #include <dxguids/dxguids.h>
+ #include "d3d12_screen.h"
 +#ifndef _GAMING_XBOX
-+#include "d3d12_live_pipeline_library.h"
++#include "d3d12_live_pso.h"
 +#endif
- static GUID OpenGLOn12CreatorID = { 0x6bb3cd34, 0x0d19, 0x45ab, { 0x97, 0xed, 0xd7, 0x20, 0xba, 0x3d, 0xfc, 0x80 } };
  
- static const struct debug_named_value
+ #include "d3d12_bufmgr.h"
+ #ifdef HAVE_GALLIUM_D3D12_GRAPHICS
 @@ -384,6 +387,9 @@
     caps->robust_buffer_access_behavior = true;
     caps->memobj = true;
@@ -2441,8 +2441,8 @@
        screen->cmdqueue = nullptr;
     }
 +#ifndef _GAMING_XBOX
-+   delete screen->live_pipeline_library;
-+   screen->live_pipeline_library = nullptr;
++   delete screen->live_psos;
++   screen->live_psos = nullptr;
 +#endif
     if (screen->dev10) {
        screen->dev10->Release();
@@ -2482,8 +2482,8 @@
     _mesa_blake3_final(&blake3_ctx, blake3);
     memcpy(screen->device_uuid, blake3, PIPE_UUID_SIZE);
 +#ifndef _GAMING_XBOX
-+   if (debug_get_bool_option("VDXG_LIVE_PIPELINE_LIBRARY", false))
-+      screen->live_pipeline_library = d3d12_live_pipeline_library::create(screen->dev);
++   if (debug_get_bool_option("VDXG_LIVE_PSO", false))
++      screen->live_psos = new (std::nothrow) d3d12_live_pso_cache();
 +#endif
  
     d3d12_init_shader_caps(screen);
@@ -2553,7 +2553,7 @@
     bool have_load_at_vertex;
     bool support_shader_images;
     bool support_create_not_resident;
-+   struct d3d12_live_pipeline_library *live_pipeline_library;
++   struct d3d12_live_pso_cache *live_psos;
     bool supports_dynamic_queue_priority;
  
  #ifdef _GAMING_XBOX
@@ -4945,114 +4945,264 @@
  depth = 1
 --- a/src/gallium/drivers/d3d12/d3d12_pipeline_state.cpp
 +++ b/src/gallium/drivers/d3d12/d3d12_pipeline_state.cpp
-@@ -43,6 +43,9 @@
- #include "util/u_prim.h"
- 
- #include <dxguids/dxguids.h>
+@@ -33,6 +33,9 @@
+ #include "d3d12_compiler.h"
+ #include "d3d12_context.h"
+ #include "d3d12_screen.h"
 +#ifndef _GAMING_XBOX
-+#include "d3d12_live_pipeline_library.h"
++#include "d3d12_live_pso.h"
 +#endif
- #include <cstdlib>
+ #ifndef _GAMING_XBOX
+ #include <directx/d3dx12_pipeline_state_stream.h>
+ #endif
+@@ -286,6 +289,127 @@
+    }
+ }
  
- struct d3d12_gfx_pso_entry {
-@@ -407,6 +410,16 @@
++#ifndef _GAMING_XBOX
++struct pso_hasher {
++   blake3_hasher h;
++   pso_hasher() { _mesa_blake3_init(&h); }
++   void bytes(const void *p, size_t n) { if (n) _mesa_blake3_update(&h, p, n); }
++   /* Scalars only: no padding. */
++   template <typename T> void val(T v) { bytes(&v, sizeof(v)); }
++   void str(const char *s)
++   {
++      val<uint8_t>(s != NULL);
++      if (s)
++         bytes(s, strlen(s) + 1);
++   }
++   void code(const D3D12_SHADER_BYTECODE &c)
++   {
++      val<uint64_t>(c.pShaderBytecode ? c.BytecodeLength : 0);
++      if (c.pShaderBytecode)
++         bytes(c.pShaderBytecode, c.BytecodeLength);
++   }
++};
++
++static inline void
++hash_stencil_face(pso_hasher &h, const D3D12_DEPTH_STENCILOP_DESC &f)
++{
++   h.val(f.StencilFailOp); h.val(f.StencilDepthFailOp);
++   h.val(f.StencilPassOp); h.val(f.StencilFunc);
++}
++
++static inline void
++hash_stencil_face(pso_hasher &h, const D3D12_DEPTH_STENCILOP_DESC1 &f)
++{
++   h.val(f.StencilFailOp); h.val(f.StencilDepthFailOp);
++   h.val(f.StencilPassOp); h.val(f.StencilFunc);
++   h.val(f.StencilReadMask); h.val(f.StencilWriteMask);
++}
++
++static inline void
++hash_depth_stencil(pso_hasher &h, const D3D12_DEPTH_STENCIL_DESC2 &d)
++{
++   h.val(d.DepthEnable); h.val(d.DepthWriteMask); h.val(d.DepthFunc);
++   h.val(d.StencilEnable);
++   hash_stencil_face(h, d.FrontFace); hash_stencil_face(h, d.BackFace);
++   h.val(d.DepthBoundsTestEnable);
++}
++
++static bool
++hash_root_signature(pso_hasher &h, ID3D12RootSignature *sig)
++{
++   uint8_t digest[BLAKE3_OUT_LEN];
++   UINT size = sizeof(digest);
++   if (!sig || FAILED(sig->GetPrivateData(d3d12_root_signature_hash_guid, &size, digest)) ||
++       size != sizeof(digest))
++      return false;
++   h.bytes(digest, sizeof(digest));
++   return true;
++}
++
++/* The key of a graphics pipeline: d is the pipeline as created (its
++ * depth-stencil state comes from ds, which keeps both stencil faces). */
++static bool
++gfx_pso_cache_key(const D3D12_GRAPHICS_PIPELINE_STATE_DESC &d,
++                  const D3D12_DEPTH_STENCIL_DESC2 &ds, bool stream, uint8_t *key)
++{
++   pso_hasher h;
++   h.val<uint32_t>(stream ? 0x67667832 : 0x67667830);
++   if (!hash_root_signature(h, d.pRootSignature))
++      return false;
++   h.code(d.VS); h.code(d.PS); h.code(d.DS); h.code(d.HS); h.code(d.GS);
++
++   const D3D12_STREAM_OUTPUT_DESC &so = d.StreamOutput;
++   h.val(so.NumEntries);
++   for (UINT i = 0; i < so.NumEntries; i++) {
++      const D3D12_SO_DECLARATION_ENTRY &e = so.pSODeclaration[i];
++      h.val(e.Stream); h.str(e.SemanticName); h.val(e.SemanticIndex);
++      h.val(e.StartComponent); h.val(e.ComponentCount); h.val(e.OutputSlot);
++   }
++   h.val(so.NumStrides);
++   for (UINT i = 0; i < so.NumStrides; i++)
++      h.val(so.pBufferStrides[i]);
++   h.val(so.RasterizedStream);
++
++   const D3D12_BLEND_DESC &b = d.BlendState;
++   h.val(b.AlphaToCoverageEnable); h.val(b.IndependentBlendEnable);
++   for (unsigned i = 0; i < ARRAY_SIZE(b.RenderTarget); i++) {
++      const D3D12_RENDER_TARGET_BLEND_DESC &r = b.RenderTarget[i];
++      h.val(r.BlendEnable); h.val(r.LogicOpEnable); h.val(r.SrcBlend);
++      h.val(r.DestBlend); h.val(r.BlendOp); h.val(r.SrcBlendAlpha);
++      h.val(r.DestBlendAlpha); h.val(r.BlendOpAlpha); h.val(r.LogicOp);
++      h.val(r.RenderTargetWriteMask);
++   }
++   h.val(d.SampleMask);
++
++   const D3D12_RASTERIZER_DESC &r = d.RasterizerState;
++   h.val(r.FillMode); h.val(r.CullMode); h.val(r.FrontCounterClockwise);
++   h.val(r.DepthBias); h.val(r.DepthBiasClamp); h.val(r.SlopeScaledDepthBias);
++   h.val(r.DepthClipEnable); h.val(r.MultisampleEnable);
++   h.val(r.AntialiasedLineEnable); h.val(r.ForcedSampleCount);
++   h.val(r.ConservativeRaster);
++
++   hash_depth_stencil(h, ds);
++
++   h.val(d.InputLayout.NumElements);
++   for (UINT i = 0; i < d.InputLayout.NumElements; i++) {
++      const D3D12_INPUT_ELEMENT_DESC &e = d.InputLayout.pInputElementDescs[i];
++      h.str(e.SemanticName); h.val(e.SemanticIndex); h.val(e.Format);
++      h.val(e.InputSlot); h.val(e.AlignedByteOffset); h.val(e.InputSlotClass);
++      h.val(e.InstanceDataStepRate);
++   }
++   h.val(d.IBStripCutValue); h.val(d.PrimitiveTopologyType);
++   h.val(d.NumRenderTargets);
++   for (UINT i = 0; i < d.NumRenderTargets && i < 8; i++)
++      h.val(d.RTVFormats[i]);
++   h.val(d.DSVFormat); h.val(d.SampleDesc.Count); h.val(d.SampleDesc.Quality);
++   h.val(d.NodeMask); h.val(d.Flags);
++
++   _mesa_blake3_final(&h.h, key);
++   return true;
++}
++
++#endif
++
+ static ID3D12PipelineState *
+ create_gfx_pipeline_state(struct d3d12_context *ctx)
+ {
+@@ -407,6 +531,16 @@
  
     pso_desc.Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
  
 +#ifndef _GAMING_XBOX
-+   auto *live = screen->live_pipeline_library;
-+   if (live) {
-+      D3D12_PIPELINE_STATE_STREAM_DESC stream{sizeof(pso_desc), &pso_desc};
-+      auto *hit = live->lookup(pso_desc.GraphicsDescV0(),
-+                               screen->opts14.IndependentFrontAndBackStencilRefMaskSupported ? &stream : nullptr);
-+      if (hit)
++   uint8_t key[BLAKE3_OUT_LEN];
++   bool cacheable = screen->live_psos &&
++      gfx_pso_cache_key(pso_desc.GraphicsDescV0(), pso_desc.DepthStencilState,
++                        screen->opts14.IndependentFrontAndBackStencilRefMaskSupported, key);
++   if (cacheable) {
++      if (auto *hit = screen->live_psos->lookup(key))
 +         return hit;
 +   }
 +#endif
     ID3D12PipelineState *ret;
  
     HRESULT hr;
-@@ -431,6 +444,10 @@
+@@ -431,6 +565,10 @@
        }
     }
  
 +#ifndef _GAMING_XBOX
-+   if (live)
-+      live->remember(pso_desc.GraphicsDescV0(), ret);
++   if (cacheable)
++      screen->live_psos->remember(key, ret, state->root_signature);
++#endif
+    return ret;
+ }
+ 
+--- a/src/gallium/drivers/d3d12/d3d12_root_signature.cpp
++++ b/src/gallium/drivers/d3d12/d3d12_root_signature.cpp
+@@ -27,6 +27,9 @@
+ #include "d3d12_root_signature.h"
+ #include "d3d12_compiler.h"
+ #include "d3d12_screen.h"
++#ifndef _GAMING_XBOX
++#include "d3d12_live_pso.h"
++#endif
+ 
+ #include "util/u_memory.h"
+ 
+@@ -237,6 +240,13 @@
+       debug_printf("CreateRootSignature failed\n");
+       return NULL;
+    }
++#ifndef _GAMING_XBOX
++   if (screen->live_psos) {
++      uint8_t digest[BLAKE3_OUT_LEN];
++      _mesa_blake3_compute(sig->GetBufferPointer(), sig->GetBufferSize(), digest);
++      ret->SetPrivateData(d3d12_root_signature_hash_guid, sizeof(digest), digest);
++   }
 +#endif
     return ret;
  }
  
 --- /dev/null
-+++ b/src/gallium/drivers/d3d12/d3d12_live_pipeline_library.h
-@@ -0,0 +1,70 @@
-+/* Process-local pipeline library for a single D3D12 screen. */
++++ b/src/gallium/drivers/d3d12/d3d12_live_pso.h
+@@ -0,0 +1,66 @@
++/* Screen-owned references to immutable graphics pipelines. */
 +#pragma once
 +
++#include "util/mesa-blake3.h"
++#include <cstring>
 +#include <mutex>
 +#include <new>
 +
-+struct d3d12_live_pipeline_library {
-+   ID3D12PipelineLibrary1 *library = nullptr;
-+   std::mutex mutex;
++static const GUID d3d12_root_signature_hash_guid =
++   { 0x6a2b8a39, 0x5d7e, 0x4c1f, { 0x9b, 0x52, 0x3f, 0x0e, 0x7d, 0x61, 0xa4, 0xc8 } };
++
++struct d3d12_live_pso_cache {
 +   struct slot {
-+      SIZE_T vertex_bytes;
-+      SIZE_T pixel_bytes;
-+      WCHAR name[3];
++      uint8_t key[BLAKE3_OUT_LEN];
++      ID3D12PipelineState *pso;
++      ID3D12RootSignature *root;
 +   };
 +   slot slots[64] = {};
-+   unsigned count = 0;
++   unsigned next = 0;
++   std::mutex mutex;
 +
-+   static d3d12_live_pipeline_library *create(ID3D12Device3 *device)
++   ~d3d12_live_pso_cache()
 +   {
-+      D3D12_FEATURE_DATA_SHADER_CACHE support = {};
-+      if (FAILED(device->CheckFeatureSupport(D3D12_FEATURE_SHADER_CACHE, &support, sizeof(support))) ||
-+          !(support.SupportFlags & D3D12_SHADER_CACHE_SUPPORT_LIBRARY))
-+         return nullptr;
-+      auto *cache = new (std::nothrow) d3d12_live_pipeline_library();
-+      if (cache && FAILED(device->CreatePipelineLibrary(nullptr, 0, IID_PPV_ARGS(&cache->library)))) {
-+         delete cache;
-+         return nullptr;
-+      }
-+      return cache;
++      for (auto &s : slots)
++         if (s.pso) {
++            s.pso->Release();
++            s.root->Release();
++         }
 +   }
 +
-+   ~d3d12_live_pipeline_library()
-+   {
-+      if (library)
-+         library->Release();
-+   }
-+
-+   ID3D12PipelineState *lookup(const D3D12_GRAPHICS_PIPELINE_STATE_DESC &graphics,
-+                               const D3D12_PIPELINE_STATE_STREAM_DESC *stream)
++   ID3D12PipelineState *lookup(const uint8_t *key)
 +   {
 +      std::lock_guard<std::mutex> guard(mutex);
-+      for (unsigned i = 0; i < count; ++i) {
-+         const slot &s = slots[i];
-+         if (s.vertex_bytes != graphics.VS.BytecodeLength || s.pixel_bytes != graphics.PS.BytecodeLength)
-+            continue;
-+         // Sizes shortlist names. D3D12 validates the complete descriptor.
-+         ID3D12PipelineState *pso = nullptr;
-+         HRESULT hr = stream ? library->LoadPipeline(s.name, stream, IID_PPV_ARGS(&pso))
-+                             : library->LoadGraphicsPipeline(s.name, &graphics, IID_PPV_ARGS(&pso));
-+         if (SUCCEEDED(hr))
-+            return pso;
++      for (auto &s : slots) {
++         if (s.pso && !std::memcmp(s.key, key, sizeof(s.key))) {
++            s.pso->AddRef();
++            return s.pso;
++         }
 +      }
 +      return nullptr;
 +   }
 +
-+   void remember(const D3D12_GRAPHICS_PIPELINE_STATE_DESC &graphics, ID3D12PipelineState *pso)
++   void remember(const uint8_t *key, ID3D12PipelineState *pso, ID3D12RootSignature *root)
 +   {
-+      std::lock_guard<std::mutex> guard(mutex);
-+      if (count == sizeof(slots) / sizeof(slots[0]))
-+         return;
-+      slot &s = slots[count];
-+      s.name[0] = static_cast<WCHAR>('A' + count / 16);
-+      s.name[1] = static_cast<WCHAR>('A' + count % 16);
-+      if (SUCCEEDED(library->StorePipeline(s.name, pso))) {
-+         s.vertex_bytes = graphics.VS.BytecodeLength;
-+         s.pixel_bytes = graphics.PS.BytecodeLength;
-+         ++count;
++      slot evicted;
++      {
++         std::lock_guard<std::mutex> guard(mutex);
++         // Another context may have completed the same creation concurrently.
++         for (const auto &s : slots)
++            if (s.pso && !std::memcmp(s.key, key, sizeof(s.key)))
++               return;
++         auto &s = slots[next];
++         next = (next + 1) % 64;
++         evicted = s;
++         root->AddRef();
++         s.root = root;
++         pso->AddRef();
++         s.pso = pso;
++         std::memcpy(s.key, key, sizeof(s.key));
++      }
++      if (evicted.pso) {
++         evicted.pso->Release();
++         evicted.root->Release();
 +      }
 +   }
 +};

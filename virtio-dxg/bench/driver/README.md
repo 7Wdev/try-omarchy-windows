@@ -58,3 +58,21 @@ before, 130-148 fps after, no corrupted icons in 444.
 Measure in a VM with a window (`DISPLAY_OPT="sdl,gl=on"`). Headless, the
 compositor's round trip took 2-4 ms instead of 0.7-1 ms, and the GPU stayed
 at P4 (~1.4 GHz) even when fully busy, where a windowed VM reaches P0.
+
+### Files context menus
+
+In a headless 1080p/240 Hz session, the second through fourth openings of
+the same Files menu each created five D3D12 graphics pipelines. Creation
+occupied 59.2, 57.7 and 70.3 ms of the longest guest output gaps (66.7,
+66.3 and 76.2 ms). No GLSL compilation or NIR linking was observed during
+those three openings. These are guest output timings for one session.
+
+An experimental D3D12 pipeline library in commit `70bc2b7` prevented Files
+from opening on the tested RTX 5090 Laptop GPU. A second launch captured a
+guest SIGABRT through NVIDIA's userspace driver at the Mesa call site for
+`StorePipeline`.
+
+The replacement experiment uses `VDXG_LIVE_PSO=1` and keeps up to 64 live
+graphics pipeline objects per Mesa screen. The default is off. Performance,
+reference lifetimes under stress and rendering correctness require validation
+on this implementation before enabling it for desktop sessions.

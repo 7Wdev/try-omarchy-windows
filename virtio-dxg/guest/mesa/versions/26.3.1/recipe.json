@@ -7,7 +7,7 @@
   "profiles": {
     "graphics": {
       "patchFile": "graphics.patch",
-      "patchSha256": "4a93ba049f41cbdf245acf29f0949711bcecc1fa2e7a0384ca29a48b04ca592e",
+      "patchSha256": "36a99713002b94c8da029e8378b21488c8c6471403c921d5f01687c119d2f0c4",
       "files": {
         "VERSION": {
           "originalSha256": "e35f85db6458a3e4736f050ff42d720b39bbff9debe6b50c11e753b3ac2ecc3d",
@@ -69,13 +69,13 @@
           "originalSha256": "c985b81fa2de5ae093ec13dd25d6c619fa7f848264cc8c06184f34d3926c0736",
           "patchedSha256": "799421c21d99c83f543a8ff0d891e9b75f074eebeb0e0b92372d12cb82cb5e32"
         },
-        "src/gallium/drivers/d3d12/d3d12_live_pipeline_library.h": {
+        "src/gallium/drivers/d3d12/d3d12_live_pso.h": {
           "originalSha256": null,
-          "patchedSha256": "52a367566bcc08233b0b967633883097f21370bde083fa6bc60666d62247d953"
+          "patchedSha256": "ddb3135032cb2e86fe0e22a6321c62ce9e9b20017d839c56a2654413a93fc554"
         },
         "src/gallium/drivers/d3d12/d3d12_pipeline_state.cpp": {
           "originalSha256": "9ae95ad956e5c2601b48323da427ca0d06b94b2b1a9594b0998fd367945b237c",
-          "patchedSha256": "bc2446ab86b2285b9ec355349a5d153ce1c3f54efd4a269900d0208e9649baa2"
+          "patchedSha256": "eaa7e6da93049efb05f96ea567700b9ffbca2e18065d153d9596c439e7244bcd"
         },
         "src/gallium/drivers/d3d12/d3d12_residency.cpp": {
           "originalSha256": "a516ecda29527ec44d2d765912cea9d805d0a6776679d4f02d002d04d539aaa4",
@@ -89,13 +89,17 @@
           "originalSha256": "ed9984a73896dfc781c534aa091b998c338bc3030e47e15f77bccce485cf0a56",
           "patchedSha256": "ccbebfebb413fa78d3c861db6490c66f545873153a92b03a9933092125fd73a4"
         },
+        "src/gallium/drivers/d3d12/d3d12_root_signature.cpp": {
+          "originalSha256": "45be0ce5b5ce3a797194647be8776831ca703ee751a957b209fa44cc30f4e1ee",
+          "patchedSha256": "35da6bd05ab66c11e1a6f3b2f92e36e9cc4a97a6a4f053acbd24a305140d7c6d"
+        },
         "src/gallium/drivers/d3d12/d3d12_screen.cpp": {
           "originalSha256": "b442477e3751012eba05e4b41c269501f0f682679c908850dac059e13dea9185",
-          "patchedSha256": "e7532e8637c6e0b3b8785a01695db25df9f4870ed4b3bb8c3c34937723898a08"
+          "patchedSha256": "03f36c3f64226a2d61d3150bd102f6170e29cf9e43fca8cfc91679ff67d5688a"
         },
         "src/gallium/drivers/d3d12/d3d12_screen.h": {
           "originalSha256": "e4ee1a6673d8b17cb27fe6fb12670d386dcec737c579f1427bfebe0bc238aa62",
-          "patchedSha256": "e7f26c7bb143528f0e6aff8b9c5b0d19dbdf53be15b8c4c595a44c549d965b61"
+          "patchedSha256": "2effd674ef231238576887fe25ec8754f21247253046c0ed70fa752a3d1880ba"
         },
         "src/glx/dri_common.c": {
           "originalSha256": "c02bc29e3325b240d899665f90df8634e1ee47f4ee7925d40848a4a8e76ad49c",
