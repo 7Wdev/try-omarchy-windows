@@ -2301,7 +2301,17 @@
     ID3D12Resource *res;
 --- a/src/gallium/drivers/d3d12/d3d12_screen.cpp
 +++ b/src/gallium/drivers/d3d12/d3d12_screen.cpp
-@@ -384,6 +384,9 @@
+@@ -22,6 +22,9 @@
+  */
+ 
+ #include "d3d12_screen.h"
++#ifndef _GAMING_XBOX
++#include "d3d12_live_pipeline_library.h"
++#endif
+ 
+ #include "d3d12_bufmgr.h"
+ #ifdef HAVE_GALLIUM_D3D12_GRAPHICS
+@@ -384,6 +387,9 @@
     caps->robust_buffer_access_behavior = true;
     caps->memobj = true;
     caps->fence_signal = true;
@@ -2311,7 +2321,7 @@
     caps->timeline_semaphore_import = true;
     caps->clip_halfz = true;
     caps->vs_layer_viewport = true;
-@@ -420,6 +423,12 @@
+@@ -420,6 +426,12 @@
     caps->query_memory_info = true;
  #endif
  
@@ -2324,7 +2334,7 @@
     caps->min_line_width =
     caps->min_line_width_aa =
     caps->min_point_size =
-@@ -443,12 +452,12 @@
+@@ -443,12 +455,12 @@
  }
  
  static bool
@@ -2343,7 +2353,7 @@
  {
     struct d3d12_screen *screen = d3d12_screen(pscreen);
  
-@@ -598,9 +607,82 @@
+@@ -598,9 +610,82 @@
     return true;
  }
  
@@ -2426,7 +2436,18 @@
     while (d3d12_screen_reclaim_one(screen))
        ;
  
-@@ -670,6 +752,10 @@
+@@ -653,6 +738,10 @@
+       screen->cmdqueue->Release();
+       screen->cmdqueue = nullptr;
+    }
++#ifndef _GAMING_XBOX
++   delete screen->live_pipeline_library;
++   screen->live_pipeline_library = nullptr;
++#endif
+    if (screen->dev10) {
+       screen->dev10->Release();
+       screen->dev10 = nullptr;
+@@ -670,6 +759,10 @@
  void
  d3d12_destroy_screen(struct d3d12_screen *screen)
  {
@@ -2437,7 +2458,7 @@
     slab_destroy_parent(&screen->transfer_pool);
     mtx_destroy(&screen->submit_mutex);
     mtx_destroy(&screen->pending_free_lock);
-@@ -1377,10 +1463,18 @@
+@@ -1377,10 +1470,18 @@
     d3d12_debug = static_cast<uint32_t>(debug_get_option_d3d12_debug());
  
     screen->winsys = winsys;
@@ -2456,6 +2477,17 @@
     mtx_init(&screen->pending_free_lock, mtx_plain);
     list_inithead(&screen->pending_free_list);
  
+@@ -1866,6 +1967,10 @@
+    _mesa_blake3_update(&blake3_ctx, &screen->revision, sizeof(screen->revision));
+    _mesa_blake3_final(&blake3_ctx, blake3);
+    memcpy(screen->device_uuid, blake3, PIPE_UUID_SIZE);
++#ifndef _GAMING_XBOX
++   if (debug_get_bool_option("VDXG_LIVE_PIPELINE_LIBRARY", false))
++      screen->live_pipeline_library = d3d12_live_pipeline_library::create(screen->dev);
++#endif
+ 
+    d3d12_init_shader_caps(screen);
+    d3d12_init_compute_caps(screen);
 --- a/src/gallium/drivers/d3d12/d3d12_screen.h
 +++ b/src/gallium/drivers/d3d12/d3d12_screen.h
 @@ -70,6 +70,9 @@
@@ -2517,7 +2549,15 @@
     ID3D12Fence *residency_fence;
     uint64_t residency_fence_value;
     unsigned num_evictions;
-@@ -213,6 +258,10 @@
+@@ -159,6 +204,7 @@
+    bool have_load_at_vertex;
+    bool support_shader_images;
+    bool support_create_not_resident;
++   struct d3d12_live_pipeline_library *live_pipeline_library;
+    bool supports_dynamic_queue_priority;
+ 
+ #ifdef _GAMING_XBOX
+@@ -213,6 +259,10 @@
  void
  d3d12_deinit_screen(struct d3d12_screen *screen);
  
@@ -4903,3 +4943,116 @@
 -revision = v1.619.1
 +revision = adbd6f3ba40795c46a8d0f33af00bcb57ff0f0a4
  depth = 1
+--- a/src/gallium/drivers/d3d12/d3d12_pipeline_state.cpp
++++ b/src/gallium/drivers/d3d12/d3d12_pipeline_state.cpp
+@@ -33,6 +33,9 @@
+ #include "d3d12_compiler.h"
+ #include "d3d12_context.h"
+ #include "d3d12_screen.h"
++#ifndef _GAMING_XBOX
++#include "d3d12_live_pipeline_library.h"
++#endif
+ #ifndef _GAMING_XBOX
+ #include <directx/d3dx12_pipeline_state_stream.h>
+ #endif
+@@ -407,6 +410,16 @@
+ 
+    pso_desc.Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
+ 
++#ifndef _GAMING_XBOX
++   auto *live = screen->live_pipeline_library;
++   if (live) {
++      D3D12_PIPELINE_STATE_STREAM_DESC stream{sizeof(pso_desc), &pso_desc};
++      auto *hit = live->lookup(pso_desc.GraphicsDescV0(),
++                               screen->opts14.IndependentFrontAndBackStencilRefMaskSupported ? &stream : nullptr);
++      if (hit)
++         return hit;
++   }
++#endif
+    ID3D12PipelineState *ret;
+ 
+    HRESULT hr;
+@@ -431,6 +444,10 @@
+       }
+    }
+ 
++#ifndef _GAMING_XBOX
++   if (live)
++      live->remember(pso_desc.GraphicsDescV0(), ret);
++#endif
+    return ret;
+ }
+ 
+--- /dev/null
++++ b/src/gallium/drivers/d3d12/d3d12_live_pipeline_library.h
+@@ -0,0 +1,70 @@
++/* Process-local pipeline library for a single D3D12 screen. */
++#pragma once
++
++#include <mutex>
++#include <new>
++
++struct d3d12_live_pipeline_library {
++   ID3D12PipelineLibrary1 *library = nullptr;
++   std::mutex mutex;
++   struct slot {
++      SIZE_T vertex_bytes;
++      SIZE_T pixel_bytes;
++      WCHAR name[3];
++   };
++   slot slots[64] = {};
++   unsigned count = 0;
++
++   static d3d12_live_pipeline_library *create(ID3D12Device3 *device)
++   {
++      D3D12_FEATURE_DATA_SHADER_CACHE support = {};
++      if (FAILED(device->CheckFeatureSupport(D3D12_FEATURE_SHADER_CACHE, &support, sizeof(support))) ||
++          !(support.SupportFlags & D3D12_SHADER_CACHE_SUPPORT_LIBRARY))
++         return nullptr;
++      auto *cache = new (std::nothrow) d3d12_live_pipeline_library();
++      if (cache && FAILED(device->CreatePipelineLibrary(nullptr, 0, IID_PPV_ARGS(&cache->library)))) {
++         delete cache;
++         return nullptr;
++      }
++      return cache;
++   }
++
++   ~d3d12_live_pipeline_library()
++   {
++      if (library)
++         library->Release();
++   }
++
++   ID3D12PipelineState *lookup(const D3D12_GRAPHICS_PIPELINE_STATE_DESC &graphics,
++                               const D3D12_PIPELINE_STATE_STREAM_DESC *stream)
++   {
++      std::lock_guard<std::mutex> guard(mutex);
++      for (unsigned i = 0; i < count; ++i) {
++         const slot &s = slots[i];
++         if (s.vertex_bytes != graphics.VS.BytecodeLength || s.pixel_bytes != graphics.PS.BytecodeLength)
++            continue;
++         // Sizes shortlist names. D3D12 validates the complete descriptor.
++         ID3D12PipelineState *pso = nullptr;
++         HRESULT hr = stream ? library->LoadPipeline(s.name, stream, IID_PPV_ARGS(&pso))
++                             : library->LoadGraphicsPipeline(s.name, &graphics, IID_PPV_ARGS(&pso));
++         if (SUCCEEDED(hr))
++            return pso;
++      }
++      return nullptr;
++   }
++
++   void remember(const D3D12_GRAPHICS_PIPELINE_STATE_DESC &graphics, ID3D12PipelineState *pso)
++   {
++      std::lock_guard<std::mutex> guard(mutex);
++      if (count == sizeof(slots) / sizeof(slots[0]))
++         return;
++      slot &s = slots[count];
++      s.name[0] = static_cast<WCHAR>('A' + count / 16);
++      s.name[1] = static_cast<WCHAR>('A' + count % 16);
++      if (SUCCEEDED(library->StorePipeline(s.name, pso))) {
++         s.vertex_bytes = graphics.VS.BytecodeLength;
++         s.pixel_bytes = graphics.PS.BytecodeLength;
++         ++count;
++      }
++   }
++};
