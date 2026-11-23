@@ -1,0 +1,47 @@
+--- a/gtk/gtkgridview.c
++++ b/gtk/gtkgridview.c
+@@ -100,6 +100,9 @@
+   /* set in size_allocate */
+   guint n_columns;
+   double column_width;
++  int allocated_xspacing;
++  int allocated_yspacing;
++  gboolean has_allocated_spacing;
+ };
+ 
+ struct _GtkGridViewClass
+@@ -194,7 +197,15 @@
+   guint col, row_height;
+   int xspacing, yspacing;
+ 
+-  gtk_list_base_get_border_spacing (base, &xspacing, &yspacing);
++  /* Split the existing tile using the same spacing as its column geometry.
++   * Before the first non-empty allocation there is no geometry snapshot. */
++  if (self->has_allocated_spacing)
++    {
++      xspacing = self->allocated_xspacing;
++      yspacing = self->allocated_yspacing;
++    }
++  else
++    gtk_list_base_get_border_spacing (base, &xspacing, &yspacing);
+ 
+   row_height = (tile->area.height + yspacing) / MAX (tile->n_items / self->n_columns, 1) - yspacing;
+ 
+@@ -786,6 +797,7 @@
+   tile = gtk_list_item_manager_get_first (self->item_manager);
+   if (tile == NULL)
+     {
++      self->has_allocated_spacing = FALSE;
+       gtk_list_base_allocate (GTK_LIST_BASE (self));
+       return;
+     }
+@@ -798,6 +810,9 @@
+                                                      col_min, col_nat);
+   self->column_width = ((orientation == GTK_ORIENTATION_VERTICAL ? width : height) + xspacing) / self->n_columns - xspacing;
+   self->column_width = MAX (self->column_width, col_min);
++  self->allocated_xspacing = xspacing;
++  self->allocated_yspacing = yspacing;
++  self->has_allocated_spacing = TRUE;
+ 
+   /* step 2: determine height of known rows */
+   heights = g_array_new (FALSE, FALSE, sizeof (int));

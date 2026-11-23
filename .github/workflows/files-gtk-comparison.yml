@@ -1,0 +1,31 @@
+name: Files GTK comparison libraries
+on:
+  push:
+    branches: [performance/files-menu-pipeline]
+    paths:
+      - .github/workflows/files-gtk-comparison.yml
+      - virtio-dxg/bench/desktop/build-gtk-comparison.sh
+      - virtio-dxg/bench/desktop/gtk-*.patch
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - name: Compile control, grid and combined GTK libraries
+        run: |
+          mkdir "$RUNNER_TEMP/gtk"
+          docker run --rm --cpus=2 --memory=6g --pids-limit=512 \
+            -v "$GITHUB_WORKSPACE:/repo:ro" -v "$RUNNER_TEMP/gtk:/out" \
+            docker.io/library/archlinux@sha256:b860afd5823683f7ea389ba5f00d812f4fe55f6f286dea329d2abeefa535e309 \
+            bash /repo/virtio-dxg/bench/desktop/build-gtk-comparison.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: gtk-4.24.1-files-comparison
+          path: ${{ runner.temp }}/gtk/
+          if-no-files-found: error
+          retention-days: 7

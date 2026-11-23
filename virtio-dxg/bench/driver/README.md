@@ -76,3 +76,61 @@ The replacement experiment uses `VDXG_LIVE_PSO=1` and keeps up to 64 live
 graphics pipeline objects per Mesa screen. The default is off. Performance,
 reference lifetimes under stress and rendering correctness require validation
 on this implementation before enabling it for desktop sessions.
+
+On build `fdb576d`, Files opened and completed all four context-menu cycles
+with the live cache both enabled and disabled. Each session scrolled the same
+3,000-entry folder for 15 seconds in a headless 1920×1080 guest configured
+for 240 Hz, with four vCPUs and 6 GiB of RAM.
+
+| Guest output measurement | Cache off | Cache on |
+| --- | ---: | ---: |
+| Scrolling updates per second | 53.8 | 54.3 |
+| 99th-percentile scrolling interval | 55.95 ms | 49.77 ms |
+| Longest gap during the first menu opening | 112.47 ms | 111.92 ms |
+| Longest gap on each subsequent opening, in order | 62.42, 75.17, 74.98 ms | 71.14, 54.10, 49.48 ms |
+
+Menu gaps include the interval from the guest input marker to the first
+output update. The median of the three repeated-opening gaps fell from
+74.98 to 54.10 ms, though the second opening was slower with reuse.
+One run per setting leaves the magnitude uncertain. These whole-output
+timestamps cannot identify when menu pixels first appeared or establish
+physical display pacing. Cache hit counts and time in pipeline creation
+during each opening would distinguish actual reuse from session variability.
+
+### Files grid scrolling
+
+A separate cache-off profile of the same 3,000-entry folder produced 59.5
+guest output updates/s, a 37.75 ms p99 interval and an 87.44 ms worst
+interval. Over 15.03 seconds Nautilus's main thread ran for 12.40 seconds
+and spent 0.27 seconds runnable waiting for CPU. The 2,354 userspace CPU
+samples were resolved against the guest GTK build
+`6338771fcb62702311e60fa571df2d5040edd640`.
+
+One repeated stack (34 samples at the same instruction) went from the scroll
+adjustment through grid anchor tracking, item realization and grid splitting
+to `gtk_list_base_get_border_spacing` and `gtk_css_node_do_ensure_style`.
+At least 214 samples across the 80 most frequent call paths passed through
+the same recursive GTK CSS validation site. These counts identify CPU
+work, not elapsed GPU time or the cost removable by a single optimization.
+Investigate repeated border-spacing reads during one grid layout operation
+and which style changes invalidate visible items while scrolling. Any reuse
+must preserve theme changes, hover, selection, icon sizing and animations.
+
+Two experimental source patches under `bench/desktop` target that profile:
+
+- `gtk-grid-split-spacing.patch` stores both spacing values beside the
+  allocated column geometry. Splitting an existing tile uses its allocation's
+  spacing. Before a nonempty allocation it still reads the style. A CPU
+  fixture compiled both split functions from the matching GTK source.
+  Across 7,080 synthetic splits, item counts, rectangles and returned tile
+  positions matched the geometry reference, with zero style reads per
+  post-allocation split. The reference used the spacing of the original
+  allocation, including cases where the current style had since changed.
+- `gtk-css-skip-valid-children.patch` checks a child's invalid flag before
+  adding ancestor hashes to the selector filter and descending into the child.
+  This mirrors the recursive function's existing early return. Only source
+  applicability has been checked for this patch.
+
+Neither candidate has a measured desktop speedup. Live reallocation, theme
+transitions, icon positions and selection during scrolling still need a
+matched guest build and comparison.
