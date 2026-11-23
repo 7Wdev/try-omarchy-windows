@@ -337,18 +337,20 @@ is reduced at every layer of the VM stack:
   `iothread` (`diskio0`) with multi-queue `virtio-blk` scaled to the vCPU count
   (`1..8`), keeping virtio-blk I/O completions off the vCPU threads; the guest
   boot hook sets `/sys/block/vda/queue/read_ahead_kb=512`.
-- **Guest page-cache & session warmers (`virtio_dxg.boost=1`, default):**
-  `app-prefetch` performs a two-tier `dlopen()`-aware `posix_fadvise` warm-up
-  (shared graphics/toolkit/runtime libraries in tier 1, browser/Electron/office/wine
-  payloads in tier 2). `desktop-boost` syncs persisted Mesa PSO caches into
-  tmpfs (`$XDG_RUNTIME_DIR/vdxg-pso` gated by `.ready`), pre-warms Nautilus
-  (`--gapplication-service`), seeds Ghostty shader cache & `foot --server`, and
-  lazily preloads `wineserver -p300` in the background. `xdg-settings-fast`
-  serves desktop default-browser queries in under a millisecond from cached
-  `mimeapps.list` / `.desktop` state. The session configures native Wayland
-  (`ELECTRON_OZONE_PLATFORM_HINT=auto`), NVIDIA WSL disk shader cache paths
-  (`__GL_SHADER_DISK_CACHE*`), and persistent Proton/DXVK/VKD3D state caches.
-  Boot with `virtio_dxg.boost=0` to disable all background warmers and prefetch.
+- **Guest page-cache, tmpfs WSL libraries, & session warmers (`virtio_dxg.boost=1`, default):**
+  `virtio_dxg` stages active NVIDIA/WSL shared libraries sequentially into
+  guest tmpfs (`stage_wsl_tmpfs` under `/run/virtio-dxg-wsl`, opt out with
+  `virtio_dxg.wsl_tmpfs=0`), avoiding Windows QEMU `9p-local` concurrent `pread`
+  page-cache races on hot `.so` page faults. `desktop_payload.py` mounts
+  writable tmpfs-backed overlays on `/usr/local/bin` and `/usr/share/applications`
+  with fastlaunch wrappers. `app-prefetch` performs a two-tier `dlopen()`-aware
+  `posix_fadvise` warm-up, while `desktop-boost` + `browser-boost` +
+  `vdxg_boost_helpers.c` (`vdxg-fastlaunch`, `libvdxg-gapp-hold.so`, and
+  `libvdxg-wl-gate.so` gating on `(wl_display, wl_proxy_get_id)` plus `dlsym`
+  interposition for dynamically loaded Wayland clients) keep native, GTK4, Qt6,
+  Chromium/PWA, VS Code/Electron, Vulkan, Blender, and Wine apps ready for
+  sub-100 ms window launches (measured across all 12 classes in `applaunch.py`
+  at `2.6–116.9 ms` warm median; `virtio_dxg.boost=0` disables all boost paths).
 - **Host/guest `/dev/dxg` fast paths:** `dxgvirtio.c` raises its stack-inline
   message buffer (`DXGVIRTIO_INLINE_BUF=1024`) so larger adapter/query/open
   requests avoid vmalloc copies. `dxghost` caches immutable `QueryAdapterInfo`
@@ -357,14 +359,16 @@ is reduced at every layer of the VM stack:
   `CREATEPROCESS`, `ISFEATUREENABLED*`, warm `OPENADAPTER`, warm
   `GETINTERNALADAPTERINFO`, and `qai_cache` hits inline without bouncing through
   worker lanes.
-- **Crash-safe Mesa PSO prewarm (`d3d12` + `Dozen`):** both `d3d12_pso_prewarm`
-  (graphics + compute `RECORD_VERSION=2`) and `dzn_pso_prewarm` (Dozen graphics,
-  compute, and variant streams) record BLAKE3-verified descriptor records,
-  preferring tmpfs `$XDG_RUNTIME_DIR/vdxg-pso` when `.ready` is present, and
-  compile live `ID3D12PipelineState` objects on background worker threads at
-  screen/device init without calling `ID3D12PipelineLibrary` / `GetCachedBlob`.
+- **Crash-safe Mesa PSO & device capability cache (`d3d12` + `Dozen`):** both
+  `d3d12_pso_prewarm` (graphics + compute `RECORD_VERSION=2`) and
+  `dzn_pso_prewarm` (Dozen graphics, compute, and variant streams) record
+  BLAKE3-verified descriptor records, preferring tmpfs `$XDG_RUNTIME_DIR/vdxg-pso`
+  when `.ready` is present, and compile live `ID3D12PipelineState` objects on
+  up to 8 background worker threads at screen/device init without calling
+  `ID3D12PipelineLibrary` / `GetCachedBlob`. `d3d12_caps.bin` (`D3D12_CAPS_CACHE=0`
+  to opt out) caches device/format capabilities across processes, and
   `dzn_physical_device_check_dxgi_format` caches format-support lookups in a
-  256-slot table. Opt out via `D3D12_PSO_PREWARM=0` or `DZN_PSO_PREWARM=0`.
+  512-slot table. Opt out via `D3D12_PSO_PREWARM=0` or `DZN_PSO_PREWARM=0`.
 - **Wine / Proton `dxgvk` startup:** `kmt_bridge.c` caches immutable
   `QueryAdapterInfo` queries across D3DKMT callers (`DXGVK_NO_QAI_CACHE=1`
   opts out), invalidates on `D3DKMTCloseAdapter`, uses `QueueUserWorkItem`

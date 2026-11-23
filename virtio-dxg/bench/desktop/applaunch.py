@@ -1,16 +1,19 @@
 """applaunch.py [RUNS] [--json PATH]: time from starting an app to its window
 being mapped (Hyprland's openwindow event), cold launch after boot and warm
-median/minimum launches across native, GTK4, browser, Electron and Vulkan apps.
+median/minimum launches across native, GTK4, browser, PWA, Electron, Vulkan and Wine apps.
 Run as the desktop user, in the desktop session."""
 import argparse
 import json
 import os
 import shlex
 import shutil
+import signal
 import socket
 import statistics
 import subprocess
 import time
+
+WINE_CMD = os.environ.get('VDXG_WINE_APP', os.path.expanduser('~/vdxg-test/run-vkpresent.sh'))
 
 APPS = [  # label, command, window class (substring, lower case)
     ('ghostty', 'ghostty', 'ghostty'),
@@ -20,14 +23,27 @@ APPS = [  # label, command, window class (substring, lower case)
     ('gnome-calculator', 'gnome-calculator', 'calculator'),
     ('omacalc', 'omacalc', 'omacalc'),
     ('chromium', 'chromium --new-window about:blank', 'chromium'),
+    ('chromium-pwa', 'chromium --app=about:blank', 'chrom'),
     ('code', 'code --new-window', 'code'),
     ('vkcube', 'vkcube', 'vkcube'),
     ('blender', 'blender --factory-startup', 'blender'),
+    ('wine-vulkan', WINE_CMD, 'vkpresent'),
 ]
 
 
 def have(cmd):
-    return shutil.which(shlex.split(cmd)[0]) is not None
+    exe = shlex.split(cmd)[0]
+    if os.path.isabs(exe):
+        return os.path.isfile(exe) and os.access(exe, os.X_OK)
+    return shutil.which(exe) is not None
+
+
+def hypr_close(addr):
+    expr = f'hl.dispatch(hl.dsp.window.close({{ window = "address:0x{addr}" }}))'
+    res = subprocess.run(['hyprctl', 'eval', expr], capture_output=True, text=True)
+    if res.returncode != 0 or not res.stdout.strip().startswith('ok'):
+        subprocess.run(['hyprctl', 'dispatch', 'closewindow', 'address:0x' + addr],
+                       capture_output=True)
 
 
 def launch(sock_path, cmd, cls, timeout=20.0):
@@ -47,7 +63,8 @@ def launch(sock_path, cmd, cls, timeout=20.0):
             line, buf = buf.split(b'\n', 1)
             if line.startswith(b'openwindow>>'):
                 fields = line[12:].decode(errors='replace').split(',', 3)
-                if len(fields) >= 3 and cls in fields[2].lower():
+                if len(fields) >= 3 and (cls in fields[2].lower() or
+                                         (len(fields) >= 4 and not fields[2] and cls in fields[3].lower())):
                     addr = fields[0]
                     break
     ms = (time.monotonic() - t0) * 1000 if addr else None
@@ -55,12 +72,17 @@ def launch(sock_path, cmd, cls, timeout=20.0):
     if addr:
         time.sleep(0.15)
         addr = addr.removeprefix('0x')
-        subprocess.run(['hyprctl', 'dispatch', 'closewindow', 'address:0x' + addr],
-                       capture_output=True)
+        hypr_close(addr)
     try:
         p.wait(timeout=5)
     except subprocess.TimeoutExpired:
-        os.killpg(p.pid, 9)
+        try:
+            os.killpg(p.pid, signal.SIGTERM)
+            p.wait(timeout=1.0)
+        except subprocess.TimeoutExpired:
+            os.killpg(p.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
     time.sleep(0.5)
     return ms
 
@@ -99,7 +121,7 @@ def main():
         results[label] = summary
         med = fmt(summary['warm_median_ms'])
         lo = fmt(summary['warm_min_ms'])
-        print(f'{label:18s} first {fmt(times[0])} ms, warm {' '.join(fmt(t) for t in times[1:])} ms '
+        print(f'{label:18s} first {fmt(times[0])} ms, warm {" ".join(fmt(t) for t in times[1:])} ms '
               f'(med {med.strip()} / min {lo.strip()} ms)')
 
     if args.json:

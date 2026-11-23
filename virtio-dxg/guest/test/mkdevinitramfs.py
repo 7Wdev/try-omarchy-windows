@@ -143,10 +143,12 @@ def main():
         entry(out, 'virtio-dxg/dxgkrnl_virtio.ko', 0o100644, module_data)
         for name in ('desktop_payload.py', 'chromium-wrapper', 'desktop-priority',
                      'app-prefetch', 'browser-boost', 'desktop-boost',
-                     'xdg-settings-fast'):
+                     'xdg-settings-fast', 'app-fastlaunch',
+                     'vdxg_boost_helpers.c'):
             mode = 0o100755 if name in ('desktop-boost', 'xdg-settings-fast',
                                         'app-prefetch', 'browser-boost',
-                                        'desktop-priority', 'chromium-wrapper') else 0o100644
+                                        'desktop-priority', 'chromium-wrapper',
+                                        'app-fastlaunch') else 0o100644
             entry(out, 'virtio-dxg/' + name, mode,
                   (hook.parent / name).read_bytes())
         entry(out, 'virtio-dxg/mesa-recipe.json', 0o100644,

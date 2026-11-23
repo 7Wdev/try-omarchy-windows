@@ -5,7 +5,7 @@
 #     core desktop/launcher/terminal binaries, GI/GTK/Qt/icon/font/mime caches,
 #     and existing PSO/shader caches (avoiding 9p/disk stalls on first click).
 #   Tier 2 (a few seconds later): all launcher .desktop targets plus Chromium,
-#     Electron/Code, and Wine runtime trees.
+#     Electron/Code, Blender, and Wine runtime trees.
 # Usage: app-prefetch [--list] [--tier1]
 set -u
 list=0
@@ -104,9 +104,10 @@ collect_tier1() {
         fi
     fi
 
-    # Core desktop, launcher, terminal, file manager, and prompt tools.
+    # Core desktop, launcher, terminal, file manager, calculator, Vulkan, and prompt tools.
     for p in quickshell uwsm uwsm-app gtk-launch systemd-run xdg-terminal-exec \
-             xdg-open alacritty ghostty foot kitty nautilus jq starship mise; do
+             xdg-open alacritty ghostty foot kitty nautilus gnome-calculator \
+             omacalc vkcube jq starship mise; do
         add_prog "$p"
     done
 
@@ -118,7 +119,8 @@ collect_tier1() {
     for d in /usr/lib/girepository-1.0 /usr/lib/gdk-pixbuf-2.0 /usr/lib/gtk-4.0 \
              /usr/lib/gio/modules /usr/lib/qt6/plugins/platforms \
              /usr/lib/qt6/plugins/wayland-shell-integration \
-             /usr/lib/qt6/plugins/wayland-graphics-integration-client; do
+             /usr/lib/qt6/plugins/wayland-graphics-integration-client \
+             /usr/lib/qt6/qml/QtQuick; do
         add_dir "$d"
     done
     local cache_home="${XDG_CACHE_HOME:-$HOME/.cache}"
@@ -154,9 +156,10 @@ collect_tier2() {
         done < <(find -L "$d" -maxdepth 3 -type f -name '*.desktop' -print0 2>/dev/null)
     done
 
+    add_prog /usr/bin/blender
     for d in /usr/lib/chromium /opt/google/chrome /usr/lib/electron* \
              /opt/visual-studio-code /usr/lib/code /usr/share/code \
-             /usr/lib/wine/x86_64-unix; do
+             /usr/share/blender /usr/lib/wine/x86_64-unix; do
         add_dir "$d"
     done
     if [ -d /usr/lib/wine/x86_64-windows ]; then

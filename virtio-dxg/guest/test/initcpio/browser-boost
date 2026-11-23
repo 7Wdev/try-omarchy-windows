@@ -1,19 +1,106 @@
 #!/bin/bash
-# browser-boost: the default browser, when it is Chromium, started without a
-# window once the desktop is up and kept running when its last window
-# closes, as Edge's startup boost does on Windows. Opening the browser or a
-# web app (YouTube, WhatsApp, ...) then hands a window to a browser whose
-# GPU process, profile and caches are already up: no process start-up, no
-# GPU initialization, no shader compilation on the way to the first frame.
-# Low CPU priority while it idles; windows it opens are normal applications.
+# browser-boost: keep the default browser (when Chromium) warm in the background
+# without a visible window, wait until its SingletonSocket is accepting connections,
+# and warm its first tab/compositor path once so even the first browser or PWA
+# click opens in well under 100 ms.
 set -u
+
 case $(xdg-settings get default-web-browser 2>/dev/null) in
 chromium.desktop|"") ;;
 *) exit 0 ;;
 esac
-command -v chromium >/dev/null || exit 0
+[ -x /usr/bin/chromium ] || exit 0
 # Already running (opened by the user before this ran): nothing to do.
 pgrep -u "$(id -u)" -x chromium >/dev/null && exit 0
-sleep "${BOOST_DELAY:-2}"
+
+rt="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export XDG_RUNTIME_DIR="$rt"
+for _ in $(seq 1 150); do
+    if [ -n "${WAYLAND_DISPLAY:-}" ] && [ -S "$rt/$WAYLAND_DISPLAY" ]; then
+        break
+    fi
+    for s in "$rt"/wayland-*; do
+        case $s in *.lock) continue ;; esac
+        if [ -S "$s" ]; then
+            export WAYLAND_DISPLAY="${s##*/}"
+            break 2
+        fi
+    done
+    sleep 0.2
+done
+
+if [ -z "${HYPRLAND_INSTANCE_SIGNATURE:-}" ] && [ -d "$rt/hypr" ]; then
+    his=$(ls -1 "$rt/hypr" 2>/dev/null | head -1 || true)
+    [ -n "$his" ] && export HYPRLAND_INSTANCE_SIGNATURE="$his"
+fi
+
+sleep "${BOOST_DELAY:-1}"
 pgrep -u "$(id -u)" -x chromium >/dev/null && exit 0
-exec chromium --no-startup-window --keep-alive-for-test
+
+/usr/bin/chromium --no-startup-window --keep-alive-for-test &
+cpid=$!
+
+sock="${XDG_CONFIG_HOME:-$HOME/.config}/chromium/SingletonSocket"
+for _ in $(seq 1 100); do
+    kill -0 "$cpid" 2>/dev/null || exit 0
+    [ -S "$sock" ] && break
+    sleep 0.1
+done
+
+# Silently warm Chromium's first-window + GPU compositor path off-screen and close it.
+if [ -S "$sock" ] && [ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ] && command -v python3 >/dev/null 2>&1; then
+    (
+        python3 - <<'PY' >/dev/null 2>&1 || true
+import os, socket, subprocess, time
+rt = os.environ["XDG_RUNTIME_DIR"]
+his = os.environ["HYPRLAND_INSTANCE_SIGNATURE"]
+sock_path = os.path.join(rt, "hypr", his, ".socket2.sock")
+
+def hypr_move_warm(a):
+    expr = f'hl.dispatch(hl.dsp.window.move({{ workspace = "special:vdxg_warm", follow = false, window = "address:0x{a}" }}))'
+    r = subprocess.run(["hyprctl", "eval", expr], capture_output=True, text=True)
+    if r.returncode != 0 or not r.stdout.strip().startswith("ok"):
+        subprocess.run(["hyprctl", "dispatch", "movetoworkspacesilent",
+                        f"special:vdxg_warm,address:0x{a}"], capture_output=True)
+
+def hypr_close(a):
+    expr = f'hl.dispatch(hl.dsp.window.close({{ window = "address:0x{a}" }}))'
+    r = subprocess.run(["hyprctl", "eval", expr], capture_output=True, text=True)
+    if r.returncode != 0 or not r.stdout.strip().startswith("ok"):
+        subprocess.run(["hyprctl", "dispatch", "closewindow",
+                        f"address:0x{a}"], capture_output=True)
+
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.connect(sock_path)
+s.settimeout(0.05)
+p = subprocess.Popen(["/usr/bin/chromium", "--class=vdxg-warm-browser",
+                      "--new-window", "about:blank"],
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+buf, addr = b"", None
+deadline = time.monotonic() + 6.0
+while time.monotonic() < deadline and addr is None:
+    try:
+        buf += s.recv(65536)
+    except socket.timeout:
+        continue
+    while b"\n" in buf:
+        line, buf = buf.split(b"\n", 1)
+        if line.startswith(b"openwindow>>"):
+            f = line[12:].decode(errors="replace").split(",", 3)
+            if len(f) >= 3 and "chrom" in f[2].lower():
+                addr = f[0].removeprefix("0x")
+                break
+s.close()
+if addr:
+    hypr_move_warm(addr)
+    time.sleep(0.25)
+    hypr_close(addr)
+try:
+    p.wait(timeout=3)
+except subprocess.TimeoutExpired:
+    pass
+PY
+    ) &
+fi
+
+wait "$cpid"

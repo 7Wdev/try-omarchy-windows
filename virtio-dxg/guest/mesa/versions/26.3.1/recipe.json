@@ -7,7 +7,7 @@
   "profiles": {
     "graphics": {
       "patchFile": "graphics.patch",
-      "patchSha256": "8d12c18c72ebd2083f6455c3284774c8f5f4de2d5996043c90e48079fb3e787d",
+      "patchSha256": "1c76bdda3fe1bb11f67f9ed242b0c5b014dd4b7c1176b2942ef4fc7cc83350df",
       "files": {
         "VERSION": {
           "originalSha256": "e35f85db6458a3e4736f050ff42d720b39bbff9debe6b50c11e753b3ac2ecc3d",
@@ -75,7 +75,7 @@
         },
         "src/gallium/drivers/d3d12/d3d12_pso_prewarm.cpp": {
           "originalSha256": null,
-          "patchedSha256": "dbd055f06acbfec18d6a23ad065efb6f73658b112000e17896a367c6c1306fd7"
+          "patchedSha256": "b229b2c3b36e7ce6b2e4477e8fa042af2607d8cb8ec94003e7f39b424bd2fd3e"
         },
         "src/gallium/drivers/d3d12/d3d12_pso_prewarm.h": {
           "originalSha256": null,
@@ -99,11 +99,11 @@
         },
         "src/gallium/drivers/d3d12/d3d12_screen.cpp": {
           "originalSha256": "b442477e3751012eba05e4b41c269501f0f682679c908850dac059e13dea9185",
-          "patchedSha256": "184e3a6e59586e35af7824e3f2a6322d1deddfba21aa0534c25c3ac45528badb"
+          "patchedSha256": "ef32a5fa448340d2c2d46336310ea476f742cf45c827b5a23083b8ec14db1163"
         },
         "src/gallium/drivers/d3d12/d3d12_screen.h": {
           "originalSha256": "e4ee1a6673d8b17cb27fe6fb12670d386dcec737c579f1427bfebe0bc238aa62",
-          "patchedSha256": "e8f0ed1d1586e5a60e6c761180d054716b758d0ac3c9da6ffd360385300b8622"
+          "patchedSha256": "9222de4a8d2c3d6601a55c5a2ae55bada500201fddd88e26e54539fefefee8a4"
         },
         "src/gallium/drivers/d3d12/meson.build": {
           "originalSha256": "62156038e9d2b15c5ea7d32b1343a18c7afd622d4f7b65133fd0dfa12ec8486b",
@@ -159,7 +159,7 @@
         },
         "src/microsoft/vulkan/dzn_pso_prewarm.cpp": {
           "originalSha256": null,
-          "patchedSha256": "3111382c9dfe071ac89d408f2f5fbf3f14bd7e20641171ec48cb51a1f9010bb7"
+          "patchedSha256": "8824393c2d387baa88a9253d6c113854c1428884fdf63304676725e4ffe4ce71"
         },
         "src/microsoft/vulkan/dzn_pso_prewarm.h": {
           "originalSha256": null,
@@ -200,7 +200,7 @@
       }
     }
   },
-  "profile": "virtio-dxg kernel ABI: KMS mirrors, zero-copy scanout, native Dozen FD lifetime, upload/constbuf/fence/reclaim guards, per-context mirror writes without per-frame heap allocation for <=16 mirrors, crash-safe d3d12+Dozen PSO prewarm & format cache",
+  "profile": "virtio-dxg kernel ABI: KMS mirrors, zero-copy scanout, native Dozen FD lifetime, upload/constbuf/fence/reclaim guards, per-context mirror writes without per-frame heap allocation for <=16 mirrors, crash-safe d3d12+Dozen PSO prewarm, persistent caps cache & format cache",
   "sourceVersionIsNotRewritten": true,
   "runtimeRequiredPaths": [
     "lib/dri/d3d12_dri.so",

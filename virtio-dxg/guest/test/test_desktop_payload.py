@@ -166,8 +166,9 @@ class DesktopData(unittest.TestCase):
         desktop.parent.mkdir(parents=True)
         desktop.write_text('Exec=/usr/bin/chromium %U\n')
         self.assertTrue(payload.prepare_browser(self.root, HERE / 'initcpio/chromium-wrapper'))
-        self.assertIn('lowerdir=/run/virtio-dxg/applications:',
-                      (self.root / 'run/systemd/system/virtio-dxg-bin.service').read_text())
+        unit = (self.root / 'run/systemd/system/virtio-dxg-bin.service').read_text()
+        self.assertIn('lowerdir=/run/virtio-dxg/applications:', unit)
+        self.assertIn('upperdir=/run/virtio-dxg/app-upper', unit)
         self.assertTrue((self.root / 'run/systemd/system/sysinit.target.wants/virtio-dxg-bin.service').is_symlink())
 
     def test_wrapper_arguments_without_browser(self):
@@ -248,7 +249,34 @@ class DesktopData(unittest.TestCase):
         self.assertIn('/sh', res.stdout)
         subprocess.run(['bash', '-n', str(HERE / 'initcpio/desktop-boost')], check=True, timeout=5)
         subprocess.run(['bash', '-n', str(HERE / 'initcpio/browser-boost')], check=True, timeout=5)
+        subprocess.run(['sh', '-n', str(HERE / 'initcpio/app-fastlaunch')], check=True, timeout=5)
         subprocess.run(['sh', '-n', str(HERE / 'initcpio/virtio_dxg')], check=True, timeout=5)
+
+    def test_app_fastlaunch_stages_installed_apps_and_desktops_only(self):
+        for app in ('foot', 'code', 'omacalc', 'gnome-calculator', 'vkcube'):
+            p = self.root / 'usr/bin' / app
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text('#!/bin/sh\n')
+        apps_dir = self.root / 'usr/share/applications'
+        apps_dir.mkdir(parents=True, exist_ok=True)
+        (apps_dir / 'foot.desktop').write_text('[Desktop Entry]\nExec=foot\n')
+        (apps_dir / 'omacalc.desktop').write_text('[Desktop Entry]\nExec=/usr/bin/omacalc\n')
+        self.assertTrue(payload.prepare_launch_paths(
+            self.root, app_fastlaunch=HERE / 'initcpio/app-fastlaunch'))
+        self.assertTrue((self.root / 'run/virtio-dxg/bin/foot').is_file())
+        self.assertTrue((self.root / 'run/virtio-dxg/bin/code').is_file())
+        self.assertTrue((self.root / 'run/virtio-dxg/bin/omacalc').is_file())
+        self.assertTrue((self.root / 'run/virtio-dxg/bin/gnome-calculator').is_file())
+        self.assertTrue((self.root / 'run/virtio-dxg/bin/vkcube').is_file())
+        self.assertFalse((self.root / 'run/virtio-dxg/bin/blender').exists())
+        self.assertEqual(
+            (self.root / 'run/virtio-dxg/applications/foot.desktop').read_text(),
+            '[Desktop Entry]\nExec=/run/virtio-dxg/bin/foot\n',
+        )
+        self.assertEqual(
+            (self.root / 'run/virtio-dxg/applications/omacalc.desktop').read_text(),
+            '[Desktop Entry]\nExec=/run/virtio-dxg/bin/omacalc\n',
+        )
 
 
 if __name__ == '__main__':

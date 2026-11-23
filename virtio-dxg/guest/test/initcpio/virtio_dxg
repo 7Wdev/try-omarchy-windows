@@ -38,6 +38,64 @@ mount_share() {
     return 1
 }
 
+# Stage hot NVIDIA/WSL driver shared libraries sequentially into guest tmpfs (/run)
+# and bind-mount over the 9p shares. Windows QEMU's 9p-local backend emulates
+# preadv with non-atomic lseek+read per FID, which can corrupt cache=loose
+# guest page cache pages under concurrent 8-thread page faults.
+stage_wsl_tmpfs() {
+    case " $(cat /proc/cmdline) " in
+    *" virtio_dxg.wsl_tmpfs=0 "*) return 0 ;;
+    esac
+    avail_kb=$(df -Pk /run 2>/dev/null | awk 'NR==2 {print $4}')
+    [ -n "$avail_kb" ] && [ "$avail_kb" -ge 524288 ] || return 0
+
+    w=/run/virtio-dxg-wsl
+    mkdir -p "$w/core" || return 0
+
+    bind_ro() {
+        src=$1 dst=$2
+        mount -o bind "$src" "$dst" 2>/dev/null || return 1
+        mount -o remount,bind,ro "$dst" 2>/dev/null || true
+        return 0
+    }
+
+    if [ -d /new_root/usr/lib/wsl/core ]; then
+        copied=0
+        for f in /new_root/usr/lib/wsl/core/*; do
+            [ -f "$f" ] || continue
+            cp -fp "$f" "$w/core/${f##*/}" && copied=1
+        done
+        if [ "$copied" = 1 ]; then
+            chmod 0755 "$w/core" "$w/core"/* 2>/dev/null || true
+            bind_ro "$w/core" /new_root/usr/lib/wsl/core || true
+        fi
+    fi
+
+    if [ -f /new_root/usr/lib/wsl/lib/libnvidia-gpucomp.so ]; then
+        if cp -fp /new_root/usr/lib/wsl/lib/libnvidia-gpucomp.so "$w/libnvidia-gpucomp.so"; then
+            chmod 0755 "$w/libnvidia-gpucomp.so" 2>/dev/null || true
+            bind_ro "$w/libnvidia-gpucomp.so" /new_root/usr/lib/wsl/lib/libnvidia-gpucomp.so || true
+        fi
+    fi
+
+    for d in /new_root/usr/lib/wsl/drivers/nv*_amd64_*; do
+        [ -d "$d" ] || continue
+        dn=${d##*/}
+        mkdir -p "$w/$dn"
+        if [ -f "$w/libnvidia-gpucomp.so" ] && [ -f "$d/libnvidia-gpucomp.so" ]; then
+            bind_ro "$w/libnvidia-gpucomp.so" "$d/libnvidia-gpucomp.so" || true
+        fi
+        for so in libnvwgf2umx.so libnvdxgdmal.so.1 libnvvamanager.so.1; do
+            [ -f "$d/$so" ] || continue
+            if cp -fp "$d/$so" "$w/$dn/$so"; then
+                chmod 0755 "$w/$dn/$so" 2>/dev/null || true
+                bind_ro "$w/$dn/$so" "$d/$so" || true
+            fi
+        done
+    done
+    echo ":: virtio-dxg: staged WSL/NVIDIA driver libraries in tmpfs"
+}
+
 # Unpacks virtio-dxg's Mesa build into /run and writes the session
 # environment that selects it (systemd reads /run/environment.d).
 setup_desktop() {
@@ -59,10 +117,12 @@ setup_desktop() {
     cp /virtio-dxg/desktop_payload.py /virtio-dxg/chromium-wrapper \
         /virtio-dxg/desktop-priority /virtio-dxg/app-prefetch \
         /virtio-dxg/browser-boost /virtio-dxg/desktop-boost \
-        /virtio-dxg/xdg-settings-fast /virtio-dxg/mesa-recipe.json \
+        /virtio-dxg/xdg-settings-fast /virtio-dxg/app-fastlaunch \
+        /virtio-dxg/vdxg_boost_helpers.c /virtio-dxg/mesa-recipe.json \
         /run/virtio-dxg/ || return 1
     chmod 0755 /run/virtio-dxg/desktop-boost /run/virtio-dxg/xdg-settings-fast \
-        /run/virtio-dxg/app-prefetch /run/virtio-dxg/browser-boost 2>/dev/null || true
+        /run/virtio-dxg/app-prefetch /run/virtio-dxg/browser-boost \
+        /run/virtio-dxg/app-fastlaunch 2>/dev/null || true
     mount -o bind /run /new_root/run || return 1
     payload_bound=
     if [ -f /run/virtio-dxg/payload/mesa-virtio-dxg.tar ]; then
@@ -83,10 +143,15 @@ setup_desktop() {
     1*|*" virtio_dxg.chromium=wayland "*) ;;
     *) browser='--browser-wrapper /run/virtio-dxg/chromium-wrapper' ;;
     esac
+    fastlaunch=
+    case " $(cat /proc/cmdline) " in
+    *" virtio_dxg.boost=0 "*) ;;
+    *) fastlaunch='--app-fastlaunch /run/virtio-dxg/app-fastlaunch' ;;
+    esac
     # shellcheck disable=SC2086
     if ! chroot /new_root /usr/bin/python3 /run/virtio-dxg/desktop_payload.py \
             "$tarball" "$m" --recipe /run/virtio-dxg/mesa-recipe.json \
-            --xdg-settings-fast /run/virtio-dxg/xdg-settings-fast $browser; then
+            --xdg-settings-fast /run/virtio-dxg/xdg-settings-fast $browser $fastlaunch; then
         [ -n "$payload_bound" ] && umount /new_root/run/virtio-dxg/payload
         umount /new_root/run
         echo ":: virtio-dxg: Mesa payload rejected; GPU environment not selected" >&2
@@ -94,6 +159,7 @@ setup_desktop() {
     fi
     [ -n "$payload_bound" ] && umount /new_root/run/virtio-dxg/payload
     umount /new_root/run || return 1
+    stage_wsl_tmpfs || true
 
     mkdir -p /run/environment.d || return 1
     # The compositor renders on d3d12 into KMS-mirrored scanout buffers.
@@ -240,6 +306,19 @@ ExecStart=/bin/bash /run/virtio-dxg/desktop-boost wine
 Slice=app-graphical.slice
 UNIT
         ln -sf ../virtio-dxg-wine-boost.service \
+            /run/systemd/user/graphical-session.target.wants/ || return 1
+        cat >/run/systemd/user/virtio-dxg-apps-boost.service <<'UNIT'
+[Unit]
+Description=virtio-dxg: VS Code warm helper and gated app standby pool
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=exec
+ExecStart=/bin/bash /run/virtio-dxg/desktop-boost apps
+Slice=app-graphical.slice
+UNIT
+        ln -sf ../virtio-dxg-apps-boost.service \
             /run/systemd/user/graphical-session.target.wants/ || return 1
         ;;
     esac

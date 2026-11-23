@@ -1,6 +1,8 @@
+diff --git a/src/gallium/auxiliary/util/u_upload_mgr.c b/src/gallium/auxiliary/util/u_upload_mgr.c
+index a3ce892..2b8dfa2 100644
 --- a/src/gallium/auxiliary/util/u_upload_mgr.c
 +++ b/src/gallium/auxiliary/util/u_upload_mgr.c
-@@ -236,6 +236,7 @@
+@@ -236,6 +236,7 @@ u_upload_alloc_buffer(struct u_upload_mgr *upload, unsigned min_size, struct pip
     if (upload->map == NULL) {
        u_upload_release_buffer(upload);
        pipe_resource_release(upload->pipe, upload->buffer);
@@ -8,7 +10,7 @@
        return 0;
     }
  
-@@ -284,7 +285,6 @@
+@@ -284,7 +285,6 @@ u_upload_alloc(struct u_upload_mgr *upload,
        if (unlikely(!buffer_size)) {
           *out_offset = ~0;
           *ptr = NULL;
@@ -16,9 +18,11 @@
           return;
        }
     } else {
+diff --git a/src/gallium/auxiliary/vl/vl_winsys_drm.c b/src/gallium/auxiliary/vl/vl_winsys_drm.c
+index 79bae2f..f927d44 100644
 --- a/src/gallium/auxiliary/vl/vl_winsys_drm.c
 +++ b/src/gallium/auxiliary/vl/vl_winsys_drm.c
-@@ -61,6 +61,21 @@
+@@ -61,6 +61,21 @@ vl_drm_screen_create(int fd, bool honor_dri_prime)
     if (pipe_loader_drm_probe_fd(&vscreen->dev, fd, false))
        vscreen->pscreen = pipe_loader_create_screen(vscreen->dev, false);
  
@@ -40,9 +44,11 @@
     if (libva_owned_fd >= 0 && libva_owned_fd != fd)
        close(fd);
  
+diff --git a/src/gallium/drivers/d3d12/d3d12_batch.cpp b/src/gallium/drivers/d3d12/d3d12_batch.cpp
+index 7f8ff5d..80e51a2 100644
 --- a/src/gallium/drivers/d3d12/d3d12_batch.cpp
 +++ b/src/gallium/drivers/d3d12/d3d12_batch.cpp
-@@ -322,13 +322,16 @@
+@@ -322,13 +322,16 @@ d3d12_end_batch(struct d3d12_context *ctx, struct d3d12_batch *batch)
  
     bool has_state_fixup = d3d12_context_state_resolve_submission(ctx, batch);
  
@@ -66,7 +72,7 @@
     /* Submitting work against resources we failed to make resident would just fault */
     if (residency_ok)
        screen->cmdqueue->ExecuteCommandLists(count_to_execute, to_execute);
-@@ -336,6 +339,9 @@
+@@ -336,6 +339,9 @@ d3d12_end_batch(struct d3d12_context *ctx, struct d3d12_batch *batch)
        batch->has_errors = true;
  
     batch->fence = d3d12_create_fence(screen, true);
@@ -76,7 +82,7 @@
  
     if (batch->fence) {
        uint64_t fv = batch->fence->value;
-@@ -489,6 +495,9 @@
+@@ -489,6 +495,9 @@ d3d12_batch_reference_resource(struct d3d12_batch *batch,
     uint8_t new_data = write ? batch_bo_reference_written : batch_bo_reference_read;
     uint8_t old_data = (uint8_t)*state;
     *state = (old_data | new_data);
@@ -86,9 +92,11 @@
  }
  
  void
+diff --git a/src/gallium/drivers/d3d12/d3d12_batch.h b/src/gallium/drivers/d3d12/d3d12_batch.h
+index c058565..4dfded1 100644
 --- a/src/gallium/drivers/d3d12/d3d12_batch.h
 +++ b/src/gallium/drivers/d3d12/d3d12_batch.h
-@@ -67,6 +67,7 @@
+@@ -67,6 +67,7 @@ struct d3d12_batch {
  
     uint64_t submit_id;
     uint32_t ctx_id, ctx_index;
@@ -96,6 +104,8 @@
  };
  
  bool
+diff --git a/src/gallium/drivers/d3d12/d3d12_bufmgr.cpp b/src/gallium/drivers/d3d12/d3d12_bufmgr.cpp
+index 81ff4d2..0937e57 100644
 --- a/src/gallium/drivers/d3d12/d3d12_bufmgr.cpp
 +++ b/src/gallium/drivers/d3d12/d3d12_bufmgr.cpp
 @@ -33,6 +33,11 @@
@@ -110,7 +120,7 @@
  
  #include <dxguids/dxguids.h>
  
-@@ -103,7 +108,7 @@
+@@ -103,7 +108,7 @@ d3d12_bo_wrap_res(struct d3d12_screen *screen, ID3D12Resource *res, enum d3d12_r
     bo->residency_status = residency;
     bo->last_used_timestamp = 0;
     desc.Flags &= ~D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
@@ -119,7 +129,7 @@
     if (residency == d3d12_resident) {
        mtx_lock(&screen->submit_mutex);
        list_add(&bo->residency_list_entry, &screen->residency_list);
-@@ -176,6 +181,385 @@
+@@ -176,6 +181,385 @@ d3d12_bo_wrap_buffer(struct d3d12_screen *screen, struct pb_buffer *buf)
     return bo;
  }
  
@@ -505,7 +515,7 @@
  void
  d3d12_bo_unreference(struct d3d12_bo *bo)
  {
-@@ -207,9 +591,12 @@
+@@ -207,9 +591,12 @@ d3d12_bo_unreference(struct d3d12_bo *bo)
  
        mtx_unlock(&bo->screen->submit_mutex);
  
@@ -521,7 +531,7 @@
  
        uint64_t mask = bo->local_context_state_mask;
        while (mask) {
-@@ -225,6 +612,8 @@
+@@ -225,6 +612,8 @@ bool
  d3d12_screen_reclaim_completed(struct d3d12_screen *screen)
  {
     uint64_t completed = screen->fence->GetCompletedValue();
@@ -530,7 +540,7 @@
     struct list_head retired;
     list_inithead(&retired);
  
-@@ -265,14 +654,21 @@
+@@ -265,14 +654,21 @@ d3d12_screen_reclaim_one(struct d3d12_screen *screen)
     if (!have_target)
        return false;
  
@@ -557,9 +567,11 @@
  }
  
  void *
+diff --git a/src/gallium/drivers/d3d12/d3d12_bufmgr.h b/src/gallium/drivers/d3d12/d3d12_bufmgr.h
+index 38b8165..9222065 100644
 --- a/src/gallium/drivers/d3d12/d3d12_bufmgr.h
 +++ b/src/gallium/drivers/d3d12/d3d12_bufmgr.h
-@@ -47,6 +47,14 @@
+@@ -47,6 +47,14 @@ enum batch_bo_reference_state : uint8_t {
     batch_bo_reference_written = (1 << 1),
  };
  
@@ -574,7 +586,7 @@
  struct d3d12_bo {
     struct pipe_reference reference;
     struct d3d12_screen *screen;
-@@ -72,6 +80,15 @@
+@@ -72,6 +80,15 @@ struct d3d12_bo {
     enum d3d12_residency_status residency_status;
     uint16_t local_needs_resolve_state;
  
@@ -590,7 +602,7 @@
     unsigned local_context_state_mask;
     uint8_t local_reference_mask[16];
  
-@@ -152,6 +169,50 @@
+@@ -152,6 +169,50 @@ d3d12_bo_reference(struct d3d12_bo *bo)
  void
  d3d12_bo_unreference(struct d3d12_bo *bo);
  
@@ -641,9 +653,11 @@
  void *
  d3d12_bo_map(struct d3d12_bo *bo, D3D12_RANGE *range);
  
+diff --git a/src/gallium/drivers/d3d12/d3d12_context.h b/src/gallium/drivers/d3d12/d3d12_context.h
+index 929e69b..56e91e9 100644
 --- a/src/gallium/drivers/d3d12/d3d12_context.h
 +++ b/src/gallium/drivers/d3d12/d3d12_context.h
-@@ -168,6 +168,7 @@
+@@ -168,6 +168,7 @@ struct d3d12_context {
     struct pipe_context base;
  
     unsigned id;
@@ -651,7 +665,7 @@
     struct slab_child_pool transfer_pool;
     struct slab_child_pool transfer_pool_unsync;
     struct list_head context_list_entry;
-@@ -272,6 +273,10 @@
+@@ -272,6 +273,10 @@ struct d3d12_context {
  
     struct d3d12_descriptor_pool *sampler_pool;
     struct d3d12_descriptor_handle null_sampler;
@@ -662,6 +676,8 @@
  
     PFN_D3D12_SERIALIZE_VERSIONED_ROOT_SIGNATURE D3D12SerializeVersionedRootSignature;
  #ifndef _GAMING_XBOX
+diff --git a/src/gallium/drivers/d3d12/d3d12_context_common.cpp b/src/gallium/drivers/d3d12/d3d12_context_common.cpp
+index 72f56b3..f1e625d 100644
 --- a/src/gallium/drivers/d3d12/d3d12_context_common.cpp
 +++ b/src/gallium/drivers/d3d12/d3d12_context_common.cpp
 @@ -55,6 +55,7 @@
@@ -672,7 +688,7 @@
  #include "util/u_upload_mgr.h"
  #include "util/u_sample_positions.h"
  #include "util/u_dl.h"
-@@ -138,6 +139,8 @@
+@@ -138,6 +139,8 @@ d3d12_context_destroy(struct pipe_context *pctx)
        d3d12_cmd_signature_cache_destroy(ctx);
        d3d12_compute_transform_cache_destroy(ctx);
        d3d12_descriptor_pool_free(ctx->sampler_pool);
@@ -681,7 +697,7 @@
        d3d12_gs_variant_cache_destroy(ctx);
        d3d12_tcs_variant_cache_destroy(ctx);
        d3d12_gfx_pipeline_state_cache_destroy(ctx);
-@@ -153,6 +156,10 @@
+@@ -153,6 +156,10 @@ d3d12_context_destroy(struct pipe_context *pctx)
     }
  #endif // HAVE_GALLIUM_D3D12_GRAPHICS
  
@@ -692,7 +708,7 @@
     slab_destroy_child(&ctx->transfer_pool);
     slab_destroy_child(&ctx->transfer_pool_unsync);
     d3d12_context_state_table_destroy(ctx);
-@@ -196,6 +203,8 @@
+@@ -196,6 +203,8 @@ d3d12_flush(struct pipe_context *pipe,
     struct d3d12_context *ctx = d3d12_context(pipe);
     struct d3d12_batch *batch = d3d12_current_batch(ctx);
  
@@ -701,7 +717,7 @@
     bool flushed = d3d12_flush_cmdlist(ctx);
  
     if (fence) {
-@@ -602,6 +611,9 @@
+@@ -602,6 +611,9 @@ d3d12_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
     ctx->base.flush_resource = d3d12_flush_resource;
     ctx->base.fence_server_signal = d3d12_signal;
     ctx->base.fence_server_sync = d3d12_wait;
@@ -711,7 +727,7 @@
     ctx->base.memory_barrier = d3d12_memory_barrier;
     ctx->base.texture_barrier = d3d12_texture_barrier;
  
-@@ -687,6 +699,15 @@
+@@ -687,6 +699,15 @@ d3d12_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
        }
        d3d12_init_null_sampler(ctx);
  
@@ -727,7 +743,7 @@
        ctx->blitter = util_blitter_create(&ctx->base);
        if (!ctx->blitter)
           return NULL;
-@@ -717,12 +738,19 @@
+@@ -717,12 +738,19 @@ d3d12_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
        ctx->id = D3D12_CONTEXT_NO_ID;
     mtx_unlock(&screen->submit_mutex);
  
@@ -748,9 +764,11 @@
        struct pipe_context *ret = threaded_context_create(&ctx->base,
           &screen->transfer_pool,
           d3d12_replace_buffer_storage,
+diff --git a/src/gallium/drivers/d3d12/d3d12_descriptor_pool.cpp b/src/gallium/drivers/d3d12/d3d12_descriptor_pool.cpp
+index 77427be..03f4d7f 100644
 --- a/src/gallium/drivers/d3d12/d3d12_descriptor_pool.cpp
 +++ b/src/gallium/drivers/d3d12/d3d12_descriptor_pool.cpp
-@@ -184,6 +184,16 @@
+@@ -184,6 +184,16 @@ d3d12_descriptor_heap_append_handles(struct d3d12_descriptor_heap *heap,
     heap->next += num_handles * heap->desc_size;
  }
  
@@ -767,9 +785,11 @@
  void
  d3d12_descriptor_heap_clear(struct d3d12_descriptor_heap *heap)
  {
+diff --git a/src/gallium/drivers/d3d12/d3d12_descriptor_pool.h b/src/gallium/drivers/d3d12/d3d12_descriptor_pool.h
+index 158709d..091e6a3 100644
 --- a/src/gallium/drivers/d3d12/d3d12_descriptor_pool.h
 +++ b/src/gallium/drivers/d3d12/d3d12_descriptor_pool.h
-@@ -92,4 +92,9 @@
+@@ -92,4 +92,9 @@ d3d12_descriptor_heap_append_handles(struct d3d12_descriptor_heap *heap,
  void
  d3d12_descriptor_heap_clear(struct d3d12_descriptor_heap *heap);
  
@@ -779,9 +799,11 @@
 +                                 unsigned index);
 +
  #endif
+diff --git a/src/gallium/drivers/d3d12/d3d12_draw.cpp b/src/gallium/drivers/d3d12/d3d12_draw.cpp
+index 03453fb..9701970 100644
 --- a/src/gallium/drivers/d3d12/d3d12_draw.cpp
 +++ b/src/gallium/drivers/d3d12/d3d12_draw.cpp
-@@ -58,6 +58,8 @@
+@@ -58,6 +58,8 @@ fill_cbv_descriptors(struct d3d12_context *ctx,
  {
     struct d3d12_batch *batch = d3d12_current_batch(ctx);
     struct d3d12_descriptor_handle table_start;
@@ -790,7 +812,7 @@
     d2d12_descriptor_heap_get_next_handle(batch->view_heap, &table_start);
  
     for (unsigned i = shader->begin_ubo_binding; i < shader->end_ubo_binding; i++) {
-@@ -73,10 +75,12 @@
+@@ -73,10 +75,12 @@ fill_cbv_descriptors(struct d3d12_context *ctx,
           d3d12_batch_reference_resource(batch, res, false);
        }
  
@@ -806,7 +828,7 @@
  
     return table_start.gpu_handle;
  }
-@@ -143,6 +147,8 @@
+@@ -143,6 +147,8 @@ fill_ssbo_descriptors(struct d3d12_context *ctx,
     struct d3d12_batch *batch = d3d12_current_batch(ctx);
     struct d3d12_descriptor_handle table_start;
  
@@ -815,7 +837,7 @@
     d2d12_descriptor_heap_get_next_handle(batch->view_heap, &table_start);
  
     for (unsigned i = 0; i < shader->nir->info.num_ssbos; i++)
-@@ -168,10 +174,12 @@
+@@ -168,10 +174,12 @@ fill_ssbo_descriptors(struct d3d12_context *ctx,
           d3d12_batch_reference_resource(batch, res, true);
        }
  
@@ -831,7 +853,7 @@
  
     return table_start.gpu_handle;
  }
-@@ -249,6 +257,8 @@
+@@ -249,6 +257,8 @@ fill_image_descriptors(struct d3d12_context *ctx,
     struct d3d12_batch *batch = d3d12_current_batch(ctx);
     struct d3d12_descriptor_handle table_start;
  
@@ -840,7 +862,7 @@
     d2d12_descriptor_heap_get_next_handle(batch->view_heap, &table_start);
  
     for (unsigned i = 0; i < shader->nir->info.num_images; i++)
-@@ -333,13 +343,15 @@
+@@ -333,13 +343,15 @@ fill_image_descriptors(struct d3d12_context *ctx,
           }
           d3d12_batch_reference_resource(batch, res, true);
  
@@ -860,6 +882,8 @@
  
     return table_start.gpu_handle;
  }
+diff --git a/src/gallium/drivers/d3d12/d3d12_fence.cpp b/src/gallium/drivers/d3d12/d3d12_fence.cpp
+index b860ae0..d37fbe5 100644
 --- a/src/gallium/drivers/d3d12/d3d12_fence.cpp
 +++ b/src/gallium/drivers/d3d12/d3d12_fence.cpp
 @@ -27,12 +27,29 @@
@@ -892,7 +916,7 @@
     if (fence->type == PIPE_FD_TYPE_NATIVE_SYNC)
        d3d12_fence_close_event(fence->event, fence->event_fd);
     else
-@@ -95,6 +112,7 @@
+@@ -95,6 +112,7 @@ d3d12_create_fence_raw(ID3D12Fence *fence, uint64_t value)
     ret->event = NULL;
     ret->event_fd = -1;
     ret->signaled = false;
@@ -900,7 +924,7 @@
  
     pipe_reference_init(&ret->reference, 1);
     return ret;
-@@ -123,6 +141,7 @@
+@@ -123,6 +141,7 @@ d3d12_open_fence(struct d3d12_screen *screen, HANDLE handle, const void *name, p
     }
  
     ret->type = type;
@@ -908,7 +932,7 @@
     pipe_reference_init(&ret->reference, 1);
     return ret;
  }
-@@ -153,11 +172,21 @@
+@@ -153,11 +172,21 @@ fence_reference(struct pipe_screen *pscreen,
  bool
  d3d12_fence_finish(struct d3d12_fence *fence, uint64_t timeout_ns)
  {
@@ -931,7 +955,7 @@
     if (!complete && timeout_ns) {
        if (timeout_ns == OS_TIMEOUT_INFINITE || timeout_ns > MaxTimeoutInNs) {
           complete = SUCCEEDED(fence->cmdqueue_fence->SetEventOnCompletion(fence->value, NULL));
-@@ -168,6 +197,10 @@
+@@ -168,6 +197,10 @@ d3d12_fence_finish(struct d3d12_fence *fence, uint64_t timeout_ns)
        }
     }
  
@@ -942,7 +966,7 @@
     fence->signaled = complete;
     return complete;
  }
-@@ -189,6 +222,8 @@
+@@ -189,6 +222,8 @@ fence_finish(struct pipe_screen *pscreen, struct pipe_context *pctx,
  void
  d3d12_fence_signal_impl(struct d3d12_fence *fence, ID3D12CommandQueue *queue, uint64_t value)
  {
@@ -951,7 +975,7 @@
     if (fence->type == PIPE_FD_TYPE_NATIVE_SYNC)
        value = fence->value;
     queue->Signal(fence->cmdqueue_fence, value);
-@@ -197,14 +232,107 @@
+@@ -197,14 +232,107 @@ d3d12_fence_signal_impl(struct d3d12_fence *fence, ID3D12CommandQueue *queue, ui
  void
  d3d12_fence_wait_impl(struct d3d12_fence *fence, ID3D12CommandQueue *queue, uint64_t value)
  {
@@ -1059,9 +1083,11 @@
 +   pscreen->fence_get_fd = fence_get_fd;
 +#endif
  }
+diff --git a/src/gallium/drivers/d3d12/d3d12_fence.h b/src/gallium/drivers/d3d12/d3d12_fence.h
+index d6200cd..ba51db7 100644
 --- a/src/gallium/drivers/d3d12/d3d12_fence.h
 +++ b/src/gallium/drivers/d3d12/d3d12_fence.h
-@@ -93,6 +93,9 @@
+@@ -93,6 +93,9 @@ struct d3d12_fence {
     int event_fd;
     uint64_t value;
     bool signaled;
@@ -1071,7 +1097,7 @@
  };
  
  static inline struct d3d12_fence *
-@@ -122,6 +125,14 @@
+@@ -122,6 +125,14 @@ d3d12_fence_finish(struct d3d12_fence *fence, uint64_t timeout_ns);
  void
  d3d12_screen_fence_init(struct pipe_screen *pscreen);
  
@@ -1086,6 +1112,8 @@
  void
  d3d12_fence_wait_impl(struct d3d12_fence *fence, ID3D12CommandQueue *queue, uint64_t value);
  void
+diff --git a/src/gallium/drivers/d3d12/d3d12_format.c b/src/gallium/drivers/d3d12/d3d12_format.c
+index 6e6f507..4451b32 100644
 --- a/src/gallium/drivers/d3d12/d3d12_format.c
 +++ b/src/gallium/drivers/d3d12/d3d12_format.c
 @@ -91,6 +91,9 @@
@@ -1098,6 +1126,8 @@
  \
     MAP_FORMAT(B8G8R8A8, UNORM) \
  \
+diff --git a/src/gallium/drivers/d3d12/d3d12_pipeline_state.cpp b/src/gallium/drivers/d3d12/d3d12_pipeline_state.cpp
+index 7dab6a2..f0b0c4e 100644
 --- a/src/gallium/drivers/d3d12/d3d12_pipeline_state.cpp
 +++ b/src/gallium/drivers/d3d12/d3d12_pipeline_state.cpp
 @@ -33,6 +33,7 @@
@@ -1108,7 +1138,7 @@
  #ifndef _GAMING_XBOX
  #include <directx/d3dx12_pipeline_state_stream.h>
  #endif
-@@ -407,29 +408,12 @@
+@@ -407,29 +408,12 @@ create_gfx_pipeline_state(struct d3d12_context *ctx)
  
     pso_desc.Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
  
@@ -1144,7 +1174,7 @@
  
     return ret;
  }
-@@ -551,9 +535,8 @@
+@@ -551,9 +535,8 @@ create_compute_pipeline_state(struct d3d12_context *ctx)
  
     pso_desc.Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
  
@@ -1156,6 +1186,9 @@
        debug_printf("D3D12: CreateComputePipelineState failed!\n");
        return NULL;
     }
+diff --git a/src/gallium/drivers/d3d12/d3d12_pso_prewarm.cpp b/src/gallium/drivers/d3d12/d3d12_pso_prewarm.cpp
+new file mode 100644
+index 0000000..5ee0fff
 --- /dev/null
 +++ b/src/gallium/drivers/d3d12/d3d12_pso_prewarm.cpp
 @@ -0,0 +1,823 @@
@@ -1771,9 +1804,9 @@
 +   load_records(pw);
 +   if (!pw->loaded.empty()) {
 +      long cpus = sysconf(_SC_NPROCESSORS_ONLN);
-+      unsigned threads = cpus > 2 ? (unsigned)(cpus / 2) : 1;
-+      if (threads > 4)
-+         threads = 4;
++      unsigned threads = cpus > 2 ? (unsigned)((cpus * 3) / 4) : 1;
++      if (threads > 8)
++         threads = 8;
 +      if (threads > pw->loaded.size())
 +         threads = (unsigned)pw->loaded.size();
 +      pw->queue_ok = util_queue_init(&pw->queue, "d3d12pso", (unsigned)pw->loaded.size() + 1,
@@ -1982,6 +2015,9 @@
 +}
 +
 +#endif
+diff --git a/src/gallium/drivers/d3d12/d3d12_pso_prewarm.h b/src/gallium/drivers/d3d12/d3d12_pso_prewarm.h
+new file mode 100644
+index 0000000..ed7064f
 --- /dev/null
 +++ b/src/gallium/drivers/d3d12/d3d12_pso_prewarm.h
 @@ -0,0 +1,38 @@
@@ -2023,9 +2059,11 @@
 +                                 const D3D12_COMPUTE_PIPELINE_STATE_DESC &desc);
 +
 +#endif
+diff --git a/src/gallium/drivers/d3d12/d3d12_residency.cpp b/src/gallium/drivers/d3d12/d3d12_residency.cpp
+index 7180aa7..ef5699c 100644
 --- a/src/gallium/drivers/d3d12/d3d12_residency.cpp
 +++ b/src/gallium/drivers/d3d12/d3d12_residency.cpp
-@@ -176,7 +176,13 @@
+@@ -176,7 +176,13 @@ bool
  d3d12_process_batch_residency(struct d3d12_screen *screen, struct d3d12_batch *batch)
  {
     d3d12_memory_info mem_info;
@@ -2040,6 +2078,8 @@
  
     uint64_t completed_fence_value = screen->fence->GetCompletedValue();
     uint64_t pending_fence_value = screen->fence_value + 1;
+diff --git a/src/gallium/drivers/d3d12/d3d12_resource.cpp b/src/gallium/drivers/d3d12/d3d12_resource.cpp
+index 458f5cf..27c0a1f 100644
 --- a/src/gallium/drivers/d3d12/d3d12_resource.cpp
 +++ b/src/gallium/drivers/d3d12/d3d12_resource.cpp
 @@ -37,6 +37,29 @@
@@ -2072,7 +2112,7 @@
  
  #include <dxguids/dxguids.h>
  #include <memory>
-@@ -80,6 +103,25 @@
+@@ -80,6 +103,25 @@ d3d12_resource_destroy(struct pipe_screen *pscreen,
     // and only destroy it on the last plane being destroyed
     if (resource->dt_refcount > 0)
        resource->dt_refcount--;
@@ -2098,7 +2138,7 @@
     if ((resource->dt_refcount == 0) && resource->dt)
     {
        struct d3d12_screen *screen = d3d12_screen(pscreen);
-@@ -95,6 +137,8 @@
+@@ -95,6 +137,8 @@ d3d12_resource_destroy(struct pipe_screen *pscreen,
        d3d12_bo_unreference(resource->bo);
     if (resource->logicop_texture)
        pipe_resource_reference(&resource->logicop_texture, NULL);
@@ -2107,7 +2147,7 @@
     FREE(resource);
  }
  
-@@ -324,7 +368,36 @@
+@@ -324,7 +368,36 @@ init_texture(struct d3d12_screen *screen,
  
     HRESULT hres = E_FAIL;
     enum d3d12_residency_status init_residency;
@@ -2145,7 +2185,7 @@
  #ifndef _GAMING_XBOX
  
     if (heap && screen->max_feature_level == D3D_FEATURE_LEVEL_1_0_GENERIC) {
-@@ -414,6 +487,13 @@
+@@ -414,6 +487,13 @@ init_texture(struct d3d12_screen *screen,
     }
     } while (hres == E_OUTOFMEMORY && d3d12_screen_reclaim_one(screen));
  
@@ -2159,7 +2199,7 @@
     if (FAILED(hres))
        return false;
  
-@@ -440,6 +520,25 @@
+@@ -440,6 +520,25 @@ init_texture(struct d3d12_screen *screen,
     }
  
     res->bo = d3d12_bo_wrap_res(screen, d3d12_res, init_residency);
@@ -2185,7 +2225,7 @@
  
     return true;
  }
-@@ -540,10 +639,726 @@
+@@ -540,10 +639,726 @@ d3d12_resource_create_or_place(struct d3d12_screen *screen,
     return &res->base.b;
  }
  
@@ -2912,7 +2952,7 @@
     struct d3d12_resource *res = CALLOC_STRUCT(d3d12_resource);
     if (!res)
        return NULL;
-@@ -581,6 +1396,13 @@
+@@ -581,6 +1396,13 @@ d3d12_resource_from_handle(struct pipe_screen *pscreen,
                            struct winsys_handle *handle, unsigned usage)
  {
     struct d3d12_screen *screen = d3d12_screen(pscreen);
@@ -2926,7 +2966,7 @@
     if (handle->type != WINSYS_HANDLE_TYPE_D3D12_RES &&
         handle->type != WINSYS_HANDLE_TYPE_FD &&
         handle->type != WINSYS_HANDLE_TYPE_WIN32_NAME)
-@@ -871,6 +1693,36 @@
+@@ -871,6 +1693,36 @@ d3d12_resource_get_handle(struct pipe_screen *pscreen,
     struct d3d12_resource *res = d3d12_resource(pres);
     struct d3d12_screen *screen = d3d12_screen(pscreen);
  
@@ -2963,7 +3003,7 @@
     switch (handle->type) {
     case WINSYS_HANDLE_TYPE_D3D12_RES:
        handle->com_obj = d3d12_resource_resource(res);
-@@ -1010,6 +1862,13 @@
+@@ -1010,6 +1862,13 @@ void d3d12_resource_get_planes_info(pipe_resource *pres,
  
  static constexpr unsigned d3d12_max_planes = 3;
  
@@ -2977,7 +3017,7 @@
  /**
   * Get stride and offset for the given pipe resource without the need to get
   * a winsys_handle.
-@@ -1028,6 +1887,41 @@
+@@ -1028,6 +1887,41 @@ d3d12_resource_get_param(struct pipe_screen *pscreen,
     struct d3d12_resource* res = d3d12_resource(pres);
     unsigned num_planes = util_format_get_num_planes(res->overall_format);
  
@@ -3019,7 +3059,7 @@
     pipe_resource *planes[d3d12_max_planes];
     unsigned int strides[d3d12_max_planes];
     unsigned int layer_strides[d3d12_max_planes];
-@@ -1298,6 +2192,142 @@
+@@ -1298,6 +2192,142 @@ copy_texture_region(struct d3d12_context *ctx,
     ctx->has_commands = true;
  }
  
@@ -3162,9 +3202,11 @@
  static void
  transfer_buf_to_image_part(struct d3d12_context *ctx,
                             struct d3d12_resource *res,
+diff --git a/src/gallium/drivers/d3d12/d3d12_resource.h b/src/gallium/drivers/d3d12/d3d12_resource.h
+index fc679ff..d641952 100644
 --- a/src/gallium/drivers/d3d12/d3d12_resource.h
 +++ b/src/gallium/drivers/d3d12/d3d12_resource.h
-@@ -54,6 +54,41 @@
+@@ -54,6 +54,41 @@ struct d3d12_resource {
     unsigned dt_stride;
     struct pipe_resource *dt_proxy;
  
@@ -3206,7 +3248,7 @@
     struct util_range valid_buffer_range;
     uint32_t bind_counts[MESA_SHADER_STAGES][D3D12_RESOURCE_BINDING_TYPES];
     unsigned generation_id;
-@@ -62,6 +97,17 @@
+@@ -62,6 +97,17 @@ struct d3d12_resource {
     struct pipe_resource *logicop_texture;
  };
  
@@ -3224,9 +3266,11 @@
  struct d3d12_memory_object {
     struct pipe_memory_object base;
     ID3D12Resource *res;
+diff --git a/src/gallium/drivers/d3d12/d3d12_root_signature.cpp b/src/gallium/drivers/d3d12/d3d12_root_signature.cpp
+index bfa4459..535484b 100644
 --- a/src/gallium/drivers/d3d12/d3d12_root_signature.cpp
 +++ b/src/gallium/drivers/d3d12/d3d12_root_signature.cpp
-@@ -29,6 +29,7 @@
+@@ -29,6 +29,7 @@ using Microsoft::WRL::ComPtr;
  #include "d3d12_screen.h"
  
  #include "util/u_memory.h"
@@ -3234,7 +3278,7 @@
  
  #include <dxguids/dxguids.h>
  
-@@ -237,6 +238,9 @@
+@@ -237,6 +238,9 @@ create_root_signature(struct d3d12_context *ctx, struct d3d12_root_signature_key
        debug_printf("CreateRootSignature failed\n");
        return NULL;
     }
@@ -3244,17 +3288,29 @@
     return ret;
  }
  
+diff --git a/src/gallium/drivers/d3d12/d3d12_screen.cpp b/src/gallium/drivers/d3d12/d3d12_screen.cpp
+index 90b70e4..392a18c 100644
 --- a/src/gallium/drivers/d3d12/d3d12_screen.cpp
 +++ b/src/gallium/drivers/d3d12/d3d12_screen.cpp
-@@ -47,6 +47,7 @@
+@@ -47,6 +47,17 @@
  #include "util/u_screen.h"
  #include "util/u_dl.h"
  #include "util/mesa-blake3.h"
 +#include "d3d12_pso_prewarm.h"
++#ifndef _WIN32
++#include <errno.h>
++#include <fcntl.h>
++#include <stddef.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/stat.h>
++#include <unistd.h>
++#endif
  
  #include "frontend/sw_winsys.h"
  
-@@ -384,6 +385,9 @@
+@@ -384,6 +395,9 @@ d3d12_init_screen_caps(struct d3d12_screen *screen)
     caps->robust_buffer_access_behavior = true;
     caps->memobj = true;
     caps->fence_signal = true;
@@ -3264,7 +3320,7 @@
     caps->timeline_semaphore_import = true;
     caps->clip_halfz = true;
     caps->vs_layer_viewport = true;
-@@ -420,6 +424,12 @@
+@@ -420,6 +434,12 @@ d3d12_init_screen_caps(struct d3d12_screen *screen)
     caps->query_memory_info = true;
  #endif
  
@@ -3277,7 +3333,7 @@
     caps->min_line_width =
     caps->min_line_width_aa =
     caps->min_point_size =
-@@ -443,12 +453,12 @@
+@@ -443,12 +463,12 @@ d3d12_init_screen_caps(struct d3d12_screen *screen)
  }
  
  static bool
@@ -3296,7 +3352,7 @@
  {
     struct d3d12_screen *screen = d3d12_screen(pscreen);
  
-@@ -598,9 +608,85 @@
+@@ -598,9 +618,299 @@ d3d12_is_format_supported(struct pipe_screen *pscreen,
     return true;
  }
  
@@ -3330,6 +3386,7 @@
 +   screen->format_cache[slot].bind = bind;
 +   screen->format_cache[slot].supported = supported;
 +   screen->format_cache[slot].valid = true;
++   screen->format_cache_dirty = true;
 +   mtx_unlock(&screen->query_cache_lock);
 +   return supported;
 +}
@@ -3371,9 +3428,222 @@
 +   return size;
 +}
 +
++#ifndef _WIN32
++namespace {
++
++constexpr uint32_t D3D12_CAPS_MAGIC = 0x43323144u; /* "D12C" */
++constexpr uint32_t D3D12_CAPS_VERSION = 1u;
++
++struct d3d12_caps_disk_entry {
++   uint64_t key;
++   uint32_t bind;
++   uint8_t valid;
++   uint8_t supported;
++   uint8_t pad[2];
++};
++
++struct d3d12_caps_disk {
++   uint32_t magic;
++   uint32_t version;
++   uint32_t vendor_id;
++   uint32_t device_id;
++   uint32_t subsys_id;
++   uint32_t revision;
++   uint64_t driver_version;
++   char mesa_sha1[64];
++   uint8_t has_queue_prio;
++   uint8_t queue_prio;
++   uint8_t has_shader_images;
++   uint8_t shader_images;
++   uint8_t reserved[4];
++   struct d3d12_caps_disk_entry entries[512];
++   uint8_t blake3[BLAKE3_KEY_LEN];
++};
++
++static bool
++d3d12_caps_ensure_dir(const char *path)
++{
++   char buf[512];
++   size_t len = strlen(path);
++   if (len == 0 || len >= sizeof(buf))
++      return false;
++   memcpy(buf, path, len + 1);
++   for (char *p = buf + 1; *p; p++) {
++      if (*p == '/') {
++         *p = '\0';
++         if (mkdir(buf, 0755) && errno != EEXIST)
++            return false;
++         *p = '/';
++      }
++   }
++   return mkdir(buf, 0755) == 0 || errno == EEXIST;
++}
++
++static bool
++d3d12_caps_cache_path(char *out, size_t out_sz, bool create_dir)
++{
++   if (!debug_get_bool_option("D3D12_CAPS_CACHE", true) ||
++       debug_get_bool_option("MESA_SHADER_CACHE_DISABLE", false))
++      return false;
++
++   char dir[480];
++   dir[0] = '\0';
++   const char *env = getenv("VDXG_PSO_CACHE_DIR");
++   if (env && *env) {
++      snprintf(dir, sizeof(dir), "%s", env);
++   } else if ((env = getenv("XDG_RUNTIME_DIR")) && *env) {
++      char ready[480];
++      snprintf(ready, sizeof(ready), "%s/vdxg-pso/.ready", env);
++      if (access(ready, F_OK) == 0)
++         snprintf(dir, sizeof(dir), "%s/vdxg-pso", env);
++   }
++   if (!dir[0]) {
++      if ((env = getenv("MESA_SHADER_CACHE_DIR")) && *env)
++         snprintf(dir, sizeof(dir), "%s", env);
++      else if ((env = getenv("XDG_CACHE_HOME")) && *env)
++         snprintf(dir, sizeof(dir), "%s/mesa_shader_cache", env);
++      else if ((env = getenv("HOME")) && *env)
++         snprintf(dir, sizeof(dir), "%s/.cache/mesa_shader_cache", env);
++      else
++         return false;
++   }
++   if (create_dir && !d3d12_caps_ensure_dir(dir))
++      return false;
++   int n = snprintf(out, out_sz, "%s/d3d12_caps.bin", dir);
++   return n > 0 && (size_t)n < out_sz;
++}
++
++static void
++d3d12_caps_fill_id(const struct d3d12_screen *screen, struct d3d12_caps_disk *d)
++{
++   d->magic = D3D12_CAPS_MAGIC;
++   d->version = D3D12_CAPS_VERSION;
++   d->vendor_id = screen->vendor_id;
++   d->device_id = screen->device_id;
++   d->subsys_id = screen->subsys_id;
++   d->revision = screen->revision;
++   d->driver_version = screen->driver_version;
++   snprintf(d->mesa_sha1, sizeof(d->mesa_sha1), "Mesa " PACKAGE_VERSION MESA_GIT_SHA1);
++}
++
++static void
++d3d12_caps_cache_load(struct d3d12_screen *screen)
++{
++   char path[512];
++   if (!screen->vendor_id || !d3d12_caps_cache_path(path, sizeof(path), false))
++      return;
++   int fd = open(path, O_RDONLY | O_CLOEXEC);
++   if (fd < 0)
++      return;
++   struct d3d12_caps_disk disk;
++   size_t got = 0;
++   uint8_t *dst = (uint8_t *)&disk;
++   while (got < sizeof(disk)) {
++      ssize_t n = read(fd, dst + got, sizeof(disk) - got);
++      if (n <= 0)
++         break;
++      got += (size_t)n;
++   }
++   close(fd);
++   if (got != sizeof(disk))
++      return;
++
++   struct d3d12_caps_disk expected;
++   memset(&expected, 0, sizeof(expected));
++   d3d12_caps_fill_id(screen, &expected);
++   if (disk.magic != expected.magic || disk.version != expected.version ||
++       disk.vendor_id != expected.vendor_id || disk.device_id != expected.device_id ||
++       disk.subsys_id != expected.subsys_id || disk.revision != expected.revision ||
++       disk.driver_version != expected.driver_version ||
++       memcmp(disk.mesa_sha1, expected.mesa_sha1, sizeof(disk.mesa_sha1)) != 0)
++      return;
++
++   uint8_t check[BLAKE3_KEY_LEN];
++   _mesa_blake3_compute(&disk, offsetof(struct d3d12_caps_disk, blake3), check);
++   if (memcmp(check, disk.blake3, BLAKE3_KEY_LEN) != 0)
++      return;
++
++   STATIC_ASSERT(ARRAY_SIZE(screen->format_cache) == ARRAY_SIZE(disk.entries));
++   mtx_lock(&screen->query_cache_lock);
++   for (unsigned i = 0; i < ARRAY_SIZE(screen->format_cache); i++) {
++      if (disk.entries[i].valid == 1 && disk.entries[i].supported <= 1 &&
++          !screen->format_cache[i].valid) {
++         screen->format_cache[i].key = disk.entries[i].key;
++         screen->format_cache[i].bind = disk.entries[i].bind;
++         screen->format_cache[i].supported = disk.entries[i].supported != 0;
++         screen->format_cache[i].valid = true;
++      }
++   }
++   mtx_unlock(&screen->query_cache_lock);
++
++   screen->caps_cache_loaded = true;
++   if (disk.has_queue_prio <= 1 && disk.queue_prio <= 1) {
++      screen->caps_cache_has_queue_prio = disk.has_queue_prio != 0;
++      screen->caps_cache_queue_prio = disk.queue_prio != 0;
++   }
++   if (disk.has_shader_images <= 1 && disk.shader_images <= 1) {
++      screen->caps_cache_has_shader_images = disk.has_shader_images != 0;
++      screen->caps_cache_shader_images = disk.shader_images != 0;
++   }
++}
++
++static void
++d3d12_caps_cache_save(struct d3d12_screen *screen)
++{
++   char path[512];
++   if (!screen->vendor_id || !d3d12_caps_cache_path(path, sizeof(path), true))
++      return;
++
++   struct d3d12_caps_disk disk;
++   memset(&disk, 0, sizeof(disk));
++   d3d12_caps_fill_id(screen, &disk);
++   disk.has_queue_prio = screen->caps_cache_has_queue_prio ? 1 : 0;
++   disk.queue_prio = screen->caps_cache_queue_prio ? 1 : 0;
++   disk.has_shader_images = screen->caps_cache_has_shader_images ? 1 : 0;
++   disk.shader_images = screen->caps_cache_shader_images ? 1 : 0;
++
++   mtx_lock(&screen->query_cache_lock);
++   for (unsigned i = 0; i < ARRAY_SIZE(screen->format_cache); i++) {
++      disk.entries[i].key = screen->format_cache[i].key;
++      disk.entries[i].bind = screen->format_cache[i].bind;
++      disk.entries[i].valid = screen->format_cache[i].valid ? 1 : 0;
++      disk.entries[i].supported = screen->format_cache[i].supported ? 1 : 0;
++   }
++   mtx_unlock(&screen->query_cache_lock);
++
++   _mesa_blake3_compute(&disk, offsetof(struct d3d12_caps_disk, blake3), disk.blake3);
++
++   char tmp[544];
++   snprintf(tmp, sizeof(tmp), "%s.tmp.%d", path, (int)getpid());
++   int fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0644);
++   if (fd < 0)
++      return;
++   const uint8_t *src_bytes = (const uint8_t *)&disk;
++   size_t sent = 0;
++   bool ok = true;
++   while (sent < sizeof(disk)) {
++      ssize_t n = write(fd, src_bytes + sent, sizeof(disk) - sent);
++      if (n <= 0) {
++         ok = false;
++         break;
++      }
++      sent += (size_t)n;
++   }
++   close(fd);
++   if (!ok || rename(tmp, path) != 0)
++      unlink(tmp);
++}
++
++} // namespace
++#endif /* !_WIN32 */
++
  void
  d3d12_deinit_screen(struct d3d12_screen *screen)
  {
++#ifndef _WIN32
++   if (!screen->caps_cache_loaded || screen->format_cache_dirty)
++      d3d12_caps_cache_save(screen);
++#endif
 +#ifdef HAVE_GALLIUM_D3D12_GRAPHICS
 +   d3d12_pso_prewarm_fini(screen);
 +#endif
@@ -3382,7 +3652,7 @@
     while (d3d12_screen_reclaim_one(screen))
        ;
  
-@@ -670,6 +756,10 @@
+@@ -670,6 +980,10 @@ d3d12_deinit_screen(struct d3d12_screen *screen)
  void
  d3d12_destroy_screen(struct d3d12_screen *screen)
  {
@@ -3393,7 +3663,7 @@
     slab_destroy_parent(&screen->transfer_pool);
     mtx_destroy(&screen->submit_mutex);
     mtx_destroy(&screen->pending_free_lock);
-@@ -1377,10 +1467,18 @@
+@@ -1377,10 +1691,18 @@ d3d12_init_screen_base(struct d3d12_screen *screen, struct sw_winsys *winsys, LU
     d3d12_debug = static_cast<uint32_t>(debug_get_option_d3d12_debug());
  
     screen->winsys = winsys;
@@ -3412,7 +3682,58 @@
     mtx_init(&screen->pending_free_lock, mtx_plain);
     list_inithead(&screen->pending_free_list);
  
-@@ -1871,5 +1969,10 @@
+@@ -1736,6 +2058,16 @@ d3d12_init_screen(struct d3d12_screen *screen, IUnknown *adapter)
+    }
+ #endif // HAVE_GALLIUM_D3D12_GRAPHICS
+ 
++#ifndef _WIN32
++   d3d12_caps_cache_load(screen);
++   if (screen->caps_cache_has_queue_prio && !screen->caps_cache_queue_prio) {
++      screen->supports_dynamic_queue_priority = false;
++      if (!d3d12_init_screen_command_queue(screen, D3D12_COMMAND_QUEUE_FLAG_NONE)) {
++         debug_printf("D3D12: failed to create command queue\n");
++         return false;
++      }
++   } else
++#endif
+    if (d3d12_init_screen_command_queue(screen, D3D12_COMMAND_QUEUE_FLAG_ALLOW_DYNAMIC_PRIORITY)) {
+       screen->supports_dynamic_queue_priority = true;
+    } else
+@@ -1746,6 +2078,14 @@ d3d12_init_screen(struct d3d12_screen *screen, IUnknown *adapter)
+          return false;
+       }
+    }
++#ifndef _WIN32
++   if (!screen->caps_cache_has_queue_prio ||
++       screen->caps_cache_queue_prio != screen->supports_dynamic_queue_priority) {
++      screen->caps_cache_has_queue_prio = true;
++      screen->caps_cache_queue_prio = screen->supports_dynamic_queue_priority;
++      screen->format_cache_dirty = true;
++   }
++#endif
+ 
+    if (FAILED(screen->dev->CreateFence(0, D3D12_FENCE_FLAG_SHARED, IID_PPV_ARGS(&screen->fence))))
+       return false;
+@@ -1821,7 +2161,18 @@ d3d12_init_screen(struct d3d12_screen *screen, IUnknown *adapter)
+       d3d12_init_null_rtv(screen);
+ 
+       screen->have_load_at_vertex = can_attribute_at_vertex(screen);
++#ifndef _WIN32
++      if (screen->caps_cache_has_shader_images) {
++         screen->support_shader_images = screen->caps_cache_shader_images;
++      } else {
++         screen->support_shader_images = can_shader_image_load_all_formats(screen);
++         screen->caps_cache_has_shader_images = true;
++         screen->caps_cache_shader_images = screen->support_shader_images;
++         screen->format_cache_dirty = true;
++      }
++#else
+       screen->support_shader_images = can_shader_image_load_all_formats(screen);
++#endif
+       static constexpr uint64_t known_good_warp_version_build = 22000ull;
+       bool warp_with_broken_int64 =
+          (screen->vendor_id == HW_VENDOR_MICROSOFT &&
+@@ -1871,5 +2222,10 @@ d3d12_init_screen(struct d3d12_screen *screen, IUnknown *adapter)
     d3d12_init_compute_caps(screen);
     d3d12_init_screen_caps(screen);
  
@@ -3423,9 +3744,11 @@
 +
     return true;
  }
+diff --git a/src/gallium/drivers/d3d12/d3d12_screen.h b/src/gallium/drivers/d3d12/d3d12_screen.h
+index d5d8e90..3672328 100644
 --- a/src/gallium/drivers/d3d12/d3d12_screen.h
 +++ b/src/gallium/drivers/d3d12/d3d12_screen.h
-@@ -67,9 +67,14 @@
+@@ -67,9 +67,14 @@ struct d3d12_memory_info {
     uint64_t budget;   // local + nonlocal
  };
  
@@ -3440,7 +3763,7 @@
     LUID adapter_luid;
     char driver_uuid[PIPE_UUID_SIZE];
     char device_uuid[PIPE_UUID_SIZE];
-@@ -91,6 +96,48 @@
+@@ -91,6 +96,48 @@ struct d3d12_screen {
     struct list_head pending_free_list;
  
     struct list_head residency_list;
@@ -3489,7 +3812,7 @@
     ID3D12Fence *residency_fence;
     uint64_t residency_fence_value;
     unsigned num_evictions;
-@@ -153,6 +200,9 @@
+@@ -153,6 +200,9 @@ struct d3d12_screen {
     uint32_t subsys_id;
     uint32_t revision;
     uint64_t driver_version;
@@ -3499,7 +3822,20 @@
     uint64_t memory_device_size_megabytes;
     uint64_t memory_system_size_megabytes;
     float timestamp_multiplier;
-@@ -213,6 +263,10 @@
+@@ -160,6 +210,12 @@ struct d3d12_screen {
+    bool support_shader_images;
+    bool support_create_not_resident;
+    bool supports_dynamic_queue_priority;
++   bool format_cache_dirty;
++   bool caps_cache_loaded;
++   bool caps_cache_has_queue_prio;
++   bool caps_cache_queue_prio;
++   bool caps_cache_has_shader_images;
++   bool caps_cache_shader_images;
+ 
+ #ifdef _GAMING_XBOX
+    UINT64 frame_token;
+@@ -213,6 +269,10 @@ d3d12_init_screen(struct d3d12_screen *screen, IUnknown *adapter);
  void
  d3d12_deinit_screen(struct d3d12_screen *screen);
  
@@ -3510,9 +3846,11 @@
  void
  d3d12_destroy_screen(struct d3d12_screen *screen);
  
+diff --git a/src/gallium/drivers/d3d12/meson.build b/src/gallium/drivers/d3d12/meson.build
+index d0ad7b3..51e96cc 100644
 --- a/src/gallium/drivers/d3d12/meson.build
 +++ b/src/gallium/drivers/d3d12/meson.build
-@@ -62,6 +62,7 @@
+@@ -62,6 +62,7 @@ if with_gallium_d3d12_graphics
      'd3d12_descriptor_pool.cpp',
      'd3d12_nir_passes.c',
      'd3d12_pipeline_state.cpp',
@@ -3520,9 +3858,11 @@
      'd3d12_query.cpp',
      'd3d12_root_signature.cpp',
      'd3d12_gs_variant.cpp',
+diff --git a/src/glx/dri_common.c b/src/glx/dri_common.c
+index f6256ab..82c5db3 100644
 --- a/src/glx/dri_common.c
 +++ b/src/glx/dri_common.c
-@@ -1036,7 +1036,9 @@
+@@ -1036,7 +1036,9 @@ dri_screen_init(struct glx_screen *psc, struct glx_display *priv, int screen, in
     enum dri_screen_type type;
     switch (psc->display->driver) {
     case GLX_DRIVER_DRI3:
@@ -3533,6 +3873,8 @@
        break;
     case GLX_DRIVER_ZINK_YES:
        type = DRI_SCREEN_KOPPER;
+diff --git a/src/mesa/state_tracker/st_atom_constbuf.c b/src/mesa/state_tracker/st_atom_constbuf.c
+index 4759c34..3f0f601 100644
 --- a/src/mesa/state_tracker/st_atom_constbuf.c
 +++ b/src/mesa/state_tracker/st_atom_constbuf.c
 @@ -35,6 +35,7 @@
@@ -3543,7 +3885,7 @@
  #include "pipe/p_context.h"
  #include "pipe/p_defines.h"
  #include "util/u_inlines.h"
-@@ -135,6 +136,12 @@
+@@ -135,6 +136,12 @@ st_upload_constants(struct st_context *st, struct gl_program *prog, mesa_shader_
            */
           u_upload_alloc(pipe->const_uploader, 0, paramBytes + 12,
              alignment, &cb.buffer_offset, &cb.buffer, &releasebuf, (void**)&ptr);
@@ -3556,9 +3898,11 @@
  
           int uniform_bytes = params->UniformBytes;
           if (uniform_bytes)
+diff --git a/src/microsoft/compiler/nir_to_dxil.c b/src/microsoft/compiler/nir_to_dxil.c
+index 026e8d5..492eb8e 100644
 --- a/src/microsoft/compiler/nir_to_dxil.c
 +++ b/src/microsoft/compiler/nir_to_dxil.c
-@@ -3663,7 +3663,10 @@
+@@ -3663,7 +3663,10 @@ emit_load_input_via_intrinsic(struct ntd_context *ctx, nir_intrinsic_instr *intr
     if (ctx->mod.shader_kind == DXIL_PIXEL_SHADER &&
        ctx->opts->interpolate_at_vertex &&
        ctx->opts->provoking_vertex != 0 &&
@@ -3570,9 +3914,11 @@
        nir_variable *var = nir_find_variable_with_driver_location(ctx->shader, nir_var_shader_in, nir_intrinsic_base(intr));
  
        attr_at_vertex = var && var->data.interpolation == INTERP_MODE_FLAT;
+diff --git a/src/microsoft/compiler/nir_to_dxil.h b/src/microsoft/compiler/nir_to_dxil.h
+index 9890115..f0ff20e 100644
 --- a/src/microsoft/compiler/nir_to_dxil.h
 +++ b/src/microsoft/compiler/nir_to_dxil.h
-@@ -82,6 +82,8 @@
+@@ -82,6 +82,8 @@ struct nir_to_dxil_options {
     bool last_ubo_is_not_arrayed;
     bool advanced_texture_ops;
     unsigned provoking_vertex;
@@ -3581,9 +3927,11 @@
     unsigned num_kernel_globals;
     unsigned input_clip_size;
     enum dxil_environment environment;
+diff --git a/src/microsoft/spirv_to_dxil/dxil_spirv_nir.c b/src/microsoft/spirv_to_dxil/dxil_spirv_nir.c
+index 4763c34..272b694 100644
 --- a/src/microsoft/spirv_to_dxil/dxil_spirv_nir.c
 +++ b/src/microsoft/spirv_to_dxil/dxil_spirv_nir.c
-@@ -80,6 +80,15 @@
+@@ -80,6 +80,15 @@ spirv_caps = {
     .Float64 = true,
     .Tessellation = true,
     .PhysicalStorageBufferAddresses = true,
@@ -3599,7 +3947,7 @@
  };
  
  static const struct spirv_to_nir_options
-@@ -520,11 +529,132 @@
+@@ -520,11 +529,132 @@ lower_yz_flip(struct nir_builder *builder, nir_instr *instr,
     return true;
  }
  
@@ -3732,7 +4080,7 @@
     struct lower_yz_flip_data data = {
        .rt_conf = rt_conf,
        .reads_sysval_ubo = reads_sysval_ubo,
-@@ -1023,11 +1153,18 @@
+@@ -1023,11 +1153,18 @@ dxil_spirv_nir_passes(nir_shader *nir,
     NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_global,
                nir_address_format_32bit_index_offset_pack64);
  
@@ -3752,9 +4100,11 @@
        NIR_PASS(_, nir, dxil_nir_scratch_and_shared_to_dxil);
     } else {
        NIR_PASS(_, nir, nir_split_struct_vars, nir_var_mem_shared);
+diff --git a/src/microsoft/vulkan/dzn_cmd_buffer.c b/src/microsoft/vulkan/dzn_cmd_buffer.c
+index e8baba6..85b460d 100644
 --- a/src/microsoft/vulkan/dzn_cmd_buffer.c
 +++ b/src/microsoft/vulkan/dzn_cmd_buffer.c
-@@ -3225,7 +3225,8 @@
+@@ -3225,7 +3225,8 @@ dzn_cmd_buffer_update_pipeline(struct dzn_cmd_buffer *cmdbuf, uint32_t bindpoint
        if (bindpoint == VK_PIPELINE_BIND_POINT_GRAPHICS) {
           struct dzn_graphics_pipeline *gfx =
              (struct dzn_graphics_pipeline *)pipeline;
@@ -3764,7 +4114,7 @@
           dzn_graphics_pipeline_get_state(gfx, &cmdbuf->state.pipeline_variant);
           if (gfx->multiview.native_view_instancing)
              view_instance_mask = gfx->multiview.view_mask;
-@@ -3465,11 +3466,15 @@
+@@ -3465,11 +3466,15 @@ dzn_cmd_buffer_update_viewports(struct dzn_cmd_buffer *cmdbuf)
     const struct dzn_graphics_pipeline *pipeline =
        (const struct dzn_graphics_pipeline *)cmdbuf->state.pipeline;
  
@@ -3783,7 +4133,7 @@
  }
  
  static void
-@@ -3481,7 +3486,12 @@
+@@ -3481,7 +3486,12 @@ dzn_cmd_buffer_update_scissors(struct dzn_cmd_buffer *cmdbuf)
     if (!(cmdbuf->state.dirty & DZN_CMD_DIRTY_SCISSORS))
        return;
  
@@ -3797,7 +4147,7 @@
        /* Apply a scissor delimiting the render area. */
        ID3D12GraphicsCommandList1_RSSetScissorRects(cmdbuf->cmdlist, 1, &cmdbuf->state.render.area);
        return;
-@@ -3489,15 +3499,15 @@
+@@ -3489,15 +3499,15 @@ dzn_cmd_buffer_update_scissors(struct dzn_cmd_buffer *cmdbuf)
  
     D3D12_RECT scissors[MAX_SCISSOR];
  
@@ -3816,7 +4166,7 @@
  }
  
  static void
-@@ -3592,10 +3602,17 @@
+@@ -3592,10 +3602,17 @@ dzn_cmd_buffer_update_depth_bias(struct dzn_cmd_buffer *cmdbuf)
  {
     if (cmdbuf->state.dirty & DZN_CMD_DIRTY_DEPTH_BIAS) {
        assert(cmdbuf->cmdlist9);
@@ -3837,7 +4187,7 @@
     }
  }
  
-@@ -3733,9 +3750,103 @@
+@@ -3733,9 +3750,103 @@ dzn_cmd_buffer_triangle_fan_rewrite_index(struct dzn_cmd_buffer *cmdbuf,
     return VK_SUCCESS;
  }
  
@@ -3941,7 +4291,7 @@
     if (indexed)
        dzn_cmd_buffer_update_ibview(cmdbuf);
  
-@@ -4035,6 +4146,7 @@
+@@ -4035,6 +4146,7 @@ dzn_cmd_buffer_indirect_draw(struct dzn_cmd_buffer *cmdbuf,
                               uint32_t draw_buf_stride,
                               bool indexed)
  {
@@ -3949,7 +4299,7 @@
     struct dzn_device *device = container_of(cmdbuf->vk.base.device, struct dzn_device, vk);
     struct dzn_physical_device *pdev = container_of(device->vk.physical, struct dzn_physical_device, vk);
     struct dzn_graphics_pipeline *pipeline = (struct dzn_graphics_pipeline *)
-@@ -5163,8 +5275,10 @@
+@@ -5163,8 +5275,10 @@ dzn_CmdBindPipeline(VkCommandBuffer commandBuffer,
           cmdbuf->state.dirty |= DZN_CMD_DIRTY_BLEND_CONSTANTS;
        }
  
@@ -3962,7 +4312,7 @@
  
        if (gfx->vb.count > 0)
           BITSET_SET_COUNT(cmdbuf->state.vb.dirty, 0, gfx->vb.count);
-@@ -5249,6 +5363,31 @@
+@@ -5249,6 +5363,31 @@ dzn_CmdSetViewport(VkCommandBuffer commandBuffer,
     }
  }
  
@@ -3994,7 +4344,7 @@
  VKAPI_ATTR void VKAPI_CALL
  dzn_CmdSetScissor(VkCommandBuffer commandBuffer,
                    uint32_t firstScissor,
-@@ -5296,6 +5435,7 @@
+@@ -5296,6 +5435,7 @@ dzn_CmdDraw(VkCommandBuffer commandBuffer,
  {
     VK_FROM_HANDLE(dzn_cmd_buffer, cmdbuf, commandBuffer);
  
@@ -4002,7 +4352,7 @@
     const struct dzn_graphics_pipeline *pipeline = (const struct dzn_graphics_pipeline *)
        cmdbuf->state.bindpoint[VK_PIPELINE_BIND_POINT_GRAPHICS].pipeline;
  
-@@ -5353,6 +5493,7 @@
+@@ -5353,6 +5493,7 @@ dzn_CmdDrawIndexed(VkCommandBuffer commandBuffer,
  {
     VK_FROM_HANDLE(dzn_cmd_buffer, cmdbuf, commandBuffer);
  
@@ -4010,12 +4360,10 @@
     const struct dzn_graphics_pipeline *pipeline = (const struct dzn_graphics_pipeline *)
        cmdbuf->state.bindpoint[VK_PIPELINE_BIND_POINT_GRAPHICS].pipeline;
  
-@@ -5511,6 +5652,42 @@
-    }
- 
+@@ -5513,6 +5654,42 @@ dzn_CmdBindVertexBuffers(VkCommandBuffer commandBuffer,
     BITSET_SET_COUNT(cmdbuf->state.vb.dirty, firstBinding, bindingCount);
-+}
-+
+ }
+ 
 +/* virtio-dxg: Vulkan 1.3 */
 +VKAPI_ATTR void VKAPI_CALL
 +dzn_CmdBindVertexBuffers2(VkCommandBuffer commandBuffer,
@@ -4050,12 +4398,16 @@
 +   }
 +
 +   BITSET_SET_COUNT(cmdbuf->state.vb.dirty, firstBinding, bindingCount);
- }
- 
++}
++
  VKAPI_ATTR void VKAPI_CALL
+ dzn_CmdBindIndexBuffer(VkCommandBuffer commandBuffer,
+                        VkBuffer buffer,
+diff --git a/src/microsoft/vulkan/dzn_descriptor_set.c b/src/microsoft/vulkan/dzn_descriptor_set.c
+index e2d3827..4db1cbb 100644
 --- a/src/microsoft/vulkan/dzn_descriptor_set.c
 +++ b/src/microsoft/vulkan/dzn_descriptor_set.c
-@@ -498,14 +498,62 @@
+@@ -498,14 +498,62 @@ dzn_descriptor_set_layout_get_desc_count(const struct dzn_descriptor_set_layout
     return 0;
  }
  
@@ -4120,7 +4472,7 @@
  }
  
  VKAPI_ATTR void VKAPI_CALL
-@@ -539,10 +587,13 @@
+@@ -539,10 +587,13 @@ dzn_GetDescriptorSetLayoutSupport(VkDevice _device,
            (binding_flags->pBindingFlags[i] & VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT))
           variable_count->maxVariableDescriptorCount = device->bindless ? INT32_MAX : upper_bound;
  
@@ -4136,7 +4488,7 @@
        if (dzn_descriptor_type_depends_on_shader_usage(desc_type, device->bindless))
           other_desc_count += bindings[i].descriptorCount;
     }
-@@ -1684,6 +1735,9 @@
+@@ -1684,6 +1735,9 @@ dzn_descriptor_set_init(struct dzn_descriptor_set *set,
           set->heap_sizes[type] = layout->range_desc_count[type] + variable_descriptor_count[type];
           set->pool->free_offset[type] = set->heap_offsets[type] + set->heap_sizes[type];
        }
@@ -4146,7 +4498,7 @@
     }
  
     /* Pre-fill the immutable samplers */
-@@ -1708,6 +1762,26 @@
+@@ -1708,6 +1762,26 @@ dzn_descriptor_set_init(struct dzn_descriptor_set *set,
           }
        }
     }
@@ -4173,7 +4525,7 @@
     return VK_SUCCESS;
  }
  
-@@ -1738,10 +1812,85 @@
+@@ -1738,10 +1812,85 @@ dzn_descriptor_pool_destroy(struct dzn_descriptor_pool *pool,
        }
     }
  
@@ -4259,7 +4611,7 @@
  static VkResult
  dzn_descriptor_pool_create(struct dzn_device *device,
                             const VkDescriptorPoolCreateInfo *pCreateInfo,
-@@ -1762,10 +1911,17 @@
+@@ -1762,10 +1911,17 @@ dzn_descriptor_pool_create(struct dzn_device *device,
  
     vk_object_base_init(&device->vk, &pool->base, VK_OBJECT_TYPE_DESCRIPTOR_POOL);
  
@@ -4277,7 +4629,7 @@
        if (device->bindless) {
           if (!vk_descriptor_type_is_dynamic(type))
              pool->desc_count[0] += num_desc;
-@@ -1799,6 +1955,16 @@
+@@ -1799,6 +1955,16 @@ dzn_descriptor_pool_create(struct dzn_device *device,
        }
     }
  
@@ -4294,7 +4646,7 @@
     if (device->bindless) {
        if (pool->desc_count[0]) {
           /* Include extra descriptors so that we can align each allocated descriptor set to a 16-byte boundary */
-@@ -1838,6 +2004,16 @@
+@@ -1838,6 +2004,16 @@ dzn_descriptor_pool_create(struct dzn_device *device,
        }
     }
  
@@ -4311,7 +4663,7 @@
     *out = dzn_descriptor_pool_to_handle(pool);
     return VK_SUCCESS;
  }
-@@ -1876,6 +2052,7 @@
+@@ -1876,6 +2052,7 @@ dzn_ResetDescriptorPool(VkDevice device,
        pool->used_desc_count[type] = 0;
     }
     pool->used_set_count = 0;
@@ -4319,7 +4671,7 @@
  
     return VK_SUCCESS;
  }
-@@ -2030,6 +2207,8 @@
+@@ -2030,6 +2207,8 @@ dzn_AllocateDescriptorSets(VkDevice dev,
                       break;
                    }
                 }
@@ -4328,7 +4680,7 @@
                 if (!is_reuse)
                    continue;
              }
-@@ -2052,6 +2231,11 @@
+@@ -2052,6 +2231,11 @@ dzn_AllocateDescriptorSets(VkDevice dev,
                 return vk_error(device, VK_ERROR_FRAGMENTED_POOL);
              }
           }
@@ -4340,7 +4692,7 @@
        }
  
        VkResult result = dzn_descriptor_set_init(set, device, pool, layout, is_reuse, additional_desc_counts);
-@@ -2111,6 +2295,33 @@
+@@ -2111,6 +2295,33 @@ dzn_FreeDescriptorSets(VkDevice dev,
     return VK_SUCCESS;
  }
  
@@ -4374,7 +4726,7 @@
  static void
  dzn_descriptor_set_write(struct dzn_device *device,
                           const VkWriteDescriptorSet *pDescriptorWrite)
-@@ -2119,6 +2330,16 @@
+@@ -2119,6 +2330,16 @@ dzn_descriptor_set_write(struct dzn_device *device,
  
     struct dzn_descriptor_set_ptr ptr;
  
@@ -4391,7 +4743,7 @@
     dzn_descriptor_set_ptr_init(set->layout, &ptr,
                                 pDescriptorWrite->dstBinding,
                                 pDescriptorWrite->dstArrayElement);
-@@ -2246,6 +2467,19 @@
+@@ -2246,6 +2467,19 @@ dzn_descriptor_set_copy(struct dzn_device *device,
     VK_FROM_HANDLE(dzn_descriptor_set, dst_set, pDescriptorCopy->dstSet);
     struct dzn_descriptor_set_ptr src_ptr, dst_ptr;
  
@@ -4411,7 +4763,7 @@
     dzn_descriptor_set_ptr_init(src_set->layout, &src_ptr,
                                 pDescriptorCopy->srcBinding,
                                 pDescriptorCopy->srcArrayElement);
-@@ -2381,6 +2615,11 @@
+@@ -2381,6 +2615,11 @@ dzn_descriptor_update_template_create(struct dzn_device *device,
        ASSERTED VkDescriptorType type = info->pDescriptorUpdateEntries[e].descriptorType;
        uint32_t d = 0;
  
@@ -4423,7 +4775,7 @@
        while (dzn_descriptor_set_ptr_is_valid(&ptr) && d < desc_count) {
           uint32_t ndescs = dzn_descriptor_set_remaining_descs_in_binding(set_layout, &ptr);
  
-@@ -2418,6 +2657,19 @@
+@@ -2418,6 +2657,19 @@ dzn_descriptor_update_template_create(struct dzn_device *device,
        size_t user_data_stride = info->pDescriptorUpdateEntries[e].stride;
        uint32_t d = 0;
  
@@ -4443,7 +4795,7 @@
        while (dzn_descriptor_set_ptr_is_valid(&ptr) && d < desc_count) {
           uint32_t ndescs = dzn_descriptor_set_remaining_descs_in_binding(set_layout, &ptr);
  
-@@ -2612,6 +2864,13 @@
+@@ -2612,6 +2864,13 @@ dzn_UpdateDescriptorSetWithTemplate(VkDevice _device,
           }
           break;
  
@@ -4457,6 +4809,8 @@
        default:
           UNREACHABLE("invalid descriptor type");
        }
+diff --git a/src/microsoft/vulkan/dzn_device.c b/src/microsoft/vulkan/dzn_device.c
+index 3e2dbe2..fdf86a4 100644
 --- a/src/microsoft/vulkan/dzn_device.c
 +++ b/src/microsoft/vulkan/dzn_device.c
 @@ -22,6 +22,7 @@
@@ -4491,7 +4845,7 @@
  
  #define MAX_TIER2_MEMORY_TYPES 4
  
-@@ -72,9 +86,15 @@
+@@ -72,9 +86,15 @@ const VkExternalMemoryHandleTypeFlags opaque_external_flag =
  static const struct vk_instance_extension_table instance_extensions = {
     .KHR_get_physical_device_properties2      = true,
     .KHR_device_group_creation                = true,
@@ -4507,7 +4861,7 @@
  #endif
  #ifdef VK_USE_PLATFORM_WIN32_KHR
     .KHR_win32_surface                        = true,
-@@ -101,6 +121,23 @@
+@@ -101,6 +121,23 @@ dzn_physical_device_get_extensions(struct dzn_physical_device *pdev)
     pdev->vk.supported_extensions = (struct vk_device_extension_table) {
        .KHR_16bit_storage                     = pdev->options4.Native16BitShaderOpsSupported,
        .KHR_bind_memory2                      = true,
@@ -4531,7 +4885,7 @@
        .KHR_buffer_device_address             = pdev->shader_model >= D3D_SHADER_MODEL_6_6,
        .KHR_create_renderpass2                = true,
        .KHR_dedicated_allocation              = true,
-@@ -157,6 +194,9 @@
+@@ -157,6 +194,9 @@ dzn_physical_device_get_extensions(struct dzn_physical_device *pdev)
        .EXT_vertex_attribute_divisor          = true,
        .EXT_memory_budget                     = true,
        .MSFT_layered_driver                   = true,
@@ -4541,7 +4895,7 @@
     };
  }
  
-@@ -197,6 +237,8 @@
+@@ -197,6 +237,8 @@ dzn_physical_device_release(struct dzn_physical_device *pdev)
     if (!pdev)
        return;
  
@@ -4550,7 +4904,7 @@
     if (pdev->dev)
        ID3D12Device1_Release(pdev->dev);
  
-@@ -688,8 +730,9 @@
+@@ -688,8 +730,9 @@ dzn_physical_device_get_features(const struct dzn_physical_device *pdev,
        .geometryShader = true,
        .tessellationShader = false,
        .sampleRateShading = true,
@@ -4562,7 +4916,7 @@
        .multiDrawIndirect = true,
        .drawIndirectFirstInstance = true,
        .depthClamp = true,
-@@ -699,7 +742,7 @@
+@@ -699,7 +742,7 @@ dzn_physical_device_get_features(const struct dzn_physical_device *pdev,
        .wideLines = instance->drirc.debug.claim_wide_lines,
        .largePoints = false,
        .alphaToOne = false,
@@ -4571,7 +4925,7 @@
        .samplerAnisotropy = true,
        .textureCompressionETC2 = false,
        .textureCompressionASTC_LDR = false,
-@@ -793,33 +836,46 @@
+@@ -793,33 +836,46 @@ dzn_physical_device_get_features(const struct dzn_physical_device *pdev,
        .bufferDeviceAddress                = pdev->shader_model >= D3D_SHADER_MODEL_6_6,
        .bufferDeviceAddressCaptureReplay   = false,
        .bufferDeviceAddressMultiDevice     = false,
@@ -4630,7 +4984,7 @@
     };
  }
  
-@@ -910,7 +966,7 @@
+@@ -910,7 +966,7 @@ dzn_physical_device_get_properties(const struct dzn_physical_device *pdev,
        .maxGeometryTotalOutputComponents = D3D12_REQ_GS_INVOCATION_32BIT_OUTPUT_COMPONENT_LIMIT,
        .maxFragmentInputComponents = D3D12_PS_INPUT_REGISTER_COUNT * D3D12_PS_INPUT_REGISTER_COMPONENTS,
        .maxFragmentOutputAttachments = D3D12_PS_OUTPUT_REGISTER_COUNT,
@@ -4639,7 +4993,7 @@
        .maxFragmentCombinedOutputResources = D3D12_PS_OUTPUT_REGISTER_COUNT,
        .maxComputeSharedMemorySize = D3D12_CS_TGSM_REGISTER_COUNT * sizeof(float),
        .maxComputeWorkGroupCount = { D3D12_CS_DISPATCH_MAX_THREAD_GROUPS_PER_DIMENSION,
-@@ -1076,6 +1132,22 @@
+@@ -1076,6 +1132,22 @@ dzn_physical_device_get_properties(const struct dzn_physical_device *pdev,
        .integerDotProduct4x8BitPackedUnsignedAccelerated = pdev->shader_model >= D3D_SHADER_MODEL_6_4,
        .integerDotProductAccumulatingSaturating4x8BitPackedSignedAccelerated = pdev->shader_model >= D3D_SHADER_MODEL_6_4,
        .integerDotProductAccumulatingSaturating4x8BitPackedUnsignedAccelerated = pdev->shader_model >= D3D_SHADER_MODEL_6_4,
@@ -4662,7 +5016,7 @@
  
        /* VkPhysicalDeviceVertexAttributeDivisorPropertiesEXT */
        .maxVertexAttribDivisor = UINT32_MAX,
-@@ -1085,6 +1157,11 @@
+@@ -1085,6 +1157,11 @@ dzn_physical_device_get_properties(const struct dzn_physical_device *pdev,
  
        /* VkPhysicalDeviceLayeredDriverPropertiesMSFT */
        .underlyingAPI = VK_LAYERED_DRIVER_UNDERLYING_API_D3D12_MSFT,
@@ -4674,7 +5028,7 @@
     };
  
     if (strlen(instance->drirc.debug.force_vk_devicename) > 0) {
-@@ -1138,6 +1215,7 @@
+@@ -1138,6 +1215,7 @@ dzn_physical_device_create(struct vk_instance *instance,
        return result;
     }
  
@@ -4682,7 +5036,7 @@
     pdev->desc = *desc;
     pdev->adapter = adapter;
     IUnknown_AddRef(adapter);
-@@ -1227,6 +1305,33 @@
+@@ -1227,6 +1305,33 @@ dzn_get_most_capable_format_for_casting(VkFormat format, VkImageCreateFlags crea
     }
  }
  
@@ -4716,7 +5070,7 @@
  D3D12_FEATURE_DATA_FORMAT_SUPPORT
  dzn_physical_device_get_format_support(struct dzn_physical_device *pdev,
                                         VkFormat format,
-@@ -1258,8 +1363,7 @@
+@@ -1258,8 +1363,7 @@ dzn_physical_device_get_format_support(struct dzn_physical_device *pdev,
     }
  
     ASSERTED HRESULT hres =
@@ -4726,7 +5080,7 @@
     assert(!FAILED(hres));
  
     if (usage != VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT)
-@@ -1273,8 +1377,7 @@
+@@ -1273,8 +1377,7 @@ dzn_physical_device_get_format_support(struct dzn_physical_device *pdev,
          .Format = dzn_image_get_dxgi_format(pdev, format, 0, aspect),
        };
  
@@ -4736,7 +5090,7 @@
        assert(!FAILED(hres));
  
  #define DS_SRV_FORMAT_SUPPORT1_MASK \
-@@ -1645,6 +1748,26 @@
+@@ -1645,6 +1748,26 @@ dzn_GetPhysicalDeviceFormatProperties2(VkPhysicalDevice physicalDevice,
     VK_FROM_HANDLE(dzn_physical_device, pdev, physicalDevice);
  
     dzn_physical_device_get_format_properties(pdev, format, pFormatProperties);
@@ -4763,7 +5117,7 @@
  }
  
  VKAPI_ATTR VkResult VKAPI_CALL
-@@ -2249,6 +2372,8 @@
+@@ -2249,6 +2372,8 @@ dzn_device_destroy(struct dzn_device *device, const VkAllocationCallbacks *pAllo
        dzn_queue_finish(queue);
     }
  
@@ -4772,7 +5126,7 @@
     dzn_device_query_finish(device);
     dzn_meta_finish(device);
  
-@@ -2484,6 +2609,14 @@
+@@ -2484,6 +2609,14 @@ dzn_device_create(struct dzn_physical_device *pdev,
     }
  
     assert(queue_count == qindex);
@@ -4787,7 +5141,7 @@
     *out = dzn_device_to_handle(device);
     return VK_SUCCESS;
  }
-@@ -2531,6 +2664,10 @@
+@@ -2531,6 +2664,10 @@ dzn_device_create_root_sig(struct dzn_device *device,
                                       ID3D10Blob_GetBufferSize(sig),
                                       &IID_ID3D12RootSignature,
                                       (void **)&root_sig);
@@ -4798,7 +5152,7 @@
     ID3D10Blob_Release(sig);
     return root_sig;
  }
-@@ -2603,6 +2740,8 @@
+@@ -2603,6 +2740,8 @@ dzn_device_memory_destroy(struct dzn_device_memory *mem,
  #else
     if ((intptr_t)mem->export_handle >= 0)
        close((int)(intptr_t)mem->export_handle);
@@ -4807,7 +5161,7 @@
  #endif
  
     vk_object_base_finish(&mem->base);
-@@ -2629,6 +2768,128 @@
+@@ -2629,6 +2768,128 @@ deduce_heap_properties_from_memory(struct dzn_physical_device *pdevice,
     return properties;
  }
  
@@ -4936,7 +5290,7 @@
  static VkResult
  dzn_device_memory_create(struct dzn_device *device,
                           const VkMemoryAllocateInfo *pAllocateInfo,
-@@ -2643,6 +2904,10 @@
+@@ -2643,6 +2904,10 @@ dzn_device_memory_create(struct dzn_device *device,
  
     VkExternalMemoryHandleTypeFlags export_flags = 0;
     HANDLE import_handle = NULL;
@@ -4947,7 +5301,7 @@
     bool imported_from_d3d11 = false;
     void *host_pointer = NULL;
  #ifdef _WIN32
-@@ -2698,7 +2963,9 @@
+@@ -2698,7 +2963,9 @@ dzn_device_memory_create(struct dzn_device *device,
           default:
              return vk_error(device, VK_ERROR_INVALID_EXTERNAL_HANDLE);
           }
@@ -4958,7 +5312,7 @@
           break;
        }
  #endif
-@@ -2747,6 +3014,10 @@
+@@ -2747,6 +3014,10 @@ dzn_device_memory_create(struct dzn_device *device,
         VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D12_HEAP_BIT);
     if (image && imported_from_d3d11)
        valid_flags |= VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_BIT;
@@ -4969,7 +5323,7 @@
  
     if (export_flags & ~valid_flags)
        return vk_error(device, VK_ERROR_INVALID_EXTERNAL_HANDLE);
-@@ -2814,7 +3085,17 @@
+@@ -2814,7 +3085,17 @@ dzn_device_memory_create(struct dzn_device *device,
  #else
        goto cleanup;
  #endif
@@ -4987,7 +5341,7 @@
        error = VK_ERROR_INVALID_EXTERNAL_HANDLE;
        if (image || buffer) {
           if (FAILED(ID3D12Device_OpenSharedHandle(device->dev, import_handle, &IID_ID3D12Resource, (void **)&mem->dedicated_res)))
-@@ -2957,10 +3238,27 @@
+@@ -2957,10 +3238,27 @@ dzn_device_memory_create(struct dzn_device *device,
           goto cleanup;
     }
  
@@ -5015,7 +5369,7 @@
  #ifdef _WIN32
     if (handle_from_name)
        CloseHandle(handle_from_name);
-@@ -3730,6 +4028,56 @@
+@@ -3730,6 +4028,56 @@ dzn_GetDeviceGroupPeerMemoryFeatures(VkDevice device,
     *pPeerMemoryFeatures = 0;
  }
  
@@ -5072,7 +5426,7 @@
  VKAPI_ATTR void VKAPI_CALL
  dzn_GetImageSparseMemoryRequirements2(VkDevice device,
                                        const VkImageSparseMemoryRequirementsInfo2* pInfo,
-@@ -3811,16 +4159,33 @@
+@@ -3811,16 +4159,33 @@ dzn_GetMemoryFdKHR(VkDevice device,
                     int *pFd)
  {
     VK_FROM_HANDLE(dzn_device_memory, mem, pGetFdInfo->memory);
@@ -5110,9 +5464,11 @@
     default:
        return vk_error(device, VK_ERROR_INVALID_EXTERNAL_HANDLE);
     }
+diff --git a/src/microsoft/vulkan/dzn_image.c b/src/microsoft/vulkan/dzn_image.c
+index 5482028..c42812b 100644
 --- a/src/microsoft/vulkan/dzn_image.c
 +++ b/src/microsoft/vulkan/dzn_image.c
-@@ -224,6 +224,15 @@
+@@ -224,6 +224,15 @@ dzn_image_create(struct dzn_device *device,
         !pdev->options12.RelaxedFormatCastingSupported)
        image->desc.Format = dzn_get_typeless_dxgi_format(image->desc.Format);
  
@@ -5128,7 +5484,7 @@
     if (image->desc.SampleDesc.Count > 1)
        image->desc.Alignment = D3D12_DEFAULT_MSAA_RESOURCE_PLACEMENT_ALIGNMENT;
     else
-@@ -1441,7 +1450,9 @@
+@@ -1441,7 +1450,9 @@ dzn_image_view_create(struct dzn_device *device,
                                                     false, false,
                                                     iview);
        }
@@ -5139,6 +5495,9 @@
           iview->uav_bindless_slot = dzn_device_descriptor_heap_alloc_slot(device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
           if (iview->uav_bindless_slot < 0) {
              dzn_image_view_destroy(iview, pAllocator);
+diff --git a/src/microsoft/vulkan/dzn_imported_memory_fd.h b/src/microsoft/vulkan/dzn_imported_memory_fd.h
+new file mode 100644
+index 0000000..869bc84
 --- /dev/null
 +++ b/src/microsoft/vulkan/dzn_imported_memory_fd.h
 @@ -0,0 +1,44 @@
@@ -5186,6 +5545,8 @@
 +      close(source);
 +}
 +#endif
+diff --git a/src/microsoft/vulkan/dzn_pipeline.c b/src/microsoft/vulkan/dzn_pipeline.c
+index 65ccc0e..cf8980a 100644
 --- a/src/microsoft/vulkan/dzn_pipeline.c
 +++ b/src/microsoft/vulkan/dzn_pipeline.c
 @@ -22,6 +22,7 @@
@@ -5196,7 +5557,7 @@
  
  #include "spirv/nir_spirv.h"
  
-@@ -412,6 +413,7 @@
+@@ -412,6 +413,7 @@ static VkResult
  dzn_pipeline_compile_shader(struct dzn_device *device,
                              nir_shader *nir,
                              uint32_t input_clip_size,
@@ -5204,7 +5565,7 @@
                              D3D12_SHADER_BYTECODE *slot)
  {
     struct dzn_instance *instance =
-@@ -428,6 +430,10 @@
+@@ -428,6 +430,10 @@ dzn_pipeline_compile_shader(struct dzn_device *device,
        .shader_model_max = dzn_get_shader_model(pdev),
        .input_clip_size = input_clip_size,
        .advanced_texture_ops = pdev->options14.AdvancedTextureOpsSupported,
@@ -5215,7 +5576,7 @@
  #ifdef _WIN32
        .validator_version_max = dxil_get_validator_version(instance->dxil_validator),
  #endif
-@@ -746,6 +752,28 @@
+@@ -746,6 +752,28 @@ dzn_graphics_pipeline_hash_attribs(D3D12_INPUT_ELEMENT_DESC *attribs,
     _mesa_blake3_final(&ctx, result);
  }
  
@@ -5244,7 +5605,7 @@
  static VkResult
  dzn_graphics_pipeline_compile_shaders(struct dzn_device *device,
                                        struct dzn_graphics_pipeline *pipeline,
-@@ -842,6 +870,17 @@
+@@ -842,6 +870,17 @@ dzn_graphics_pipeline_compile_shaders(struct dzn_device *device,
        info->pMultisampleState &&
        info->pMultisampleState->sampleShadingEnable;
  
@@ -5262,7 +5623,7 @@
     if (cache) {
        dzn_graphics_pipeline_hash_attribs(attribs, vi_conversions, attribs_hash);
  
-@@ -856,6 +895,7 @@
+@@ -856,6 +895,7 @@ dzn_graphics_pipeline_compile_shaders(struct dzn_device *device,
        _mesa_blake3_update(&pipeline_hash_ctx, &force_sample_rate_shading, sizeof(force_sample_rate_shading));
        _mesa_blake3_update(&pipeline_hash_ctx, &lower_view_index, sizeof(lower_view_index));
        _mesa_blake3_update(&pipeline_hash_ctx, &pipeline->use_gs_for_polygon_mode_point, sizeof(pipeline->use_gs_for_polygon_mode_point));
@@ -5270,7 +5631,7 @@
  
        u_foreach_bit(stage, active_stage_mask) {
           const VkPipelineShaderStageRequiredSubgroupSizeCreateInfo *subgroup_size_info =
-@@ -1004,6 +1044,21 @@
+@@ -1004,6 +1044,21 @@ dzn_graphics_pipeline_compile_shaders(struct dzn_device *device,
        }
     }
  
@@ -5292,7 +5653,7 @@
     u_foreach_bit(stage, active_stage_mask) {
        uint8_t bindings_hash[BLAKE3_KEY_LEN];
  
-@@ -1019,6 +1074,8 @@
+@@ -1019,6 +1074,8 @@ dzn_graphics_pipeline_compile_shaders(struct dzn_device *device,
           _mesa_blake3_update(&dxil_hash_ctx, stages[stage].link_hashes[0], sizeof(stages[stage].link_hashes[0]));
           _mesa_blake3_update(&dxil_hash_ctx, stages[stage].link_hashes[1], sizeof(stages[stage].link_hashes[1]));
           _mesa_blake3_update(&dxil_hash_ctx, bindings_hash, sizeof(bindings_hash));
@@ -5301,7 +5662,7 @@
           _mesa_blake3_final(&dxil_hash_ctx, stages[stage].dxil_hash);
           dxil_hashes[stage] = stages[stage].dxil_hash;
  
-@@ -1088,7 +1145,8 @@
+@@ -1088,7 +1145,8 @@ dzn_graphics_pipeline_compile_shaders(struct dzn_device *device,
        D3D12_SHADER_BYTECODE *slot =
           dzn_pipeline_get_gfx_shader_slot(out, stage);
  
@@ -5311,7 +5672,7 @@
        if (ret != VK_SUCCESS)
           return ret;
  
-@@ -1243,6 +1301,16 @@
+@@ -1243,6 +1301,16 @@ to_prim_topology(VkPrimitiveTopology in, unsigned patch_control_points, bool sup
     }
  }
  
@@ -5328,7 +5689,7 @@
  static VkResult
  dzn_graphics_pipeline_translate_ia(struct dzn_device *device,
                                     struct dzn_graphics_pipeline *pipeline,
-@@ -1857,6 +1925,99 @@
+@@ -1857,6 +1925,99 @@ dzn_graphics_pipeline_destroy(struct dzn_graphics_pipeline *pipeline,
     vk_free2(&pipeline->base.base.device->alloc, alloc, pipeline);
  }
  
@@ -5428,7 +5789,7 @@
  static VkResult
  dzn_graphics_pipeline_create(struct dzn_device *device,
                               VkPipelineCache cache,
-@@ -1877,6 +2038,16 @@
+@@ -1877,6 +2038,16 @@ dzn_graphics_pipeline_create(struct dzn_device *device,
     VkResult ret;
     HRESULT hres = 0;
     D3D12_VIEW_INSTANCE_LOCATION vi_locs[D3D12_MAX_VIEW_INSTANCE_COUNT];
@@ -5445,7 +5806,7 @@
  
     struct dzn_graphics_pipeline *pipeline =
        vk_zalloc2(&device->vk.alloc, pAllocator, sizeof(*pipeline), 8,
-@@ -1945,11 +2116,69 @@
+@@ -1945,11 +2116,69 @@ dzn_graphics_pipeline_create(struct dzn_device *device,
           case VK_DYNAMIC_STATE_LINE_WIDTH:
              /* Nothing to do since we just support lineWidth = 1. */
              break;
@@ -5516,7 +5877,7 @@
     ret = dzn_graphics_pipeline_translate_ia(device, pipeline, stream_desc, pCreateInfo);
     if (ret)
        goto out;
-@@ -2057,9 +2286,8 @@
+@@ -2057,9 +2286,8 @@ dzn_graphics_pipeline_create(struct dzn_device *device,
     }
  
     if (!pipeline->variants) {
@@ -5528,7 +5889,7 @@
        if (FAILED(hres)) {
           ret = vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
           goto out;
-@@ -2180,6 +2408,105 @@
+@@ -2180,6 +2408,105 @@ update_stencil_state(struct dzn_physical_device *pdev,
     }
  }
  
@@ -5634,7 +5995,7 @@
  ID3D12PipelineState *
  dzn_graphics_pipeline_get_state(struct dzn_graphics_pipeline *pipeline,
                                  const struct dzn_graphics_pipeline_variant_key *key)
-@@ -2204,6 +2531,14 @@
+@@ -2204,6 +2531,14 @@ dzn_graphics_pipeline_get_state(struct dzn_graphics_pipeline *pipeline,
  
     mask_key_for_stencil_state(pdev, pipeline, key, &masked_key);
  
@@ -5649,7 +6010,7 @@
     struct hash_entry *he =
        _mesa_hash_table_search(pipeline->variants, &masked_key);
  
-@@ -2235,10 +2570,10 @@
+@@ -2235,10 +2570,10 @@ dzn_graphics_pipeline_get_state(struct dzn_graphics_pipeline *pipeline,
        }
  
        update_stencil_state(pdev, pipeline, stream_buf, &masked_key);
@@ -5663,7 +6024,7 @@
        assert(!FAILED(hres));
        he = _mesa_hash_table_insert(pipeline->variants, &variant->key, variant);
        assert(he);
-@@ -2563,7 +2898,7 @@
+@@ -2563,7 +2898,7 @@ dzn_compute_pipeline_compile_shader(struct dzn_device *device,
        }
     }
  
@@ -5672,7 +6033,7 @@
     if (ret != VK_SUCCESS)
        goto out;
  
-@@ -2590,6 +2925,11 @@
+@@ -2590,6 +2925,11 @@ dzn_compute_pipeline_create(struct dzn_device *device,
     VK_FROM_HANDLE(dzn_pipeline_layout, layout, pCreateInfo->layout);
     VK_FROM_HANDLE(vk_pipeline_cache, pcache, cache);
  
@@ -5684,7 +6045,7 @@
     struct dzn_compute_pipeline *pipeline =
        vk_zalloc2(&device->vk.alloc, pAllocator, sizeof(*pipeline), 8,
                   VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
-@@ -2613,9 +2953,8 @@
+@@ -2613,9 +2953,8 @@ dzn_compute_pipeline_create(struct dzn_device *device,
     if (ret != VK_SUCCESS)
        goto out;
  
@@ -5696,9 +6057,11 @@
        ret = vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
  
  out:
+diff --git a/src/microsoft/vulkan/dzn_private.h b/src/microsoft/vulkan/dzn_private.h
+index 456c37a..fffb278 100644
 --- a/src/microsoft/vulkan/dzn_private.h
 +++ b/src/microsoft/vulkan/dzn_private.h
-@@ -225,6 +225,13 @@
+@@ -225,6 +225,13 @@ struct dzn_physical_device {
     const struct vk_sync_type *sync_types[MAX_SYNC_TYPES + 1];
     float timestamp_period;
     bool support_a4b4g4r4;
@@ -5712,7 +6075,7 @@
  };
  
  D3D12_FEATURE_DATA_FORMAT_SUPPORT
-@@ -277,6 +284,8 @@
+@@ -277,6 +284,8 @@ struct dzn_device_descriptor_heap {
  
  #define NUM_POOL_TYPES D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER + 1
  
@@ -5721,7 +6084,7 @@
  struct dzn_device {
     struct vk_device vk;
     struct vk_device_extension_table enabled_extensions;
-@@ -310,6 +319,7 @@
+@@ -310,6 +319,7 @@ struct dzn_device {
     bool bindless;
     bool support_static_samplers;
     struct dzn_device_descriptor_heap device_heaps[NUM_POOL_TYPES];
@@ -5729,7 +6092,7 @@
  };
  
  void dzn_meta_finish(struct dzn_device *device);
-@@ -346,6 +356,10 @@
+@@ -346,6 +356,10 @@ struct dzn_device_memory {
     /* If the resource is exportable, this is the pre-created handle for that */
     HANDLE export_handle;
  
@@ -5740,7 +6103,7 @@
     /* These flags need to be added into all resources created on this heap */
     D3D12_RESOURCE_FLAGS res_flags;
  };
-@@ -565,8 +579,45 @@
+@@ -565,8 +579,45 @@ struct dzn_rendering_attachment {
     VkAttachmentStoreOp store_op;
  };
  
@@ -5786,7 +6149,7 @@
     struct {
        int constant_factor;
        float slope_factor;
-@@ -590,6 +641,8 @@
+@@ -590,6 +641,8 @@ struct dzn_cmd_buffer_state {
     const struct dzn_pipeline *pipeline;
     struct dzn_descriptor_heap *heaps[NUM_POOL_TYPES];
     struct dzn_graphics_pipeline_variant_key pipeline_variant;
@@ -5795,7 +6158,7 @@
     struct {
        VkRenderingFlags flags;
        D3D12_RECT area;
-@@ -728,6 +781,11 @@
+@@ -728,6 +781,11 @@ struct dzn_descriptor_pool {
     uint32_t desc_count[NUM_POOL_TYPES];
     uint32_t used_desc_count[NUM_POOL_TYPES];
     uint32_t free_offset[NUM_POOL_TYPES];
@@ -5807,7 +6170,7 @@
  };
  
  #define MAX_SHADER_VISIBILITIES (D3D12_SHADER_VISIBILITY_PIXEL + 1)
-@@ -748,6 +806,9 @@
+@@ -748,6 +806,9 @@ struct dzn_descriptor_set_layout_binding {
        uint32_t buffer_idx;
     };
     bool variable_size;
@@ -5817,7 +6180,7 @@
  };
  
  struct dzn_descriptor_set_layout {
-@@ -779,6 +840,8 @@
+@@ -779,6 +840,8 @@ struct dzn_descriptor_set_layout {
  
     uint32_t binding_count;
     const struct dzn_descriptor_set_layout_binding *bindings;
@@ -5826,7 +6189,7 @@
  };
  
  struct dzn_descriptor_set {
-@@ -791,6 +854,8 @@
+@@ -791,6 +854,8 @@ struct dzn_descriptor_set {
     uint32_t heap_sizes[NUM_POOL_TYPES];
     /* Layout (and pool) is null for a freed descriptor set */
     const struct dzn_descriptor_set_layout *layout;
@@ -5835,7 +6198,7 @@
  };
  
  struct dzn_pipeline_layout_set {
-@@ -988,6 +1053,16 @@
+@@ -988,6 +1053,16 @@ struct dzn_graphics_pipeline {
        float constants[4];
     } blend;
  
@@ -5852,7 +6215,7 @@
     bool rast_disabled_from_missing_position;
     bool use_gs_for_polygon_mode_point;
     bool needs_draw_sysvals;
-@@ -1035,6 +1110,10 @@
+@@ -1035,6 +1110,10 @@ dzn_graphics_pipeline_get_indirect_cmd_sig(struct dzn_graphics_pipeline *pipelin
  
  VkFormat dzn_graphics_pipeline_patch_vi_format(VkFormat format);
  
@@ -5863,7 +6226,7 @@
  struct dzn_compute_pipeline {
     struct dzn_pipeline base;
     struct {
-@@ -1233,6 +1312,11 @@
+@@ -1233,6 +1312,11 @@ void dzn_translate_rect(D3D12_RECT *out, const VkRect2D *in);
             if (mask & aspect)
  
  VkResult dzn_wsi_init(struct dzn_physical_device *physical_device);
@@ -5875,6 +6238,9 @@
  void dzn_wsi_finish(struct dzn_physical_device *physical_device);
  
  struct dzn_app_info {
+diff --git a/src/microsoft/vulkan/dzn_pso_prewarm.cpp b/src/microsoft/vulkan/dzn_pso_prewarm.cpp
+new file mode 100644
+index 0000000..ed94231
 --- /dev/null
 +++ b/src/microsoft/vulkan/dzn_pso_prewarm.cpp
 @@ -0,0 +1,1140 @@
@@ -6847,9 +7213,9 @@
 +   load_records(pw);
 +   if (!pw->loaded.empty()) {
 +      long cpus = sysconf(_SC_NPROCESSORS_ONLN);
-+      unsigned threads = cpus > 2 ? (unsigned)(cpus / 2) : 1;
-+      if (threads > 4)
-+         threads = 4;
++      unsigned threads = cpus > 2 ? (unsigned)((cpus * 3) / 4) : 1;
++      if (threads > 8)
++         threads = 8;
 +      if (threads > pw->loaded.size())
 +         threads = (unsigned)pw->loaded.size();
 +      pw->queue_ok = util_queue_init(&pw->queue, "dznpso", (unsigned)pw->loaded.size() + 1,
@@ -7018,6 +7384,9 @@
 +}
 +
 +#endif
+diff --git a/src/microsoft/vulkan/dzn_pso_prewarm.h b/src/microsoft/vulkan/dzn_pso_prewarm.h
+new file mode 100644
+index 0000000..939685f
 --- /dev/null
 +++ b/src/microsoft/vulkan/dzn_pso_prewarm.h
 @@ -0,0 +1,46 @@
@@ -7067,9 +7436,11 @@
 +#endif
 +
 +#endif
+diff --git a/src/microsoft/vulkan/dzn_wsi.c b/src/microsoft/vulkan/dzn_wsi.c
+index 6a83497..fc86aae 100644
 --- a/src/microsoft/vulkan/dzn_wsi.c
 +++ b/src/microsoft/vulkan/dzn_wsi.c
-@@ -110,6 +110,14 @@
+@@ -110,6 +110,14 @@ dzn_wsi_init(struct dzn_physical_device *physical_device)
     physical_device->wsi_device.win32.create_image_memory =
        dzn_wsi_create_image_memory;
     physical_device->wsi_device.supports_modifiers = false;
@@ -7084,9 +7455,11 @@
     physical_device->vk.wsi_device = &physical_device->wsi_device;
  
     return VK_SUCCESS;
+diff --git a/src/microsoft/vulkan/meson.build b/src/microsoft/vulkan/meson.build
+index 800fdc2..8953176 100644
 --- a/src/microsoft/vulkan/meson.build
 +++ b/src/microsoft/vulkan/meson.build
-@@ -35,6 +35,7 @@
+@@ -35,6 +35,7 @@ libdzn_files = files(
    'dzn_meta.c',
    'dzn_nir.c',
    'dzn_pipeline.c',
@@ -7094,9 +7467,11 @@
    'dzn_query.c',
    'dzn_sync.c',
    'dzn_util.c',
+diff --git a/src/vulkan/wsi/wsi_common.h b/src/vulkan/wsi/wsi_common.h
+index cfb921d..51f0e49 100644
 --- a/src/vulkan/wsi/wsi_common.h
 +++ b/src/vulkan/wsi/wsi_common.h
-@@ -165,6 +165,11 @@
+@@ -165,6 +165,11 @@ struct wsi_device {
  
     bool sw;
  
@@ -7108,9 +7483,11 @@
     /* Set to true if the implementation is ok with linear WSI images. */
     bool wants_linear;
  
+diff --git a/src/vulkan/wsi/wsi_common_drm.c b/src/vulkan/wsi/wsi_common_drm.c
+index dbf65b2..25feac2 100644
 --- a/src/vulkan/wsi/wsi_common_drm.c
 +++ b/src/vulkan/wsi/wsi_common_drm.c
-@@ -843,7 +843,9 @@
+@@ -843,7 +843,9 @@ wsi_create_native_image_mem(const struct wsi_swapchain *chain,
        wsi->GetImageSubresourceLayout(chain->device, image->image,
                                       &image_subresource, &image_layout);
  
@@ -7121,6 +7498,8 @@
        image->num_planes = 1;
        image->sizes[0] = reqs.size;
        image->row_pitches[0] = image_layout.rowPitch;
+diff --git a/src/vulkan/wsi/wsi_common_wayland.c b/src/vulkan/wsi/wsi_common_wayland.c
+index 8a1e86f..ee7e724 100644
 --- a/src/vulkan/wsi/wsi_common_wayland.c
 +++ b/src/vulkan/wsi/wsi_common_wayland.c
 @@ -1,3 +1,7 @@
@@ -7131,7 +7510,7 @@
  /*
   * Copyright © 2015 Intel Corporation
   * Copyright © 2026 NXP
-@@ -424,6 +428,9 @@
+@@ -424,6 +428,9 @@ wsi_wl_display_add_vk_format(struct wsi_wl_display *display,
     if (!(props.optimalTilingFeatures & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT))
        return NULL;
  
@@ -7141,7 +7520,7 @@
     struct u_vector modifiers;
     if (!u_vector_init_pow2(&modifiers, 4, sizeof(uint64_t)))
        return NULL;
-@@ -1270,12 +1277,11 @@
+@@ -1270,12 +1277,11 @@ static const struct wp_image_description_v1_listener image_description_listener
  static bool
  needs_color_surface(struct wsi_wl_display *display, VkColorSpaceKHR colorspace)
  {
@@ -7159,7 +7538,7 @@
     return colorspace != VK_COLOR_SPACE_PASS_THROUGH_EXT;
  }
  
-@@ -1838,7 +1844,7 @@
+@@ -1838,7 +1844,7 @@ wsi_GetPhysicalDeviceWaylandPresentationSupportKHR(VkPhysicalDevice physicalDevi
  
     struct wsi_wl_display display;
     VkResult ret = wsi_wl_display_init(wsi, &display, wl_display, false,
@@ -7168,7 +7547,7 @@
     if (ret == VK_SUCCESS)
        wsi_wl_display_finish(&display);
  
-@@ -1914,7 +1920,7 @@
+@@ -1914,7 +1920,7 @@ wsi_wl_surface_get_capabilities(VkIcdSurfaceBase *icd_surface,
  
     if (!wsi_wl_surface->display) {
        if (wsi_wl_display_init(wsi, &temp_display, surface->display, true,
@@ -7177,7 +7556,7 @@
           return VK_ERROR_SURFACE_LOST_KHR;
        display = &temp_display;
     }
-@@ -1971,7 +1977,7 @@
+@@ -1971,7 +1977,7 @@ wsi_wl_surface_check_presentation(VkIcdSurfaceBase *icd_surface,
     struct wsi_wl_display display;
  
     if (wsi_wl_display_init(wsi, &display, surface->display, true,
@@ -7186,7 +7565,7 @@
        return VK_ERROR_SURFACE_LOST_KHR;
  
     if (has_wp_presentation)
-@@ -2005,7 +2011,7 @@
+@@ -2005,7 +2011,7 @@ wsi_wl_surface_get_present_modes(VkIcdSurfaceBase *icd_surface,
  
     struct wsi_wl_display display;
     if (wsi_wl_display_init(wsi, &display, surface->display, true,
@@ -7195,7 +7574,7 @@
        return VK_ERROR_SURFACE_LOST_KHR;
  
     VkPresentModeKHR present_modes[WSI_WL_MAX_PRESENT_MODES];
-@@ -2237,7 +2243,7 @@
+@@ -2237,7 +2243,7 @@ wsi_wl_surface_get_formats(VkIcdSurfaceBase *icd_surface,
  
     struct wsi_wl_display display;
     if (wsi_wl_display_init(wsi, &display, surface->display, true,
@@ -7204,7 +7583,7 @@
        return VK_ERROR_SURFACE_LOST_KHR;
  
     VK_OUTARRAY_MAKE_TYPED(VkSurfaceFormatKHR, out,
-@@ -2245,6 +2251,11 @@
+@@ -2245,6 +2251,11 @@ wsi_wl_surface_get_formats(VkIcdSurfaceBase *icd_surface,
  
     VkColorSpaceKHR *cs;
     u_vector_foreach(cs, &display.colorspaces) {
@@ -7216,7 +7595,7 @@
        struct wsi_wl_format *disp_fmt;
        u_vector_foreach(disp_fmt, &display.formats) {
           /* Skip formats for which we can't support both alpha & opaque
-@@ -2282,7 +2293,7 @@
+@@ -2282,7 +2293,7 @@ wsi_wl_surface_get_formats2(VkIcdSurfaceBase *icd_surface,
  
     struct wsi_wl_display display;
     if (wsi_wl_display_init(wsi, &display, surface->display, true,
@@ -7225,7 +7604,7 @@
        return VK_ERROR_SURFACE_LOST_KHR;
  
     VK_OUTARRAY_MAKE_TYPED(VkSurfaceFormat2KHR, out,
-@@ -2290,6 +2301,11 @@
+@@ -2290,6 +2301,11 @@ wsi_wl_surface_get_formats2(VkIcdSurfaceBase *icd_surface,
  
     VkColorSpaceKHR *cs;
     u_vector_foreach(cs, &display.colorspaces) {
@@ -7237,7 +7616,7 @@
        struct wsi_wl_format *disp_fmt;
        u_vector_foreach(disp_fmt, &display.formats) {
           /* Skip formats for which we can't support both alpha & opaque
-@@ -2575,7 +2591,7 @@
+@@ -2575,7 +2591,7 @@ static VkResult wsi_wl_surface_init(struct wsi_wl_surface *wsi_wl_surface,
        return VK_SUCCESS;
  
     result = wsi_wl_display_create(wsi, wsi_wl_surface->base.display,
@@ -7246,7 +7625,7 @@
     if (result != VK_SUCCESS)
        goto fail;
  
-@@ -3375,6 +3391,15 @@
+@@ -3375,6 +3391,15 @@ wsi_wl_swapchain_queue_present(struct wsi_swapchain *wsi_chain,
     if (chain->retired)
        return VK_ERROR_OUT_OF_DATE_KHR;
  
@@ -7262,7 +7641,7 @@
     struct wsi_wl_surface *wsi_wl_surface = chain->wsi_wl_surface;
     bool mode_fifo = chain->base.present_mode == VK_PRESENT_MODE_FIFO_KHR;
  
-@@ -3943,7 +3968,7 @@
+@@ -3943,7 +3968,7 @@ wsi_wl_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
     struct wsi_drm_image_params drm_image_params;
     uint32_t num_drm_modifiers = 0;
     const uint64_t *drm_modifiers = NULL;
@@ -7271,6 +7650,8 @@
        cpu_image_params = (struct wsi_cpu_image_params) {
           .base.image_type = WSI_IMAGE_TYPE_CPU,
        };
+diff --git a/subprojects/DirectX-Headers.wrap b/subprojects/DirectX-Headers.wrap
+index 3ac408e..6d7342f 100644
 --- a/subprojects/DirectX-Headers.wrap
 +++ b/subprojects/DirectX-Headers.wrap
 @@ -2,5 +2,5 @@

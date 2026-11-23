@@ -10,6 +10,17 @@ import tarfile
 import tempfile
 
 LIMIT = 512 * 1024 ** 2
+FASTLAUNCH_APPS = (
+    'chromium',
+    'code',
+    'foot',
+    'alacritty',
+    'ghostty',
+    'omacalc',
+    'gnome-calculator',
+    'vkcube',
+    'blender',
+)
 
 
 def canonical(name):
@@ -103,26 +114,28 @@ def extract(archive, destination, recipe):
     return version
 
 
-def desktop_entry(text):
-    """Preserve URLs, field codes, actions and localization in the installed entry."""
-    pattern = r'(?m)^Exec=(?:/usr/bin/chromium|chromium|"/usr/bin/chromium")(?=\s|$)'
-    result, count = re.subn(pattern, 'Exec=/run/virtio-dxg/bin/chromium', text)
+def desktop_entry(text, cmd='chromium'):
+    """Rewrite Exec/TryExec for cmd while preserving URLs, field codes, and actions."""
+    qcmd = re.escape(cmd)
+    pattern = rf'(?m)^Exec=(?:/usr/bin/{qcmd}|{qcmd}|"/usr/bin/{qcmd}")(?=\s|$)'
+    result, count = re.subn(pattern, f'Exec=/run/virtio-dxg/bin/{cmd}', text)
     if not count:
-        raise ValueError('Chromium desktop entry has no recognized launcher')
-    return re.sub(r'(?m)^TryExec=(?:/usr/bin/chromium|chromium)\s*$',
-                  'TryExec=/run/virtio-dxg/bin/chromium', result)
+        raise ValueError(f'{cmd} desktop entry has no recognized launcher')
+    return re.sub(rf'(?m)^TryExec=(?:/usr/bin/{qcmd}|{qcmd})\s*$',
+                  f'TryExec=/run/virtio-dxg/bin/{cmd}', result)
 
 
-def prepare_launch_paths(root, browser_wrapper=None, xdg_settings_fast=None):
+def prepare_launch_paths(root, browser_wrapper=None, xdg_settings_fast=None, app_fastlaunch=None):
     """Create data only; systemd mounts the read-only boot-local overlays later."""
     boot = root / 'run/virtio-dxg'
     has_bin = False
     has_apps = False
+    staged_desktop_cmds = []
 
     if browser_wrapper:
         desktop = root / 'usr/share/applications/chromium.desktop'
         if (root / 'usr/bin/chromium').is_file() and desktop.is_file():
-            changed = desktop_entry(desktop.read_text(encoding='utf-8'))
+            changed = desktop_entry(desktop.read_text(encoding='utf-8'), 'chromium')
             (boot / 'bin').mkdir(parents=True, exist_ok=True)
             (boot / 'applications').mkdir(parents=True, exist_ok=True)
             shutil.copyfile(browser_wrapper, boot / 'bin/chromium')
@@ -137,16 +150,52 @@ def prepare_launch_paths(root, browser_wrapper=None, xdg_settings_fast=None):
         (boot / 'bin/xdg-settings').chmod(0o755)
         has_bin = True
 
+    if app_fastlaunch:
+        for cmd in FASTLAUNCH_APPS:
+            dst = boot / 'bin' / cmd
+            if dst.exists():
+                continue  # browser_wrapper keeps precedence on winbuf=0
+            if (root / 'usr/bin' / cmd).is_file():
+                (boot / 'bin').mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(app_fastlaunch, dst)
+                dst.chmod(0o755)
+                has_bin = True
+                staged_desktop_cmds.append(cmd)
+
+        apps_dir = root / 'usr/share/applications'
+        if staged_desktop_cmds and apps_dir.is_dir():
+            for entry_file in sorted(apps_dir.glob('*.desktop')):
+                out_file = boot / 'applications' / entry_file.name
+                if out_file.exists():
+                    continue
+                try:
+                    raw = entry_file.read_text(encoding='utf-8')
+                except OSError:
+                    continue
+                for cmd in staged_desktop_cmds:
+                    try:
+                        rewritten = desktop_entry(raw, cmd)
+                    except ValueError:
+                        continue
+                    (boot / 'applications').mkdir(parents=True, exist_ok=True)
+                    out_file.write_text(rewritten, encoding='utf-8')
+                    has_apps = True
+                    break
+
     if not has_bin and not has_apps:
         return False
 
     starts = []
     stops = []
     if has_bin:
-        starts.append('ExecStart=/usr/bin/mount -t overlay overlay -o ro,lowerdir=/run/virtio-dxg/bin:/usr/local/bin /usr/local/bin')
+        (boot / 'bin-upper').mkdir(parents=True, exist_ok=True)
+        (boot / 'bin-work').mkdir(parents=True, exist_ok=True)
+        starts.append('ExecStart=/usr/bin/mount -t overlay overlay -o lowerdir=/run/virtio-dxg/bin:/usr/local/bin,upperdir=/run/virtio-dxg/bin-upper,workdir=/run/virtio-dxg/bin-work /usr/local/bin')
         stops.append('ExecStop=/usr/bin/umount /usr/local/bin')
     if has_apps:
-        starts.append('ExecStart=/usr/bin/mount -t overlay overlay -o ro,lowerdir=/run/virtio-dxg/applications:/usr/share/applications /usr/share/applications')
+        (boot / 'app-upper').mkdir(parents=True, exist_ok=True)
+        (boot / 'app-work').mkdir(parents=True, exist_ok=True)
+        starts.append('ExecStart=/usr/bin/mount -t overlay overlay -o lowerdir=/run/virtio-dxg/applications:/usr/share/applications,upperdir=/run/virtio-dxg/app-upper,workdir=/run/virtio-dxg/app-work /usr/share/applications')
         stops.insert(0, 'ExecStop=/usr/bin/umount /usr/share/applications')
 
     unit = root / 'run/systemd/system/virtio-dxg-bin.service'
@@ -184,11 +233,14 @@ if __name__ == '__main__':
     parser.add_argument('--recipe', required=True, type=Path)
     parser.add_argument('--browser-wrapper', type=Path)
     parser.add_argument('--xdg-settings-fast', type=Path)
+    parser.add_argument('--app-fastlaunch', type=Path)
     args = parser.parse_args()
     version = extract(args.archive, args.destination, args.recipe)
-    if args.browser_wrapper or args.xdg_settings_fast:
+    if args.browser_wrapper or args.xdg_settings_fast or args.app_fastlaunch:
         try:
-            prepare_launch_paths(Path('/'), args.browser_wrapper, args.xdg_settings_fast)
+            prepare_launch_paths(
+                Path('/'), args.browser_wrapper, args.xdg_settings_fast, args.app_fastlaunch
+            )
         except (ValueError, OSError) as error:
             print('virtio-dxg: launch path overlay unavailable: ' + str(error))
     print('virtio-dxg: staged matched Mesa ' + version + '; hardware acceptance pending')
