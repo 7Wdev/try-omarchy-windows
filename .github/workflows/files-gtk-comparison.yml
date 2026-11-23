@@ -16,10 +16,24 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           persist-credentials: false
+      - name: Fetch pinned Arch package indexes
+        run: |
+          mkdir "$RUNNER_TEMP/arch-index"
+          cd "$RUNNER_TEMP/arch-index"
+          for repo in core extra; do
+            curl --fail --location --proto '=https' --proto-redir '=https' --retry 3 \
+              --connect-timeout 30 --max-time 120 \
+              "https://archive.archlinux.org/repos/2026/10/10/$repo/os/x86_64/$repo.db" -o "$repo.db"
+          done
+          sha256sum -c <<'SUMS'
+          efd4f4380de593065b26ae508479767e799a82eb46f85bdb0633dadf0220f79f  core.db
+          2643ecbff9a66444924cf92ee1a8f01f508602b5762a4c78d4d59eb14374611a  extra.db
+          SUMS
       - name: Compile control, grid and combined GTK libraries
         run: |
           mkdir "$RUNNER_TEMP/gtk"
           docker run --rm --cpus=2 --memory=6g --pids-limit=512 \
+            -v "$RUNNER_TEMP/arch-index:/indexes:ro" \
             -v "$GITHUB_WORKSPACE:/repo:ro" -v "$RUNNER_TEMP/gtk:/out" \
             docker.io/library/archlinux@sha256:b860afd5823683f7ea389ba5f00d812f4fe55f6f286dea329d2abeefa535e309 \
             bash /repo/virtio-dxg/bench/desktop/build-gtk-comparison.sh

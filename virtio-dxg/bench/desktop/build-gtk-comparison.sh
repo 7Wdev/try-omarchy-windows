@@ -2,10 +2,11 @@
 # Compile comparable guest libraries on an isolated Linux runner.
 set -euo pipefail
 cd /tmp
-printf 'Server = https://archive.archlinux.org/repos/2026/10/03/$repo/os/$arch\n' >/etc/pacman.d/mirrorlist
+printf 'CacheServer = https://geo.mirror.pkgbuild.com/$repo/os/$arch\nServer = https://archive.archlinux.org/repos/2026/10/10/$repo/os/$arch\n' >/etc/pacman.d/mirrorlist
+install -Dm644 -t /var/lib/pacman/sync /indexes/{core,extra}.db
 pacman-key --init
 pacman-key --populate archlinux
-pacman --disable-sandbox --noconfirm -Syyu --needed base-devel gtk4 meson git \
+pacman --disable-download-timeout --disable-sandbox --noconfirm -Su --needed base-devel gtk4 meson git \
   glib2-devel gobject-introspection hicolor-icon-theme libsysprof-capture python-gobject \
   sassc shaderc vulkan-headers wayland-protocols curl
 test "$(pacman -Q gtk4)" = 'gtk4 1:4.24.1-1'
