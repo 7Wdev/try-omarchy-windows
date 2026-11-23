@@ -253,22 +253,31 @@ class DesktopData(unittest.TestCase):
         subprocess.run(['sh', '-n', str(HERE / 'initcpio/virtio_dxg')], check=True, timeout=5)
 
     def test_app_fastlaunch_stages_installed_apps_and_desktops_only(self):
-        for app in ('foot', 'code', 'omacalc', 'gnome-calculator', 'vkcube'):
+        for app in ('foot', 'code', 'nautilus', 'omacalc', 'gnome-calculator', 'vkcube',
+                    'uwsm-app', 'gtk-launch', 'xdg-terminal-exec'):
             p = self.root / 'usr/bin' / app
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text('#!/bin/sh\n')
+        omarchy_bin = self.root / 'usr/share/omarchy/bin'
+        omarchy_bin.mkdir(parents=True, exist_ok=True)
+        (omarchy_bin / 'omarchy-launch-webapp').write_text('#!/bin/sh\n')
         apps_dir = self.root / 'usr/share/applications'
         apps_dir.mkdir(parents=True, exist_ok=True)
         (apps_dir / 'foot.desktop').write_text('[Desktop Entry]\nExec=foot\n')
         (apps_dir / 'omacalc.desktop').write_text('[Desktop Entry]\nExec=/usr/bin/omacalc\n')
+        (apps_dir / 'uwsm-app.desktop').write_text('[Desktop Entry]\nExec=uwsm-app\n')
         self.assertTrue(payload.prepare_launch_paths(
             self.root, app_fastlaunch=HERE / 'initcpio/app-fastlaunch'))
-        self.assertTrue((self.root / 'run/virtio-dxg/bin/foot').is_file())
-        self.assertTrue((self.root / 'run/virtio-dxg/bin/code').is_file())
-        self.assertTrue((self.root / 'run/virtio-dxg/bin/omacalc').is_file())
-        self.assertTrue((self.root / 'run/virtio-dxg/bin/gnome-calculator').is_file())
-        self.assertTrue((self.root / 'run/virtio-dxg/bin/vkcube').is_file())
+        for app in ('foot', 'code', 'nautilus', 'omacalc', 'gnome-calculator', 'vkcube',
+                    'uwsm-app', 'gtk-launch', 'xdg-terminal-exec'):
+            self.assertTrue((self.root / 'run/virtio-dxg/bin' / app).is_file())
+        self.assertTrue((self.root / 'run/virtio-dxg/omarchy-bin/omarchy-launch-webapp').is_file())
+        self.assertTrue((self.root / 'run/virtio-dxg/omarchy-orig/omarchy-launch-webapp').is_file())
+        self.assertFalse((self.root / 'run/virtio-dxg/omarchy-bin/omarchy-launch-nautilus').exists())
         self.assertFalse((self.root / 'run/virtio-dxg/bin/blender').exists())
+        self.assertFalse((self.root / 'run/virtio-dxg/applications/uwsm-app.desktop').exists())
+        unit = (self.root / 'run/systemd/system/virtio-dxg-bin.service').read_text()
+        self.assertIn('/usr/share/omarchy/bin', unit)
         self.assertEqual(
             (self.root / 'run/virtio-dxg/applications/foot.desktop').read_text(),
             '[Desktop Entry]\nExec=/run/virtio-dxg/bin/foot\n',

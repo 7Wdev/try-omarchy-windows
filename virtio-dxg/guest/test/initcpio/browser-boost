@@ -37,7 +37,10 @@ fi
 sleep "${BOOST_DELAY:-1}"
 pgrep -u "$(id -u)" -x chromium >/dev/null && exit 0
 
-/usr/bin/chromium --no-startup-window --keep-alive-for-test &
+/usr/bin/chromium \
+    --enable-features=TouchpadOverscrollHistoryNavigation,SpareRendererForSitePerProcess,ParallelDownloading,BackForwardCache \
+    --enable-gpu-rasterization --enable-zero-copy --num-raster-threads=4 \
+    --disk-cache-size=536870912 --no-startup-window --keep-alive-for-test &
 cpid=$!
 
 sock="${XDG_CONFIG_HOME:-$HOME/.config}/chromium/SingletonSocket"
@@ -47,14 +50,50 @@ for _ in $(seq 1 100); do
     sleep 0.1
 done
 
-# Silently warm Chromium's first-window + GPU compositor path off-screen and close it.
+# Dynamically discover all PWA/webapp origins from .desktop entries + YouTube/Discord CDN
+# origins, resolve DNS (AF_INET), and warm TLS/HTTP2/SPARE renderer off-screen cleanly.
 if [ -S "$sock" ] && [ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ] && command -v python3 >/dev/null 2>&1; then
     (
         python3 - <<'PY' >/dev/null 2>&1 || true
-import os, socket, subprocess, time
+import glob, os, re, socket, subprocess, time, urllib.parse
+
 rt = os.environ["XDG_RUNTIME_DIR"]
 his = os.environ["HYPRLAND_INSTANCE_SIGNATURE"]
 sock_path = os.path.join(rt, "hypr", his, ".socket2.sock")
+
+origins = {
+    "https://youtube.com",
+    "https://www.youtube.com",
+    "https://i.ytimg.com",
+    "https://yt3.ggpht.com",
+    "https://fonts.gstatic.com",
+    "https://fonts.googleapis.com",
+    "https://discord.com",
+    "https://cdn.discordapp.com",
+    "https://gateway.discord.gg",
+    "https://assets.discord.com",
+}
+data_dirs = [os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share"), "/usr/share"]
+for d in data_dirs:
+    for df in glob.glob(os.path.join(d, "applications", "*.desktop")):
+        try:
+            txt = open(df, encoding="utf-8", errors="ignore").read()
+        except OSError:
+            continue
+        for m in re.finditer(r"https://[^\s\"']+", txt):
+            p = urllib.parse.urlsplit(m.group(0))
+            if p.netloc:
+                origins.add(f"{p.scheme}://{p.netloc}")
+
+hosts = sorted({urllib.parse.urlsplit(o).hostname for o in origins if urllib.parse.urlsplit(o).hostname})
+for h in hosts:
+    try:
+        socket.getaddrinfo(h, 443, socket.AF_INET)
+    except OSError:
+        pass
+
+links = "".join(f'<link rel="preconnect" href="{o}" crossorigin>' for o in sorted(origins)[:24])
+warm_url = "data:text/html,<!doctype html><head>" + urllib.parse.quote(links) + "</head>"
 
 def hypr_move_warm(a):
     expr = f'hl.dispatch(hl.dsp.window.move({{ workspace = "special:vdxg_warm", follow = false, window = "address:0x{a}" }}))'
@@ -74,7 +113,7 @@ s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 s.connect(sock_path)
 s.settimeout(0.05)
 p = subprocess.Popen(["/usr/bin/chromium", "--class=vdxg-warm-browser",
-                      "--new-window", "about:blank"],
+                      "--new-window", warm_url],
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 buf, addr = b"", None
 deadline = time.monotonic() + 6.0
@@ -93,12 +132,20 @@ while time.monotonic() < deadline and addr is None:
 s.close()
 if addr:
     hypr_move_warm(addr)
-    time.sleep(0.25)
+    time.sleep(0.8)
     hypr_close(addr)
 try:
     p.wait(timeout=3)
 except subprocess.TimeoutExpired:
     pass
+
+while True:
+    time.sleep(120)
+    for h in hosts:
+        try:
+            socket.getaddrinfo(h, 443, socket.AF_INET)
+        except OSError:
+            pass
 PY
     ) &
 fi

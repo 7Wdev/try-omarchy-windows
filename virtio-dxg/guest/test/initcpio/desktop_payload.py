@@ -10,17 +10,29 @@ import tarfile
 import tempfile
 
 LIMIT = 512 * 1024 ** 2
-FASTLAUNCH_APPS = (
+DESKTOP_REWRITE_APPS = (
     'chromium',
     'code',
     'foot',
     'alacritty',
     'ghostty',
+    'nautilus',
     'omacalc',
     'gnome-calculator',
     'vkcube',
     'blender',
 )
+LAUNCHER_HELPER_APPS = (
+    'uwsm-app',
+    'gtk-launch',
+    'xdg-terminal-exec',
+    'omarchy-launch-webapp',
+    'omarchy-launch-browser',
+    'omarchy-cmd-browser-handoff',
+    'omarchy-launch-nautilus',
+    'omarchy-launch-terminal',
+)
+FASTLAUNCH_APPS = DESKTOP_REWRITE_APPS + LAUNCHER_HELPER_APPS
 
 
 def canonical(name):
@@ -150,8 +162,9 @@ def prepare_launch_paths(root, browser_wrapper=None, xdg_settings_fast=None, app
         (boot / 'bin/xdg-settings').chmod(0o755)
         has_bin = True
 
+    has_omarchy_bin = False
     if app_fastlaunch:
-        for cmd in FASTLAUNCH_APPS:
+        for cmd in DESKTOP_REWRITE_APPS:
             dst = boot / 'bin' / cmd
             if dst.exists():
                 continue  # browser_wrapper keeps precedence on winbuf=0
@@ -161,6 +174,27 @@ def prepare_launch_paths(root, browser_wrapper=None, xdg_settings_fast=None, app
                 dst.chmod(0o755)
                 has_bin = True
                 staged_desktop_cmds.append(cmd)
+
+        omarchy_src_dir = root / 'usr/share/omarchy/bin'
+        omarchy_dst_dir = boot / 'omarchy-bin'
+        omarchy_orig_dir = boot / 'omarchy-orig'
+        for cmd in LAUNCHER_HELPER_APPS:
+            src_exists = (root / 'usr/bin' / cmd).is_file() or (omarchy_src_dir / cmd).is_file()
+            if src_exists:
+                dst = boot / 'bin' / cmd
+                if not dst.exists():
+                    (boot / 'bin').mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(app_fastlaunch, dst)
+                    dst.chmod(0o755)
+                    has_bin = True
+            if (omarchy_src_dir / cmd).is_file():
+                omarchy_orig_dir.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(omarchy_src_dir / cmd, omarchy_orig_dir / cmd)
+                (omarchy_orig_dir / cmd).chmod(0o755)
+                omarchy_dst_dir.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(app_fastlaunch, omarchy_dst_dir / cmd)
+                (omarchy_dst_dir / cmd).chmod(0o755)
+                has_omarchy_bin = True
 
         apps_dir = root / 'usr/share/applications'
         if staged_desktop_cmds and apps_dir.is_dir():
@@ -182,7 +216,7 @@ def prepare_launch_paths(root, browser_wrapper=None, xdg_settings_fast=None, app
                     has_apps = True
                     break
 
-    if not has_bin and not has_apps:
+    if not has_bin and not has_apps and not has_omarchy_bin:
         return False
 
     starts = []
@@ -192,6 +226,11 @@ def prepare_launch_paths(root, browser_wrapper=None, xdg_settings_fast=None, app
         (boot / 'bin-work').mkdir(parents=True, exist_ok=True)
         starts.append('ExecStart=/usr/bin/mount -t overlay overlay -o lowerdir=/run/virtio-dxg/bin:/usr/local/bin,upperdir=/run/virtio-dxg/bin-upper,workdir=/run/virtio-dxg/bin-work /usr/local/bin')
         stops.append('ExecStop=/usr/bin/umount /usr/local/bin')
+    if has_omarchy_bin:
+        (boot / 'omarchy-upper').mkdir(parents=True, exist_ok=True)
+        (boot / 'omarchy-work').mkdir(parents=True, exist_ok=True)
+        starts.append('ExecStart=/usr/bin/mount -t overlay overlay -o lowerdir=/run/virtio-dxg/omarchy-bin:/usr/share/omarchy/bin,upperdir=/run/virtio-dxg/omarchy-upper,workdir=/run/virtio-dxg/omarchy-work /usr/share/omarchy/bin')
+        stops.insert(0, 'ExecStop=/usr/bin/umount /usr/share/omarchy/bin')
     if has_apps:
         (boot / 'app-upper').mkdir(parents=True, exist_ok=True)
         (boot / 'app-work').mkdir(parents=True, exist_ok=True)

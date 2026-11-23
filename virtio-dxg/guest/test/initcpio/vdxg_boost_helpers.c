@@ -17,6 +17,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/file.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -191,6 +192,7 @@ static pthread_once_t g_wl_once = PTHREAD_ONCE_INIT;
 static pthread_mutex_t g_gate_mtx = PTHREAD_MUTEX_INITIALIZER;
 static char g_gate_sock[256];
 static int g_gate_armed = 0;
+static int g_gate_waiting = 0;
 static int g_gate_released = 0;
 static int g_client_fd = -1;
 
@@ -272,6 +274,16 @@ static int is_wrapper_process(void)
            !strcmp(base, "timeout") || !strcmp(base, "sh") || !strcmp(base, "bash");
 }
 
+static void *gate_init_watchdog(void *arg)
+{
+    (void)arg;
+    sleep(20);
+    if (!__atomic_load_n(&g_gate_waiting, __ATOMIC_ACQUIRE) &&
+        !__atomic_load_n(&g_gate_released, __ATOMIC_ACQUIRE))
+        _exit(1);
+    return NULL;
+}
+
 __attribute__((constructor))
 static void wl_gate_init(void)
 {
@@ -281,6 +293,12 @@ static void wl_gate_init(void)
     if (s && *s && strlen(s) < sizeof(g_gate_sock) - 16) {
         strcpy(g_gate_sock, s);
         g_gate_armed = 1;
+        pthread_t wth;
+        pthread_attr_t wattr;
+        pthread_attr_init(&wattr);
+        pthread_attr_setdetachstate(&wattr, PTHREAD_CREATE_DETACHED);
+        (void)pthread_create(&wth, &wattr, gate_init_watchdog, NULL);
+        pthread_attr_destroy(&wattr);
     }
     unsetenv("LD_PRELOAD");
     unsetenv("VDXG_WL_GATE_SOCK");
@@ -316,6 +334,7 @@ static void wait_at_gate(struct wl_proxy *surface)
     }
     strcpy(sock_path, g_gate_sock);
     pthread_mutex_unlock(&g_gate_mtx);
+    __atomic_store_n(&g_gate_waiting, 1, __ATOMIC_RELEASE);
 
     /* Serialize multiple warm standby processes sharing sock_path. */
     snprintf(lock_path, sizeof(lock_path), "%s.lock", sock_path);
@@ -838,6 +857,8 @@ static int jb_str(struct jbuf *j, const char *s)
     return jb_append(j, "\"", 1);
 }
 
+#define jb_lit(j, s) jb_append((j), (s), sizeof(s) - 1)
+
 static void put_be32(uint8_t *dst, uint32_t v)
 {
     dst[0] = (uint8_t)(v >> 24);
@@ -1036,34 +1057,47 @@ static int fast_foot(int argc, char **argv)
 static int fast_alacritty(int argc, char **argv)
 {
     char rt[256], spath[512];
-    runtime_dir(rt, sizeof(rt));
-    snprintf(spath, sizeof(spath), "%s/vdxg-boost/alacritty.sock", rt);
-    struct stat st;
-    if (stat(spath, &st) != 0 || !S_ISSOCK(st.st_mode) || st.st_uid != getuid())
-        return 11;
+    const char *workdir = NULL;
+
     for (int a = 1; a < argc; a++) {
         const char *s = argv[a];
-        if (!strcmp(s, "msg") || !strcmp(s, "migrate") ||
-            !strcmp(s, "-h") || !strcmp(s, "--help") ||
-            !strcmp(s, "-V") || !strcmp(s, "--version") ||
-            !strcmp(s, "--daemon") || !strcmp(s, "--config-file") ||
-            !strncmp(s, "--socket", 8) || !strcmp(s, "-o") || !strcmp(s, "--option"))
+        if (!strncmp(s, "--working-directory=", 20)) {
+            workdir = s + 20;
+        } else if (!strcmp(s, "--working-directory") && a + 1 < argc) {
+            workdir = argv[++a];
+        } else {
             return 11;
+        }
     }
-    char **nargv = calloc((size_t)argc + 6, sizeof(char *));
-    if (!nargv)
+    runtime_dir(rt, sizeof(rt));
+    snprintf(spath, sizeof(spath), "%s/vdxg-boost/alacritty.sock", rt);
+    int fd = connect_unix_uid(spath);
+    if (fd < 0)
         return 11;
-    int k = 0;
-    nargv[k++] = (char *)"/usr/bin/alacritty";
-    nargv[k++] = (char *)"msg";
-    nargv[k++] = (char *)"--socket";
-    nargv[k++] = spath;
-    nargv[k++] = (char *)"create-window";
-    for (int a = 1; a < argc; a++)
-        nargv[k++] = argv[a];
-    int rc = run_and_wait_status("/usr/bin/alacritty", nargv);
-    free(nargv);
-    return rc;
+
+    struct jbuf jb = {0};
+    if (jb_lit(&jb, "{\"CreateWindow\":{\"terminal_options\":{\"working_directory\":") != 0 ||
+        (workdir ? jb_str(&jb, workdir) : jb_lit(&jb, "null")) != 0 ||
+        jb_lit(&jb, ",\"hold\":false,\"command\":[]},\"window_identity\":{\"title\":null,\"class\":null},\"activation_token\":null,\"option\":[]}}") != 0) {
+        free(jb.data);
+        close(fd);
+        return 11;
+    }
+    int wr = write_all(fd, jb.data, jb.len);
+    free(jb.data);
+    if (wr != 0) {
+        close(fd);
+        return 11;
+    }
+    shutdown(fd, SHUT_WR);
+    struct pollfd pfd = { .fd = fd, .events = POLLIN };
+    if (poll(&pfd, 1, 500) > 0) {
+        char buf[64];
+        ssize_t n = read(fd, buf, sizeof(buf));
+        (void)n;
+    }
+    close(fd);
+    return 0;
 }
 
 static int fast_ghostty(int argc, char **argv)
@@ -1076,14 +1110,224 @@ static int fast_ghostty(int argc, char **argv)
     snprintf(ready, sizeof(ready), "%s/vdxg-boost/ghostty.ready", rt);
     if (access(ready, F_OK) != 0)
         return 11;
-    char *nargv[] = { (char *)"/usr/bin/ghostty", (char *)"+new-window", NULL };
+    char *nargv[] = {
+        (char *)"/usr/bin/ghostty", (char *)"+new-window", NULL
+    };
     return run_and_wait_status("/usr/bin/ghostty", nargv);
+}
+
+static int fast_nautilus(int argc, char **argv)
+{
+    char rt[256], ready[512];
+    if (argc > 2 || (argc == 2 && strcmp(argv[1], "--new-window") != 0))
+        return 11;
+    runtime_dir(rt, sizeof(rt));
+    snprintf(ready, sizeof(ready), "%s/vdxg-boost/files.ready", rt);
+    if (access(ready, F_OK) != 0)
+        return 11;
+    char *nargv[] = {
+        (char *)"/usr/bin/nautilus", (char *)"--new-window", NULL
+    };
+    return run_and_wait_status("/usr/bin/nautilus", nargv);
+}
+
+static int mimeapps_chromium_default(const char *path)
+{
+    FILE *f = fopen(path, "r");
+    if (!f)
+        return -1;
+    char line[1024];
+    int in_sec = 0;
+    int res = -1;
+    while (fgets(line, sizeof(line), f)) {
+        size_t l = strlen(line);
+        while (l && (line[l - 1] == '\n' || line[l - 1] == '\r'))
+            line[--l] = '\0';
+        if (line[0] == '[') {
+            in_sec = !strcmp(line, "[Default Applications]");
+            continue;
+        }
+        if (!in_sec)
+            continue;
+        const char *val = NULL;
+        if (!strncmp(line, "x-scheme-handler/https=", 23))
+            val = line + 23;
+        else if (!strncmp(line, "x-scheme-handler/http=", 22))
+            val = line + 22;
+        if (!val)
+            continue;
+        char copy[1024];
+        snprintf(copy, sizeof(copy), "%s", val);
+        char *saveptr = NULL;
+        for (char *tok = strtok_r(copy, ";", &saveptr); tok; tok = strtok_r(NULL, ";", &saveptr)) {
+            if (!*tok || !strcmp(tok, "omarchy-browser.desktop"))
+                continue;
+            res = !strcmp(tok, "chromium.desktop") ? 1 : 0;
+            fclose(f);
+            return res;
+        }
+    }
+    fclose(f);
+    return res;
+}
+
+static int is_chromium_default_browser(void)
+{
+    const char *cfg = getenv("XDG_CONFIG_HOME");
+    const char *home = getenv("HOME");
+    char cdir[512];
+    if (cfg && *cfg)
+        snprintf(cdir, sizeof(cdir), "%s", cfg);
+    else if (home && *home)
+        snprintf(cdir, sizeof(cdir), "%s/.config", home);
+    else
+        return 1;
+    const char *files[] = { "hyprland-mimeapps.list", "mimeapps.list" };
+    for (size_t i = 0; i < sizeof(files) / sizeof(files[0]); i++) {
+        char p[600];
+        snprintf(p, sizeof(p), "%s/%s", cdir, files[i]);
+        int r = mimeapps_chromium_default(p);
+        if (r >= 0)
+            return r;
+    }
+    return 1;
+}
+
+static int fast_webapp(int argc, char **argv)
+{
+    if (argc < 2 || argc >= 60 || getenv("CHROME_USER_DATA_DIR") ||
+        getenv("CHROME_CONFIG_HOME") || !is_chromium_default_browser())
+        return 11;
+    char app_arg[4096];
+    if (strlen(argv[1]) + 7 >= sizeof(app_arg))
+        return 11;
+    snprintf(app_arg, sizeof(app_arg), "--app=%s", argv[1]);
+    char *nargv[64];
+    int k = 0;
+    nargv[k++] = (char *)"chromium";
+    nargv[k++] = app_arg;
+    for (int a = 2; a < argc; a++)
+        nargv[k++] = argv[a];
+    nargv[k] = NULL;
+    return fast_chromium(k, nargv);
+}
+
+static const char *base_name(const char *p)
+{
+    const char *s = strrchr(p, '/');
+    return s ? s + 1 : p;
+}
+
+static int fast_browser_handoff(int argc, char **argv)
+{
+    if (argc < 2 || getenv("CHROME_USER_DATA_DIR") || getenv("CHROME_CONFIG_HOME"))
+        return 11;
+    if (strcmp(base_name(argv[1]), "chromium") != 0)
+        return 11;
+    return fast_chromium(argc - 1, argv + 1);
+}
+
+static int fast_launch_browser(int argc, char **argv)
+{
+    if (argc >= 60 || getenv("CHROME_USER_DATA_DIR") ||
+        getenv("CHROME_CONFIG_HOME") || !is_chromium_default_browser())
+        return 11;
+    for (int a = 1; a < argc; a++) {
+        if (!strcmp(argv[a], "--private"))
+            return 11;
+    }
+    if (argc == 1) {
+        char *nargv[] = { (char *)"chromium", (char *)"--new-window", NULL };
+        return fast_chromium(2, nargv);
+    }
+    return fast_chromium(argc, argv);
+}
+
+static int read_default_terminal(char *out, size_t sz)
+{
+    const char *cfg = getenv("XDG_CONFIG_HOME");
+    const char *home = getenv("HOME");
+    char cdir[512];
+    if (cfg && *cfg)
+        snprintf(cdir, sizeof(cdir), "%s", cfg);
+    else if (home && *home)
+        snprintf(cdir, sizeof(cdir), "%s/.config", home);
+    else
+        return -1;
+    const char *files[] = { "hypr-xdg-terminals.list", "xdg-terminals.list" };
+    for (size_t i = 0; i < sizeof(files) / sizeof(files[0]); i++) {
+        char p[600];
+        snprintf(p, sizeof(p), "%s/%s", cdir, files[i]);
+        FILE *f = fopen(p, "r");
+        if (!f)
+            continue;
+        char line[256];
+        while (fgets(line, sizeof(line), f)) {
+            char *s = line;
+            while (*s == ' ' || *s == '\t')
+                s++;
+            size_t l = strlen(s);
+            while (l && (s[l - 1] == '\n' || s[l - 1] == '\r' || s[l - 1] == ' ' || s[l - 1] == '\t'))
+                s[--l] = '\0';
+            if (!*s || *s == '#')
+                continue;
+            snprintf(out, sz, "%s", s);
+            fclose(f);
+            return 0;
+        }
+        fclose(f);
+    }
+    return -1;
+}
+
+static int fast_terminal_exec(int argc, char **argv, int from_omarchy_helper)
+{
+    const char *dir = NULL;
+    if (from_omarchy_helper) {
+        if (argc != 1)
+            return 11;
+    } else {
+        for (int a = 1; a < argc; a++) {
+            if (!strncmp(argv[a], "--dir=", 6))
+                dir = argv[a] + 6;
+            else
+                return 11;
+        }
+    }
+    char term[256] = "";
+    if (read_default_terminal(term, sizeof(term)) != 0)
+        return 11;
+    if (!strcasecmp(term, "Alacritty.desktop") || !strcasecmp(term, "alacritty.desktop")) {
+        if (dir) {
+            char arg[PATH_MAX + 32];
+            snprintf(arg, sizeof(arg), "--working-directory=%s", dir);
+            char *nargv[] = { (char *)"alacritty", arg, NULL };
+            return fast_alacritty(2, nargv);
+        }
+        char *nargv[] = { (char *)"alacritty", NULL };
+        return fast_alacritty(1, nargv);
+    }
+    if (!strcmp(term, "foot.desktop") || !strcmp(term, "footclient.desktop")) {
+        if (dir) {
+            char *nargv[] = { (char *)"foot", (char *)"-D", (char *)dir, NULL };
+            return fast_foot(3, nargv);
+        }
+        char *nargv[] = { (char *)"foot", NULL };
+        return fast_foot(1, nargv);
+    }
+    if (!strcmp(term, "com.mitchellh.ghostty.desktop") || !strcmp(term, "ghostty.desktop")) {
+        if (!dir) {
+            char *nargv[] = { (char *)"ghostty", NULL };
+            return fast_ghostty(1, nargv);
+        }
+    }
+    return 11;
 }
 
 static volatile sig_atomic_t g_got_sig = 0;
 static void on_term_sig(int sig) { g_got_sig = sig; }
 
-static int fast_wl_gate(const char *sock_name)
+static int fast_wl_gate(const char *sock_name, int detached)
 {
     char rt[256], spath[512], lpath[530], okbuf[8];
     runtime_dir(rt, sizeof(rt));
@@ -1106,6 +1350,26 @@ static int fast_wl_gate(const char *sock_name)
     if (poll(&pfd, 1, 1500) <= 0 || read(fd, okbuf, 3) < 2 || memcmp(okbuf, "OK", 2) != 0) {
         close(fd);
         return 11;
+    }
+    if (detached) {
+        pid_t pid = fork();
+        if (pid < 0) {
+            close(fd);
+            return 0;
+        }
+        if (pid > 0) {
+            close(fd);
+            return 0;
+        }
+        setsid();
+        int dn = open("/dev/null", O_RDWR);
+        if (dn >= 0) {
+            dup2(dn, STDIN_FILENO);
+            dup2(dn, STDOUT_FILENO);
+            dup2(dn, STDERR_FILENO);
+            if (dn > 2)
+                close(dn);
+        }
     }
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
@@ -1133,7 +1397,214 @@ static int fast_wl_gate(const char *sock_name)
         }
     }
     close(fd);
+    if (detached)
+        _exit(0);
     return 0;
+}
+
+static int dispatch_known_app(int argc, char **argv, int detached)
+{
+    if (argc < 1 || !argv[0])
+        return 11;
+    const char *app = base_name(argv[0]);
+
+    if (!strcmp(app, "chromium"))
+        return fast_chromium(argc, argv);
+    if (!strcmp(app, "code"))
+        return fast_code(argc, argv);
+    if (!strcmp(app, "foot"))
+        return fast_foot(argc, argv);
+    if (!strcmp(app, "alacritty"))
+        return fast_alacritty(argc, argv);
+    if (!strcmp(app, "ghostty"))
+        return fast_ghostty(argc, argv);
+    if (!strcmp(app, "nautilus"))
+        return detached ? fast_nautilus(argc, argv) : 11;
+    if (!strcmp(app, "omacalc") && argc == 1)
+        return fast_wl_gate("gate-omacalc.sock", detached);
+    if (!strcmp(app, "gnome-calculator") && argc == 1)
+        return fast_wl_gate("gate-gnome-calculator.sock", detached);
+    if (!strcmp(app, "vkcube") && argc == 1)
+        return fast_wl_gate("gate-vkcube.sock", detached);
+    if (!strcmp(app, "blender")) {
+        if (argc == 1)
+            return fast_wl_gate("gate-blender.sock", detached);
+        if (argc == 2 && !strcmp(argv[1], "--factory-startup"))
+            return fast_wl_gate("gate-blender-factory.sock", detached);
+    }
+    if (!strcmp(app, "omarchy-launch-webapp"))
+        return fast_webapp(argc, argv);
+    if (!strcmp(app, "omarchy-cmd-browser-handoff"))
+        return fast_browser_handoff(argc, argv);
+    if (!strcmp(app, "omarchy-launch-browser"))
+        return fast_launch_browser(argc, argv);
+    if (!strcmp(app, "omarchy-launch-nautilus") && argc == 1)
+        return fast_nautilus(argc, argv);
+    if (!strcmp(app, "omarchy-launch-terminal"))
+        return fast_terminal_exec(argc, argv, 1);
+    if (!strcmp(app, "xdg-terminal-exec"))
+        return fast_terminal_exec(argc, argv, 0);
+    return 11;
+}
+
+static int find_desktop_file(const char *id, char *out, size_t out_sz)
+{
+    char clean[256];
+    size_t len = strlen(id);
+    if (!len || len >= sizeof(clean) - 16 || strchr(id, '/'))
+        return -1;
+    if (len > 8 && !strcmp(id + len - 8, ".desktop"))
+        snprintf(clean, sizeof(clean), "%s", id);
+    else
+        snprintf(clean, sizeof(clean), "%s.desktop", id);
+
+    const char *xdh = getenv("XDG_DATA_HOME");
+    const char *home = getenv("HOME");
+    char user_dir[512] = "";
+    if (xdh && *xdh)
+        snprintf(user_dir, sizeof(user_dir), "%s/applications", xdh);
+    else if (home && *home)
+        snprintf(user_dir, sizeof(user_dir), "%s/.local/share/applications", home);
+
+    const char *dirs[4] = {
+        user_dir[0] ? user_dir : NULL,
+        "/run/virtio-dxg/applications",
+        "/usr/local/share/applications",
+        "/usr/share/applications",
+    };
+    for (int i = 0; i < 4; i++) {
+        if (!dirs[i])
+            continue;
+        snprintf(out, out_sz, "%s/%s", dirs[i], clean);
+        if (access(out, R_OK) == 0)
+            return 0;
+    }
+    return -1;
+}
+
+static int parse_exec_tokens(const char *raw, char *buf, size_t bsz, char **toks, int max_toks)
+{
+    int nt = 0;
+    size_t bo = 0;
+    const char *p = raw;
+    while (*p) {
+        while (*p == ' ' || *p == '\t')
+            p++;
+        if (!*p)
+            break;
+        if (nt >= max_toks - 1)
+            return -1;
+        char *start = buf + bo;
+        char q = 0;
+        while (*p && (q || (*p != ' ' && *p != '\t'))) {
+            if (*p == '\'' || *p == '"') {
+                if (!q) {
+                    q = *p++;
+                    continue;
+                } else if (*p == q) {
+                    q = 0;
+                    p++;
+                    continue;
+                }
+            }
+            if (!q && strchr("|&;<>()$`*?~", *p))
+                return -1;
+            if (*p == '\\' && p[1] && q != '\'')
+                p++;
+            if (bo + 2 >= bsz)
+                return -1;
+            buf[bo++] = *p++;
+        }
+        if (q)
+            return -1;
+        buf[bo++] = '\0';
+        if (start[0] == '%' && start[1] && !start[2])
+            continue;
+        if (nt == 0 && strchr(start, '='))
+            return -1;
+        toks[nt++] = start;
+    }
+    toks[nt] = NULL;
+    return nt;
+}
+
+static void launch_via_systemd_run(int argc, char **argv)
+{
+    if (argc < 1 || argc > 60)
+        return;
+    char *sargv[72];
+    int k = 0;
+    sargv[k++] = (char *)"/usr/bin/systemd-run";
+    sargv[k++] = (char *)"--user";
+    sargv[k++] = (char *)"--no-block";
+    sargv[k++] = (char *)"--quiet";
+    sargv[k++] = (char *)"--collect";
+    sargv[k++] = (char *)"--slice=app-graphical.slice";
+    sargv[k++] = (char *)"--";
+    for (int i = 0; i < argc; i++)
+        sargv[k++] = argv[i];
+    sargv[k] = NULL;
+    execv("/usr/bin/systemd-run", sargv);
+}
+
+static int fast_gtk_launch(int argc, char **argv, int from_uwsm)
+{
+    if (argc != 2 || !argv[1][0] || argv[1][0] == '-')
+        return 11;
+    char dpath[600];
+    if (find_desktop_file(argv[1], dpath, sizeof(dpath)) != 0)
+        return 11;
+    FILE *f = fopen(dpath, "r");
+    if (!f)
+        return 11;
+    char line[4096], exec_raw[4096] = "";
+    int in_entry = 0, is_term = 0, is_dbus = 0;
+    while (fgets(line, sizeof(line), f)) {
+        size_t l = strlen(line);
+        while (l && (line[l - 1] == '\n' || line[l - 1] == '\r'))
+            line[--l] = '\0';
+        if (line[0] == '[') {
+            if (in_entry)
+                break;
+            in_entry = !strcmp(line, "[Desktop Entry]");
+            continue;
+        }
+        if (!in_entry)
+            continue;
+        if (!strcmp(line, "Terminal=true"))
+            is_term = 1;
+        else if (!strcmp(line, "DBusActivatable=true"))
+            is_dbus = 1;
+        else if (!strncmp(line, "Exec=", 5))
+            snprintf(exec_raw, sizeof(exec_raw), "%s", line + 5);
+    }
+    fclose(f);
+    if (is_term || !exec_raw[0])
+        return 11;
+    char tokbuf[4096];
+    char *toks[64];
+    int ntoks = parse_exec_tokens(exec_raw, tokbuf, sizeof(tokbuf), toks, 64);
+    if (ntoks <= 0)
+        return 11;
+    if (dispatch_known_app(ntoks, toks, 1) == 0)
+        return 0;
+    if (from_uwsm && !is_dbus) {
+        launch_via_systemd_run(ntoks, toks);
+        return 11;
+    }
+    return 11;
+}
+
+static int fast_uwsm_app(int argc, char **argv)
+{
+    if (argc < 3 || strcmp(argv[1], "--") != 0 || !argv[2][0] || argv[2][0] == '-')
+        return 11;
+    if (!strcmp(base_name(argv[2]), "gtk-launch"))
+        return fast_gtk_launch(argc - 2, argv + 2, 1);
+    if (dispatch_known_app(argc - 2, argv + 2, 1) == 0)
+        return 0;
+    launch_via_systemd_run(argc - 2, argv + 2);
+    return 11;
 }
 
 int main(int argc, char **argv)
@@ -1147,29 +1618,11 @@ int main(int argc, char **argv)
     char **app_argv = argv + 1;
     int app_argc = argc - 1;
 
-    if (!strcmp(app, "chromium"))
-        return fast_chromium(app_argc, app_argv);
-    if (!strcmp(app, "code"))
-        return fast_code(app_argc, app_argv);
-    if (!strcmp(app, "foot"))
-        return fast_foot(app_argc, app_argv);
-    if (!strcmp(app, "alacritty"))
-        return fast_alacritty(app_argc, app_argv);
-    if (!strcmp(app, "ghostty"))
-        return fast_ghostty(app_argc, app_argv);
-    if (!strcmp(app, "omacalc") && app_argc == 1)
-        return fast_wl_gate("gate-omacalc.sock");
-    if (!strcmp(app, "gnome-calculator") && app_argc == 1)
-        return fast_wl_gate("gate-gnome-calculator.sock");
-    if (!strcmp(app, "vkcube") && app_argc == 1)
-        return fast_wl_gate("gate-vkcube.sock");
-    if (!strcmp(app, "blender")) {
-        if (app_argc == 1)
-            return fast_wl_gate("gate-blender.sock");
-        if (app_argc == 2 && !strcmp(app_argv[1], "--factory-startup"))
-            return fast_wl_gate("gate-blender-factory.sock");
-    }
-    return 11;
+    if (!strcmp(app, "uwsm-app"))
+        return fast_uwsm_app(app_argc, app_argv);
+    if (!strcmp(app, "gtk-launch"))
+        return fast_gtk_launch(app_argc, app_argv, 0);
+    return dispatch_known_app(app_argc, app_argv, 0);
 }
 
 #endif

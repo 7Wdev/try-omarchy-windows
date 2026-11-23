@@ -30,6 +30,11 @@ APPS = [  # label, command, window class (substring, lower case)
     ('wine-vulkan', WINE_CMD, 'vkpresent'),
 ]
 
+WEBAPP_APPS = [
+    ('youtube-pwa', 'omarchy-launch-webapp https://youtube.com/', 'youtube'),
+    ('discord-pwa', 'omarchy-launch-webapp https://discord.com/channels/@me', 'discord'),
+]
+
 
 def have(cmd):
     exe = shlex.split(cmd)[0]
@@ -104,13 +109,16 @@ def main():
                         help='Warm runs after the initial cold launch (default: 3)')
     parser.add_argument('--json', type=str, default=None,
                         help='Optional path to write structured JSON latency results')
+    parser.add_argument('--include-webapps', action='store_true',
+                        help='Also measure YouTube and Discord PWA window launches')
     args = parser.parse_args()
 
     sock_path = os.path.join(os.environ['XDG_RUNTIME_DIR'], 'hypr',
                              os.environ['HYPRLAND_INSTANCE_SIGNATURE'], '.socket2.sock')
     results = {}
     fmt = lambda t: f'{t:7.0f}' if t is not None else '   fail'
-    for label, cmd, cls in APPS:
+    apps = APPS + (WEBAPP_APPS if args.include_webapps else [])
+    for label, cmd, cls in apps:
         if not have(cmd):
             print(f'{label:18s} not installed')
             results[label] = {'status': 'skipped'}

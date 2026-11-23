@@ -271,15 +271,23 @@ run_terminal() {
         fi
     fi
 
-    if [ -x /usr/bin/ghostty ] &&
-       ! pgrep -u "$(id -u)" -x ghostty >/dev/null 2>&1; then
-        /usr/bin/ghostty --gtk-single-instance=true --initial-window=false \
-            --quit-after-last-window-closed=false >/dev/null 2>&1 &
+    if [ -x /usr/bin/ghostty ]; then
+        (
+            while :; do
+                if ! pgrep -u "$(id -u)" -x ghostty >/dev/null 2>&1; then
+                    /usr/bin/ghostty --gtk-single-instance=true --initial-window=false \
+                        --quit-after-last-window-closed=false >/dev/null 2>&1
+                fi
+                sleep 1
+            done
+        ) &
         for _ in $(seq 1 50); do
-            busctl --user list 2>/dev/null | grep -q 'com\.mitchellh\.ghostty' && break
+            busctl --user call org.freedesktop.DBus /org/freedesktop/DBus \
+                org.freedesktop.DBus NameHasOwner s com.mitchellh.ghostty 2>/dev/null | grep -q 'true' && break
             sleep 0.1
         done
-        if busctl --user list 2>/dev/null | grep -q 'com\.mitchellh\.ghostty'; then
+        if busctl --user call org.freedesktop.DBus /org/freedesktop/DBus \
+            org.freedesktop.DBus NameHasOwner s com.mitchellh.ghostty 2>/dev/null | grep -q 'true'; then
             prime_window ghostty /usr/bin/ghostty +new-window
             : >"$bdir/ghostty.ready" 2>/dev/null || true
         fi
@@ -380,27 +388,68 @@ PY
     if [ -f "$bdir/libvdxg-wl-gate.so" ] && [ -x /usr/bin/omacalc ]; then
         gate_pool_loop "$bdir/gate-omacalc.sock" /usr/bin/omacalc &
         ( sleep 0.5; gate_pool_loop "$bdir/gate-omacalc.sock" /usr/bin/omacalc ) &
-        ( sleep 1.0; gate_pool_loop "$bdir/gate-omacalc.sock" /usr/bin/omacalc ) &
     fi
 
     if [ -f "$bdir/libvdxg-wl-gate.so" ] && [ -x /usr/bin/gnome-calculator ]; then
         gate_pool_loop "$bdir/gate-gnome-calculator.sock" /usr/bin/gnome-calculator &
         ( sleep 0.6; gate_pool_loop "$bdir/gate-gnome-calculator.sock" /usr/bin/gnome-calculator ) &
-        ( sleep 1.2; gate_pool_loop "$bdir/gate-gnome-calculator.sock" /usr/bin/gnome-calculator ) &
     fi
 
     if [ -f "$bdir/libvdxg-wl-gate.so" ] && [ -x /usr/bin/vkcube ]; then
         gate_pool_loop "$bdir/gate-vkcube.sock" /usr/bin/vkcube &
         ( sleep 0.4; gate_pool_loop "$bdir/gate-vkcube.sock" /usr/bin/vkcube ) &
-        ( sleep 0.8; gate_pool_loop "$bdir/gate-vkcube.sock" /usr/bin/vkcube ) &
     fi
 
     if [ -f "$bdir/libvdxg-wl-gate.so" ] && [ -x /usr/bin/blender ]; then
-        ( sleep 4.5; gate_pool_loop "$bdir/gate-blender-factory.sock" /usr/bin/blender --factory-startup ) &
-        ( sleep 5.7; gate_pool_loop "$bdir/gate-blender-factory.sock" /usr/bin/blender --factory-startup ) &
-        ( sleep 6.9; gate_pool_loop "$bdir/gate-blender-factory.sock" /usr/bin/blender --factory-startup ) &
-        ( sleep 8.1; gate_pool_loop "$bdir/gate-blender.sock" /usr/bin/blender ) &
+        ( sleep 5.5; gate_pool_loop "$bdir/gate-blender-factory.sock" /usr/bin/blender --factory-startup ) &
+        ( sleep 8.0; gate_pool_loop "$bdir/gate-blender-factory.sock" /usr/bin/blender --factory-startup ) &
+        ( sleep 10.5; gate_pool_loop "$bdir/gate-blender-factory.sock" /usr/bin/blender --factory-startup ) &
+        ( sleep 13.0; gate_pool_loop "$bdir/gate-blender.sock" /usr/bin/blender ) &
     fi
+
+    # Monitor .desktop directories every 5s so any newly installed app or webapp
+    # has its binary/libraries paged in and its HTTPS DNS resolved automatically.
+    (
+        python3 - <<'PY' >/dev/null 2>&1 || true
+import glob, os, re, shlex, shutil, socket, subprocess, time, urllib.parse
+dirs = [os.path.join(os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share"), "applications"),
+        "/usr/local/share/applications", "/usr/share/applications"]
+seen = {}
+for d in dirs:
+    for p in glob.glob(os.path.join(d, "*.desktop")):
+        try: seen[p] = os.stat(p).st_mtime_ns
+        except OSError: pass
+while True:
+    time.sleep(5)
+    for d in dirs:
+        for p in glob.glob(os.path.join(d, "*.desktop")):
+            try: mt = os.stat(p).st_mtime_ns
+            except OSError: continue
+            if seen.get(p) == mt:
+                continue
+            seen[p] = mt
+            try: txt = open(p, encoding="utf-8", errors="ignore").read()
+            except OSError: continue
+            for m in re.finditer(r"https://[^\s\"']+", txt):
+                h = urllib.parse.urlsplit(m.group(0)).hostname
+                if h:
+                    try: socket.getaddrinfo(h, 443, socket.AF_INET)
+                    except OSError: pass
+            for line in txt.splitlines():
+                if line.startswith("Exec="):
+                    try: exe = shlex.split(line[5:])[0]
+                    except Exception: exe = ""
+                    path = shutil.which(exe) if exe else None
+                    if path and os.path.isfile(path):
+                        try:
+                            subprocess.run(["sh", "-c", 'ldd "$1" 2>/dev/null | awk "$3 ~ /^\\// {print $3}" | xargs -r cat >/dev/null 2>&1', "_", path], timeout=5)
+                            with open(path, "rb") as f:
+                                while f.read(1 << 20): pass
+                        except Exception:
+                            pass
+                    break
+PY
+    ) &
 
     wait
 }
@@ -415,12 +464,18 @@ run_wine() {
         [ -d "$d" ] || continue
         if [ -d "$d/wine/bin" ] && [ -x "$d/wine/bin/wineserver" ] && [ -d "$d/prefix/drive_c" ]; then
             WINEPREFIX="$d/prefix" "$d/wine/bin/wineserver" -p >/dev/null 2>&1 &
-            cat "$d"/*.dll "$d"/*.so /mnt/vdxgdrivers/nvoglv64.dll >/dev/null 2>&1 &
+            cat "$d"/*.dll "$d"/*.so /usr/lib/wsl/drivers/nv*_amd64_*/nvoglv64.dll /mnt/vdxgdrivers/nvoglv64.dll >/dev/null 2>&1 &
             (
                 sleep 0.5
-                cd "$d" && WINEPREFIX="$d/prefix" WINEDEBUG=-all WINEDLLOVERRIDES="mscoree,mshtml=" \
-                    "$d/wine/bin/wine" rundll32.exe user32.dll,SetProcessDPIAware
-            ) >/dev/null 2>&1 &
+                cd "$d" || exit 0
+                WINEPREFIX="$d/prefix" WINEDEBUG=-all WINEDLLOVERRIDES="mscoree,mshtml=" \
+                    timeout 6 "$d/wine/bin/wine" cmd.exe /c exit >/dev/null 2>&1 || true
+                sleep 2
+                if [ -f "$d/nvvkprobe.exe" ] && command -v timeout >/dev/null 2>&1; then
+                    WINEPREFIX="$d/prefix" WINEDEBUG=-all WINEDLLOVERRIDES="vulkan-1=n;mscoree,mshtml=" \
+                        timeout 10 "$d/wine/bin/wine" "$d/nvvkprobe.exe" >/dev/null 2>&1 || true
+                fi
+            ) &
         elif [ "$d" = "$HOME/.wine" ] && [ -d "$d/drive_c" ] && command -v wineserver >/dev/null 2>&1; then
             WINEPREFIX="$d" wineserver -p >/dev/null 2>&1 &
         fi

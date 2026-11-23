@@ -341,16 +341,32 @@ is reduced at every layer of the VM stack:
   `virtio_dxg` stages active NVIDIA/WSL shared libraries sequentially into
   guest tmpfs (`stage_wsl_tmpfs` under `/run/virtio-dxg-wsl`, opt out with
   `virtio_dxg.wsl_tmpfs=0`), avoiding Windows QEMU `9p-local` concurrent `pread`
-  page-cache races on hot `.so` page faults. `desktop_payload.py` mounts
-  writable tmpfs-backed overlays on `/usr/local/bin` and `/usr/share/applications`
-  with fastlaunch wrappers. `app-prefetch` performs a two-tier `dlopen()`-aware
-  `posix_fadvise` warm-up, while `desktop-boost` + `browser-boost` +
-  `vdxg_boost_helpers.c` (`vdxg-fastlaunch`, `libvdxg-gapp-hold.so`, and
-  `libvdxg-wl-gate.so` gating on `(wl_display, wl_proxy_get_id)` plus `dlsym`
-  interposition for dynamically loaded Wayland clients) keep native, GTK4, Qt6,
-  Chromium/PWA, VS Code/Electron, Vulkan, Blender, and Wine apps ready for
-  sub-100 ms window launches (measured across all 12 classes in `applaunch.py`
-  at `2.6–116.9 ms` warm median; `virtio_dxg.boost=0` disables all boost paths).
+  page-cache races on hot `.so` page faults, and disables broken QEMU SLIRP
+  IPv6 (`virtio-dxg-slirp-ipv6.service`) to eliminate multi-second Chromium/PWA
+  DNS timeouts. `desktop_payload.py` mounts writable tmpfs-backed overlays on
+  `/usr/local/bin`, `/usr/share/omarchy/bin` (with original fallbacks staged in
+  `/run/virtio-dxg/omarchy-orig`), and `/usr/share/applications`.
+  `app-prefetch` performs a two-tier `dlopen()`-aware `posix_fadvise` warm-up
+  that also warms Chromium `Code Cache`/`Service Worker`/`GPUCache`, Electron
+  `CachedData` directories across `~/.config/*`, and Wine/NVIDIA libraries.
+  `desktop-boost`, `browser-boost` (Chromium `SpareRendererForSitePerProcess`,
+  GPU raster/zero-copy, dynamic PWA `<link rel="preconnect">`, and `120s` IPv4
+  DNS refresh), and `vdxg_boost_helpers.c` (`vdxg-fastlaunch` handling
+  Chromium, `omarchy-launch-webapp`/`browser`/`terminal`, `uwsm-app`,
+  `gtk-launch`, `alacritty.sock` JSON IPC, Ghostty single-instance, VS Code,
+  and gated apps; `libvdxg-gapp-hold.so`; and `libvdxg-wl-gate.so` with a
+  20 s pre-gate watchdog, `dlsym` interposition, and `(wl_display,
+  wl_proxy_get_id)` tracking) keep newly installed apps, Electron apps, PWAs,
+  native Linux apps, Vulkan/Blender, and Wine/Proton workloads ready for
+  instant launches. On clean boot, `applaunch.py 3 --include-webapps`
+  measured **`2.7–113.4 ms`** warm median across all 14 targets (`vkcube`
+  `3.3 ms`, `blender` `2.7 ms`, `omacalc` `3.2 ms`, `gnome-calculator`
+  `3.4 ms`, `foot` `20.5 ms`, `discord-pwa` `41.2 ms`, `ghostty` `55.8 ms`,
+  `chromium` `58.8 ms`, `chromium-pwa` `65.5 ms`, `alacritty` `69.6 ms`,
+  `code` `76.1 ms`, `nautilus` `87.2 ms`, `youtube-pwa` `94.6 ms`,
+  `wine-vulkan` `113.4 ms`), and `uwsm-app -- gtk-launch` measured
+  `98.4`/`83.6 ms` (`YouTube.desktop`) and `53.3`/`48.6 ms`
+  (`Discord.desktop`); `virtio_dxg.boost=0` disables all boost paths.
 - **Host/guest `/dev/dxg` fast paths:** `dxgvirtio.c` raises its stack-inline
   message buffer (`DXGVIRTIO_INLINE_BUF=1024`) so larger adapter/query/open
   requests avoid vmalloc copies. `dxghost` caches immutable `QueryAdapterInfo`

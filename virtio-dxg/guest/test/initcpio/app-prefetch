@@ -124,9 +124,48 @@ collect_tier1() {
         add_dir "$d"
     done
     local cache_home="${XDG_CACHE_HOME:-$HOME/.cache}"
+    local config_home="${XDG_CONFIG_HOME:-$HOME/.config}"
     for d in "$cache_home/vdxg-pso" "${MESA_SHADER_CACHE_DIR:-$cache_home/mesa_shader_cache}" \
-             "$cache_home/mesa_shader_cache_db"; do
+             "$cache_home/mesa_shader_cache_db" \
+             "$cache_home/chromium/Default/Code Cache" \
+             "$cache_home/google-chrome/Default/Code Cache" \
+             "$cache_home/BraveSoftware/Brave-Browser/Default/Code Cache" \
+             "$config_home/chromium/Default/Service Worker" \
+             "$config_home/chromium/Default/GPUCache" \
+             "$config_home/chromium/Default/DawnGraphiteCache" \
+             "$config_home/chromium/Default/DawnWebGPUCache" \
+             "$config_home/chromium/ShaderCache" \
+             "$config_home/chromium/GrShaderCache" \
+             "$config_home/google-chrome/Default/Service Worker" \
+             "$config_home/google-chrome/Default/GPUCache" \
+             "$config_home/BraveSoftware/Brave-Browser/Default/Service Worker" \
+             "$config_home/BraveSoftware/Brave-Browser/Default/GPUCache"; do
         add_dir "$d"
+    done
+    # Dynamically prefetch V8 bytecode + GPU caches for all Electron/Chromium apps
+    # (VS Code, Discord, Vesktop, Obsidian, Spotify, Slack, Signal, Cursor, etc.).
+    for d in "$config_home"/*/CachedData "$config_home"/*/"Code Cache" "$config_home"/*/GPUCache \
+             "$HOME/vdxg-test/prefix/drive_c/users/Public/AppData/Local/NVIDIA/DXCache" \
+             "$HOME/vdxg-test/prefix/drive_c/users/Public/AppData/Local/NVIDIA/GLCache" \
+             "$HOME/.nv/ComputeCache"; do
+        [ -d "$d" ] && add_dir "$d"
+    done
+    if [ -d "$HOME/vdxg-test" ]; then
+        for f in "$HOME/vdxg-test"/*.dll "$HOME/vdxg-test"/*.so "$HOME/vdxg-test"/*.exe \
+                 "$HOME/vdxg-test"/wine/bin/*; do
+            add "$f"
+        done
+        add_dir "$HOME/vdxg-test/wine/lib/wine/x86_64-unix"
+        for d in ntdll kernel32 kernelbase user32 gdi32 win32u imm32 advapi32 rpcrt4 \
+                 sechost ucrtbase msvcrt winex11.drv winewayland.drv vulkan-1 opengl32 \
+                 d3d11 d3d12 dxgi winevulkan; do
+            add "$HOME/vdxg-test/wine/lib/wine/x86_64-windows/$d.dll"
+            add "$HOME/vdxg-test/wine/lib/wine/x86_64-windows/$d.drv"
+        done
+    fi
+    for d in "$HOME/.local/share/Steam/compatibilitytools.d"/*/files/lib/wine/x86_64-unix \
+             /usr/share/steam/compatibilitytools.d/*/files/lib/wine/x86_64-unix; do
+        [ -d "$d" ] && add_dir "$d"
     done
 }
 

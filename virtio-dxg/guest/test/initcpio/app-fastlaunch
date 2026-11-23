@@ -12,4 +12,7 @@ if [ "${VIRTIO_DXG_BOOST:-1}" != 0 ]; then
         [ "$rc" -eq 0 ] && exit 0
     fi
 fi
+if [ -x "/run/virtio-dxg/omarchy-orig/$prog" ]; then
+    exec "/run/virtio-dxg/omarchy-orig/$prog" "$@"
+fi
 exec "/usr/bin/$prog" "$@"

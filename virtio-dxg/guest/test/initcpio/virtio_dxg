@@ -320,6 +320,19 @@ Slice=app-graphical.slice
 UNIT
         ln -sf ../virtio-dxg-apps-boost.service \
             /run/systemd/user/graphical-session.target.wants/ || return 1
+        mkdir -p /run/systemd/system/multi-user.target.wants || return 1
+        cat >/run/systemd/system/virtio-dxg-slirp-ipv6.service <<'UNIT'
+[Unit]
+Description=virtio-dxg: disable broken QEMU SLIRP IPv6 to eliminate browser/PWA DNS stalls
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'ip addr show 2>/dev/null | grep -qE "inet 10\\.0\\.2\\.|inet6 fec0::" && sysctl -qw net.ipv6.conf.all.disable_ipv6=1 net.ipv6.conf.default.disable_ipv6=1 || true'
+RemainAfterExit=yes
+UNIT
+        ln -sf ../virtio-dxg-slirp-ipv6.service \
+            /run/systemd/system/multi-user.target.wants/ || return 1
         ;;
     esac
     echo ":: virtio-dxg: desktop selects d3d12 (Mesa $(cat "$m/lib/virtio-dxg-mesa-version")${winbuf:+, zero-copy windows})"
