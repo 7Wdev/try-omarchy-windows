@@ -58,8 +58,11 @@ setup_desktop() {
     mkdir -p /run/virtio-dxg || return 1
     cp /virtio-dxg/desktop_payload.py /virtio-dxg/chromium-wrapper \
         /virtio-dxg/desktop-priority /virtio-dxg/app-prefetch \
-        /virtio-dxg/browser-boost /virtio-dxg/mesa-recipe.json \
+        /virtio-dxg/browser-boost /virtio-dxg/desktop-boost \
+        /virtio-dxg/xdg-settings-fast /virtio-dxg/mesa-recipe.json \
         /run/virtio-dxg/ || return 1
+    chmod 0755 /run/virtio-dxg/desktop-boost /run/virtio-dxg/xdg-settings-fast \
+        /run/virtio-dxg/app-prefetch /run/virtio-dxg/browser-boost 2>/dev/null || true
     mount -o bind /run /new_root/run || return 1
     # Window buffers (the guest module offers them unless
     # virtio_dxg.winbuf=0): applications hand the compositor GPU textures,
@@ -78,7 +81,8 @@ setup_desktop() {
     esac
     # shellcheck disable=SC2086
     if ! chroot /new_root /usr/bin/python3 /run/virtio-dxg/desktop_payload.py \
-            "$tarball" "$m" --recipe /run/virtio-dxg/mesa-recipe.json $browser; then
+            "$tarball" "$m" --recipe /run/virtio-dxg/mesa-recipe.json \
+            --xdg-settings-fast /run/virtio-dxg/xdg-settings-fast $browser; then
         umount /new_root/run
         echo ":: virtio-dxg: Mesa payload rejected; GPU environment not selected" >&2
         return 1
@@ -120,6 +124,11 @@ setup_desktop() {
         "LIBVA_DRIVERS_PATH=$m/lib/dri" \
         "VK_ADD_DRIVER_FILES=$m/share/vulkan/icd.d/dzn_icd.x86_64.json" \
         GSK_RENDERER=gl \
+        ELECTRON_OZONE_PLATFORM_HINT=auto \
+        __GL_SHADER_DISK_CACHE=1 \
+        __GL_SHADER_DISK_CACHE_SKIP_CLEANUP=1 \
+        DXVK_STATE_CACHE=1 \
+        VKD3D_CONFIG=pipeline_library_app_cache \
         >/run/environment.d/90-virtio-dxg.conf.pending || return 1
     mv /run/environment.d/90-virtio-dxg.conf.pending \
         /run/environment.d/90-virtio-dxg.conf || return 1
@@ -176,6 +185,59 @@ Slice=app-graphical.slice
 UNIT
         ln -sf ../virtio-dxg-browser-boost.service \
             /run/systemd/user/graphical-session.target.wants/ || return 1
+        cat >/run/systemd/user/virtio-dxg-pso-cache.service <<'UNIT'
+[Unit]
+Description=virtio-dxg: tmpfs pipeline library cache sync
+PartOf=graphical-session.target
+
+[Service]
+Type=exec
+ExecStart=/bin/bash /run/virtio-dxg/desktop-boost psocache
+Slice=app-graphical.slice
+UNIT
+        ln -sf ../virtio-dxg-pso-cache.service \
+            /run/systemd/user/graphical-session.target.wants/ || return 1
+        cat >/run/systemd/user/virtio-dxg-files-boost.service <<'UNIT'
+[Unit]
+Description=virtio-dxg: Files kept ready for instant windows
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/bin/bash /run/virtio-dxg/desktop-boost files
+Restart=always
+RestartSec=2
+Slice=app-graphical.slice
+UNIT
+        ln -sf ../virtio-dxg-files-boost.service \
+            /run/systemd/user/graphical-session.target.wants/ || return 1
+        cat >/run/systemd/user/virtio-dxg-terminal-boost.service <<'UNIT'
+[Unit]
+Description=virtio-dxg: terminal server and GL probe warmup
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=exec
+ExecStart=/bin/bash /run/virtio-dxg/desktop-boost terminal
+Slice=app-graphical.slice
+UNIT
+        ln -sf ../virtio-dxg-terminal-boost.service \
+            /run/systemd/user/graphical-session.target.wants/ || return 1
+        cat >/run/systemd/user/virtio-dxg-wine-boost.service <<'UNIT'
+[Unit]
+Description=virtio-dxg: keep wineserver warm once Wine runs
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=exec
+ExecStart=/bin/bash /run/virtio-dxg/desktop-boost wine
+Slice=app-graphical.slice
+UNIT
+        ln -sf ../virtio-dxg-wine-boost.service \
+            /run/systemd/user/graphical-session.target.wants/ || return 1
         ;;
     esac
     echo ":: virtio-dxg: desktop selects d3d12 (Mesa $(cat "$m/lib/virtio-dxg-mesa-version")${winbuf:+, zero-copy windows})"
@@ -216,6 +278,10 @@ run_latehook() {
     # Wine 11 makes one 32 GiB address-space reservation that the default
     # overcommit heuristic refuses in an 8 GiB guest.
     echo 1 >/proc/sys/vm/overcommit_memory
+    # Larger block readahead helps multi-queue virtio-blk preload binaries and caches.
+    if [ -w /sys/block/vda/queue/read_ahead_kb ]; then
+        echo 512 >/sys/block/vda/queue/read_ahead_kb 2>/dev/null || true
+    fi
     modprobe -q 9pnet_virtio
     modprobe -q 9p
     # NVIDIA's libraries look for the driver store at /usr/lib/wsl/drivers.

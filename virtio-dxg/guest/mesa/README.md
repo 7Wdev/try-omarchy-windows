@@ -114,6 +114,30 @@ What Blender 5.2's Vulkan backend needs beyond 1.3, each a D3D12 feature:
 Dozen still lacks tessellation and a viewport index written by geometry
 shaders; Vulkan 1.4 is the next step.
 
+## PSO prewarm and DXGI format cache
+
+Both Gallium `d3d12` and Dozen (`dzn`) cache pipeline state descriptors on
+disk (`d3d12_pso/` with `RECORD_VERSION=2` for graphics and compute PSOs;
+`dzn_pso/` with `DZP1` stream serialization covering graphics, compute and
+variant streams) and compile live `ID3D12PipelineState` objects on background
+worker threads at screen/device init.
+
+- **Why descriptor prewarm instead of `ID3D12PipelineLibrary`:** NVIDIA's WSL
+  Linux driver (`libnvwgf2umx.so`) crashes when calling
+  `ID3D12PipelineState::GetCachedBlob` or `ID3D12Device1::CreatePipelineLibrary`
+  over `/dev/dxg`. Recording BLAKE3-verified descriptor streams and compiling live
+  PSOs asynchronously avoids those driver calls while still eliminating main-thread
+  shader-compile stalls on warm launches.
+- **Directory selection and opt-outs:** both prewarmers prefer `VDXG_PSO_CACHE_DIR`,
+  then tmpfs `$XDG_RUNTIME_DIR/vdxg-pso` when populated (gated on `.ready`
+  written by `desktop-boost`), falling back to `MESA_SHADER_CACHE_DIR` /
+  `$XDG_CACHE_HOME/mesa_shader_cache` / `$HOME/.cache/mesa_shader_cache`. Set
+  `D3D12_PSO_PREWARM=0` or `DZN_PSO_PREWARM=0` to disable either prewarmer.
+- **DXGI format support cache:** `dzn_physical_device_check_dxgi_format` caches
+  successful `D3D12_FEATURE_FORMAT_SUPPORT` queries for formats `< 256` under
+  `pdev->format_cache_lock`, eliminating repeated host round trips during Vulkan
+  physical device / format enumeration.
+
 ## Building
 
 Build from a full repository checkout on Linux with the guest's build dependencies

@@ -14,6 +14,6 @@ esac
 command -v chromium >/dev/null || exit 0
 # Already running (opened by the user before this ran): nothing to do.
 pgrep -u "$(id -u)" -x chromium >/dev/null && exit 0
-sleep "${BOOST_DELAY:-6}"
+sleep "${BOOST_DELAY:-2}"
 pgrep -u "$(id -u)" -x chromium >/dev/null && exit 0
 exec chromium --no-startup-window --keep-alive-for-test

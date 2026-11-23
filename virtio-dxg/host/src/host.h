@@ -65,6 +65,18 @@ struct dxghost_fence_page {
 };
 
 #define DXGHOST_STAT_TYPES 128
+#define DXGHOST_QAI_CACHE_SLOTS 128
+#define DXGHOST_QAI_CACHE_MAX_SIZE 65536u
+
+struct dxghost_qai_entry {
+	uint64_t hash;
+	uint32_t type;
+	uint32_t size;
+	int32_t ntstatus;
+	uint8_t *req_in;
+	uint8_t *resp_out;
+	bool valid;
+};
 
 /* Work found under h->lock that must run after it (see struct dxghost). */
 struct dxghost_deferred {
@@ -154,7 +166,18 @@ struct dxghost {
 	 * log every 10 s ([0] global, [1] adapter commands).
 	 */
 	bool stats;
+	bool no_qai_cache;
 	bool inline_lock2, inline_unlock2;
+	/* Leaf lock protecting immutable startup/capability query caches. Never
+	 * take any other lock or call into the driver or VMM while holding it. */
+	SRWLOCK qai_lock;
+	bool internal_info_valid;
+	struct dxgkvmb_command_getinternaladapterinfo_return internal_info;
+	bool wsl_umd_checked;
+	uint32_t wsl_umd_len;
+	uint16_t wsl_umd[260];
+	struct dxghost_qai_entry qai_cache[DXGHOST_QAI_CACHE_SLOTS];
+	uint32_t qai_clock;
 	struct dxghost_stat {
 		volatile LONG64 count, ticks, max;
 	} stat[2][DXGHOST_STAT_TYPES];
@@ -235,5 +258,8 @@ void dxghost_exec_vgpu(struct dxghost_msg *m, uint32_t type);
 void dxghost_destroy_process_objects(struct dxghost *h, uint32_t process);
 void dxghost_sysmem_release(struct dxghost *h);
 void dxghost_waits_close(struct dxghost *h);
+void dxghost_qai_cache_clear(struct dxghost *h);
+bool dxghost_qai_can_inline(struct dxghost *h, const uint8_t *cmd,
+			    uint32_t cmd_size);
 
 #endif /* DXGHOST_HOST_H */

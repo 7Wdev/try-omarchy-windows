@@ -94,6 +94,20 @@ func prepareDxgLaunch(dataDir string) (dxgLaunch, string, error) {
 // dxgDisplayHostMem is the virtio-gpu host memory limit in dxg mode.
 const dxgDisplayHostMem = 8 << 30
 
+// dxgDiskQueues picks the virtio-blk queue count for a dxg guest (1..8).
+func dxgDiskQueues(cpus int) int {
+	if cpus <= 0 {
+		cpus = minimumAutoGuestCPUs
+	}
+	if cpus < 1 {
+		return 1
+	}
+	if cpus > 8 {
+		return 8
+	}
+	return cpus
+}
+
 // dxgQemuArgs adds the device and the read-only shares. The display stays
 // the 2D virtio-gpu of CPU mode: frames reach it from the GPU (KMS mirrors).
 //
@@ -102,13 +116,18 @@ const dxgDisplayHostMem = 8 << 30
 // display device accounts each one against its host memory limit, and the
 // stock 256 MiB is gone after a few large windows: creation then fails on
 // the host and the next scanout buffer cannot be made. The memory is only
-// reserved, never touched, so the limit can be generous.
-func dxgQemuArgs(l dxgLaunch) []string {
+// reserved, never touched, so the limit can be generous. A dedicated iothread
+// and per-vCPU block queues keep disk I/O and background prefetch off QEMU's
+// main loop so window presentation stays smooth.
+func dxgQemuArgs(l dxgLaunch, cpus int) []string {
 	if !l.enabled {
 		return nil
 	}
 	args := []string{"-device", "virtio-dxg-pci",
-		"-global", "virtio-gpu-device.max_hostmem=" + strconv.FormatUint(dxgDisplayHostMem, 10)}
+		"-global", "virtio-gpu-device.max_hostmem=" + strconv.FormatUint(dxgDisplayHostMem, 10),
+		"-object", "iothread,id=diskio0",
+		"-global", "virtio-blk-pci.iothread=diskio0",
+		"-global", "virtio-blk-pci.num-queues=" + strconv.Itoa(dxgDiskQueues(cpus))}
 	for _, s := range l.shares {
 		args = append(args, "-virtfs",
 			"local,path="+qemuOptionValue(s.path)+",mount_tag="+s.tag+",security_model=none,readonly=on")

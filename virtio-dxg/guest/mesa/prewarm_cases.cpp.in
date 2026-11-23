@@ -1,0 +1,1134 @@
+// Descriptor serialization, BLAKE3 integrity, cache directory selection,
+// state-machine coordination (hit/claim/wait), and DXGI format caching.
+// Exercises extracted source from d3d12_pso_prewarm.cpp, dzn_pso_prewarm.cpp,
+// and dzn_device.c; no Mesa headers or Windows D3D12 runtime required.
+
+#include <algorithm>
+#include <atomic>
+#include <cassert>
+#include <condition_variable>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <ctype.h>
+#include <dirent.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <functional>
+#include <mutex>
+#include <string>
+#include <sys/stat.h>
+#include <thread>
+#include <unistd.h>
+#include <unordered_map>
+#include <vector>
+
+#define PACKAGE_VERSION "26.3.1"
+#define MESA_GIT_SHA1 "test"
+#define BLAKE3_OUT_LEN 32
+#define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
+#define ALIGN_POT(x, a) (((x) + ((a) - 1)) & ~((size_t)(a) - 1))
+
+typedef uint32_t UINT;
+typedef uint8_t UINT8;
+typedef int32_t INT;
+typedef int32_t HRESULT;
+
+constexpr HRESULT S_OK = 0;
+constexpr HRESULT E_FAIL = (HRESULT)0x80004005u;
+#define SUCCEEDED(hr) (((HRESULT)(hr)) >= 0)
+#define FAILED(hr) (((HRESULT)(hr)) < 0)
+
+struct GUID {
+   uint32_t Data1;
+   uint16_t Data2;
+   uint16_t Data3;
+   uint8_t Data4[8];
+   bool operator==(const GUID &o) const { return memcmp(this, &o, sizeof(*this)) == 0; }
+};
+
+#define IID_PPV_ARGS(pp) (pp)
+
+enum DXGI_FORMAT {
+   DXGI_FORMAT_UNKNOWN = 0,
+   DXGI_FORMAT_R32G32B32_FLOAT = 6,
+   DXGI_FORMAT_R8G8B8A8_UNORM = 28,
+   DXGI_FORMAT_D24_UNORM_S8_UINT = 45,
+   DXGI_FORMAT_B8G8R8A8_UNORM = 87,
+   DXGI_FORMAT_CUSTOM_HIGH = 300,
+};
+
+struct DXGI_SAMPLE_DESC {
+   UINT Count;
+   UINT Quality;
+};
+
+struct D3D12_SHADER_BYTECODE {
+   const void *pShaderBytecode;
+   size_t BytecodeLength;
+};
+
+enum D3D12_INPUT_CLASSIFICATION { D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA = 0 };
+constexpr unsigned D3D12_IA_VERTEX_INPUT_STRUCTURE_ELEMENT_COUNT = 32;
+constexpr unsigned D3D12_MAX_VIEW_INSTANCE_COUNT = 4;
+
+struct D3D12_INPUT_ELEMENT_DESC {
+   const char *SemanticName;
+   UINT SemanticIndex;
+   DXGI_FORMAT Format;
+   UINT InputSlot;
+   UINT AlignedByteOffset;
+   D3D12_INPUT_CLASSIFICATION InputSlotClass;
+   UINT InstanceDataStepRate;
+};
+
+struct D3D12_INPUT_LAYOUT_DESC {
+   const D3D12_INPUT_ELEMENT_DESC *pInputElementDescs;
+   UINT NumElements;
+};
+
+struct D3D12_STREAM_OUTPUT_DESC {
+   const void *pSODeclaration;
+   UINT NumEntries;
+   const UINT *pBufferStrides;
+   UINT NumStrides;
+   UINT RasterizedStream;
+};
+
+enum D3D12_BLEND { D3D12_BLEND_ONE = 2, D3D12_BLEND_INV_SRC_ALPHA = 6 };
+enum D3D12_BLEND_OP { D3D12_BLEND_OP_ADD = 1 };
+enum D3D12_LOGIC_OP { D3D12_LOGIC_OP_NOOP = 4 };
+
+struct D3D12_RENDER_TARGET_BLEND_DESC {
+   int BlendEnable;
+   int LogicOpEnable;
+   D3D12_BLEND SrcBlend;
+   D3D12_BLEND DestBlend;
+   D3D12_BLEND_OP BlendOp;
+   D3D12_BLEND SrcBlendAlpha;
+   D3D12_BLEND DestBlendAlpha;
+   D3D12_BLEND_OP BlendOpAlpha;
+   D3D12_LOGIC_OP LogicOp;
+   UINT8 RenderTargetWriteMask;
+};
+
+struct D3D12_BLEND_DESC {
+   int AlphaToCoverageEnable;
+   int IndependentBlendEnable;
+   D3D12_RENDER_TARGET_BLEND_DESC RenderTarget[8];
+};
+
+enum D3D12_STENCIL_OP { D3D12_STENCIL_OP_KEEP = 1 };
+enum D3D12_COMPARISON_FUNC { D3D12_COMPARISON_FUNC_LESS = 2, D3D12_COMPARISON_FUNC_ALWAYS = 8 };
+enum D3D12_DEPTH_WRITE_MASK { D3D12_DEPTH_WRITE_MASK_ALL = 1 };
+
+struct D3D12_DEPTH_STENCILOP_DESC {
+   D3D12_STENCIL_OP StencilFailOp;
+   D3D12_STENCIL_OP StencilDepthFailOp;
+   D3D12_STENCIL_OP StencilPassOp;
+   D3D12_COMPARISON_FUNC StencilFunc;
+};
+
+struct D3D12_DEPTH_STENCILOP_DESC1 {
+   D3D12_STENCIL_OP StencilFailOp;
+   D3D12_STENCIL_OP StencilDepthFailOp;
+   D3D12_STENCIL_OP StencilPassOp;
+   D3D12_COMPARISON_FUNC StencilFunc;
+   UINT8 StencilReadMask;
+   UINT8 StencilWriteMask;
+};
+
+struct D3D12_DEPTH_STENCIL_DESC {
+   int DepthEnable;
+   D3D12_DEPTH_WRITE_MASK DepthWriteMask;
+   D3D12_COMPARISON_FUNC DepthFunc;
+   int StencilEnable;
+   UINT8 StencilReadMask;
+   UINT8 StencilWriteMask;
+   D3D12_DEPTH_STENCILOP_DESC FrontFace;
+   D3D12_DEPTH_STENCILOP_DESC BackFace;
+};
+
+struct D3D12_DEPTH_STENCIL_DESC1 {
+   int DepthEnable;
+   D3D12_DEPTH_WRITE_MASK DepthWriteMask;
+   D3D12_COMPARISON_FUNC DepthFunc;
+   int StencilEnable;
+   UINT8 StencilReadMask;
+   UINT8 StencilWriteMask;
+   D3D12_DEPTH_STENCILOP_DESC FrontFace;
+   D3D12_DEPTH_STENCILOP_DESC BackFace;
+   int DepthBoundsTestEnable;
+};
+
+struct D3D12_DEPTH_STENCIL_DESC2 {
+   int DepthEnable;
+   D3D12_DEPTH_WRITE_MASK DepthWriteMask;
+   D3D12_COMPARISON_FUNC DepthFunc;
+   int StencilEnable;
+   D3D12_DEPTH_STENCILOP_DESC1 FrontFace;
+   D3D12_DEPTH_STENCILOP_DESC1 BackFace;
+   int DepthBoundsTestEnable;
+};
+using d3d12_depth_stencil_desc_type = D3D12_DEPTH_STENCIL_DESC2;
+
+enum D3D12_FILL_MODE { D3D12_FILL_MODE_SOLID = 3 };
+enum D3D12_CULL_MODE { D3D12_CULL_MODE_BACK = 3 };
+enum D3D12_CONSERVATIVE_RASTERIZATION_MODE { D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF = 0 };
+enum D3D12_LINE_RASTERIZATION_MODE { D3D12_LINE_RASTERIZATION_MODE_ALIASED = 0 };
+
+struct D3D12_RASTERIZER_DESC {
+   D3D12_FILL_MODE FillMode;
+   D3D12_CULL_MODE CullMode;
+   int FrontCounterClockwise;
+   INT DepthBias;
+   float DepthBiasClamp;
+   float SlopeScaledDepthBias;
+   int DepthClipEnable;
+   int MultisampleEnable;
+   int AntialiasedLineEnable;
+   UINT ForcedSampleCount;
+   D3D12_CONSERVATIVE_RASTERIZATION_MODE ConservativeRaster;
+};
+
+struct D3D12_RASTERIZER_DESC1 {
+   D3D12_FILL_MODE FillMode;
+   D3D12_CULL_MODE CullMode;
+   int FrontCounterClockwise;
+   float DepthBias;
+   float DepthBiasClamp;
+   float SlopeScaledDepthBias;
+   int DepthClipEnable;
+   int MultisampleEnable;
+   int AntialiasedLineEnable;
+   UINT ForcedSampleCount;
+   D3D12_CONSERVATIVE_RASTERIZATION_MODE ConservativeRaster;
+};
+
+struct D3D12_RASTERIZER_DESC2 {
+   D3D12_FILL_MODE FillMode;
+   D3D12_CULL_MODE CullMode;
+   int FrontCounterClockwise;
+   float DepthBias;
+   float DepthBiasClamp;
+   float SlopeScaledDepthBias;
+   int DepthClipEnable;
+   D3D12_LINE_RASTERIZATION_MODE LineRasterizationMode;
+   UINT ForcedSampleCount;
+   D3D12_CONSERVATIVE_RASTERIZATION_MODE ConservativeRaster;
+};
+
+struct D3D12_RT_FORMAT_ARRAY {
+   DXGI_FORMAT RTFormats[8];
+   UINT NumRenderTargets;
+};
+
+struct D3D12_CACHED_PIPELINE_STATE {
+   const void *pCachedBlob;
+   size_t CachedBlobSizeInBytes;
+};
+
+enum D3D12_VIEW_INSTANCING_FLAGS { D3D12_VIEW_INSTANCING_FLAG_NONE = 0 };
+struct D3D12_VIEW_INSTANCE_LOCATION {
+   UINT ViewportArrayIndex;
+   UINT RenderTargetArrayIndex;
+};
+struct D3D12_VIEW_INSTANCING_DESC {
+   UINT ViewInstanceCount;
+   const D3D12_VIEW_INSTANCE_LOCATION *pViewInstanceLocations;
+   D3D12_VIEW_INSTANCING_FLAGS Flags;
+};
+
+enum D3D12_INDEX_BUFFER_STRIP_CUT_VALUE { D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED = 0 };
+enum D3D12_PRIMITIVE_TOPOLOGY_TYPE { D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE = 3 };
+enum D3D12_PIPELINE_STATE_FLAGS { D3D12_PIPELINE_STATE_FLAG_NONE = 0 };
+
+enum D3D12_PIPELINE_STATE_SUBOBJECT_TYPE {
+   D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_ROOT_SIGNATURE = 0,
+   D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_VS = 1,
+   D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PS = 2,
+   D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DS = 3,
+   D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_HS = 4,
+   D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_GS = 5,
+   D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_CS = 6,
+   D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_STREAM_OUTPUT = 7,
+   D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_BLEND = 8,
+   D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SAMPLE_MASK = 9,
+   D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RASTERIZER = 10,
+   D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL = 11,
+   D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_INPUT_LAYOUT = 12,
+   D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_IB_STRIP_CUT_VALUE = 13,
+   D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PRIMITIVE_TOPOLOGY = 14,
+   D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RENDER_TARGET_FORMATS = 15,
+   D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL_FORMAT = 16,
+   D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SAMPLE_DESC = 17,
+   D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_NODE_MASK = 18,
+   D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_CACHED_PSO = 19,
+   D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_FLAGS = 20,
+   D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL1 = 21,
+   D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_VIEW_INSTANCING = 22,
+   D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL2 = 27,
+   D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RASTERIZER1 = 28,
+   D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RASTERIZER2 = 29,
+};
+
+struct ID3D12RootSignature {
+   std::atomic<int> refs{1};
+   std::vector<std::pair<GUID, std::vector<uint8_t>>> priv;
+   std::mutex lock;
+   void AddRef() { ++refs; }
+   int Release() {
+      int r = --refs;
+      if (r == 0)
+         delete this;
+      return r;
+   }
+   HRESULT SetPrivateData(const GUID &g, UINT size, const void *data) {
+      std::lock_guard<std::mutex> lk(lock);
+      const uint8_t *p = (const uint8_t *)data;
+      std::vector<uint8_t> v(p, p + size);
+      for (auto &kv : priv) {
+         if (kv.first == g) {
+            kv.second = v;
+            return S_OK;
+         }
+      }
+      priv.push_back({g, v});
+      return S_OK;
+   }
+   HRESULT GetPrivateData(const GUID &g, UINT *size, void *out) {
+      std::lock_guard<std::mutex> lk(lock);
+      for (auto &kv : priv) {
+         if (kv.first == g) {
+            if (!out) {
+               *size = (UINT)kv.second.size();
+               return S_OK;
+            }
+            if (*size < kv.second.size())
+               return E_FAIL;
+            memcpy(out, kv.second.data(), kv.second.size());
+            *size = (UINT)kv.second.size();
+            return S_OK;
+         }
+      }
+      return E_FAIL;
+   }
+};
+
+struct D3D12_GRAPHICS_PIPELINE_STATE_DESC {
+   ID3D12RootSignature *pRootSignature = nullptr;
+   D3D12_SHADER_BYTECODE VS{};
+   D3D12_SHADER_BYTECODE PS{};
+   D3D12_SHADER_BYTECODE DS{};
+   D3D12_SHADER_BYTECODE HS{};
+   D3D12_SHADER_BYTECODE GS{};
+   D3D12_STREAM_OUTPUT_DESC StreamOutput{};
+   D3D12_BLEND_DESC BlendState{};
+   UINT SampleMask = 0xffffffffu;
+   D3D12_RASTERIZER_DESC RasterizerState{};
+   D3D12_DEPTH_STENCIL_DESC DepthStencilState{};
+   D3D12_INPUT_LAYOUT_DESC InputLayout{};
+   D3D12_INDEX_BUFFER_STRIP_CUT_VALUE IBStripCutValue = D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED;
+   D3D12_PRIMITIVE_TOPOLOGY_TYPE PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+   UINT NumRenderTargets = 0;
+   DXGI_FORMAT RTVFormats[8]{};
+   DXGI_FORMAT DSVFormat = DXGI_FORMAT_UNKNOWN;
+   DXGI_SAMPLE_DESC SampleDesc{};
+   UINT NodeMask = 0;
+   D3D12_CACHED_PIPELINE_STATE CachedPSO{};
+   D3D12_PIPELINE_STATE_FLAGS Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
+};
+
+struct D3D12_COMPUTE_PIPELINE_STATE_DESC {
+   ID3D12RootSignature *pRootSignature = nullptr;
+   D3D12_SHADER_BYTECODE CS{};
+   UINT NodeMask = 0;
+   D3D12_CACHED_PIPELINE_STATE CachedPSO{};
+   D3D12_PIPELINE_STATE_FLAGS Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
+};
+
+struct D3D12_PIPELINE_STATE_STREAM_DESC {
+   size_t SizeInBytes = 0;
+   void *pPipelineStateSubobjectStream = nullptr;
+};
+
+struct CD3DX12_PIPELINE_STATE_STREAM3 {
+   ID3D12RootSignature *pRootSignature = nullptr;
+   D3D12_SHADER_BYTECODE VS{}, HS{}, DS{}, GS{}, PS{}, AS{}, MS{}, CS{};
+   D3D12_STREAM_OUTPUT_DESC StreamOutput{};
+   D3D12_INPUT_LAYOUT_DESC InputLayout{};
+   D3D12_INDEX_BUFFER_STRIP_CUT_VALUE IBStripCutValue = D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED;
+   D3D12_PRIMITIVE_TOPOLOGY_TYPE PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+   D3D12_BLEND_DESC BlendState{};
+   d3d12_depth_stencil_desc_type DepthStencilState{};
+   DXGI_FORMAT DSVFormat = DXGI_FORMAT_UNKNOWN;
+   D3D12_RASTERIZER_DESC RasterizerState{};
+   D3D12_RT_FORMAT_ARRAY RTVFormats{};
+   DXGI_SAMPLE_DESC SampleDesc{};
+   UINT SampleMask = 0xffffffffu;
+   UINT NodeMask = 0;
+   D3D12_CACHED_PIPELINE_STATE CachedPSO{};
+   D3D12_VIEW_INSTANCING_DESC ViewInstancingDesc{};
+   D3D12_PIPELINE_STATE_FLAGS Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
+
+   D3D12_GRAPHICS_PIPELINE_STATE_DESC GraphicsDescV0() const {
+      D3D12_GRAPHICS_PIPELINE_STATE_DESC g;
+      g.pRootSignature = pRootSignature;
+      g.VS = VS; g.PS = PS; g.DS = DS; g.HS = HS; g.GS = GS;
+      g.StreamOutput = StreamOutput;
+      g.BlendState = BlendState;
+      g.SampleMask = SampleMask;
+      g.RasterizerState = RasterizerState;
+      g.DepthStencilState.DepthEnable = DepthStencilState.DepthEnable;
+      g.DepthStencilState.DepthWriteMask = DepthStencilState.DepthWriteMask;
+      g.DepthStencilState.DepthFunc = DepthStencilState.DepthFunc;
+      g.DepthStencilState.StencilEnable = DepthStencilState.StencilEnable;
+      g.DepthStencilState.StencilReadMask = DepthStencilState.FrontFace.StencilReadMask;
+      g.DepthStencilState.StencilWriteMask = DepthStencilState.FrontFace.StencilWriteMask;
+      g.InputLayout = InputLayout;
+      g.IBStripCutValue = IBStripCutValue;
+      g.PrimitiveTopologyType = PrimitiveTopologyType;
+      g.NumRenderTargets = RTVFormats.NumRenderTargets;
+      for (unsigned i = 0; i < 8; i++)
+         g.RTVFormats[i] = RTVFormats.RTFormats[i];
+      g.DSVFormat = DSVFormat;
+      g.SampleDesc = SampleDesc;
+      g.NodeMask = NodeMask;
+      g.CachedPSO = CachedPSO;
+      g.Flags = Flags;
+      return g;
+   }
+};
+
+static std::atomic<int> g_live_psos{0};
+
+struct ID3D12PipelineState {
+   std::atomic<int> refs{1};
+   std::vector<uint8_t> captured_vs;
+   std::vector<uint8_t> captured_cs;
+   std::string captured_semantic;
+   UINT captured_vi_count = 0;
+   float captured_depth_bias = 0.0f;
+   UINT8 captured_stencil_read = 0;
+   UINT captured_rt0 = 0;
+   ID3D12PipelineState() { ++g_live_psos; }
+   void AddRef() { ++refs; }
+   int Release() {
+      int r = --refs;
+      if (r == 0) {
+         --g_live_psos;
+         delete this;
+      }
+      return r;
+   }
+};
+
+static const GUID dzn_root_signature_blob_guid_mirror =
+   { 0x8d4e1f23, 0x6a95, 0x4b18, { 0x9c, 0x12, 0x7e, 0x45, 0xa1, 0x30, 0x8b, 0x5d } };
+
+template <typename T>
+struct test_subobj {
+   D3D12_PIPELINE_STATE_SUBOBJECT_TYPE type;
+   T d;
+};
+
+struct ID3D12Device4 {
+   std::atomic<int> root_sig_calls{0};
+   std::atomic<int> gfx_calls{0};
+   std::atomic<int> compute_calls{0};
+   std::atomic<int> stream_calls{0};
+   std::function<void()> on_stream_enter;
+
+   HRESULT CreateRootSignature(UINT, const void *blob, size_t len, ID3D12RootSignature **out) {
+      ++root_sig_calls;
+      ID3D12RootSignature *rs = new ID3D12RootSignature;
+      const GUID d3d12_guid = { 0x3f1c2a7e, 0x9b64, 0x4d0a, { 0x8e, 0x21, 0x5c, 0x7b, 0x90, 0x14, 0xd6, 0x3a } };
+      rs->SetPrivateData(d3d12_guid, (UINT)len, blob);
+      rs->SetPrivateData(dzn_root_signature_blob_guid_mirror, (UINT)len, blob);
+      *out = rs;
+      return S_OK;
+   }
+   HRESULT CreateGraphicsPipelineState(const D3D12_GRAPHICS_PIPELINE_STATE_DESC *d, ID3D12PipelineState **out) {
+      ++gfx_calls;
+      ID3D12PipelineState *pso = new ID3D12PipelineState;
+      if (d->VS.pShaderBytecode && d->VS.BytecodeLength)
+         pso->captured_vs.assign((const uint8_t *)d->VS.pShaderBytecode,
+                                 (const uint8_t *)d->VS.pShaderBytecode + d->VS.BytecodeLength);
+      if (d->InputLayout.NumElements && d->InputLayout.pInputElementDescs &&
+          d->InputLayout.pInputElementDescs[0].SemanticName)
+         pso->captured_semantic = d->InputLayout.pInputElementDescs[0].SemanticName;
+      pso->captured_rt0 = d->RTVFormats[0];
+      *out = pso;
+      return S_OK;
+   }
+   HRESULT CreateComputePipelineState(const D3D12_COMPUTE_PIPELINE_STATE_DESC *d, ID3D12PipelineState **out) {
+      ++compute_calls;
+      ID3D12PipelineState *pso = new ID3D12PipelineState;
+      if (d->CS.pShaderBytecode && d->CS.BytecodeLength)
+         pso->captured_cs.assign((const uint8_t *)d->CS.pShaderBytecode,
+                                 (const uint8_t *)d->CS.pShaderBytecode + d->CS.BytecodeLength);
+      *out = pso;
+      return S_OK;
+   }
+   HRESULT CreatePipelineState(const D3D12_PIPELINE_STATE_STREAM_DESC *s, ID3D12PipelineState **out) {
+      ++stream_calls;
+      if (on_stream_enter)
+         on_stream_enter();
+      ID3D12PipelineState *pso = new ID3D12PipelineState;
+      const uint8_t *buf = (const uint8_t *)s->pPipelineStateSubobjectStream;
+      size_t pos = 0;
+      while (pos < s->SizeInBytes) {
+         pos = ALIGN_POT(pos, alignof(void *));
+         if (pos + sizeof(D3D12_PIPELINE_STATE_SUBOBJECT_TYPE) > s->SizeInBytes)
+            break;
+         D3D12_PIPELINE_STATE_SUBOBJECT_TYPE t;
+         memcpy(&t, buf + pos, sizeof(t));
+         auto adv = [&](size_t sz) -> const uint8_t * {
+            const uint8_t *ptr = buf + pos + sizeof(t);
+            (void)sz;
+            return ptr;
+         };
+         (void)adv;
+         switch (t) {
+         case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_ROOT_SIGNATURE:
+            pos += sizeof(test_subobj<ID3D12RootSignature *>);
+            break;
+         case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_VS: {
+            test_subobj<D3D12_SHADER_BYTECODE> obj;
+            memcpy(&obj, buf + pos, sizeof(obj));
+            if (obj.d.pShaderBytecode && obj.d.BytecodeLength)
+               pso->captured_vs.assign((const uint8_t *)obj.d.pShaderBytecode,
+                                       (const uint8_t *)obj.d.pShaderBytecode + obj.d.BytecodeLength);
+            pos += sizeof(obj);
+            break;
+         }
+         case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PS:
+         case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DS:
+         case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_HS:
+         case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_GS:
+            pos += sizeof(test_subobj<D3D12_SHADER_BYTECODE>);
+            break;
+         case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_CS: {
+            test_subobj<D3D12_SHADER_BYTECODE> obj;
+            memcpy(&obj, buf + pos, sizeof(obj));
+            if (obj.d.pShaderBytecode && obj.d.BytecodeLength)
+               pso->captured_cs.assign((const uint8_t *)obj.d.pShaderBytecode,
+                                       (const uint8_t *)obj.d.pShaderBytecode + obj.d.BytecodeLength);
+            pos += sizeof(obj);
+            break;
+         }
+         case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_INPUT_LAYOUT: {
+            test_subobj<D3D12_INPUT_LAYOUT_DESC> obj;
+            memcpy(&obj, buf + pos, sizeof(obj));
+            if (obj.d.NumElements && obj.d.pInputElementDescs && obj.d.pInputElementDescs[0].SemanticName)
+               pso->captured_semantic = obj.d.pInputElementDescs[0].SemanticName;
+            pos += sizeof(obj);
+            break;
+         }
+         case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_VIEW_INSTANCING: {
+            test_subobj<D3D12_VIEW_INSTANCING_DESC> obj;
+            memcpy(&obj, buf + pos, sizeof(obj));
+            pso->captured_vi_count = obj.d.ViewInstanceCount;
+            pos += sizeof(obj);
+            break;
+         }
+         case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_STREAM_OUTPUT:
+            pos += sizeof(test_subobj<D3D12_STREAM_OUTPUT_DESC>);
+            break;
+         case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_BLEND:
+            pos += sizeof(test_subobj<D3D12_BLEND_DESC>);
+            break;
+         case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SAMPLE_MASK:
+            pos += sizeof(test_subobj<UINT>);
+            break;
+         case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RASTERIZER:
+            pos += sizeof(test_subobj<D3D12_RASTERIZER_DESC>);
+            break;
+         case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RASTERIZER1:
+            pos += sizeof(test_subobj<D3D12_RASTERIZER_DESC1>);
+            break;
+         case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RASTERIZER2: {
+            test_subobj<D3D12_RASTERIZER_DESC2> obj;
+            memcpy(&obj, buf + pos, sizeof(obj));
+            pso->captured_depth_bias = obj.d.DepthBias;
+            pos += sizeof(obj);
+            break;
+         }
+         case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL:
+            pos += sizeof(test_subobj<D3D12_DEPTH_STENCIL_DESC>);
+            break;
+         case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL1:
+            pos += sizeof(test_subobj<D3D12_DEPTH_STENCIL_DESC1>);
+            break;
+         case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL2: {
+            test_subobj<D3D12_DEPTH_STENCIL_DESC2> obj;
+            memcpy(&obj, buf + pos, sizeof(obj));
+            pso->captured_stencil_read = obj.d.FrontFace.StencilReadMask;
+            pos += sizeof(obj);
+            break;
+         }
+         case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_IB_STRIP_CUT_VALUE:
+            pos += sizeof(test_subobj<D3D12_INDEX_BUFFER_STRIP_CUT_VALUE>);
+            break;
+         case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PRIMITIVE_TOPOLOGY:
+            pos += sizeof(test_subobj<D3D12_PRIMITIVE_TOPOLOGY_TYPE>);
+            break;
+         case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RENDER_TARGET_FORMATS: {
+            test_subobj<D3D12_RT_FORMAT_ARRAY> obj;
+            memcpy(&obj, buf + pos, sizeof(obj));
+            pso->captured_rt0 = obj.d.RTFormats[0];
+            pos += sizeof(obj);
+            break;
+         }
+         case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL_FORMAT:
+            pos += sizeof(test_subobj<DXGI_FORMAT>);
+            break;
+         case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SAMPLE_DESC:
+            pos += sizeof(test_subobj<DXGI_SAMPLE_DESC>);
+            break;
+         case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_NODE_MASK:
+            pos += sizeof(test_subobj<UINT>);
+            break;
+         case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_CACHED_PSO:
+            pos += sizeof(test_subobj<D3D12_CACHED_PIPELINE_STATE>);
+            break;
+         case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_FLAGS:
+            pos += sizeof(test_subobj<D3D12_PIPELINE_STATE_FLAGS>);
+            break;
+         default:
+            pos = s->SizeInBytes;
+            break;
+         }
+      }
+      *out = pso;
+      return S_OK;
+   }
+};
+
+struct blake3_hasher {
+   std::vector<uint8_t> data;
+};
+
+static inline void _mesa_blake3_init(blake3_hasher *h) { h->data.clear(); }
+static inline void _mesa_blake3_update(blake3_hasher *h, const void *p, size_t n) {
+   const uint8_t *b = (const uint8_t *)p;
+   h->data.insert(h->data.end(), b, b + n);
+}
+static inline void _mesa_blake3_final(blake3_hasher *h, uint8_t out[BLAKE3_OUT_LEN]) {
+   uint64_t s[4] = {
+      0x6a09e667f3bcc908ull, 0xbb67ae8584caa73bull,
+      0x3c6ef372fe94f82bull, 0xa54ff53a5f1d36f1ull,
+   };
+   for (size_t i = 0; i < h->data.size(); i++) {
+      uint64_t x = h->data[i] + 1u + (uint64_t)i * 0x9e3779b97f4a7c15ull;
+      s[i & 3] ^= x;
+      s[0] = (s[0] * 0xbf58476d1ce4e5b9ull) ^ (s[(i + 1) & 3] >> 27);
+      s[1] = (s[1] * 0x94d049bb133111ebull) ^ (s[(i + 2) & 3] << 13);
+      s[2] += s[0] ^ (s[3] >> 17);
+      s[3] ^= s[1] + (s[2] << 7);
+   }
+   memcpy(out, s, 32);
+}
+static inline void _mesa_blake3_compute(const void *p, size_t n, uint8_t out[BLAKE3_OUT_LEN]) {
+   blake3_hasher h;
+   _mesa_blake3_init(&h);
+   _mesa_blake3_update(&h, p, n);
+   _mesa_blake3_final(&h, out);
+}
+
+static inline void disk_cache_get_function_identifier(void *fn, blake3_hasher *h) {
+   uintptr_t tag = fn ? 0x12345678u : 0u;
+   _mesa_blake3_update(h, &tag, sizeof(tag));
+}
+
+static inline const char *util_get_process_name() { return "prewarm_unit_app"; }
+static inline int64_t os_time_get_nano() { return 1000000; }
+static inline bool debug_get_bool_option(const char *name, bool dfault) {
+   const char *v = getenv(name);
+   if (!v)
+      return dfault;
+   if (!strcmp(v, "0") || !strcmp(v, "false") || !strcmp(v, "no"))
+      return false;
+   return true;
+}
+
+enum test_queue_mode { Q_SYNC, Q_DEFER, Q_ASYNC_THREAD };
+static test_queue_mode g_queue_mode = Q_SYNC;
+
+constexpr unsigned UTIL_QUEUE_INIT_RESIZE_IF_FULL = 1;
+constexpr unsigned UTIL_QUEUE_INIT_SET_FULL_THREAD_AFFINITY = 2;
+
+struct util_queue_fence { int unused = 0; };
+typedef void (*util_queue_execute_func)(void *job, void *gdata, int thread_index);
+
+struct util_queue {
+   void *gdata = nullptr;
+   struct pending_job { void *job; util_queue_execute_func fn; };
+   std::vector<pending_job> deferred;
+   std::vector<std::thread> threads;
+};
+
+static inline void util_queue_fence_init(struct util_queue_fence *) {}
+static inline void util_queue_fence_destroy(struct util_queue_fence *) {}
+static inline bool util_queue_init(struct util_queue *q, const char *, unsigned, unsigned, unsigned, void *gdata) {
+   q->gdata = gdata;
+   return true;
+}
+static inline void util_queue_add_job(struct util_queue *q, void *job, struct util_queue_fence *,
+                                      util_queue_execute_func execute, util_queue_execute_func, size_t) {
+   if (g_queue_mode == Q_SYNC)
+      execute(job, q->gdata, 0);
+   else if (g_queue_mode == Q_DEFER)
+      q->deferred.push_back({job, execute});
+   else
+      q->threads.emplace_back([job, gdata = q->gdata, execute]() { execute(job, gdata, 0); });
+}
+static inline void util_queue_finish(struct util_queue *q) {
+   for (auto &t : q->threads)
+      if (t.joinable())
+         t.join();
+   q->threads.clear();
+   for (auto &j : q->deferred)
+      j.fn(j.job, q->gdata, 0);
+   q->deferred.clear();
+}
+static inline void util_queue_destroy(struct util_queue *q) { util_queue_finish(q); }
+
+namespace d3d12_unit {
+struct d3d12_pso_prewarm;
+struct d3d12_screen {
+   ID3D12Device4 *dev = nullptr;
+   uint32_t vendor_id = 0x10de;
+   uint32_t device_id = 0x2c59;
+   uint32_t subsys_id = 0x1;
+   uint32_t revision = 0xa1;
+   uint64_t driver_version = 62114;
+   struct d3d12_pso_prewarm *pso_prewarm = nullptr;
+};
+static const GUID d3d12_root_signature_blob_guid =
+   { 0x3f1c2a7e, 0x9b64, 0x4d0a, { 0x8e, 0x21, 0x5c, 0x7b, 0x90, 0x14, 0xd6, 0x3a } };
+void d3d12_pso_prewarm_init(struct d3d12_screen *screen);
+void d3d12_pso_prewarm_fini(struct d3d12_screen *screen);
+// ACTUAL_D3D12_PREWARM
+} // namespace d3d12_unit
+
+namespace dzn_unit {
+struct dzn_pso_prewarm;
+struct dzn_pso_prewarm *dzn_pso_prewarm_init(ID3D12Device4 *dev,
+   uint32_t vendor_id, uint32_t device_id, uint32_t subsys_id,
+   uint32_t revision, uint64_t driver_version, uint32_t device_flags);
+void dzn_pso_prewarm_fini(struct dzn_pso_prewarm *pw);
+HRESULT dzn_pso_prewarm_create(struct dzn_pso_prewarm *pw, ID3D12Device4 *dev,
+   const D3D12_PIPELINE_STATE_STREAM_DESC *stream_desc, ID3D12PipelineState **out);
+// ACTUAL_DZN_PREWARM
+} // namespace dzn_unit
+
+namespace dzn_fmt_unit {
+enum D3D12_FEATURE_TYPE { D3D12_FEATURE_FORMAT_SUPPORT = 1 };
+enum D3D12_FORMAT_SUPPORT1 { D3D12_FORMAT_SUPPORT1_RENDER_TARGET = 0x4000 };
+enum D3D12_FORMAT_SUPPORT2 { D3D12_FORMAT_SUPPORT2_UAV_ATOMIC_ADD = 0x20 };
+struct D3D12_FEATURE_DATA_FORMAT_SUPPORT {
+   DXGI_FORMAT Format = DXGI_FORMAT_UNKNOWN;
+   D3D12_FORMAT_SUPPORT1 Support1 = (D3D12_FORMAT_SUPPORT1)0;
+   D3D12_FORMAT_SUPPORT2 Support2 = (D3D12_FORMAT_SUPPORT2)0;
+};
+struct mtx_t { std::mutex m; };
+static inline void mtx_lock(mtx_t *l) { l->m.lock(); }
+static inline void mtx_unlock(mtx_t *l) { l->m.unlock(); }
+struct FakeFmtDev {
+   int calls = 0;
+   HRESULT next_hr = S_OK;
+   D3D12_FORMAT_SUPPORT1 s1 = D3D12_FORMAT_SUPPORT1_RENDER_TARGET;
+   D3D12_FORMAT_SUPPORT2 s2 = D3D12_FORMAT_SUPPORT2_UAV_ATOMIC_ADD;
+};
+struct dzn_physical_device {
+   FakeFmtDev *dev = nullptr;
+   mtx_t format_cache_lock;
+   struct {
+      D3D12_FORMAT_SUPPORT1 support1 = (D3D12_FORMAT_SUPPORT1)0;
+      D3D12_FORMAT_SUPPORT2 support2 = (D3D12_FORMAT_SUPPORT2)0;
+      bool valid = false;
+   } dxgi_format_cache[256];
+};
+static inline HRESULT ID3D12Device1_CheckFeatureSupport(FakeFmtDev *d, D3D12_FEATURE_TYPE,
+                                                        D3D12_FEATURE_DATA_FORMAT_SUPPORT *info, size_t) {
+   ++d->calls;
+   if (FAILED(d->next_hr))
+      return d->next_hr;
+   info->Support1 = (D3D12_FORMAT_SUPPORT1)((uint32_t)d->s1 + (uint32_t)info->Format);
+   info->Support2 = d->s2;
+   return S_OK;
+}
+// ACTUAL_DZN_FORMAT_CACHE
+} // namespace dzn_fmt_unit
+
+static void remove_tree(const std::string &path) {
+   DIR *d = opendir(path.c_str());
+   if (!d) {
+      unlink(path.c_str());
+      return;
+   }
+   while (struct dirent *ent = readdir(d)) {
+      if (!strcmp(ent->d_name, ".") || !strcmp(ent->d_name, ".."))
+         continue;
+      std::string child = path + "/" + ent->d_name;
+      struct stat st{};
+      if (lstat(child.c_str(), &st) == 0 && S_ISDIR(st.st_mode))
+         remove_tree(child);
+      else
+         unlink(child.c_str());
+   }
+   closedir(d);
+   rmdir(path.c_str());
+}
+
+static std::string find_single_bin(const std::string &dir) {
+   DIR *d = opendir(dir.c_str());
+   assert(d != nullptr);
+   std::string found;
+   while (struct dirent *ent = readdir(d)) {
+      size_t n = strlen(ent->d_name);
+      if (n > 4 && !strcmp(ent->d_name + n - 4, ".bin")) {
+         assert(found.empty());
+         found = dir + "/" + ent->d_name;
+      }
+   }
+   closedir(d);
+   assert(!found.empty());
+   return found;
+}
+
+static std::string make_temp_dir(const char *tag) {
+   std::string tmpl = std::string("/tmp/vdxg_prewarm_") + tag + "_XXXXXX";
+   std::vector<char> buf(tmpl.begin(), tmpl.end());
+   buf.push_back('\0');
+   char *res = mkdtemp(buf.data());
+   assert(res != nullptr);
+   return std::string(res);
+}
+
+template <typename T>
+static size_t emit_test_subobj(std::vector<uint8_t> &buf, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE type, const T &val) {
+   test_subobj<T> item{};
+   item.type = type;
+   item.d = val;
+   size_t pos = ALIGN_POT(buf.size(), alignof(void *));
+   buf.resize(pos + sizeof(item), 0);
+   memcpy(buf.data() + pos, &item, sizeof(item));
+   return buf.size();
+}
+
+static void build_dzn_gfx_stream(std::vector<uint8_t> &buf, ID3D12RootSignature *rs,
+                                 const std::vector<uint8_t> &vs, const std::vector<uint8_t> &ps,
+                                 const D3D12_INPUT_LAYOUT_DESC &il,
+                                 const D3D12_VIEW_INSTANCING_DESC &vi,
+                                 const D3D12_RASTERIZER_DESC2 &ra2,
+                                 const D3D12_DEPTH_STENCIL_DESC2 &ds2,
+                                 const D3D12_RT_FORMAT_ARRAY &rts) {
+   buf.clear();
+   emit_test_subobj(buf, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_ROOT_SIGNATURE, rs);
+   D3D12_SHADER_BYTECODE vsbc{ vs.data(), vs.size() };
+   D3D12_SHADER_BYTECODE psbc{ ps.data(), ps.size() };
+   emit_test_subobj(buf, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_VS, vsbc);
+   emit_test_subobj(buf, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PS, psbc);
+   emit_test_subobj(buf, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_INPUT_LAYOUT, il);
+   emit_test_subobj(buf, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_VIEW_INSTANCING, vi);
+   emit_test_subobj(buf, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RASTERIZER2, ra2);
+   emit_test_subobj(buf, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL2, ds2);
+   D3D12_BLEND_DESC blend{};
+   blend.RenderTarget[0].BlendEnable = 1;
+   emit_test_subobj(buf, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_BLEND, blend);
+   emit_test_subobj(buf, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RENDER_TARGET_FORMATS, rts);
+   DXGI_SAMPLE_DESC sd{ 4, 0 };
+   emit_test_subobj(buf, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SAMPLE_DESC, sd);
+   D3D12_PRIMITIVE_TOPOLOGY_TYPE pt = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+   emit_test_subobj(buf, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PRIMITIVE_TOPOLOGY, pt);
+   D3D12_PIPELINE_STATE_FLAGS fl = D3D12_PIPELINE_STATE_FLAG_NONE;
+   emit_test_subobj(buf, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_FLAGS, fl);
+}
+
+int main() {
+   std::string root = make_temp_dir("main");
+   std::string runtime = root + "/runtime";
+   std::string cache_fallback = root + "/cache";
+   mkdir(runtime.c_str(), 0755);
+   mkdir(cache_fallback.c_str(), 0755);
+   unsetenv("VDXG_PSO_CACHE_DIR");
+   setenv("XDG_RUNTIME_DIR", runtime.c_str(), 1);
+   setenv("MESA_SHADER_CACHE_DIR", cache_fallback.c_str(), 1);
+   setenv("D3D12_PSO_PREWARM", "1", 1);
+   setenv("DZN_PSO_PREWARM", "1", 1);
+   setenv("MESA_SHADER_CACHE_DISABLE", "0", 1);
+
+   const std::vector<uint8_t> rs_blob{ 0x52, 0x53, 0x30, 0x31, 0xaa, 0xbb };
+   const std::vector<uint8_t> vs_code{ 0x44, 0x58, 0x42, 0x43, 0x01, 0x02 };
+   const std::vector<uint8_t> ps_code{ 0x44, 0x58, 0x42, 0x43, 0x03, 0x04 };
+   const std::vector<uint8_t> cs_code{ 0x44, 0x58, 0x42, 0x43, 0x05, 0x06, 0x07 };
+
+   // Cases 1, 2, 3, 4: d3d12_pso_prewarm (.ready gating, graphics+compute record & prewarm hit)
+   {
+      ID3D12Device4 dev;
+      ID3D12RootSignature *rs = nullptr;
+      dev.CreateRootSignature(0, rs_blob.data(), rs_blob.size(), &rs);
+
+      d3d12_unit::d3d12_screen scr;
+      scr.dev = &dev;
+      g_queue_mode = Q_SYNC;
+      d3d12_unit::d3d12_pso_prewarm_init(&scr);
+      assert(scr.pso_prewarm != nullptr);
+
+      D3D12_INPUT_ELEMENT_DESC elem{};
+      elem.SemanticName = "POSITION";
+      elem.Format = DXGI_FORMAT_R32G32B32_FLOAT;
+      CD3DX12_PIPELINE_STATE_STREAM3 gfx;
+      gfx.pRootSignature = rs;
+      gfx.VS = D3D12_SHADER_BYTECODE{ vs_code.data(), vs_code.size() };
+      gfx.PS = D3D12_SHADER_BYTECODE{ ps_code.data(), ps_code.size() };
+      gfx.InputLayout = D3D12_INPUT_LAYOUT_DESC{ &elem, 1 };
+      gfx.RTVFormats.NumRenderTargets = 1;
+      gfx.RTVFormats.RTFormats[0] = DXGI_FORMAT_B8G8R8A8_UNORM;
+
+      // Case 1: cold gfx records + in-screen repeat hits live PSO
+      ID3D12PipelineState *p1 = d3d12_unit::d3d12_pso_prewarm_create_gfx(&scr, gfx, false);
+      assert(p1 && dev.gfx_calls == 1);
+      ID3D12PipelineState *p1_hit = d3d12_unit::d3d12_pso_prewarm_create_gfx(&scr, gfx, false);
+      assert(p1_hit == p1 && dev.gfx_calls == 1);
+      p1->Release();
+      p1_hit->Release();
+
+      // Case 2: cold compute records + repeat hits
+      D3D12_COMPUTE_PIPELINE_STATE_DESC cdesc{};
+      cdesc.pRootSignature = rs;
+      cdesc.CS = D3D12_SHADER_BYTECODE{ cs_code.data(), cs_code.size() };
+      ID3D12PipelineState *c1 = d3d12_unit::d3d12_pso_prewarm_create_compute(&scr, cdesc);
+      assert(c1 && dev.compute_calls == 1);
+      ID3D12PipelineState *c1_hit = d3d12_unit::d3d12_pso_prewarm_create_compute(&scr, cdesc);
+      assert(c1_hit == c1 && dev.compute_calls == 1);
+      c1->Release();
+      c1_hit->Release();
+
+      d3d12_unit::d3d12_pso_prewarm_fini(&scr);
+      assert(g_live_psos == 0);
+
+      // Case 4: verify .ready gating chose fallback (vdxg-pso did NOT have .ready yet)
+      struct stat st{};
+      assert(stat((cache_fallback + "/d3d12_pso").c_str(), &st) == 0);
+      assert(stat((runtime + "/vdxg-pso/d3d12_pso").c_str(), &st) != 0);
+
+      // Case 3: reload on fresh screen prewarms both gfx + compute in worker queue
+      dev.gfx_calls = 0;
+      dev.compute_calls = 0;
+      d3d12_unit::d3d12_pso_prewarm_init(&scr);
+      assert(dev.gfx_calls == 1 && dev.compute_calls == 1);
+      ID3D12PipelineState *p2 = d3d12_unit::d3d12_pso_prewarm_create_gfx(&scr, gfx, false);
+      ID3D12PipelineState *c2 = d3d12_unit::d3d12_pso_prewarm_create_compute(&scr, cdesc);
+      assert(p2 && c2 && dev.gfx_calls == 1 && dev.compute_calls == 1);
+      assert(p2->captured_vs == vs_code && p2->captured_semantic == "POSITION");
+      assert(c2->captured_cs == cs_code);
+      p2->Release();
+      c2->Release();
+      d3d12_unit::d3d12_pso_prewarm_fini(&scr);
+      assert(g_live_psos == 0);
+
+      // Now create runtime/vdxg-pso/.ready and verify it takes priority on next init
+      std::string rt_pso = runtime + "/vdxg-pso";
+      mkdir(rt_pso.c_str(), 0755);
+      int rfd = open((rt_pso + "/.ready").c_str(), O_CREAT | O_WRONLY, 0644);
+      assert(rfd >= 0);
+      close(rfd);
+      d3d12_unit::d3d12_pso_prewarm_init(&scr);
+      d3d12_unit::d3d12_pso_prewarm_fini(&scr);
+      assert(stat((rt_pso + "/d3d12_pso").c_str(), &st) == 0);
+
+      rs->Release();
+   }
+
+   // Cases 5, 6, 7, 8, 9: dzn_pso_prewarm (stream gfx + compute, worker prewarm, claim, wait, corrupt stop)
+   {
+      std::string dzn_dir = make_temp_dir("dzn");
+      setenv("VDXG_PSO_CACHE_DIR", dzn_dir.c_str(), 1);
+
+      ID3D12Device4 dev;
+      ID3D12RootSignature *rs = nullptr;
+      dev.CreateRootSignature(0, rs_blob.data(), rs_blob.size(), &rs);
+
+      D3D12_INPUT_ELEMENT_DESC elem{};
+      elem.SemanticName = "TEXCOORD";
+      elem.Format = DXGI_FORMAT_R32G32B32_FLOAT;
+      D3D12_INPUT_LAYOUT_DESC il{ &elem, 1 };
+      D3D12_VIEW_INSTANCE_LOCATION vi_loc{ 2, 1 };
+      D3D12_VIEW_INSTANCING_DESC vi{ 1, &vi_loc, D3D12_VIEW_INSTANCING_FLAG_NONE };
+      D3D12_RASTERIZER_DESC2 ra2{};
+      ra2.DepthBias = -2.5f;
+      D3D12_DEPTH_STENCIL_DESC2 ds2{};
+      ds2.FrontFace.StencilReadMask = 0x5a;
+      D3D12_RT_FORMAT_ARRAY rts{};
+      rts.NumRenderTargets = 1;
+      rts.RTFormats[0] = DXGI_FORMAT_B8G8R8A8_UNORM;
+
+      std::vector<uint8_t> gfx_stream, cs_stream;
+      build_dzn_gfx_stream(gfx_stream, rs, vs_code, ps_code, il, vi, ra2, ds2, rts);
+      emit_test_subobj(cs_stream, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_ROOT_SIGNATURE, rs);
+      D3D12_SHADER_BYTECODE csbc{ cs_code.data(), cs_code.size() };
+      emit_test_subobj(cs_stream, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_CS, csbc);
+      D3D12_PIPELINE_STATE_FLAGS cfl = D3D12_PIPELINE_STATE_FLAG_NONE;
+      emit_test_subobj(cs_stream, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_FLAGS, cfl);
+
+      D3D12_PIPELINE_STATE_STREAM_DESC gfx_desc{ gfx_stream.size(), gfx_stream.data() };
+      D3D12_PIPELINE_STATE_STREAM_DESC cs_desc{ cs_stream.size(), cs_stream.data() };
+
+      // Case 5: cold record + live hit
+      g_queue_mode = Q_SYNC;
+      dzn_unit::dzn_pso_prewarm *pw = dzn_unit::dzn_pso_prewarm_init(&dev, 0x10de, 0x2c59, 1, 0xa1, 62114, 3);
+      assert(pw != nullptr);
+      ID3D12PipelineState *dp1 = nullptr, *dp1_hit = nullptr, *dc1 = nullptr;
+      assert(SUCCEEDED(dzn_unit::dzn_pso_prewarm_create(pw, &dev, &gfx_desc, &dp1)) && dp1);
+      assert(SUCCEEDED(dzn_unit::dzn_pso_prewarm_create(pw, &dev, &gfx_desc, &dp1_hit)) && dp1_hit == dp1);
+      assert(SUCCEEDED(dzn_unit::dzn_pso_prewarm_create(pw, &dev, &cs_desc, &dc1)) && dc1);
+      assert(dev.stream_calls == 2);
+      dp1->Release();
+      dp1_hit->Release();
+      dc1->Release();
+      dzn_unit::dzn_pso_prewarm_fini(pw);
+      assert(g_live_psos == 0);
+
+      // Case 6: reload prewarms both and preserves every stream subobject field
+      dev.stream_calls = 0;
+      pw = dzn_unit::dzn_pso_prewarm_init(&dev, 0x10de, 0x2c59, 1, 0xa1, 62114, 3);
+      assert(dev.stream_calls == 2);
+      ID3D12PipelineState *dp2 = nullptr, *dc2 = nullptr;
+      assert(SUCCEEDED(dzn_unit::dzn_pso_prewarm_create(pw, &dev, &gfx_desc, &dp2)) && dp2);
+      assert(SUCCEEDED(dzn_unit::dzn_pso_prewarm_create(pw, &dev, &cs_desc, &dc2)) && dc2);
+      assert(dev.stream_calls == 2);
+      assert(dp2->captured_vs == vs_code && dp2->captured_semantic == "TEXCOORD");
+      assert(dp2->captured_vi_count == 1 && dp2->captured_depth_bias == -2.5f);
+      assert(dp2->captured_stencil_read == 0x5a && dp2->captured_rt0 == DXGI_FORMAT_B8G8R8A8_UNORM);
+      assert(dc2->captured_cs == cs_code);
+      dp2->Release();
+      dc2->Release();
+      dzn_unit::dzn_pso_prewarm_fini(pw);
+      assert(g_live_psos == 0);
+
+      // Case 7: deferred worker leaves entry PSO_PENDING; caller claims & compiles once on demand
+      g_queue_mode = Q_DEFER;
+      dev.stream_calls = 0;
+      pw = dzn_unit::dzn_pso_prewarm_init(&dev, 0x10de, 0x2c59, 1, 0xa1, 62114, 3);
+      assert(dev.stream_calls == 0);
+      ID3D12PipelineState *dp3 = nullptr;
+      assert(SUCCEEDED(dzn_unit::dzn_pso_prewarm_create(pw, &dev, &gfx_desc, &dp3)) && dp3);
+      assert(dev.stream_calls == 1);
+      dp3->Release();
+      dzn_unit::dzn_pso_prewarm_fini(pw);
+      assert(dev.stream_calls == 1 && g_live_psos == 0);
+
+      // Case 8: isolated single pipeline under Q_ASYNC_THREAD; worker hits PSO_BUSY and main waits
+      std::string dzn_wait_dir = make_temp_dir("dzn_wait");
+      setenv("VDXG_PSO_CACHE_DIR", dzn_wait_dir.c_str(), 1);
+      g_queue_mode = Q_SYNC;
+      pw = dzn_unit::dzn_pso_prewarm_init(&dev, 0x10de, 0x2c59, 1, 0xa1, 62114, 3);
+      ID3D12PipelineState *seed_pso = nullptr;
+      assert(SUCCEEDED(dzn_unit::dzn_pso_prewarm_create(pw, &dev, &gfx_desc, &seed_pso)) && seed_pso);
+      seed_pso->Release();
+      dzn_unit::dzn_pso_prewarm_fini(pw);
+      assert(g_live_psos == 0);
+
+      std::mutex b_mtx;
+      std::condition_variable b_cv;
+      bool worker_entered = false, release_worker = false;
+      dev.stream_calls = 0;
+      dev.on_stream_enter = [&]() {
+         std::unique_lock<std::mutex> lk(b_mtx);
+         worker_entered = true;
+         b_cv.notify_all();
+         b_cv.wait(lk, [&]() { return release_worker; });
+      };
+      g_queue_mode = Q_ASYNC_THREAD;
+      pw = dzn_unit::dzn_pso_prewarm_init(&dev, 0x10de, 0x2c59, 1, 0xa1, 62114, 3);
+      {
+         std::unique_lock<std::mutex> lk(b_mtx);
+         b_cv.wait(lk, [&]() { return worker_entered; });
+      }
+      ID3D12PipelineState *waited_pso = nullptr;
+      std::thread waiter([&]() {
+         assert(SUCCEEDED(dzn_unit::dzn_pso_prewarm_create(pw, &dev, &gfx_desc, &waited_pso)));
+      });
+      {
+         std::lock_guard<std::mutex> lk(b_mtx);
+         release_worker = true;
+         b_cv.notify_all();
+      }
+      waiter.join();
+      assert(waited_pso != nullptr);
+      waited_pso->Release();
+      dev.on_stream_enter = nullptr;
+      dzn_unit::dzn_pso_prewarm_fini(pw);
+      assert(dev.stream_calls == 1 && g_live_psos == 0);
+      remove_tree(dzn_wait_dir);
+      setenv("VDXG_PSO_CACHE_DIR", dzn_dir.c_str(), 1);
+
+      // Case 9: tamper one byte near start of persisted record -> BLAKE3 stops loading cleanly
+      g_queue_mode = Q_SYNC;
+      std::string bin_path = find_single_bin(dzn_dir + "/dzn_pso");
+      int bfd = open(bin_path.c_str(), O_RDWR);
+      assert(bfd >= 0);
+      uint8_t byte_at_44 = 0;
+      assert(pread(bfd, &byte_at_44, 1, 44) == 1);
+      byte_at_44 ^= 0xff;
+      assert(pwrite(bfd, &byte_at_44, 1, 44) == 1);
+      close(bfd);
+
+      dev.stream_calls = 0;
+      pw = dzn_unit::dzn_pso_prewarm_init(&dev, 0x10de, 0x2c59, 1, 0xa1, 62114, 3);
+      assert(dev.stream_calls == 0); // Stopped at corrupted first record
+      ID3D12PipelineState *recover = nullptr;
+      assert(SUCCEEDED(dzn_unit::dzn_pso_prewarm_create(pw, &dev, &gfx_desc, &recover)) && recover);
+      assert(dev.stream_calls == 1);
+      recover->Release();
+      dzn_unit::dzn_pso_prewarm_fini(pw);
+      assert(g_live_psos == 0);
+
+      rs->Release();
+      remove_tree(dzn_dir);
+      unsetenv("VDXG_PSO_CACHE_DIR");
+   }
+
+   // Cases 10, 11, 12: dzn_physical_device_check_dxgi_format cache
+   {
+      dzn_fmt_unit::FakeFmtDev fdev;
+      dzn_fmt_unit::dzn_physical_device pdev;
+      pdev.dev = &fdev;
+
+      // Case 10: < 256 format hits cache on 2nd query
+      dzn_fmt_unit::D3D12_FEATURE_DATA_FORMAT_SUPPORT q1{};
+      q1.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+      assert(dzn_fmt_unit::dzn_physical_device_check_dxgi_format(&pdev, &q1) == S_OK);
+      assert(fdev.calls == 1 &&
+             (uint32_t)q1.Support1 == (uint32_t)dzn_fmt_unit::D3D12_FORMAT_SUPPORT1_RENDER_TARGET + 87u);
+      dzn_fmt_unit::D3D12_FEATURE_DATA_FORMAT_SUPPORT q2{};
+      q2.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+      assert(dzn_fmt_unit::dzn_physical_device_check_dxgi_format(&pdev, &q2) == S_OK);
+      assert(fdev.calls == 1 && q2.Support1 == q1.Support1 && q2.Support2 == q1.Support2);
+
+      // Case 11: >= 256 bypasses fixed 256-slot table safely
+      dzn_fmt_unit::D3D12_FEATURE_DATA_FORMAT_SUPPORT q_high{};
+      q_high.Format = DXGI_FORMAT_CUSTOM_HIGH;
+      assert(dzn_fmt_unit::dzn_physical_device_check_dxgi_format(&pdev, &q_high) == S_OK);
+      assert(dzn_fmt_unit::dzn_physical_device_check_dxgi_format(&pdev, &q_high) == S_OK);
+      assert(fdev.calls == 3);
+
+      // Case 12: failure HRESULT is not cached
+      fdev.next_hr = E_FAIL;
+      dzn_fmt_unit::D3D12_FEATURE_DATA_FORMAT_SUPPORT q_err{};
+      q_err.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
+      assert(dzn_fmt_unit::dzn_physical_device_check_dxgi_format(&pdev, &q_err) == E_FAIL);
+      assert(fdev.calls == 4 && !pdev.dxgi_format_cache[45].valid);
+      fdev.next_hr = S_OK;
+      assert(dzn_fmt_unit::dzn_physical_device_check_dxgi_format(&pdev, &q_err) == S_OK);
+      assert(fdev.calls == 5 && pdev.dxgi_format_cache[45].valid);
+   }
+
+   remove_tree(root);
+   std::puts("PREWARM_CPU_PASS cases=12");
+   return 0;
+}

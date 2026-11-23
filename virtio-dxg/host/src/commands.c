@@ -588,6 +588,11 @@ static void cmd_open_adapter(struct dxghost_msg *m)
 	if (!h->adapter) {
 		struct d3dkmt_openadapterfromluid open = {0};
 
+		if (m->inline_call) {
+			UNLOCK(h);
+			m->to_lane = true;
+			return;
+		}
 		open.adapter_luid.a = h->luid.LowPart;
 		open.adapter_luid.b = (u32)h->luid.HighPart;
 		status = h->kmt.OpenAdapterFromLuid(&open);
@@ -610,6 +615,7 @@ static void cmd_close_adapter(struct dxghost_msg *m)
 {
 	COMMAND(dxgkvmb_command_closeadapter);
 	struct dxghost *h = m->h;
+	bool closed = false;
 
 	LOCK(h);
 	if (is_adapter(h, c->host_handle.v) && h->adapter_refs &&
@@ -619,8 +625,11 @@ static void cmd_close_adapter(struct dxghost_msg *m)
 		close.adapter_handle.v = h->adapter;
 		h->kmt.CloseAdapter(&close);
 		h->adapter = 0;
+		closed = true;
 	}
 	UNLOCK(h);
+	if (closed)
+		dxghost_qai_cache_clear(h);
 }
 
 /* Development: hex dump of private data with DXGHOST_TRACE. */
@@ -654,13 +663,168 @@ static int32_t query(struct dxghost *h, uint32_t type, void *data,
 	return h->kmt.QueryAdapterInfo(&q);
 }
 
+#define QAI_QUERYREGISTRY	48
+
+static uint64_t qai_hash(uint32_t type, uint32_t size, const u8 *in)
+{
+	uint64_t h = 14695981039346656037ull;
+	uint32_t i;
+
+	h = (h ^ type) * 1099511628211ull;
+	h = (h ^ size) * 1099511628211ull;
+	for (i = 0; i < size; i++)
+		h = (h ^ in[i]) * 1099511628211ull;
+	return h;
+}
+
+static bool qai_type_immutable(uint32_t type)
+{
+	switch (type) {
+	case DXGHOST_QAI_UMDRIVERPRIVATE:
+	case DXGHOST_QAI_UMDRIVERNAME:
+	case 8:		/* KMTQAITYPE_ADAPTERREGISTRYINFO */
+	case DXGHOST_QAI_DRIVERVERSION:
+	case 15:	/* KMTQAITYPE_ADAPTERTYPE */
+	case 20:	/* KMTQAITYPE_WDDM_1_2_CAPS */
+	case 24:	/* KMTQAITYPE_WDDM_1_3_CAPS */
+	case 30:	/* KMTQAITYPE_PHYSICALADAPTERCOUNT */
+	case DXGHOST_QAI_PHYSICALADAPTERDEVICEIDS:
+	case 44:	/* KMTQAITYPE_NODEMETADATA */
+	case QAI_QUERYREGISTRY:
+	case 50:	/* KMTQAITYPE_WDDM_2_0_CAPS */
+	case 57:	/* KMTQAITYPE_ADAPTERTYPE_RENDER */
+	case DXGHOST_QAI_DRIVER_DESCRIPTION:
+	case DXGHOST_QAI_WDDM_2_7_CAPS:
+	case 75:	/* KMTQAITYPE_WDDM_2_9_CAPS */
+	case 77:	/* KMTQAITYPE_WDDM_3_0_CAPS */
+	case 80:	/* KMTQAITYPE_WDDM_3_1_CAPS */
+		return true;
+	default:
+		return false;
+	}
+}
+
+static const struct dxghost_qai_entry *
+qai_cache_find_locked(const struct dxghost *h, uint64_t hash, uint32_t type,
+		      const u8 *in, uint32_t size)
+{
+	uint32_t base = (uint32_t)hash % DXGHOST_QAI_CACHE_SLOTS;
+	uint32_t k;
+
+	for (k = 0; k < 4; k++) {
+		const struct dxghost_qai_entry *e =
+			&h->qai_cache[(base + k) % DXGHOST_QAI_CACHE_SLOTS];
+
+		if (e->valid && e->hash == hash && e->type == type &&
+		    e->size == size && e->req_in &&
+		    memcmp(e->req_in, in, size) == 0)
+			return e;
+	}
+	return NULL;
+}
+
+void dxghost_qai_cache_clear(struct dxghost *h)
+{
+	uint32_t i;
+
+	AcquireSRWLockExclusive(&h->qai_lock);
+	h->internal_info_valid = false;
+	memset(&h->internal_info, 0, sizeof(h->internal_info));
+	h->wsl_umd_checked = false;
+	h->wsl_umd_len = 0;
+	memset(h->wsl_umd, 0, sizeof(h->wsl_umd));
+	for (i = 0; i < DXGHOST_QAI_CACHE_SLOTS; i++) {
+		free(h->qai_cache[i].req_in);
+		free(h->qai_cache[i].resp_out);
+	}
+	memset(h->qai_cache, 0, sizeof(h->qai_cache));
+	h->qai_clock = 0;
+	ReleaseSRWLockExclusive(&h->qai_lock);
+}
+
+bool dxghost_qai_can_inline(struct dxghost *h, const uint8_t *cmd,
+			    uint32_t cmd_size)
+{
+	const struct dxgkvmb_command_queryadapterinfo *c = (const void *)cmd;
+	const u8 *in;
+	uint32_t off = (uint32_t)offsetof(
+		struct dxgkvmb_command_queryadapterinfo, private_data);
+	uint64_t hash;
+	bool hit;
+
+	if (h->no_qai_cache || !h->adapter || cmd_size < off)
+		return false;
+	if (!c->private_data_size ||
+	    c->private_data_size > DXGHOST_QAI_CACHE_MAX_SIZE ||
+	    c->private_data_size > cmd_size - off)
+		return false;
+	if (!qai_type_immutable(c->query_type))
+		return false;
+	in = cmd + off;
+	hash = qai_hash(c->query_type, c->private_data_size, in);
+	AcquireSRWLockShared(&h->qai_lock);
+	hit = qai_cache_find_locked(h, hash, c->query_type, in,
+				    c->private_data_size) != NULL;
+	ReleaseSRWLockShared(&h->qai_lock);
+	return hit;
+}
+
+static void qai_cache_put(struct dxghost *h, uint64_t hash, uint32_t type,
+			  const u8 *in, const u8 *out, uint32_t size,
+			  int32_t ntstatus)
+{
+	u8 *in_copy = malloc(size);
+	u8 *out_copy = malloc(size);
+	uint32_t base, k, slot;
+	u8 *old_in = NULL, *old_out = NULL;
+
+	if (!in_copy || !out_copy) {
+		free(in_copy);
+		free(out_copy);
+		return;
+	}
+	memcpy(in_copy, in, size);
+	memcpy(out_copy, out, size);
+
+	AcquireSRWLockExclusive(&h->qai_lock);
+	if (qai_cache_find_locked(h, hash, type, in, size)) {
+		ReleaseSRWLockExclusive(&h->qai_lock);
+		free(in_copy);
+		free(out_copy);
+		return;
+	}
+	base = (uint32_t)hash % DXGHOST_QAI_CACHE_SLOTS;
+	slot = (base + (h->qai_clock++ & 3u)) % DXGHOST_QAI_CACHE_SLOTS;
+	for (k = 0; k < 4; k++) {
+		uint32_t idx = (base + k) % DXGHOST_QAI_CACHE_SLOTS;
+
+		if (!h->qai_cache[idx].valid) {
+			slot = idx;
+			break;
+		}
+	}
+	old_in = h->qai_cache[slot].req_in;
+	old_out = h->qai_cache[slot].resp_out;
+	h->qai_cache[slot].hash = hash;
+	h->qai_cache[slot].type = type;
+	h->qai_cache[slot].size = size;
+	h->qai_cache[slot].ntstatus = ntstatus;
+	h->qai_cache[slot].req_in = in_copy;
+	h->qai_cache[slot].resp_out = out_copy;
+	h->qai_cache[slot].valid = true;
+	ReleaseSRWLockExclusive(&h->qai_lock);
+	free(old_in);
+	free(old_out);
+}
+
 static void cmd_internal_adapter_info(struct dxghost_msg *m)
 {
 	struct dxgkvmb_command_getinternaladapterinfo_return *r;
+	struct dxgkvmb_command_getinternaladapterinfo_return info;
 	struct dxghost *h = m->h;
 	uint32_t ddi_version = 0, caps = 0, n;
-	static wchar_t description[4096];
-	static SRWLOCK description_lock = SRWLOCK_INIT;
+	wchar_t *description;
+	bool cached = false;
 
 	/* Older protocol versions omit the trailing vGPU LUID. */
 	n = m->res_cap < sizeof(*r) ? m->res_cap : sizeof(*r);
@@ -669,25 +833,54 @@ static void cmd_internal_adapter_info(struct dxghost_msg *m)
 		return;
 	}
 	r = reply(m, n);
+	if (!r)
+		return;
+	if (!h->no_qai_cache) {
+		AcquireSRWLockShared(&h->qai_lock);
+		if (h->internal_info_valid) {
+			info = h->internal_info;
+			cached = true;
+		}
+		ReleaseSRWLockShared(&h->qai_lock);
+	}
+	if (cached) {
+		memcpy(r, &info, n);
+		return;
+	}
+	if (m->inline_call) {
+		m->to_lane = true;
+		return;
+	}
+
+	memset(&info, 0, sizeof(info));
 	query(h, DXGHOST_QAI_DRIVERVERSION, &ddi_version, sizeof(ddi_version));
 	query(h, DXGHOST_QAI_WDDM_2_7_CAPS, &caps, sizeof(caps));
-	r->driver_ddi_version = ddi_version;
-	r->hw_sch_capable = caps & 1;		/* HwSchSupported */
-	r->hw_sch_enabled = (caps >> 1) & 1;	/* HwSchEnabled */
-	r->async_msg_enabled = 1;
-	r->host_adapter_luid.a = h->luid.LowPart;
-	r->host_adapter_luid.b = (u32)h->luid.HighPart;
-	AcquireSRWLockExclusive(&description_lock);
-	if (query(h, DXGHOST_QAI_DRIVER_DESCRIPTION, description,
-		  sizeof(description)) >= 0) {
-		for (n = 0; n < 79 && description[n]; n++)
-			r->device_description[n] = (u16)description[n];
+	info.driver_ddi_version = ddi_version;
+	info.hw_sch_capable = caps & 1;		/* HwSchSupported */
+	info.hw_sch_enabled = (caps >> 1) & 1;	/* HwSchEnabled */
+	info.async_msg_enabled = 1;
+	info.host_adapter_luid.a = h->luid.LowPart;
+	info.host_adapter_luid.b = (u32)h->luid.HighPart;
+	description = calloc(4096, sizeof(wchar_t));
+	if (description) {
+		uint32_t k;
+
+		if (query(h, DXGHOST_QAI_DRIVER_DESCRIPTION, description,
+			  4096 * (uint32_t)sizeof(wchar_t)) >= 0) {
+			for (k = 0; k < 79 && description[k]; k++)
+				info.device_description[k] = (u16)description[k];
+		}
+		free(description);
 	}
-	ReleaseSRWLockExclusive(&description_lock);
-	if (m->res_len == sizeof(*r)) {
-		r->host_vgpu_luid.a = h->luid.LowPart;
-		r->host_vgpu_luid.b = (u32)h->luid.HighPart;
+	info.host_vgpu_luid.a = h->luid.LowPart;
+	info.host_vgpu_luid.b = (u32)h->luid.HighPart;
+	if (!h->no_qai_cache && h->adapter) {
+		AcquireSRWLockExclusive(&h->qai_lock);
+		h->internal_info = info;
+		h->internal_info_valid = true;
+		ReleaseSRWLockExclusive(&h->qai_lock);
 	}
+	memcpy(r, &info, n);
 }
 
 /*
@@ -700,8 +893,6 @@ static void cmd_internal_adapter_info(struct dxghost_msg *m)
  * dxgkrnl build of the D3D12 driver (libnvwgf2umx.so). Read once through
  * D3DKMT; 0 when the driver has none.
  */
-#define QAI_QUERYREGISTRY	48
-
 static uint32_t wsl_umd_path(struct dxghost *h, u16 *out, uint32_t max)
 {
 	static const char value[] = "UserModeDriverNameWsl";
@@ -709,9 +900,26 @@ static uint32_t wsl_umd_path(struct dxghost *h, u16 *out, uint32_t max)
 	u8 buffer[552 + 1040];
 	uint32_t t, i, len = 0;
 
+	if (!max)
+		return 0;
+	if (!h->no_qai_cache) {
+		AcquireSRWLockShared(&h->qai_lock);
+		if (h->wsl_umd_checked) {
+			len = h->wsl_umd_len;
+			if (len > max - 1)
+				len = max - 1;
+			if (len)
+				memcpy(out, h->wsl_umd, len * sizeof(u16));
+			out[len] = 0;
+			ReleaseSRWLockShared(&h->qai_lock);
+			return len;
+		}
+		ReleaseSRWLockShared(&h->qai_lock);
+	}
+
 	for (t = 0; t < 2 && !len; t++) {
 		uint32_t status, out_size;
-
+		int32_t nt;
 		uint32_t adapter_key = 1;	/* D3DDDI_QUERYREGISTRY_ADAPTERKEY */
 
 		memset(buffer, 0, sizeof(buffer));
@@ -719,8 +927,6 @@ static uint32_t wsl_umd_path(struct dxghost *h, u16 *out, uint32_t max)
 		memcpy(buffer, &adapter_key, 4);
 		for (i = 0; value[i]; i++)
 			((u16 *)(buffer + 8))[i] = (u16)value[i];
-		int32_t nt;
-
 		memcpy(buffer + 528, &types[t], 4);
 		nt = query(h, QAI_QUERYREGISTRY, buffer, sizeof(buffer));
 		memcpy(&out_size, buffer + 536, 4);
@@ -739,6 +945,17 @@ static uint32_t wsl_umd_path(struct dxghost *h, u16 *out, uint32_t max)
 			if (!out[len])
 				break;
 		}
+	}
+	if (!h->no_qai_cache && h->adapter && max >= 260) {
+		uint32_t save = len < 260 ? len : 259;
+
+		AcquireSRWLockExclusive(&h->qai_lock);
+		memset(h->wsl_umd, 0, sizeof(h->wsl_umd));
+		if (save)
+			memcpy(h->wsl_umd, out, save * sizeof(u16));
+		h->wsl_umd_len = save;
+		h->wsl_umd_checked = true;
+		ReleaseSRWLockExclusive(&h->qai_lock);
 	}
 	return len;
 }
@@ -832,11 +1049,15 @@ static void adapt_private_data(u8 *data, uint32_t size)
 static void cmd_query_adapter_info(struct dxghost_msg *m)
 {
 	COMMAND_VAR(dxgkvmb_command_queryadapterinfo, private_data);
+	struct dxghost *h = m->h;
 	uint32_t size = c->private_data_size;
 	const u8 *in = tail(m, offsetof(struct dxgkvmb_command_queryadapterinfo,
 					private_data), size);
 	struct ntstatus *status;
 	u8 *out;
+	bool cacheable;
+	uint64_t hash = 0;
+	int32_t orig_status;
 
 	if (!in)
 		return;
@@ -844,9 +1065,32 @@ static void cmd_query_adapter_info(struct dxghost_msg *m)
 	if (!status)
 		return;
 	out = (u8 *)(status + 1);
-	memcpy(out, in, size);	/* queries can carry input data */
-	status->v = query(m->h, c->query_type, out, size);
-	if (c->query_type == 48 && size >= 548 && m->h->trace) {
+	cacheable = !h->no_qai_cache && h->adapter && size > 0 &&
+		    size <= DXGHOST_QAI_CACHE_MAX_SIZE &&
+		    qai_type_immutable(c->query_type);
+	if (cacheable) {
+		const struct dxghost_qai_entry *e;
+
+		hash = qai_hash(c->query_type, size, in);
+		AcquireSRWLockShared(&h->qai_lock);
+		e = qai_cache_find_locked(h, hash, c->query_type, in, size);
+		if (e && e->resp_out) {
+			status->v = e->ntstatus;
+			memcpy(out, e->resp_out, size);
+			ReleaseSRWLockShared(&h->qai_lock);
+			return;
+		}
+		ReleaseSRWLockShared(&h->qai_lock);
+	}
+	if (m->inline_call) {
+		m->to_lane = true;
+		return;
+	}
+	if (size)
+		memcpy(out, in, size);	/* queries can carry input data */
+	orig_status = query(h, c->query_type, out, size);
+	status->v = orig_status;
+	if (c->query_type == 48 && size >= 548 && h->trace) {
 		/* D3DDDI_QUERYREGISTRY_INFO: type, flags, name[260], value
 		 * type, adapter, output size, status, data. */
 		char name[128];
@@ -863,15 +1107,20 @@ static void cmd_query_adapter_info(struct dxghost_msg *m)
 			name[i] = ch < 128 ? (char)ch : '?';
 		}
 		name[i] = 0;
-		dxghost_logf(m->h, "registry query %u '%s': ntstatus 0x%08x, "
+		dxghost_logf(h, "registry query %u '%s': ntstatus 0x%08x, "
 			     "status %u", qtype, name, (unsigned)status->v,
 			     rstatus);
 	}
 	if (status->v >= 0 && c->query_type == DXGHOST_QAI_UMDRIVERNAME &&
-	    !adapt_umd_name(m->h, out, size))
+	    !adapt_umd_name(h, out, size))
 		status->v = DXG_STATUS_INVALID_PARAMETER;
 	if (status->v >= 0 && c->query_type == DXGHOST_QAI_UMDRIVERPRIVATE)
 		adapt_private_data(out, size);
+	if (cacheable &&
+	    (orig_status >= 0 ||
+	     (c->query_type == QAI_QUERYREGISTRY &&
+	      orig_status == (int32_t)0xC0000034L)))
+		qai_cache_put(h, hash, c->query_type, in, out, size, status->v);
 }
 
 static void cmd_feature(struct dxghost_msg *m)

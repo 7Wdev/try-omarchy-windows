@@ -234,6 +234,10 @@ static void check_unlocked(void)
 		ReleaseSRWLockExclusive(&test_h->lock);
 	else
 		lock_violations++;
+	if (TryAcquireSRWLockExclusive(&test_h->qai_lock))
+		ReleaseSRWLockExclusive(&test_h->qai_lock);
+	else
+		lock_violations++;
 }
 
 static int vmm_map(void *o, uint64_t gpa, void *hva, uint64_t size, bool w)
@@ -444,6 +448,152 @@ static void test_executor(void)
 		for (n = 0; want[n]; n++)
 			CHECK(path[base + n] == (u16)want[n]);
 		CHECK(path[base + n] == 0);
+	}
+
+	/* Startup queries hit cache & run inline with zero KMT wakeups. */
+	{
+		uint32_t kmt_before = calls_kmt_total;
+		uint32_t p_inline, size = 4 + 520;
+
+		/* CREATEPROCESS and ISFEATUREENABLED* run inline cleanly. */
+		{
+			struct dxgkvmb_command_createprocess *c = msg(sizeof(*c));
+
+			global(c, DXGK_VMBCOMMAND_CREATEPROCESS, 0);
+			c->process_id = 333;
+			CHECK(dxghost_try_inline(h, VIRTIO_DXG_CHANNEL_GLOBAL, msg_buf,
+						 sizeof(struct dxgvmb_ext_header) + sizeof(*c),
+						 res_buf, 4, &resp));
+			CHECK(resp.status == VIRTIO_DXG_OK);
+			p_inline = ((struct d3dkmthandle *)res_buf)->v;
+			CHECK(p_inline && p_inline != p1 && p_inline != p2);
+			{
+				struct dxgkvmb_command_destroyprocess *d = msg(sizeof(*d));
+
+				global(d, DXGK_VMBCOMMAND_DESTROYPROCESS, p_inline);
+				run(h, sizeof(*d), 4);
+				CHECK(status_of() == 0);
+			}
+		}
+		{
+			struct dxgkvmb_command_isfeatureenabled *f = msg(sizeof(*f));
+
+			global(f, DXGK_VMBCOMMAND_ISFEATUREENABLED_GLOBAL, 0);
+			CHECK(dxghost_try_inline(h, VIRTIO_DXG_CHANNEL_GLOBAL, msg_buf,
+						 sizeof(struct dxgvmb_ext_header) + sizeof(*f),
+						 res_buf,
+						 sizeof(struct dxgkvmb_command_isfeatureenabled_return),
+						 &resp));
+			CHECK(resp.status == VIRTIO_DXG_OK &&
+			      ((struct dxgkvmb_command_isfeatureenabled_return *)res_buf)->status.v ==
+			      DXG_STATUS_NOT_SUPPORTED);
+
+			vgpu(f, DXGK_VMBCOMMAND_ISFEATUREENABLED, 0);
+			CHECK(dxghost_try_inline(h, VIRTIO_DXG_CHANNEL_ADAPTER, msg_buf,
+						 sizeof(struct dxgvmb_ext_header) + sizeof(*f),
+						 res_buf,
+						 sizeof(struct dxgkvmb_command_isfeatureenabled_return),
+						 &resp));
+			CHECK(resp.status == VIRTIO_DXG_OK &&
+			      ((struct dxgkvmb_command_isfeatureenabled_return *)res_buf)->status.v ==
+			      DXG_STATUS_NOT_SUPPORTED);
+		}
+		/* Warm OPENADAPTER and CLOSEADAPTER stay balanced. */
+		{
+			struct dxgkvmb_command_openadapter *o = msg(sizeof(*o));
+			struct dxgkvmb_command_openadapter_return *or = (void *)res_buf;
+			struct dxgkvmb_command_closeadapter *cl;
+
+			vgpu(o, DXGK_VMBCOMMAND_OPENADAPTER, 0);
+			o->vmbus_interface_version = 40;
+			CHECK(dxghost_try_inline(h, VIRTIO_DXG_CHANNEL_ADAPTER, msg_buf,
+						 sizeof(struct dxgvmb_ext_header) + sizeof(*o),
+						 res_buf, sizeof(*or), &resp));
+			CHECK(resp.status == VIRTIO_DXG_OK &&
+			      or->status.v == 0 && or->host_adapter_handle.v == 0x500);
+
+			cl = msg(sizeof(*cl));
+			vgpu(cl, DXGK_VMBCOMMAND_CLOSEADAPTER, 0);
+			cl->host_handle.v = 0x500;
+			run(h, sizeof(*cl), 0);
+		}
+		/* Warm GETINTERNALADAPTERINFO runs inline without touching KMT. */
+		{
+			struct dxgkvmb_command_getinternaladapterinfo *c = msg(sizeof(*c));
+			struct dxgkvmb_command_getinternaladapterinfo_return *r =
+				(void *)res_buf;
+
+			vgpu(c, DXGK_VMBCOMMAND_GETINTERNALADAPTERINFO, 0);
+			CHECK(dxghost_try_inline(h, VIRTIO_DXG_CHANNEL_ADAPTER, msg_buf,
+						 sizeof(struct dxgvmb_ext_header) + sizeof(*c),
+						 res_buf, sizeof(*r), &resp));
+			CHECK(resp.status == VIRTIO_DXG_OK &&
+			      r->driver_ddi_version == 3200 &&
+			      r->host_vgpu_luid.a == NV_LUID);
+		}
+		/* Cached UMDRIVERNAME runs inline without hitting f_query. */
+		{
+			struct dxgkvmb_command_queryadapterinfo *c =
+				msg(sizeof(*c) - 1 + size);
+			const char *want = "libnvwgf2umx.so";
+			u16 *path = (u16 *)(res_buf + 4 + 4);
+			uint32_t n = 0, base = 0;
+
+			vgpu(c, DXGK_VMBCOMMAND_QUERYADAPTERINFO, p1);
+			c->query_type = DXGHOST_QAI_UMDRIVERNAME;
+			c->private_data_size = size;
+			CHECK(dxghost_try_inline(h, VIRTIO_DXG_CHANNEL_ADAPTER, msg_buf,
+						 sizeof(struct dxgvmb_ext_header) + sizeof(*c) - 1 + size,
+						 res_buf, 4 + size, &resp));
+			CHECK(resp.status == VIRTIO_DXG_OK && status_of() == 0);
+			while (path[n]) {
+				if (path[n] == '\\')
+					base = n + 1;
+				n++;
+			}
+			for (n = 0; want[n]; n++)
+				CHECK(path[base + n] == (u16)want[n]);
+			CHECK(path[base + n] == 0);
+		}
+		CHECK(calls_kmt_total == kmt_before);
+
+		/* Cold DRIVERVERSION query goes to a lane once, then runs inline. */
+		{
+			struct dxgkvmb_command_queryadapterinfo *c =
+				msg(sizeof(*c) - 1 + 4);
+
+			vgpu(c, DXGK_VMBCOMMAND_QUERYADAPTERINFO, p1);
+			c->query_type = DXGHOST_QAI_DRIVERVERSION;
+			c->private_data_size = 4;
+			CHECK(!dxghost_try_inline(h, VIRTIO_DXG_CHANNEL_ADAPTER, msg_buf,
+						  sizeof(struct dxgvmb_ext_header) + sizeof(*c) - 1 + 4,
+						  res_buf, 8, &resp));
+			CHECK(calls_kmt_total == kmt_before);
+			resp = run(h, sizeof(*c) - 1 + 4, 8);
+			CHECK(resp.status == VIRTIO_DXG_OK && status_of() == 0 &&
+			      *(u32 *)(res_buf + 4) == 3200);
+			CHECK(calls_kmt_total == kmt_before + 1);
+
+			c = msg(sizeof(*c) - 1 + 4);
+			vgpu(c, DXGK_VMBCOMMAND_QUERYADAPTERINFO, p2);
+			c->query_type = DXGHOST_QAI_DRIVERVERSION;
+			c->private_data_size = 4;
+			CHECK(dxghost_try_inline(h, VIRTIO_DXG_CHANNEL_ADAPTER, msg_buf,
+						 sizeof(struct dxgvmb_ext_header) + sizeof(*c) - 1 + 4,
+						 res_buf, 8, &resp));
+			CHECK(resp.status == VIRTIO_DXG_OK && status_of() == 0 &&
+			      *(u32 *)(res_buf + 4) == 3200);
+			CHECK(calls_kmt_total == kmt_before + 1);
+
+			/* Unlisted mutable query type never caches or runs inline. */
+			c = msg(sizeof(*c) - 1 + 4);
+			vgpu(c, DXGK_VMBCOMMAND_QUERYADAPTERINFO, p1);
+			c->query_type = 999;
+			c->private_data_size = 4;
+			CHECK(!dxghost_try_inline(h, VIRTIO_DXG_CHANNEL_ADAPTER, msg_buf,
+						  sizeof(struct dxgvmb_ext_header) + sizeof(*c) - 1 + 4,
+						  res_buf, 8, &resp));
+		}
 	}
 
 	d1 = create_device(h, p1);
@@ -771,7 +921,18 @@ static void test_executor(void)
 				   freq.QuadPart));
 	}
 
-	/* Teardown unmaps too: still on this thread, still checked. */
+	/* Reset clears the startup query cache; teardown unmaps cleanly. */
+	dxghost_reset(h);
+	{
+		struct dxgkvmb_command_getinternaladapterinfo *c = msg(sizeof(*c));
+
+		vgpu(c, DXGK_VMBCOMMAND_GETINTERNALADAPTERINFO, 0);
+		CHECK(!dxghost_try_inline(h, VIRTIO_DXG_CHANNEL_ADAPTER, msg_buf,
+					  sizeof(struct dxgvmb_ext_header) + sizeof(*c),
+					  res_buf,
+					  sizeof(struct dxgkvmb_command_getinternaladapterinfo_return),
+					  &resp));
+	}
 	dxghost_destroy(h);
 	test_h = NULL;
 	CHECK(lock_violations == 0);

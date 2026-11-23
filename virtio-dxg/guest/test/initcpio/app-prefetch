@@ -1,38 +1,55 @@
 #!/bin/bash
-# app-prefetch: what the launcher's applications load at start - their
-# programs, the shared libraries those need, and the data directories of the
-# big ones (browsers, Electron apps) - read into the page cache once the
-# desktop is up, at idle CPU and I/O priority, as Windows' SysMain prefetches
-# applications: a first launch then reads memory instead of the disk. Only
-# reads; the page cache gives the memory back whenever anything needs it.
-# Usage: app-prefetch [--list]  (--list: print the files, read nothing)
+# app-prefetch: read what the launcher's applications and GPU/toolkit stack
+# load at start into the page cache in two tiers at idle CPU and I/O priority:
+#   Tier 1 (shortly after desktop): Mesa d3d12/Dozen, NVIDIA WSL libraries,
+#     core desktop/launcher/terminal binaries, GI/GTK/Qt/icon/font/mime caches,
+#     and existing PSO/shader caches (avoiding 9p/disk stalls on first click).
+#   Tier 2 (a few seconds later): all launcher .desktop targets plus Chromium,
+#     Electron/Code, and Wine runtime trees.
+# Usage: app-prefetch [--list] [--tier1]
 set -u
 list=0
-[ "${1:-}" = --list ] && list=1
+tier1_only=0
+for arg in "$@"; do
+    case $arg in
+    --list) list=1 ;;
+    --tier1) tier1_only=1 ;;
+    esac
+done
 
 declare -A seen
 declare -A programs
-files=()
+tier1_files=()
+tier2_files=()
+active_list=1
+
 add_resolved() {
     [[ -n ${seen[$1]:-} ]] && return
     seen[$1]=1
-    files+=("$1")
+    if [ "$active_list" = 1 ]; then
+        tier1_files+=("$1")
+    else
+        tier2_files+=("$1")
+    fi
 }
+
 add() {
     local f
     for f in "$@"; do
         [ -f "$f" ] || continue
         [[ -n ${seen[$f]:-} ]] && continue
         f=$(readlink -f -- "$f") || continue
+        [ -f "$f" ] || continue
         add_resolved "$f"
     done
 }
-# A program and the libraries it links (ldd follows them for us).
+
+# A program and the shared libraries it links (ldd follows them for us).
 add_prog() {
     local p
     p=$(command -v "$1" 2>/dev/null) || return
-    p=$(readlink -f "$p")
-    [ -n "$p" ] || return
+    p=$(readlink -f -- "$p") || return
+    [ -f "$p" ] || return
     [ -z "${programs[$p]:-}" ] || return
     programs[$p]=1
     add "$p"
@@ -50,6 +67,7 @@ add_prog() {
         [ -n "$last" ] && [ "$last" != "$1" ] && case $last in \$*|\"*) ;; *) add_prog "$last" ;; esac ;;
     esac
 }
+
 add_dir() {
     local f
     [ -d "$1" ] || return
@@ -58,38 +76,170 @@ add_dir() {
     )
 }
 
-# Every application the launcher lists.
-[ "$list" = 1 ] || sleep "${PREFETCH_DELAY:-8}"
-IFS=: read -ra data_dirs <<< "${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
-for root in "${XDG_DATA_HOME:-$HOME/.local/share}" "${data_dirs[@]}"; do
-    [[ $root == /* ]] || continue
-    d=$root/applications
-    for f in "$d"/*.desktop; do
-        [ -f "$f" ] || continue
-        grep -qiE '^(NoDisplay|Hidden)=true' "$f" && continue
-        exe=$(sed -n 's/^Exec=//p' "$f" | head -1 | awk '{print $1}')
-        [ "$exe" = env ] && exe=$(sed -n 's/^Exec=//p' "$f" | head -1 | awk '{for (i = 2; i <= NF; i++) if ($i !~ /=/) {print $i; exit}}')
-        [ -n "$exe" ] && add_prog "$exe"
+collect_tier1() {
+    local d f p hp drv
+    active_list=1
+    # dlopen()'d GPU & WSL libraries (invisible to ldd, stored on 9p shares).
+    for d in /run/virtio-dxg-mesa/lib /usr/lib/wsl/lib /usr/lib/wsl/core; do
+        add_dir "$d"
     done
-done
-# How the launcher starts them, and the terminal its TUI entries open in.
-for p in uwsm-app gtk-launch systemd-run xdg-terminal-exec alacritty ghostty foot kitty; do add_prog "$p"; done
-# The large ones load much more than their program: Chromium's and Electron's
-# resources, GTK/GI data, image loaders, Qt plugins and QML.
-for d in /usr/lib/chromium /opt/google/chrome /usr/lib/electron* /opt/visual-studio-code \
-         /usr/lib/code /usr/share/code /usr/lib/girepository-1.0 /usr/lib/gdk-pixbuf-2.0 \
-         /usr/lib/qt6/plugins/platforms /usr/lib/qt6/plugins/wayland-shell-integration \
-         /usr/lib/qt6/plugins/wayland-graphics-integration-client /usr/lib/gtk-4.0 /usr/lib/gio/modules; do
-    add_dir "$d"
-done
-# Icon theme indexes and caches the launcher and every application read.
-for f in /usr/share/icons/*/index.theme /usr/share/icons/*/icon-theme.cache /var/cache/fontconfig/*; do add "$f"; done
+    # Only the active DriverStore folder (other stale versions can sit alongside it).
+    drv=
+    hp=$(pgrep -x Hyprland 2>/dev/null | head -1 || true)
+    if [ -n "$hp" ] && [ -r "/proc/$hp/maps" ]; then
+        drv=$(grep -oE '/usr/lib/wsl/drivers/nv[^/]+\.inf_amd64_[^/]+' "/proc/$hp/maps" 2>/dev/null | head -1 || true)
+    fi
+    if [ -z "$drv" ] && [ -d /usr/lib/wsl/drivers ]; then
+        drv=$(ls -1dt /usr/lib/wsl/drivers/nv*.inf_amd64_* 2>/dev/null | head -1 || true)
+    fi
+    if [ -n "$drv" ] && [ -d "$drv" ]; then
+        for f in "$drv"/libnvwgf2umx.so* "$drv"/libnvdxdlkernels.so* \
+                 "$drv"/libcuda.so* "$drv"/libnvcuvid.so* \
+                 "$drv"/libnvidia-encode.so* "$drv"/libnvidia-ptxjitcompiler.so* \
+                 "$drv"/nvoptix.bin; do
+            add "$f"
+        done
+        if command -v wine >/dev/null 2>&1 || command -v proton >/dev/null 2>&1; then
+            add "$drv/nvoglv64.dll"
+        fi
+    fi
 
-if [ $list = 1 ]; then
-    printf '%s\n' "${files[@]}"
+    # Core desktop, launcher, terminal, file manager, and prompt tools.
+    for p in quickshell uwsm uwsm-app gtk-launch systemd-run xdg-terminal-exec \
+             xdg-open alacritty ghostty foot kitty nautilus jq starship mise; do
+        add_prog "$p"
+    done
+
+    # Hot linker, font, icon, mime, and toolkit module caches.
+    add /etc/ld.so.cache /usr/share/mime/mime.cache /usr/share/applications/mimeinfo.cache
+    for f in /usr/share/icons/*/index.theme /usr/share/icons/*/icon-theme.cache /var/cache/fontconfig/*; do
+        add "$f"
+    done
+    for d in /usr/lib/girepository-1.0 /usr/lib/gdk-pixbuf-2.0 /usr/lib/gtk-4.0 \
+             /usr/lib/gio/modules /usr/lib/qt6/plugins/platforms \
+             /usr/lib/qt6/plugins/wayland-shell-integration \
+             /usr/lib/qt6/plugins/wayland-graphics-integration-client; do
+        add_dir "$d"
+    done
+    local cache_home="${XDG_CACHE_HOME:-$HOME/.cache}"
+    for d in "$cache_home/vdxg-pso" "${MESA_SHADER_CACHE_DIR:-$cache_home/mesa_shader_cache}" \
+             "$cache_home/mesa_shader_cache_db"; do
+        add_dir "$d"
+    done
+}
+
+collect_tier2() {
+    local d f root line exe
+    local -a data_dirs
+    active_list=2
+    IFS=: read -ra data_dirs <<< "${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
+    for root in "${XDG_DATA_HOME:-$HOME/.local/share}" "${data_dirs[@]}"; do
+        [[ $root == /* ]] || continue
+        d=$root/applications
+        [ -d "$d" ] || continue
+        while IFS= read -r -d '' f; do
+            grep -qiE '^(NoDisplay|Hidden)=true' "$f" && continue
+            line=$(sed -n 's/^Exec=//p' "$f" | head -1)
+            [ -n "$line" ] || continue
+            # Handle quoted executable paths while ignoring field arguments.
+            case $line in
+            \"*) exe=${line#\"}; exe=${exe%%\"*} ;;
+            *)   exe=$(printf '%s\n' "$line" | awk '{print $1}') ;;
+            esac
+            if [ "$exe" = env ]; then
+                exe=$(printf '%s\n' "$line" | awk '{for (i = 2; i <= NF; i++) if ($i !~ /=/) {print $i; exit}}')
+            fi
+            exe=${exe#\"}; exe=${exe%\"}
+            [ -n "$exe" ] && add_prog "$exe"
+        done < <(find -L "$d" -maxdepth 3 -type f -name '*.desktop' -print0 2>/dev/null)
+    done
+
+    for d in /usr/lib/chromium /opt/google/chrome /usr/lib/electron* \
+             /opt/visual-studio-code /usr/lib/code /usr/share/code \
+             /usr/lib/wine/x86_64-unix; do
+        add_dir "$d"
+    done
+    if [ -d /usr/lib/wine/x86_64-windows ]; then
+        for f in kernel32.dll kernelbase.dll ntdll.dll user32.dll gdi32.dll \
+                 win32u.dll vulkan-1.dll opengl32.dll d3d11.dll d3d12.dll \
+                 dxgi.dll winevulkan.dll; do
+            add "/usr/lib/wine/x86_64-windows/$f"
+        done
+    fi
+}
+
+warm_files() {
+    local tag=$1; shift
+    [ "$#" -gt 0 ] || return 0
+    if command -v python3 >/dev/null 2>&1; then
+        printf '%s\0' "$@" | python3 - "$tag" <<'PY'
+import concurrent.futures
+import os
+import sys
+import time
+
+tag = sys.argv[1]
+paths = [p for p in sys.stdin.buffer.read().split(b'\0') if p]
+fadvise = getattr(os, 'posix_fadvise', None)
+willneed = getattr(os, 'POSIX_FADV_WILLNEED', None)
+t0 = time.monotonic()
+
+def warm(path):
+    fd = -1
+    total = 0
+    try:
+        fd = os.open(path, os.O_RDONLY)
+        if fadvise is not None and willneed is not None:
+            try:
+                fadvise(fd, 0, 0, willneed)
+            except OSError:
+                pass
+        while True:
+            chunk = os.read(fd, 2 * 1024 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+        return 1, total
+    except OSError:
+        return 0, 0
+    finally:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+count = 0
+nbytes = 0
+with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+    for ok, n in pool.map(warm, paths):
+        count += ok
+        nbytes += n
+ms = int((time.monotonic() - t0) * 1000)
+print(f'app-prefetch ({tag}): {count} files, {nbytes // 1048576} MiB in {ms} ms')
+PY
+    else
+        local start bytes
+        start=$(date +%s%N)
+        printf '%s\0' "$@" | xargs -0 -n 64 -P 4 cat >/dev/null 2>&1
+        bytes=$(printf '%s\0' "$@" | du -cb --files0-from=- 2>/dev/null | tail -1 | cut -f1)
+        echo "app-prefetch ($tag): $# files, $((${bytes:-0} / 1048576)) MiB in $(( ($(date +%s%N) - start) / 1000000 )) ms"
+    fi
+}
+
+if [ "$list" = 1 ]; then
+    collect_tier1
+    [ "$tier1_only" = 1 ] || collect_tier2
+    [ "${#tier1_files[@]}" -gt 0 ] && printf '%s\n' "${tier1_files[@]}"
+    [ "${#tier2_files[@]}" -gt 0 ] && printf '%s\n' "${tier2_files[@]}"
     exit 0
 fi
-start=$(date +%s%N)
-printf '%s\0' "${files[@]}" | xargs -0 -n 64 -P 4 cat >/dev/null 2>&1
-bytes=$(printf '%s\0' "${files[@]}" | du -cb --files0-from=- 2>/dev/null | tail -1 | cut -f1)
-echo "app-prefetch: ${#files[@]} files, $((bytes / 1048576)) MiB in $(( ($(date +%s%N) - start) / 1000000 )) ms"
+
+sleep "${PREFETCH_TIER1_DELAY:-1}"
+collect_tier1
+warm_files tier1 "${tier1_files[@]}"
+[ "$tier1_only" = 1 ] && exit 0
+
+sleep "${PREFETCH_DELAY:-4}"
+collect_tier2
+warm_files tier2 "${tier2_files[@]}"

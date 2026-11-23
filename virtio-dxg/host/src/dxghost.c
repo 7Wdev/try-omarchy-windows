@@ -130,6 +130,7 @@ int dxghost_create(const struct dxghost_config *config,
 	InitializeSRWLock(&h->lock);
 	InitializeSRWLock(&h->map_lock);
 	InitializeSRWLock(&h->wait_lock);
+	InitializeSRWLock(&h->qai_lock);
 	h->next_proc = 1;
 	if (config->kmt)
 		h->kmt = *config->kmt;
@@ -146,6 +147,7 @@ int dxghost_create(const struct dxghost_config *config,
 	/* Development: DXGHOST_TRACE logs every command and its result. */
 	h->trace = getenv("DXGHOST_TRACE") != NULL;
 	h->stats = getenv("DXGHOST_STATS") != NULL;
+	h->no_qai_cache = getenv("DXGHOST_NO_QAI_CACHE") != NULL;
 	/* Diagnostics: DXGHOST_NO_INLINE_LOCK2 / _UNLOCK2 send them to lanes. */
 	h->inline_lock2 = getenv("DXGHOST_NO_INLINE_LOCK2") == NULL;
 	h->inline_unlock2 = getenv("DXGHOST_NO_INLINE_UNLOCK2") == NULL;
@@ -244,6 +246,7 @@ void dxghost_reset(struct dxghost *h)
 	dxghost_objtab_free(&h->objects);
 	dxghost_io_reset(h, 0, 0);
 	dxghost_unlock(h);
+	dxghost_qai_cache_clear(h);
 }
 
 void dxghost_destroy(struct dxghost *h)
@@ -436,16 +439,41 @@ bool dxghost_try_inline(struct dxghost *h, uint32_t channel,
 {
 	uint32_t cmd_size;
 	const uint8_t *cmd = command_of(message, size, &cmd_size);
+	const struct dxgkvmb_command_vm_to_host *vm = (const void *)cmd;
 	const struct dxgkvmb_command_vgpu_to_host *hdr = (const void *)cmd;
+	uint32_t channel_type;
 
-	if (!dxghost_nonblocking(message, size)) {
-		if (!cmd || hdr->channel_type != DXGKVMB_VGPU_TO_HOST)
+	if (!cmd)
+		return false;
+	memcpy(&channel_type, cmd + 12, sizeof(channel_type));
+	channel_type &= 0xff;
+	if (channel_type == DXGKVMB_VM_TO_HOST) {
+		if (vm->command_type != DXGK_VMBCOMMAND_CREATEPROCESS &&
+		    vm->command_type != DXGK_VMBCOMMAND_ISFEATUREENABLED_GLOBAL)
 			return false;
-		if (!(hdr->command_type == DXGK_VMBCOMMAND_UNLOCK2 &&
-		      h->inline_unlock2) &&
-		    !(hdr->command_type == DXGK_VMBCOMMAND_LOCK2 &&
-		      h->inline_lock2 && lock2_view_mapped(h, cmd, cmd_size)))
-			return false;
+	} else if (channel_type == DXGKVMB_VGPU_TO_HOST) {
+		if (!dxghost_nonblocking(message, size)) {
+			if (hdr->command_type == DXGK_VMBCOMMAND_ISFEATUREENABLED)
+				;
+			else if (hdr->command_type == DXGK_VMBCOMMAND_OPENADAPTER)
+				;
+			else if (hdr->command_type == DXGK_VMBCOMMAND_GETINTERNALADAPTERINFO)
+				;
+			else if (hdr->command_type == DXGK_VMBCOMMAND_QUERYADAPTERINFO &&
+				 dxghost_qai_can_inline(h, cmd, cmd_size))
+				;
+			else if (hdr->command_type == DXGK_VMBCOMMAND_UNLOCK2 &&
+				 h->inline_unlock2)
+				;
+			else if (hdr->command_type == DXGK_VMBCOMMAND_LOCK2 &&
+				 h->inline_lock2 &&
+				 lock2_view_mapped(h, cmd, cmd_size))
+				;
+			else
+				return false;
+		}
+	} else {
+		return false;
 	}
 	return execute(h, channel, message, size, result, result_capacity,
 		       resp, true);

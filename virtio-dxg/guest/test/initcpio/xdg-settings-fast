@@ -1,0 +1,41 @@
+#!/bin/bash
+# Fast path for `xdg-settings get default-web-browser` (used by browser-boost
+# and omarchy-launch-webapp) without invoking the ~1,000-line upstream script.
+# Everything else delegates verbatim to /usr/bin/xdg-settings.
+if [ "$#" -eq 2 ] && [ "$1" = get ] && [ "$2" = default-web-browser ]; then
+    cfg_home=${XDG_CONFIG_HOME:-$HOME/.config}
+    data_home=${XDG_DATA_HOME:-$HOME/.local/share}
+    data_dirs=${XDG_DATA_DIRS:-/usr/local/share:/usr/share}
+    for mime in "$cfg_home/mimeapps.list" /etc/xdg/mimeapps.list /usr/share/applications/mimeapps.list; do
+        [ -r "$mime" ] || continue
+        desktop=$(awk -F= '
+            /^\[Default Applications\]/ { in_def = 1; next }
+            /^\[/ { in_def = 0 }
+            in_def {
+                k = $1; gsub(/^[ \t]+|[ \t]+$/, "", k)
+                if (k == "x-scheme-handler/https" || k == "x-scheme-handler/http" || k == "text/html") {
+                    val = $2
+                    sub(/;.*/, "", val)
+                    gsub(/^[ \t]+|[ \t]+$/, "", val)
+                    if (val != "" && !(k in found)) found[k] = val
+                }
+            }
+            END {
+                if ("x-scheme-handler/https" in found) print found["x-scheme-handler/https"]
+                else if ("x-scheme-handler/http" in found) print found["x-scheme-handler/http"]
+                else if ("text/html" in found) print found["text/html"]
+            }
+        ' "$mime")
+        if [ -n "$desktop" ]; then
+            IFS=: read -ra dirs <<< "$data_home:$data_dirs"
+            for root in "${dirs[@]}"; do
+                [ -n "$root" ] || continue
+                if [ -f "$root/applications/$desktop" ]; then
+                    printf '%s\n' "$desktop"
+                    exit 0
+                fi
+            done
+        fi
+    done
+fi
+exec /usr/bin/xdg-settings "$@"

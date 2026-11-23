@@ -70,8 +70,18 @@ sed -i '/require_tool_appid/d' "$PROTON/toolmanifest.vdf"
 D=$PFX/drive_c/dxgvk
 mkdir -p "$D"
 cp -f "$BUILD/dxgvk.dll" "$BUILD/dxgvk.json" "$D/"
-gcc -shared -fPIC -O2 -o "$D/dxgkmt.so" "$here/dxgkmt_unix.c" \
-    -lgbm -lxcb -lxcb-dri3 -lxcb-present -lpthread
+if [ -f "$BUILD/dxgkmt.so" ] && [ "$BUILD/dxgkmt.so" -nt "$here/dxgkmt_unix.c" ]; then
+    cp -f "$BUILD/dxgkmt.so" "$D/dxgkmt.so"
+else
+    gcc -shared -fPIC -O2 -o "$D/dxgkmt.so" "$here/dxgkmt_unix.c" \
+        -lgbm -lxcb -lxcb-dri3 -lxcb-present -lpthread
+    if [ -w "$BUILD" ]; then
+        cp -f "$D/dxgkmt.so" "$BUILD/dxgkmt.so"
+    fi
+fi
+mkdir -p "$PFX/drive_c/users/steamuser/AppData/Local/NVIDIA/DXCache" \
+         "$PFX/drive_c/users/steamuser/AppData/Local/NVIDIA/GLCache" \
+         "$PFX/drive_c/ProgramData/NVIDIA Corporation/NV_Cache"
 # Replaced by rename: a running game keeps the old file mapped.
 cp -f "$D/dxgvk.dll" "$LIB/x86_64-windows/.dxgvk.dll.new"
 mv -f "$LIB/x86_64-windows/.dxgvk.dll.new" "$LIB/x86_64-windows/dxgvk.dll"

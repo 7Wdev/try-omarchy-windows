@@ -113,38 +113,68 @@ def desktop_entry(text):
                   'TryExec=/run/virtio-dxg/bin/chromium', result)
 
 
-def prepare_browser(root, source):
+def prepare_launch_paths(root, browser_wrapper=None, xdg_settings_fast=None):
     """Create data only; systemd mounts the read-only boot-local overlays later."""
-    desktop = root / 'usr/share/applications/chromium.desktop'
-    if not (root / 'usr/bin/chromium').is_file() or not desktop.is_file():
-        return False
-    changed = desktop_entry(desktop.read_text(encoding='utf-8'))
     boot = root / 'run/virtio-dxg'
-    (boot / 'bin').mkdir(parents=True, exist_ok=True)
-    (boot / 'applications').mkdir(exist_ok=True)
-    shutil.copyfile(source, boot / 'bin/chromium')
-    (boot / 'bin/chromium').chmod(0o755)
-    (boot / 'applications/chromium.desktop').write_text(changed, encoding='utf-8')
+    has_bin = False
+    has_apps = False
+
+    if browser_wrapper:
+        desktop = root / 'usr/share/applications/chromium.desktop'
+        if (root / 'usr/bin/chromium').is_file() and desktop.is_file():
+            changed = desktop_entry(desktop.read_text(encoding='utf-8'))
+            (boot / 'bin').mkdir(parents=True, exist_ok=True)
+            (boot / 'applications').mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(browser_wrapper, boot / 'bin/chromium')
+            (boot / 'bin/chromium').chmod(0o755)
+            (boot / 'applications/chromium.desktop').write_text(changed, encoding='utf-8')
+            has_bin = True
+            has_apps = True
+
+    if xdg_settings_fast and (root / 'usr/bin/xdg-settings').is_file():
+        (boot / 'bin').mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(xdg_settings_fast, boot / 'bin/xdg-settings')
+        (boot / 'bin/xdg-settings').chmod(0o755)
+        has_bin = True
+
+    if not has_bin and not has_apps:
+        return False
+
+    starts = []
+    stops = []
+    if has_bin:
+        starts.append('ExecStart=/usr/bin/mount -t overlay overlay -o ro,lowerdir=/run/virtio-dxg/bin:/usr/local/bin /usr/local/bin')
+        stops.append('ExecStop=/usr/bin/umount /usr/local/bin')
+    if has_apps:
+        starts.append('ExecStart=/usr/bin/mount -t overlay overlay -o ro,lowerdir=/run/virtio-dxg/applications:/usr/share/applications /usr/share/applications')
+        stops.insert(0, 'ExecStop=/usr/bin/umount /usr/share/applications')
+
     unit = root / 'run/systemd/system/virtio-dxg-bin.service'
     unit.parent.mkdir(parents=True, exist_ok=True)
-    unit.write_text('''[Unit]
-Description=virtio-dxg Chromium launch paths for this boot
-DefaultDependencies=no
-After=local-fs.target
-Before=sysinit.target systemd-user-sessions.service
-
-[Service]
-Type=oneshot
-ExecStart=/usr/bin/mount -t overlay overlay -o ro,lowerdir=/run/virtio-dxg/bin:/usr/local/bin /usr/local/bin
-ExecStart=/usr/bin/mount -t overlay overlay -o ro,lowerdir=/run/virtio-dxg/applications:/usr/share/applications /usr/share/applications
-ExecStop=/usr/bin/umount /usr/share/applications
-ExecStop=/usr/bin/umount /usr/local/bin
-RemainAfterExit=yes
-''', encoding='utf-8')
+    unit.write_text(
+        '[Unit]\n'
+        'Description=virtio-dxg launch paths for this boot\n'
+        'DefaultDependencies=no\n'
+        'After=local-fs.target\n'
+        'Before=sysinit.target systemd-user-sessions.service\n\n'
+        '[Service]\n'
+        'Type=oneshot\n' +
+        '\n'.join(starts) + '\n' +
+        '\n'.join(stops) + '\n'
+        'RemainAfterExit=yes\n',
+        encoding='utf-8',
+    )
     wants = unit.parent / 'sysinit.target.wants'
     wants.mkdir(exist_ok=True)
-    (wants / unit.name).symlink_to('../' + unit.name)
+    link = wants / unit.name
+    if not link.exists() and not link.is_symlink():
+        link.symlink_to('../' + unit.name)
     return True
+
+
+def prepare_browser(root, source):
+    """Backward-compatible helper for staging the Chromium wrapper overlay."""
+    return prepare_launch_paths(root, browser_wrapper=source)
 
 
 if __name__ == '__main__':
@@ -153,11 +183,12 @@ if __name__ == '__main__':
     parser.add_argument('destination', type=Path)
     parser.add_argument('--recipe', required=True, type=Path)
     parser.add_argument('--browser-wrapper', type=Path)
+    parser.add_argument('--xdg-settings-fast', type=Path)
     args = parser.parse_args()
     version = extract(args.archive, args.destination, args.recipe)
-    if args.browser_wrapper:
+    if args.browser_wrapper or args.xdg_settings_fast:
         try:
-            prepare_browser(Path('/'), args.browser_wrapper)
+            prepare_launch_paths(Path('/'), args.browser_wrapper, args.xdg_settings_fast)
         except (ValueError, OSError) as error:
-            print('virtio-dxg: Chromium wrapper unavailable: ' + str(error))
+            print('virtio-dxg: launch path overlay unavailable: ' + str(error))
     print('virtio-dxg: staged matched Mesa ' + version + '; hardware acceptance pending')

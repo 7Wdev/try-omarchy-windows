@@ -16,7 +16,7 @@ from apply_mesa_recipe import apply_recipe, load_recipe
 
 def function(text, name):
     # Anchor the definition; calls/comments are not source definitions.
-    match = re.search(r'(?m)^(?:static )?(?:inline )?(?:bool|void|int|struct pipe_resource \*)\s*\n' +
+    match = re.search(r'(?m)^(?:static )?(?:inline )?(?:bool|void|int|HRESULT|struct pipe_resource \*)\s*\n' +
                       re.escape(name) + r'\(', text)
     if not match:
         raise ValueError('Function definition missing: ' + name)
@@ -138,11 +138,31 @@ def main():
         text = (source / 'd3d12_bufmgr.cpp').read_text(encoding='utf-8')
         actual = function(text, 'd3d12_screen_reclaim_completed') + function(text, 'd3d12_screen_reclaim_one')
         run_fixture(out, label, reclaim_template, actual, expected, message)
+
+    d3d12_pw_src = (driver / 'd3d12_pso_prewarm.cpp').read_text(encoding='utf-8')
+    d3d12_pw_body = d3d12_pw_src[d3d12_pw_src.index('namespace {'):d3d12_pw_src.index('\n#else')]
+    dzn_src_dir = fixed / 'src/microsoft/vulkan'
+    dzn_pw_src = (dzn_src_dir / 'dzn_pso_prewarm.cpp').read_text(encoding='utf-8')
+    dzn_pw_slice = dzn_pw_src[dzn_pw_src.index('static const GUID dzn_root_signature_blob_guid'):
+                              dzn_pw_src.index('\n#else')]
+    dzn_pw_body = '\n'.join(
+        line for line in dzn_pw_slice.splitlines()
+        if not line.startswith('#ifndef _WIN32') and not line.startswith('#include ')
+    )
+    dzn_fmt_fn = function((dzn_src_dir / 'dzn_device.c').read_text(encoding='utf-8'),
+                          'dzn_physical_device_check_dxgi_format')
+    prewarm_tpl = ((HERE / 'prewarm_cases.cpp.in').read_text(encoding='utf-8')
+                   .replace('// ACTUAL_D3D12_PREWARM', d3d12_pw_body)
+                   .replace('// ACTUAL_DZN_PREWARM', dzn_pw_body)
+                   .replace('// ACTUAL_DZN_FORMAT_CACHE', dzn_fmt_fn))
+    run_fixture(out, 'prewarm-patched', prewarm_tpl, '', 0, 'PREWARM_CPU_PASS cases=12')
+
     receipt = {'schema': 1, 'recipeSha256': hashlib.sha256((recipe / 'recipe.json').read_bytes()).hexdigest(),
                'mesaVersion': manifest['mesaVersion'], 'recipeControls': 4,
                'actualMirrorCpuCases': 19, 'actualFenceCpuCases': 15,
                'nativeExportCpuFixture': 'passed',
                'actualReclaimCpuCases': 10,
+               'actualPrewarmCpuCases': 12,
                'baselineDefectsReproduced': ['shared-dirty-bit', 'device-removal-completion', 'device-removal-reclaim'],
                'graphicsLibraryLoaded': False, 'hardwareIntegrationTested': False}
     (out / 'result.json').write_text(json.dumps(receipt, indent=2) + '\n')

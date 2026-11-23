@@ -1,0 +1,149 @@
+#!/bin/bash
+# desktop-boost: runtime session warmers for virtio-dxg (controlled by
+# virtio_dxg.boost=0). Subcommands:
+#   psocache  seed $XDG_RUNTIME_DIR/vdxg-pso from ~/.cache/vdxg-pso and sync back
+#   files     keep Nautilus GApplication service warm for instant Files windows
+#   terminal  skip Ghostty's GL probe on d3d12 and keep foot --server warm
+#   wine      once a Wine session starts, keep its wineserver warm 5 minutes
+set -u
+
+run_psocache() {
+    local rt="${XDG_RUNTIME_DIR:-/tmp/vdxg-pso-$(id -u)}/vdxg-pso"
+    local persist="${MESA_SHADER_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/mesa_shader_cache}"
+    local sub f base tmp src_sz dst_sz
+    mkdir -p -m 0700 "$rt" "$persist" "$rt/d3d12_pso" "$rt/dzn_pso" \
+        "$persist/d3d12_pso" "$persist/dzn_pso" || exit 1
+
+    for sub in d3d12_pso dzn_pso; do
+        for f in "$persist/$sub"/*.bin; do
+            [ -f "$f" ] || continue
+            base=${f##*/}
+            src_sz=$(stat -c %s -- "$f" 2>/dev/null || echo 0)
+            dst_sz=$(stat -c %s -- "$rt/$sub/$base" 2>/dev/null || echo -1)
+            if [ ! -f "$rt/$sub/$base" ] || [ "$f" -nt "$rt/$sub/$base" ] || [ "$src_sz" -gt "$dst_sz" ]; then
+                tmp="$rt/$sub/.$base.tmp.$$"
+                cp -p -- "$f" "$tmp" 2>/dev/null && mv -f -- "$tmp" "$rt/$sub/$base" || rm -f -- "$tmp"
+            fi
+        done
+    done
+    # Only advertise the tmpfs directory once persistent records are staged.
+    : >"$rt/.ready" 2>/dev/null || true
+
+    sync_back() {
+        local s rf rb rtmp ssz dsz
+        for s in d3d12_pso dzn_pso; do
+            for rf in "$rt/$s"/*.bin; do
+                [ -f "$rf" ] || continue
+                rb=${rf##*/}
+                ssz=$(stat -c %s -- "$rf" 2>/dev/null || echo 0)
+                dsz=$(stat -c %s -- "$persist/$s/$rb" 2>/dev/null || echo -1)
+                if [ ! -f "$persist/$s/$rb" ] || [ "$rf" -nt "$persist/$s/$rb" ] || [ "$ssz" -gt "$dsz" ]; then
+                    rtmp="$persist/$s/.$rb.tmp.$$"
+                    cp -p -- "$rf" "$rtmp" 2>/dev/null && mv -f -- "$rtmp" "$persist/$s/$rb" || rm -f -- "$rtmp"
+                fi
+            done
+        done
+    }
+
+    trap 'sync_back; exit 0' EXIT TERM INT HUP
+    while :; do
+        sleep "${PSO_SYNC_INTERVAL:-20}" &
+        wait $! || break
+        sync_back
+    done
+}
+
+wait_wayland() {
+    local rt="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+    local i=0
+    while [ $i -lt 150 ]; do
+        if [ -n "${WAYLAND_DISPLAY:-}" ] && [ -S "$rt/$WAYLAND_DISPLAY" ]; then
+            return 0
+        fi
+        for s in "$rt"/wayland-*; do
+            case $s in *.lock) continue ;; esac
+            if [ -S "$s" ]; then
+                export WAYLAND_DISPLAY="${s##*/}"
+                return 0
+            fi
+        done
+        sleep 0.2
+        i=$((i + 1))
+    done
+    return 1
+}
+
+run_files() {
+    command -v nautilus >/dev/null 2>&1 || exit 0
+    wait_wayland || exit 0
+    # Give compositor and shell priority before warming Nautilus.
+    sleep "${FILES_BOOST_DELAY:-1}"
+    if pgrep -u "$(id -u)" -f 'nautilus.*--gapplication-service' >/dev/null 2>&1; then
+        exit 0
+    fi
+    exec nautilus --gapplication-service
+}
+
+run_terminal() {
+    local rt="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+    # Mesa d3d12 exposes OpenGL 4.6 core, so Ghostty never needs the 4.2->4.3 override;
+    # seeding ghostty-gl.env avoids a surfaceless EGL probe subprocess on first launch.
+    if [ -d "$rt" ]; then
+        local gdir="$rt/try-omarchy" gfile="$rt/try-omarchy/ghostty-gl.env" gtmp
+        mkdir -p -m 0700 "$gdir" 2>/dev/null || true
+        if [ ! -f "$gfile" ]; then
+            gtmp="$gfile.tmp.$$"
+            printf '# virtio-dxg d3d12 offers OpenGL 4.6 core; no override\n' >"$gtmp" 2>/dev/null &&
+                mv -f -- "$gtmp" "$gfile" || rm -f -- "$gtmp"
+        fi
+    fi
+
+    wait_wayland || exit 0
+    if command -v foot >/dev/null 2>&1 &&
+       ! pgrep -u "$(id -u)" -f 'foot.*--server' >/dev/null 2>&1 &&
+       [ ! -S "$rt/foot-${WAYLAND_DISPLAY:-wayland-0}.sock" ]; then
+        foot --server >/dev/null 2>&1 &
+    fi
+    if command -v ghostty >/dev/null 2>&1 &&
+       ! pgrep -u "$(id -u)" -x ghostty >/dev/null 2>&1; then
+        # Only keep Ghostty resident when it is the user's configured default terminal.
+        case $(cat "${XDG_CONFIG_HOME:-$HOME/.config}/xdg-terminals.list" 2>/dev/null | head -1) in
+        *ghostty*)
+            if ghostty --help 2>/dev/null | grep -q -- '--initial-window'; then
+                exec ghostty --gtk-single-instance=true --initial-window=false \
+                    --quit-after-last-window-closed=false >/dev/null 2>&1
+            fi
+            ;;
+        esac
+    fi
+    wait
+}
+
+run_wine() {
+    local uid pid pfx bin
+    declare -A boosted
+    uid=$(id -u)
+    while :; do
+        for pid in $(pgrep -u "$uid" -x wineserver 2>/dev/null || true); do
+            [ -z "${boosted[$pid]:-}" ] || continue
+            boosted[$pid]=1
+            bin=$(readlink -f "/proc/$pid/exe" 2>/dev/null || true)
+            [ -n "$bin" ] && [ -x "$bin" ] || continue
+            pfx=$(tr '\0' '\n' <"/proc/$pid/environ" 2>/dev/null | sed -n 's/^WINEPREFIX=//p' | head -1)
+            if [ -n "$pfx" ]; then
+                WINEPREFIX="$pfx" "$bin" -p300 >/dev/null 2>&1 &
+            else
+                "$bin" -p300 >/dev/null 2>&1 &
+            fi
+        done
+        sleep 5
+    done
+}
+
+case "${1:-}" in
+psocache) run_psocache ;;
+files)    run_files ;;
+terminal) run_terminal ;;
+wine)     run_wine ;;
+*)        echo "usage: $0 {psocache|files|terminal|wine}" >&2; exit 2 ;;
+esac

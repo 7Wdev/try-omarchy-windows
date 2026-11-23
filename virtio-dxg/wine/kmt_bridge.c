@@ -376,9 +376,23 @@ static DWORD WINAPI async_wait_thread(void *context)
 	return 0;
 }
 
+static int spawn_async_wait(struct async_wait *w)
+{
+	HANDLE thread;
+
+	if (QueueUserWorkItem(async_wait_thread, w, WT_EXECUTELONGFUNCTION))
+		return 0;
+	thread = CreateThread(NULL, 64 * 1024, async_wait_thread, w, 0, NULL);
+	if (thread) {
+		CloseHandle(thread);
+		return 0;
+	}
+	return -1;
+}
+
 /*
- * A Win32 event becomes an eventfd that dxgkrnl signals; a thread forwards
- * it. (The product version uses one poll thread for all waits.)
+ * A Win32 event becomes an eventfd that dxgkrnl signals; a thread-pool
+ * worker (with CreateThread fallback) forwards it.
  */
 static int32_t WINAPI kmt_wait_cpu(void *args)
 {
@@ -394,23 +408,120 @@ static int32_t WINAPI kmt_wait_cpu(void *args)
 	fd = linux_eventfd();
 	if (fd < 0)
 		return (int32_t)0xC0000017;
+	w = HeapAlloc(GetProcessHeap(), 0, sizeof(*w));
+	if (!w) {
+		linux_close((int)fd);
+		return (int32_t)0xC0000017;
+	}
 	a.async_event = (uint64_t)fd;
 	status = kmt_WaitForSynchronizationObjectFromCpu(&a);
 	if (status < 0) {
+		HeapFree(GetProcessHeap(), 0, w);
 		linux_close((int)fd);
 		return status;
 	}
-	w = HeapAlloc(GetProcessHeap(), 0, sizeof(*w));
 	w->event = event;
 	w->fd = (int)fd;
-	CloseHandle(CreateThread(NULL, 64 * 1024, async_wait_thread, w, 0,
-				 NULL));
+	if (spawn_async_wait(w) < 0) {
+		HeapFree(GetProcessHeap(), 0, w);
+		linux_close((int)fd);
+		return (int32_t)0xC0000017;
+	}
+	return status;
+}
+
+#define QAI_CACHE_SLOTS 64
+#define QAI_CACHE_MAX_BYTES 65536u
+#define QAI_CACHE_IN_PREFIX 64u
+
+static struct kmt_stat stat_cached_QueryAdapterInfo = {
+	"QueryAdapterInfo (reused)"
+};
+static SRWLOCK qai_cache_lock = SRWLOCK_INIT;
+static uint64_t qai_stamp;
+
+static struct {
+	uint32_t adapter;
+	uint32_t type;
+	uint32_t size;
+	uint32_t in_len;
+	uint8_t in_prefix[QAI_CACHE_IN_PREFIX];
+	uint8_t *out_data;
+	uint64_t stamp;
+	int valid;
+} qai_cache[QAI_CACHE_SLOTS];
+
+static int qai_is_cacheable_type(uint32_t type)
+{
+	switch (type) {
+	case 1:		/* UMDRIVERPRIVATE */
+	case 4:		/* ADAPTERGUID */
+	case 8:		/* ADAPTERREGISTRYINFO */
+	case 13:	/* DRIVERVERSION */
+	case 15:	/* ADAPTERTYPE */
+	case 24:	/* WDDM_1_2_CAPS */
+	case 27:	/* WDDM_1_3_CAPS */
+	case 31:	/* DRIVER_DESCRIPTION */
+	case 34:	/* WDDM_2_0_CAPS */
+	case 62:	/* WSLUMD_FILENAME */
+	case 70:	/* WDDM_2_7_CAPS */
+	case 75:	/* WDDM_2_9_CAPS */
+	case 77:	/* WDDM_3_0_CAPS */
+	case 80:	/* WDDM_3_1_CAPS */
+		return 1;
+	default:
+		return 0;
+	}
+}
+
+static int qai_cache_enabled(void)
+{
+	static volatile LONG mode;
+	LONG cur = mode;
+
+	if (!cur) {
+		char buf[16];
+		DWORD n = GetEnvironmentVariableA("DXGVK_NO_QAI_CACHE", buf,
+						  sizeof(buf));
+		LONG next = (n > 0 && strcmp(buf, "0") != 0) ? 2 : 1;
+
+		InterlockedCompareExchange(&mode, next, 0);
+		cur = mode;
+	}
+	return cur == 1;
+}
+
+static int32_t WINAPI kmt_close_adapter(void *args)
+{
+	struct d3dkmt_closeadapter *c = args;
+	uint32_t adapter = c ? c->adapter_handle.v : 0;
+	uint8_t *to_free[QAI_CACHE_SLOTS];
+	size_t nfree = 0, i;
+	int32_t status = kmt_CloseAdapter(args);
+
+	if (adapter) {
+		AcquireSRWLockExclusive(&qai_cache_lock);
+		for (i = 0; i < QAI_CACHE_SLOTS; i++) {
+			if (qai_cache[i].valid &&
+			    qai_cache[i].adapter == adapter) {
+				if (qai_cache[i].out_data)
+					to_free[nfree++] = qai_cache[i].out_data;
+				memset(&qai_cache[i], 0, sizeof(qai_cache[i]));
+			}
+		}
+		ReleaseSRWLockExclusive(&qai_cache_lock);
+		for (i = 0; i < nfree; i++)
+			HeapFree(GetProcessHeap(), 0, to_free[i]);
+	}
 	return status;
 }
 
 static int32_t WINAPI kmt_query_adapter_info(void *args)
 {
 	struct d3dkmt_queryadapterinfo *q = args;
+	uint8_t in_prefix[QAI_CACHE_IN_PREFIX];
+	uint32_t in_len = 0;
+	int cacheable;
 	int32_t status;
 
 	/*
@@ -424,7 +535,81 @@ static int32_t WINAPI kmt_query_adapter_info(void *args)
 	    !wcsncmp((const wchar_t *)((const uint8_t *)(uintptr_t)q->private_data + 8),
 		     L"Vulkan", 6))
 		return (int32_t)0xC0000034;	/* OBJECT_NAME_NOT_FOUND */
+
+	cacheable = trace_calls <= 0 && qai_cache_enabled() &&
+		    q->private_data && q->private_data_size > 0 &&
+		    q->private_data_size <= QAI_CACHE_MAX_BYTES &&
+		    qai_is_cacheable_type((uint32_t)q->type);
+	if (cacheable) {
+		size_t i;
+
+		in_len = q->private_data_size < QAI_CACHE_IN_PREFIX ?
+			 q->private_data_size : QAI_CACHE_IN_PREFIX;
+		memcpy(in_prefix, (const void *)(uintptr_t)q->private_data,
+		       in_len);
+		AcquireSRWLockShared(&qai_cache_lock);
+		for (i = 0; i < QAI_CACHE_SLOTS; i++) {
+			if (qai_cache[i].valid &&
+			    qai_cache[i].adapter == q->adapter.v &&
+			    qai_cache[i].type == (uint32_t)q->type &&
+			    qai_cache[i].size == q->private_data_size &&
+			    qai_cache[i].in_len == in_len &&
+			    memcmp(qai_cache[i].in_prefix, in_prefix,
+				   in_len) == 0) {
+				memcpy((void *)(uintptr_t)q->private_data,
+				       qai_cache[i].out_data,
+				       q->private_data_size);
+				ReleaseSRWLockShared(&qai_cache_lock);
+				InterlockedIncrement(
+					&stat_cached_QueryAdapterInfo.calls);
+				return 0;
+			}
+		}
+		ReleaseSRWLockShared(&qai_cache_lock);
+	}
+
 	status = kmt_QueryAdapterInfo(args);
+	if (cacheable && status == 0) {
+		uint8_t *copy = HeapAlloc(GetProcessHeap(), 0,
+					  q->private_data_size);
+		if (copy) {
+			uint8_t *old = NULL;
+			size_t i, slot = 0;
+
+			memcpy(copy, (const void *)(uintptr_t)q->private_data,
+			       q->private_data_size);
+			AcquireSRWLockExclusive(&qai_cache_lock);
+			for (i = 0; i < QAI_CACHE_SLOTS; i++) {
+				if (!qai_cache[i].valid) {
+					slot = i;
+					break;
+				}
+				if (qai_cache[i].adapter == q->adapter.v &&
+				    qai_cache[i].type == (uint32_t)q->type &&
+				    qai_cache[i].size == q->private_data_size &&
+				    qai_cache[i].in_len == in_len &&
+				    memcmp(qai_cache[i].in_prefix, in_prefix,
+					   in_len) == 0) {
+					slot = i;
+					break;
+				}
+				if (qai_cache[i].stamp < qai_cache[slot].stamp)
+					slot = i;
+			}
+			old = qai_cache[slot].out_data;
+			qai_cache[slot].adapter = q->adapter.v;
+			qai_cache[slot].type = (uint32_t)q->type;
+			qai_cache[slot].size = q->private_data_size;
+			qai_cache[slot].in_len = in_len;
+			memcpy(qai_cache[slot].in_prefix, in_prefix, in_len);
+			qai_cache[slot].out_data = copy;
+			qai_cache[slot].stamp = ++qai_stamp;
+			qai_cache[slot].valid = 1;
+			ReleaseSRWLockExclusive(&qai_cache_lock);
+			if (old)
+				HeapFree(GetProcessHeap(), 0, old);
+		}
+	}
 
 	if (trace_calls > 0) {
 		const uint8_t *p = (const uint8_t *)(uintptr_t)q->private_data;
@@ -900,10 +1085,13 @@ static const struct kmt_entry entries[] = {
 	{ "GetDeviceState", kmt_get_device_state, &stat_GetDeviceState },
 	{ "QueryVideoMemoryInfoReused", kmt_query_video_memory_info,
 	  &stat_cached_QueryVideoMemoryInfo },
+	{ "QueryAdapterInfoReused", kmt_query_adapter_info,
+	  &stat_cached_QueryAdapterInfo },
 	{ "GetDeviceStateReused", kmt_get_device_state, &stat_cached_GetDeviceState },
 	{ "WaitForSynchronizationObjectFromCpu", kmt_wait_cpu,
 	  &stat_WaitForSynchronizationObjectFromCpu },
 	{ "QueryAdapterInfo", kmt_query_adapter_info, &stat_QueryAdapterInfo },
+	{ "CloseAdapter", kmt_close_adapter, &stat_CloseAdapter },
 	{ "CreateSynchronizationObject2", kmt_create_sync_object2,
 	  &stat_CreateSynchronizationObject2 },
 	{ "SignalSynchronizationObject2", kmt_signal_sync_object2,
@@ -1580,18 +1768,26 @@ static int32_t WINAPI kmt_signal_sync_object2(void *args)
 	fd = linux_eventfd();
 	if (fd < 0)
 		return (int32_t)0xC0000017;
+	w = HeapAlloc(GetProcessHeap(), 0, sizeof(*w));
+	if (!w) {
+		linux_close((int)fd);
+		return (int32_t)0xC0000017;
+	}
 	a->cpu_event_handle = (uint64_t)fd;
 	status = kmt_SignalSynchronizationObject2(args);
 	a->cpu_event_handle = event;
 	if (status < 0) {
+		HeapFree(GetProcessHeap(), 0, w);
 		linux_close((int)fd);
 		return status;
 	}
-	w = HeapAlloc(GetProcessHeap(), 0, sizeof(*w));
 	w->event = (HANDLE)(uintptr_t)event;
 	w->fd = (int)fd;
-	CloseHandle(CreateThread(NULL, 64 * 1024, async_wait_thread, w, 0,
-				 NULL));
+	if (spawn_async_wait(w) < 0) {
+		HeapFree(GetProcessHeap(), 0, w);
+		linux_close((int)fd);
+		return (int32_t)0xC0000017;
+	}
 	return status;
 }
 

@@ -35,6 +35,7 @@
 #define dev_fmt(fmt)	"dxgk: " fmt
 
 #define DXGVIRTIO_EVENT_BUFFERS	128
+#define DXGVIRTIO_INLINE_BUF	1024
 
 struct dxgvirtio_req {
 	struct kref			ref;
@@ -47,6 +48,7 @@ struct dxgvirtio_req {
 	u32				result_size;
 	bool				async;
 	bool				urgent;	/* async, but its sender sleeps on it */
+	u8				inline_buf[DXGVIRTIO_INLINE_BUF];
 };
 
 struct dxgvirtio {
@@ -145,7 +147,8 @@ static void dxgvirtio_req_free(struct kref *ref)
 	struct dxgvirtio_req *req = container_of(ref, struct dxgvirtio_req,
 						 ref);
 
-	kvfree(req->buf);
+	if (req->buf != req->inline_buf)
+		kvfree(req->buf);
 	kfree(req);
 }
 
@@ -335,6 +338,8 @@ int dxgvirtio_send(struct dxgvirtio *dv, u32 channel, const void *command,
 	struct dxgvirtio_req *req;
 	int ret;
 
+	u64 total_size = (u64)cmd_size + result_size;
+
 	if (cmd_size == 0 || cmd_size > dv->max_message ||
 	    result_size > dv->max_message || (async && result_size))
 		return -EINVAL;
@@ -342,14 +347,18 @@ int dxgvirtio_send(struct dxgvirtio *dv, u32 channel, const void *command,
 	req = kzalloc(sizeof(*req), GFP_KERNEL);
 	if (!req)
 		return -ENOMEM;
-	req->buf = kvmalloc(cmd_size + result_size, GFP_KERNEL);
-	if (!req->buf) {
-		kfree(req);
-		return -ENOMEM;
+	if (total_size <= DXGVIRTIO_INLINE_BUF) {
+		req->buf = req->inline_buf;
+	} else {
+		req->buf = kvmalloc(total_size, GFP_KERNEL);
+		if (!req->buf) {
+			kfree(req);
+			return -ENOMEM;
+		}
+		if (result_size)
+			memset((u8 *)req->buf + cmd_size, 0, result_size);
 	}
 	memcpy(req->buf, command, cmd_size);
-	if (result_size)
-		memset((u8 *)req->buf + cmd_size, 0, result_size);
 	req->cmd_size = cmd_size;
 	req->result_size = result_size;
 	req->async = async;

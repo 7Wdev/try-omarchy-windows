@@ -194,6 +194,62 @@ class DesktopData(unittest.TestCase):
             else:
                 self.assertEqual(observed, argv)
 
+    def test_launch_paths_stages_xdg_settings_fast_without_browser(self):
+        xdg_bin = self.root / 'usr/bin/xdg-settings'
+        xdg_bin.parent.mkdir(parents=True)
+        xdg_bin.write_text('#!/bin/sh\necho fallback:$*\n')
+        xdg_bin.chmod(0o755)
+        self.assertTrue(payload.prepare_launch_paths(
+            self.root, xdg_settings_fast=HERE / 'initcpio/xdg-settings-fast'))
+        staged = self.root / 'run/virtio-dxg/bin/xdg-settings'
+        self.assertTrue(staged.is_file())
+        unit = (self.root / 'run/systemd/system/virtio-dxg-bin.service').read_text()
+        self.assertIn('lowerdir=/run/virtio-dxg/bin:/usr/local/bin', unit)
+        self.assertNotIn('/usr/share/applications', unit)
+
+    def test_xdg_settings_fast_default_browser_and_fallback(self):
+        cfg = self.root / 'cfg'
+        apps = self.root / 'data/applications'
+        cfg.mkdir(parents=True)
+        apps.mkdir(parents=True)
+        (apps / 'chromium.desktop').write_text('[Desktop Entry]\nName=Chromium\n')
+        (cfg / 'mimeapps.list').write_text(
+            '[Default Applications]\n'
+            'text/html=other.desktop\n'
+            'x-scheme-handler/https=chromium.desktop;\n'
+        )
+        stub = self.root / 'fallback-xdg-settings'
+        stub.write_text('#!/bin/sh\necho "FALLBACK:$*"\n')
+        stub.chmod(0o755)
+        fast = self.root / 'xdg-settings-fast'
+        fast.write_text((HERE / 'initcpio/xdg-settings-fast').read_text().replace(
+            '/usr/bin/xdg-settings', str(stub)))
+        env = dict(os.environ, XDG_CONFIG_HOME=str(cfg),
+                   XDG_DATA_HOME=str(self.root / 'data'),
+                   XDG_DATA_DIRS=str(self.root / 'empty'))
+        res = subprocess.run(['bash', str(fast), 'get', 'default-web-browser'],
+                             env=env, capture_output=True, text=True, check=True, timeout=5)
+        self.assertEqual(res.stdout.strip(), 'chromium.desktop')
+        res2 = subprocess.run(['bash', str(fast), 'check', 'default-web-browser', 'chromium.desktop'],
+                              env=env, capture_output=True, text=True, check=True, timeout=5)
+        self.assertEqual(res2.stdout.strip(), 'FALLBACK:check default-web-browser chromium.desktop')
+
+    def test_app_prefetch_list_and_syntax(self):
+        fake_apps = self.root / 'apps/applications'
+        fake_apps.mkdir(parents=True)
+        (fake_apps / 'test.desktop').write_text(
+            '[Desktop Entry]\nType=Application\nExec=/bin/sh -c true\n'
+        )
+        env = dict(os.environ, XDG_DATA_HOME=str(self.root / 'apps'),
+                   XDG_DATA_DIRS=str(self.root / 'empty'),
+                   XDG_CACHE_HOME=str(self.root / 'cache'))
+        res = subprocess.run(['bash', str(HERE / 'initcpio/app-prefetch'), '--list'],
+                             env=env, capture_output=True, text=True, check=True, timeout=10)
+        self.assertIn('/sh', res.stdout)
+        subprocess.run(['bash', '-n', str(HERE / 'initcpio/desktop-boost')], check=True, timeout=5)
+        subprocess.run(['bash', '-n', str(HERE / 'initcpio/browser-boost')], check=True, timeout=5)
+        subprocess.run(['sh', '-n', str(HERE / 'initcpio/virtio_dxg')], check=True, timeout=5)
+
 
 if __name__ == '__main__':
     unittest.main()

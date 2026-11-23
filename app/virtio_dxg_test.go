@@ -88,7 +88,7 @@ func TestPrepareDxgLaunchFindsItsFiles(t *testing.T) {
 
 func TestBuildQemuArgsForDxg(t *testing.T) {
 	cfg := &config{vmDir: "vm", guestDir: "guest", disk: "disk.raw", diskFormat: "raw",
-		memMiB: 4096, audio: "none", diskSnapshot: true,
+		cpus: 6, memMiB: 4096, audio: "none", diskSnapshot: true,
 		dxg: dxgLaunch{enabled: true, initramfs: filepath.Join("vdxg", "initramfs-linux.img"),
 			shares: []dxgShare{{"wsllib", `C:\Windows\System32\lxss\lib`}, {"vdxgpayload", `D:\x,y`}}}}
 	args := strings.Join(buildQemuArgs(cfg, "root=/dev/vda"), " ")
@@ -96,6 +96,9 @@ func TestBuildQemuArgsForDxg(t *testing.T) {
 		"-cpu host ",
 		"-device virtio-dxg-pci",
 		"-global virtio-gpu-device.max_hostmem=8589934592",
+		"-object iothread,id=diskio0",
+		"-global virtio-blk-pci.iothread=diskio0",
+		"-global virtio-blk-pci.num-queues=6",
 		"-initrd " + filepath.Join("vdxg", "initramfs-linux.img") + " ",
 		"tryomarchy.render=gpu virtio_dxg.desktop=1",
 		"mount_tag=wsllib,security_model=none,readonly=on",
@@ -112,6 +115,7 @@ func TestBuildQemuArgsForDxg(t *testing.T) {
 	cfg.dxg, cfg.diskSnapshot = dxgLaunch{}, false
 	args = strings.Join(buildQemuArgs(cfg, "root=/dev/vda"), " ")
 	if strings.Contains(args, "virtio-dxg") || strings.Contains(args, "snapshot=on") ||
+		strings.Contains(args, "iothread") || strings.Contains(args, "virtio-blk-pci.") ||
 		!strings.Contains(args, "tryomarchy.render=cpu") || strings.Contains(args, "-cpu host") ||
 		!strings.Contains(args, "-display sdl,gl=off,") {
 		t.Fatalf("CPU mode changed by dxg support: %s", args)
