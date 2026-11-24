@@ -11,7 +11,7 @@ done
 if [ -n "${DISPLAY:-}" ]; then
     exec /usr/bin/chromium "$@" --ozone-platform=x11 --use-gl=angle \
         --use-angle=gl --ignore-gpu-blocklist --enable-gpu-rasterization \
-        --disable-accelerated-video-encode
+        --disable-accelerated-video-encode --disable-quic
 fi
 # Never guess an X display or leave an invisible browser waiting on one.
 exec /usr/bin/chromium "$@"

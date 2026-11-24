@@ -249,6 +249,8 @@ class DesktopData(unittest.TestCase):
         self.assertIn('/sh', res.stdout)
         subprocess.run(['bash', '-n', str(HERE / 'initcpio/desktop-boost')], check=True, timeout=5)
         subprocess.run(['bash', '-n', str(HERE / 'initcpio/browser-boost')], check=True, timeout=5)
+        subprocess.run(['sh', '-n', str(HERE / 'initcpio/desktop-priority')], check=True, timeout=5)
+        subprocess.run(['sh', '-n', str(HERE / 'initcpio/chromium-wrapper')], check=True, timeout=5)
         subprocess.run(['sh', '-n', str(HERE / 'initcpio/app-fastlaunch')], check=True, timeout=5)
         subprocess.run(['sh', '-n', str(HERE / 'initcpio/virtio_dxg')], check=True, timeout=5)
 

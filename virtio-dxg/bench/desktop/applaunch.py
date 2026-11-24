@@ -51,14 +51,34 @@ def hypr_close(addr):
                        capture_output=True)
 
 
+def hypr_clients_via_sock(ctl_sock_path):
+    cs = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    cs.settimeout(1.0)
+    try:
+        cs.connect(ctl_sock_path)
+        cs.sendall(b'j/clients')
+        chunks = []
+        while True:
+            d = cs.recv(65536)
+            if not d:
+                break
+            chunks.append(d)
+        return json.loads(b''.join(chunks).decode(errors='replace'))
+    except Exception:
+        return None
+    finally:
+        cs.close()
+
+
 def launch(sock_path, cmd, cls, timeout=20.0):
+    ctl_sock_path = os.path.join(os.path.dirname(sock_path), '.socket.sock')
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     s.connect(sock_path)
     s.settimeout(0.05)
     t0 = time.monotonic()
     p = subprocess.Popen(shlex.split(cmd), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                          start_new_session=True)
-    buf, addr = b'', None
+    buf, addr, t_hit = b'', None, None
     while time.monotonic() - t0 < timeout and addr is None:
         try:
             buf += s.recv(65536)
@@ -68,11 +88,30 @@ def launch(sock_path, cmd, cls, timeout=20.0):
             line, buf = buf.split(b'\n', 1)
             if line.startswith(b'openwindow>>'):
                 fields = line[12:].decode(errors='replace').split(',', 3)
-                if len(fields) >= 3 and (cls in fields[2].lower() or
-                                         (len(fields) >= 4 and not fields[2] and cls in fields[3].lower())):
+                if len(fields) >= 3 and not fields[1].lower().startswith('special') and (
+                    cls in fields[2].lower() or
+                    (len(fields) >= 4 and not fields[2] and cls in fields[3].lower())
+                ):
                     addr = fields[0]
+                    t_hit = time.monotonic()
                     break
-    ms = (time.monotonic() - t0) * 1000 if addr else None
+            elif line.startswith(b'movewindow>>'):
+                fields = line[12:].decode(errors='replace').split(',', 1)
+                if len(fields) == 2 and not fields[1].lower().startswith('special'):
+                    cand = fields[0].removeprefix('0x').lower()
+                    hit_time = time.monotonic()
+                    clients = hypr_clients_via_sock(ctl_sock_path) or []
+                    for c in clients:
+                        if c.get('address', '').removeprefix('0x').lower() == cand:
+                            wcls = c.get('class', '').lower()
+                            wtitle = c.get('title', '').lower()
+                            if cls in wcls or (not wcls and cls in wtitle):
+                                addr = cand
+                                t_hit = hit_time
+                                break
+                    if addr is not None:
+                        break
+    ms = ((t_hit or time.monotonic()) - t0) * 1000 if addr else None
     s.close()
     if addr:
         time.sleep(0.15)

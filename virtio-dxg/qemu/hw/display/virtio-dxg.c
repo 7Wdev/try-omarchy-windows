@@ -101,7 +101,8 @@ struct VirtIODxgState {
     GHashTable *fallback;   /* gpa of views that went the memory API way */
     QemuMutex event_lock;
     QSIMPLEQ_HEAD(, DxgEvent) events;
-    /* Reply buffer of inline requests; they run under the BQL. */
+    /* Request and reply buffers of inline requests; they run under the BQL. */
+    uint8_t *inline_req;
     uint8_t *inline_result;
 };
 
@@ -408,6 +409,29 @@ typedef struct DxgPowerThrottling {
     ULONG state_mask;
 } DxgPowerThrottling;
 
+typedef UINT (WINAPI *DxgTimerPeriodFn)(UINT);
+static HMODULE dxg_winmm_mod;
+static bool dxg_timer_period_set;
+
+static void dxg_timer_period(bool enable)
+{
+    if (enable == dxg_timer_period_set) {
+        return;
+    }
+    if (!dxg_winmm_mod) {
+        dxg_winmm_mod = LoadLibraryA("winmm.dll");
+    }
+    if (!dxg_winmm_mod) {
+        return;
+    }
+    DxgTimerPeriodFn fn = (DxgTimerPeriodFn)(void (*)(void))
+        GetProcAddress(dxg_winmm_mod,
+                       enable ? "timeBeginPeriod" : "timeEndPeriod");
+    if (fn && fn(1) == 0) {
+        dxg_timer_period_set = enable;
+    }
+}
+
 static void dxg_high_qos_process(void)
 {
     DxgSetInfo set = (DxgSetInfo)(void (*)(void))
@@ -419,6 +443,7 @@ static void dxg_high_qos_process(void)
         warn_report("virtio-dxg: cannot opt out of power throttling: %lu",
                     (unsigned long)GetLastError());
     }
+    dxg_timer_period(true);
 }
 
 static void dxg_high_qos_thread(void)
@@ -1028,6 +1053,8 @@ static void dxg_handle_ctrl(VirtIODevice *vdev, VirtQueue *vq)
         DxgLane *lane;
         struct virtio_dxg_resp resp;
         size_t in_size = iov_size(elem->in_sg, elem->in_num);
+        uint32_t channel, size, result_size;
+        bool async;
 
         if (iov_to_buf(elem->out_sg, elem->out_num, 0, &hdr, sizeof(hdr)) !=
             sizeof(hdr)) {
@@ -1035,62 +1062,67 @@ static void dxg_handle_ctrl(VirtIODevice *vdev, VirtQueue *vq)
             notify = true;
             continue;
         }
-        r = g_new0(DxgRequest, 1);
-        r->elem = elem;
-        r->channel = le32_to_cpu(hdr.channel);
-        r->async = le32_to_cpu(hdr.kind) == VIRTIO_DXG_REQ_ASYNC;
-        r->size = le32_to_cpu(hdr.size);
-        r->result_size = le32_to_cpu(hdr.result_size);
-        if (r->size > VIRTIO_DXG_MAX_MESSAGE ||
-            r->result_size > VIRTIO_DXG_MAX_MESSAGE ||
-            (!r->async &&
-             in_size < sizeof(struct virtio_dxg_resp) + r->result_size)) {
+        channel = le32_to_cpu(hdr.channel);
+        async = le32_to_cpu(hdr.kind) == VIRTIO_DXG_REQ_ASYNC;
+        size = le32_to_cpu(hdr.size);
+        result_size = le32_to_cpu(hdr.result_size);
+        if (size > VIRTIO_DXG_MAX_MESSAGE ||
+            result_size > VIRTIO_DXG_MAX_MESSAGE ||
+            (!async &&
+             in_size < sizeof(struct virtio_dxg_resp) + result_size)) {
             warn_report("virtio-dxg: rejected request: %u bytes, result %u, "
-                        "reply room %zu", r->size, r->result_size, in_size);
-            g_free(r);
+                        "reply room %zu", size, result_size, in_size);
             dxg_fail(d, elem, VIRTIO_DXG_ERR_INVALID);
             notify = true;
             continue;
         }
-        r->message = g_malloc(r->size);
-        if (iov_to_buf(elem->out_sg, elem->out_num, sizeof(hdr), r->message,
-                       r->size) != r->size) {
+        if (iov_to_buf(elem->out_sg, elem->out_num, sizeof(hdr),
+                       d->state->inline_req, size) != size) {
             warn_report("virtio-dxg: short request: %u bytes announced, %zu "
-                        "sent", r->size,
+                        "sent", size,
                         iov_size(elem->out_sg, elem->out_num) - sizeof(hdr));
-            g_free(r->message);
-            g_free(r);
             dxg_fail(d, elem, VIRTIO_DXG_ERR_INVALID);
             notify = true;
             continue;
         }
-        if (r->channel == VIRTIO_DXG_CHANNEL_DEVICE) {
-            dxg_device_command(d, r->message, r->size,
-                               d->state->inline_result, r->result_size,
+        DxgRequest inline_req = {
+            .elem = elem,
+            .channel = channel,
+            .async = async,
+            .size = size,
+            .result_size = result_size,
+            .message = d->state->inline_req,
+        };
+        if (channel == VIRTIO_DXG_CHANNEL_DEVICE) {
+            dxg_device_command(d, d->state->inline_req, size,
+                               d->state->inline_result, result_size,
                                &resp);
-            dxg_finish(d, r, d->state->inline_result, &resp);
-            g_free(r->elem);
-            g_free(r->message);
-            g_free(r);
+            dxg_finish(d, &inline_req, d->state->inline_result, &resp);
+            g_free(elem);
             notify = true;
             continue;
         }
-        lane = &d->state->lanes[dxghost_lane(r->message, r->size) %
+        lane = &d->state->lanes[dxghost_lane(d->state->inline_req, size) %
                                 DXG_LANES];
         qemu_mutex_lock(&lane->lock);
         /* The lane lock keeps this lane's next requests behind it. */
         if (!lane->busy && QSIMPLEQ_EMPTY(&lane->queue) &&
-            dxghost_try_inline(d->host, r->channel, r->message, r->size,
-                               r->async ? NULL : d->state->inline_result,
-                               r->result_size, &resp)) {
+            dxghost_try_inline(d->host, channel, d->state->inline_req, size,
+                               async ? NULL : d->state->inline_result,
+                               result_size, &resp)) {
             qemu_mutex_unlock(&lane->lock);
-            dxg_finish(d, r, d->state->inline_result, &resp);
-            g_free(r->elem);
-            g_free(r->message);
-            g_free(r);
+            dxg_finish(d, &inline_req, d->state->inline_result, &resp);
+            g_free(elem);
             notify = true;
             continue;
         }
+        r = g_new0(DxgRequest, 1);
+        r->elem = elem;
+        r->channel = channel;
+        r->async = async;
+        r->size = size;
+        r->result_size = result_size;
+        r->message = size ? g_memdup2(d->state->inline_req, size) : NULL;
         QSIMPLEQ_INSERT_TAIL(&lane->queue, r, next);
         lane->busy = true;
         qemu_cond_signal(&lane->cond);
@@ -1199,6 +1231,8 @@ static void dxg_realize(DeviceState *dev, Error **errp)
     d->stats = getenv("DXGHOST_STATS") != NULL;
     if (!getenv("VIRTIO_DXG_DEFAULT_QOS")) {
         dxg_high_qos_process();
+        dxg_high_qos_thread();
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
     }
     if (getenv("DXG_LANE_SPIN_US")) {
         dxg_lane_spin_ns = (int64_t)atoi(getenv("DXG_LANE_SPIN_US")) * 1000;
@@ -1226,6 +1260,7 @@ static void dxg_realize(DeviceState *dev, Error **errp)
                                                g_free, NULL);
     QSIMPLEQ_INIT(&d->state->events);
     qemu_mutex_init(&d->state->event_lock);
+    d->state->inline_req = g_malloc(VIRTIO_DXG_MAX_MESSAGE);
     d->state->inline_result = g_malloc(VIRTIO_DXG_MAX_MESSAGE);
     memory_region_init(&d->iospace, OBJECT(d), "virtio-dxg-iospace",
                        d->iospace_size);
@@ -1276,6 +1311,8 @@ static void dxg_unrealize(DeviceState *dev)
     bql_unlock();  /* as in dxg_reset */
     dxghost_destroy(d->host);
     bql_lock();
+    dxg_timer_period(false);
+    g_free(d->state->inline_req);
     g_free(d->state->inline_result);
     qemu_mutex_destroy(&d->state->event_lock);
     g_hash_table_destroy(d->state->fallback);

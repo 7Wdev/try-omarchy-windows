@@ -89,65 +89,6 @@ wait_hyprland() {
     return 0
 }
 
-prime_window() {
-    local cls_sub=$1
-    shift
-    [ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ] || return 0
-    command -v python3 >/dev/null 2>&1 || return 0
-    python3 - "$cls_sub" "$@" <<'PY' >/dev/null 2>&1 || true
-import os, socket, subprocess, sys, time
-
-cls_sub = sys.argv[1].lower()
-cmd = sys.argv[2:]
-rt = os.environ["XDG_RUNTIME_DIR"]
-his = os.environ["HYPRLAND_INSTANCE_SIGNATURE"]
-sock_path = os.path.join(rt, "hypr", his, ".socket2.sock")
-
-def hypr_move_warm(a):
-    expr = f'hl.dispatch(hl.dsp.window.move({{ workspace = "special:vdxg_warm", follow = false, window = "address:0x{a}" }}))'
-    r = subprocess.run(["hyprctl", "eval", expr], capture_output=True, text=True)
-    if r.returncode != 0 or not r.stdout.strip().startswith("ok"):
-        subprocess.run(["hyprctl", "dispatch", "movetoworkspacesilent",
-                        f"special:vdxg_warm,address:0x{a}"], capture_output=True)
-
-def hypr_close(a):
-    expr = f'hl.dispatch(hl.dsp.window.close({{ window = "address:0x{a}" }}))'
-    r = subprocess.run(["hyprctl", "eval", expr], capture_output=True, text=True)
-    if r.returncode != 0 or not r.stdout.strip().startswith("ok"):
-        subprocess.run(["hyprctl", "dispatch", "closewindow",
-                        f"address:0x{a}"], capture_output=True)
-
-s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-s.connect(sock_path)
-s.settimeout(0.05)
-p = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
-buf, addr = b"", None
-deadline = time.monotonic() + 6.0
-while time.monotonic() < deadline and addr is None:
-    try:
-        buf += s.recv(65536)
-    except socket.timeout:
-        continue
-    while b"\n" in buf:
-        line, buf = buf.split(b"\n", 1)
-        if line.startswith(b"openwindow>>"):
-            f = line[12:].decode(errors="replace").split(",", 3)
-            if len(f) >= 3 and (cls_sub in f[2].lower() or
-                                (len(f) >= 4 and not f[2] and cls_sub in f[3].lower())):
-                addr = f[0].removeprefix("0x")
-                break
-s.close()
-if addr:
-    hypr_move_warm(addr)
-    time.sleep(0.2)
-    hypr_close(addr)
-try:
-    p.wait(timeout=3)
-except subprocess.TimeoutExpired:
-    pass
-PY
-}
-
 sync_file_if_newer() {
     local src=$1 dst=$2 tmp src_sz dst_sz
     [ -f "$src" ] || return 0
@@ -222,15 +163,18 @@ run_files() {
                 sleep 1
             done
         ) &
-        for _ in $(seq 1 30); do
-            pgrep -u "$(id -u)" -f '/usr/bin/nautilus --gapplication-service' >/dev/null 2>&1 && break
-            sleep 0.1
+        for _ in $(seq 1 150); do
+            busctl --user call org.freedesktop.DBus /org/freedesktop/DBus \
+                org.freedesktop.DBus NameHasOwner s org.gnome.Nautilus 2>/dev/null | grep -q 'true' && break
+            sleep 0.2
         done
-        sleep 0.3
-        prime_window nautilus /usr/bin/nautilus --new-window
-        : >"$bdir/files.ready" 2>/dev/null || true
-        wait
+        if busctl --user call org.freedesktop.DBus /org/freedesktop/DBus \
+            org.freedesktop.DBus NameHasOwner s org.gnome.Nautilus 2>/dev/null | grep -q 'true'; then
+            : >"$bdir/files.ready" 2>/dev/null || true
+        fi
     fi
+
+    wait
 }
 
 run_terminal() {
@@ -266,9 +210,6 @@ run_terminal() {
             [ -S "$bdir/alacritty.sock" ] && break
             sleep 0.1
         done
-        if [ -S "$bdir/alacritty.sock" ] && [ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]; then
-            prime_window vdxg-warm-term /usr/bin/alacritty msg --socket "$bdir/alacritty.sock" create-window --class vdxg-warm-term
-        fi
     fi
 
     if [ -x /usr/bin/ghostty ]; then
@@ -281,14 +222,13 @@ run_terminal() {
                 sleep 1
             done
         ) &
-        for _ in $(seq 1 50); do
+        for _ in $(seq 1 150); do
             busctl --user call org.freedesktop.DBus /org/freedesktop/DBus \
                 org.freedesktop.DBus NameHasOwner s com.mitchellh.ghostty 2>/dev/null | grep -q 'true' && break
-            sleep 0.1
+            sleep 0.2
         done
         if busctl --user call org.freedesktop.DBus /org/freedesktop/DBus \
             org.freedesktop.DBus NameHasOwner s com.mitchellh.ghostty 2>/dev/null | grep -q 'true'; then
-            prime_window ghostty /usr/bin/ghostty +new-window
             : >"$bdir/ghostty.ready" 2>/dev/null || true
         fi
     fi
@@ -320,69 +260,74 @@ run_apps() {
         sleep 0.2
     done
 
-    if [ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ] && command -v python3 >/dev/null 2>&1; then
-        python3 - <<'PY' >/dev/null 2>&1 &
-import json, os, socket, subprocess
+    if [ -x /usr/share/code/code ] && [ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ] &&
+       ! ls "$rt"/vscode-*-main.sock >/dev/null 2>&1; then
+        ws="$bdir/__vdxg_warm__.code-workspace"
+        printf '{"folders":[]}\n' >"$ws"
+        if command -v python3 >/dev/null 2>&1; then
+            python3 - "$ws" <<'PY' >/dev/null 2>&1 || true
+import json, os, socket, subprocess, sys, time
 
+ws = sys.argv[1]
 rt = os.environ["XDG_RUNTIME_DIR"]
 his = os.environ["HYPRLAND_INSTANCE_SIGNATURE"]
 sock_path = os.path.join(rt, "hypr", his, ".socket2.sock")
 
-def move_warm(addr):
-    a = addr.removeprefix("0x")
-    expr = f'hl.dispatch(hl.dsp.window.move({{ workspace = "special:vdxg_warm", follow = false, window = "address:0x{a}" }}))'
-    r = subprocess.run(["hyprctl", "eval", expr], capture_output=True, text=True)
-    if r.returncode != 0 or not r.stdout.strip().startswith("ok"):
-        subprocess.run(
-            ["hyprctl", "dispatch", "movetoworkspacesilent", f"special:vdxg_warm,address:0x{a}"],
-            capture_output=True,
-        )
-
-def is_warm(cls, title):
-    return cls.lower().startswith("vdxg-warm-") or "__vdxg_warm__" in title
+def set_rule(pat):
+    expr = f'hl.window_rule({{ name = "vdxg_warm_code", match = {{ class = [[{pat}]] }}, workspace = "special:vdxg_warm silent" }})'
+    subprocess.run(["hyprctl", "eval", expr], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 try:
-    out = subprocess.check_output(["hyprctl", "-j", "clients"], text=True)
-    for c in json.loads(out):
-        if is_warm(c.get("class", ""), c.get("title", "")):
-            move_warm(c["address"])
+    existing = json.loads(subprocess.check_output(["hyprctl", "-j", "clients"], text=True))
 except Exception:
-    pass
+    existing = []
+if any("code" in c.get("class", "").lower() for c in existing):
+    sys.exit(0)
 
 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-s.connect(sock_path)
-buf = b""
-while True:
-    chunk = s.recv(65536)
-    if not chunk:
-        break
-    buf += chunk
-    while b"\n" in buf:
-        line, buf = buf.split(b"\n", 1)
-        if line.startswith(b"openwindow>>"):
-            fields = line[12:].decode(errors="replace").split(",", 3)
-            if len(fields) >= 4 and is_warm(fields[2], fields[3]):
-                move_warm(fields[0])
-        elif line.startswith(b"windowtitlev2>>"):
-            fields = line[15:].decode(errors="replace").split(",", 1)
-            if len(fields) >= 2 and "__vdxg_warm__" in fields[1]:
-                move_warm(fields[0])
-PY
-    fi
+try:
+    s.connect(sock_path)
+    s.settimeout(0.05)
+except OSError:
+    s.close()
+    s = None
 
-    if [ -x /usr/share/code/code ] && [ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]; then
-        (
-            ws="$bdir/__vdxg_warm__.code-workspace"
-            printf '{"folders":[]}\n' >"$ws"
-            while :; do
-                if ! ls "$rt"/vscode-*-main.sock >/dev/null 2>&1; then
-                    /usr/share/code/code --ozone-platform=wayland "$ws" >/dev/null 2>&1 &
-                    cpid=$!
-                    wait "$cpid" || true
-                fi
-                sleep 2
-            done
-        ) &
+set_rule("^(com\\.microsoft\\.VSCode|[Cc]ode)$")
+try:
+    subprocess.Popen(
+        ["/usr/share/code/code", "--ozone-platform=wayland", ws],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+    )
+    buf = b""
+    deadline = time.monotonic() + 8.0
+    mapped = False
+    while s is not None and time.monotonic() < deadline and not mapped:
+        try:
+            buf += s.recv(65536)
+        except socket.timeout:
+            continue
+        while b"\n" in buf:
+            line, buf = buf.split(b"\n", 1)
+            if line.startswith(b"openwindow>>"):
+                f = line[12:].decode(errors="replace").split(",", 3)
+                if len(f) >= 3 and "code" in f[2].lower():
+                    if not f[1].lower().startswith("special:"):
+                        a = f[0].removeprefix("0x")
+                        subprocess.run(
+                            ["hyprctl", "eval", f'hl.dispatch(hl.dsp.window.move({{ workspace = "special:vdxg_warm", follow = false, window = "address:0x{a}" }}))'],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                        )
+                    mapped = True
+                    break
+finally:
+    if s is not None:
+        s.close()
+    set_rule("^__vdxg_none__$")
+PY
+        else
+            hyprctl eval 'hl.window_rule({ name = "vdxg_warm_code", match = { title = [[.*__vdxg_warm__.*]] }, workspace = "special:vdxg_warm silent" })' >/dev/null 2>&1 || true
+            /usr/share/code/code --ozone-platform=wayland "$ws" >/dev/null 2>&1 &
+        fi
     fi
 
     if [ -f "$bdir/libvdxg-wl-gate.so" ] && [ -x /usr/bin/omacalc ]; then

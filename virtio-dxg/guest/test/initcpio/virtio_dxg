@@ -197,6 +197,7 @@ setup_desktop() {
         "VK_ADD_DRIVER_FILES=$m/share/vulkan/icd.d/dzn_icd.x86_64.json" \
         GSK_RENDERER=gl \
         ELECTRON_OZONE_PLATFORM_HINT=auto \
+        QML_DISK_CACHE=aot,bytecode \
         __GL_SHADER_DISK_CACHE=1 \
         __GL_SHADER_DISK_CACHE_SKIP_CLEANUP=1 \
         DXVK_STATE_CACHE=1 \
@@ -376,6 +377,18 @@ run_latehook() {
     # Larger block readahead helps multi-queue virtio-blk preload binaries and caches.
     if [ -w /sys/block/vda/queue/read_ahead_kb ]; then
         echo 512 >/sys/block/vda/queue/read_ahead_kb 2>/dev/null || true
+    fi
+    if [ -w /sys/kernel/mm/transparent_hugepage/enabled ]; then
+        echo madvise >/sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || true
+    fi
+    if [ -w /proc/sys/vm/swappiness ]; then
+        echo 10 >/proc/sys/vm/swappiness 2>/dev/null || true
+    fi
+    if [ -w /proc/sys/vm/dirty_background_ratio ]; then
+        echo 5 >/proc/sys/vm/dirty_background_ratio 2>/dev/null || true
+    fi
+    if [ -w /proc/sys/vm/dirty_ratio ]; then
+        echo 15 >/proc/sys/vm/dirty_ratio 2>/dev/null || true
     fi
     modprobe -q 9pnet_virtio
     modprobe -q 9p

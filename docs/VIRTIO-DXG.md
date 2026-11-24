@@ -349,27 +349,41 @@ is reduced at every layer of the VM stack:
   `app-prefetch` performs a two-tier `dlopen()`-aware `posix_fadvise` warm-up
   that also warms Chromium `Code Cache`/`Service Worker`/`GPUCache`, Electron
   `CachedData` directories across `~/.config/*`, and Wine/NVIDIA libraries.
-  `desktop-boost`, `browser-boost` (Chromium `SpareRendererForSitePerProcess`,
-  GPU raster/zero-copy, dynamic PWA `<link rel="preconnect">`, and `120s` IPv4
-  DNS refresh), and `vdxg_boost_helpers.c` (`vdxg-fastlaunch` handling
-  Chromium, `omarchy-launch-webapp`/`browser`/`terminal`, `uwsm-app`,
-  `gtk-launch`, `alacritty.sock` JSON IPC, Ghostty single-instance, VS Code,
-  and gated apps; `libvdxg-gapp-hold.so`; and `libvdxg-wl-gate.so` with a
-  20 s pre-gate watchdog, `dlsym` interposition, and `(wl_display,
-  wl_proxy_get_id)` tracking) keep newly installed apps, Electron apps, PWAs,
-  native Linux apps, Vulkan/Blender, and Wine/Proton workloads ready for
-  instant launches. On clean boot, `applaunch.py 3 --include-webapps`
-  measured **`2.7–113.4 ms`** warm median across all 14 targets (`vkcube`
-  `3.3 ms`, `blender` `2.7 ms`, `omacalc` `3.2 ms`, `gnome-calculator`
-  `3.4 ms`, `foot` `20.5 ms`, `discord-pwa` `41.2 ms`, `ghostty` `55.8 ms`,
-  `chromium` `58.8 ms`, `chromium-pwa` `65.5 ms`, `alacritty` `69.6 ms`,
-  `code` `76.1 ms`, `nautilus` `87.2 ms`, `youtube-pwa` `94.6 ms`,
-  `wine-vulkan` `113.4 ms`), and `uwsm-app -- gtk-launch` measured
-  `98.4`/`83.6 ms` (`YouTube.desktop`) and `53.3`/`48.6 ms`
-  (`Discord.desktop`); `virtio_dxg.boost=0` disables all boost paths.
+  `desktop-boost` (without any window-opening boot flashes, using one-shot
+  `special:vdxg_warm` placement for VS Code, supervised `nautilus --gapplication-service`
+  with `libvdxg-gapp-hold.so`, Alacritty/Ghostty/Foot daemons, and `flock`-serialized
+  `libvdxg-wl-gate.so` workers), `browser-boost` (`--disable-quic`,
+  `SpareRendererForSitePerProcess`, `V8VmFuture` / `--js-flags=--maglev`, GPU
+  raster/zero-copy, `120s` IPv4 DNS refresh, and silent `special:vdxg_pwa`
+  background pre-rendering with 6 s close cooldowns), and `vdxg_boost_helpers.c`
+  (`vdxg-fastlaunch` handling Chromium, `reveal_prewarmed_pwa` via `pwa-ready.tsv`
+  and direct `.socket.sock` IPC, `omarchy-launch-webapp`/`browser`/`terminal`,
+  `uwsm-app`, `gtk-launch`, `alacritty.sock` JSON IPC, Ghostty single-instance,
+  VS Code, and gated apps closing detached gate fds immediately after `OK`).
+  `desktop-priority` elevates `Hyprland` (`-20`) plus `Xwayland`, `quickshell`,
+  `swayosd-server`, `mako`, `pipewire`, `wireplumber`, and `irq/*-virtio*` (`-15`),
+  while `virtio_dxg` sets `QML_DISK_CACHE=aot,bytecode`, `madvise` THP,
+  `swappiness=10`, and `dirty_background_ratio=5` / `dirty_ratio=15`. On clean
+  boot (`snapshot=on`), `applaunch.py 3 --include-webapps` measured
+  **`2.4–108.3 ms`** warm median across all 14 targets (`blender` `2.4 ms`,
+  `vkcube` `3.3 ms`, `omacalc` `3.5 ms`, `gnome-calculator` `3.8 ms`, `foot`
+  `17.4 ms`, `discord-pwa` `44.2 ms`, `alacritty` `53.8 ms`, `ghostty`
+  `58.7 ms`, `chromium` `66.1 ms`, `chromium-pwa` `71.2 ms`, `code` `76.3 ms`,
+  `nautilus` `90.3 ms`, `youtube-pwa` `97.5 ms`, `wine-vulkan` `108.3 ms`),
+  `YouTube.desktop` (`3.1 ms` cold-reveal) and `Discord.desktop` (`2.3 ms`)
+  revealed pre-rendered loaded UIs in `2.3 ms` each via `uwsm-app -- gtk-launch`,
+  all 9 tested desktop/PWA apps closed cleanly on first close with `0` phantom
+  boot opens, `SUPER+SPACE` menu opened in `174.8 ms` (`5.1 ms` close), and
+  native `wl_surface.frame` pacing held `235.2 fps` idle (`med 4.16 ms`),
+  `228.9 fps` under 12-thread CPU saturation, `234.9 fps` under GPU load, and
+  `230.5 fps` during concurrent heavy app launches under CPU load;
+  `virtio_dxg.boost=0` disables all boost paths.
 - **Host/guest `/dev/dxg` fast paths:** `dxgvirtio.c` raises its stack-inline
   message buffer (`DXGVIRTIO_INLINE_BUF=1024`) so larger adapter/query/open
-  requests avoid vmalloc copies. `dxghost` caches immutable `QueryAdapterInfo`
+  requests avoid vmalloc copies. `virtio-dxg.c` reuses preallocated
+  `inline_req`/`inline_result` buffers on BQL inline requests, enables `winmm`
+  `timeBeginPeriod(1)` in `dxg_high_qos_process()`, and raises the QEMU main
+  thread to `THREAD_PRIORITY_HIGHEST`. `dxghost` caches immutable `QueryAdapterInfo`
   queries (`qai_cache`, 128 slots under a dedicated leaf `SRWLOCK` — opt out
   with `DXGHOST_NO_QAI_CACHE=1`), and `dxghost_try_inline` resolves
   `CREATEPROCESS`, `ISFEATUREENABLED*`, warm `OPENADAPTER`, warm
