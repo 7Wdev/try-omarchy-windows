@@ -12,6 +12,7 @@ void dxghost_logf(struct dxghost *h, const char *format, ...)
 {
 	char line[512];
 	va_list ap;
+	FILE *f;
 
 	if (!h->vmm.log)
 		return;
@@ -19,17 +20,22 @@ void dxghost_logf(struct dxghost *h, const char *format, ...)
 	vsnprintf(line, sizeof(line), format, ap);
 	va_end(ap);
 	h->vmm.log(h->vmm.opaque, line);
-	{
+	AcquireSRWLockExclusive(&h->log_lock);
+	if (!h->log_checked) {
 		/* Development: DXGHOST_LOG names a file that gets every line,
 		 * flushed, so nothing is lost when the VMM is killed. */
 		const char *path = getenv("DXGHOST_LOG");
-		FILE *f = path ? fopen(path, "a") : NULL;
 
-		if (f) {
-			fprintf(f, "%s\n", line);
-			fclose(f);
-		}
+		h->log_checked = true;
+		if (path && *path)
+			h->log_file = fopen(path, "a");
 	}
+	f = h->log_file;
+	if (f) {
+		fprintf(f, "%s\n", line);
+		fflush(f);
+	}
+	ReleaseSRWLockExclusive(&h->log_lock);
 }
 
 void dxghost_signal_guest_event(struct dxghost *h, uint32_t process,
@@ -131,6 +137,7 @@ int dxghost_create(const struct dxghost_config *config,
 	InitializeSRWLock(&h->map_lock);
 	InitializeSRWLock(&h->wait_lock);
 	InitializeSRWLock(&h->qai_lock);
+	InitializeSRWLock(&h->log_lock);
 	h->next_proc = 1;
 	if (config->kmt)
 		h->kmt = *config->kmt;
@@ -229,6 +236,8 @@ void dxghost_reset(struct dxghost *h)
 		h->procs[i].live = false;
 	}
 	h->proc_count = 0;
+	memset(h->proc_hash, 0, sizeof(h->proc_hash));
+	h->proc_hash_used = 0;
 	if (h->adapter && h->kmt.CloseAdapter) {
 		struct d3dkmt_closeadapter close = {0};
 
@@ -256,6 +265,12 @@ void dxghost_destroy(struct dxghost *h)
 	InterlockedExchange(&h->closing, 1);
 	dxghost_waits_close(h);
 	dxghost_reset(h);
+	AcquireSRWLockExclusive(&h->log_lock);
+	if (h->log_file) {
+		fclose(h->log_file);
+		h->log_file = NULL;
+	}
+	ReleaseSRWLockExclusive(&h->log_lock);
 	free(h->vas);
 	free(h->io_free);
 	free(h->fence_pages);
@@ -339,16 +354,112 @@ bool dxghost_nonblocking(const void *message, uint32_t size)
 	}
 }
 
+static uint32_t proc_slot(uint32_t token)
+{
+	return (token * 2654435761u) & (DXGHOST_PROC_HASH_SIZE - 1);
+}
+
+static void proc_hash_insert(struct dxghost *h, uint32_t token)
+{
+	uint32_t s, i;
+
+	if (h->proc_hash_used * 2 >= DXGHOST_PROC_HASH_SIZE) {
+		memset(h->proc_hash, 0, sizeof(h->proc_hash));
+		h->proc_hash_used = 0;
+		for (i = 0; i < h->proc_count; i++) {
+			if (!h->procs[i].live)
+				continue;
+			for (s = proc_slot(h->procs[i].token); h->proc_hash[s];
+			     s = (s + 1) & (DXGHOST_PROC_HASH_SIZE - 1))
+				;
+			h->proc_hash[s] = h->procs[i].token;
+			h->proc_hash_used++;
+		}
+	}
+	if (h->proc_hash_used >= DXGHOST_PROC_HASH_SIZE - 1)
+		return;
+	for (s = proc_slot(token); h->proc_hash[s] > 1;
+	     s = (s + 1) & (DXGHOST_PROC_HASH_SIZE - 1)) {
+		if (h->proc_hash[s] == token)
+			return;
+	}
+	if (h->proc_hash[s] == 0)
+		h->proc_hash_used++;
+	h->proc_hash[s] = token;
+}
+
+uint32_t dxghost_proc_add(struct dxghost *h, uint64_t guest_pid)
+{
+	uint32_t token = 0;
+
+	dxghost_lock(h);
+	if (h->proc_count == h->proc_capacity) {
+		uint32_t capacity = h->proc_capacity ? h->proc_capacity * 2 : 64;
+		struct dxghost_proc *p = realloc(h->procs,
+						 capacity * sizeof(*p));
+
+		if (p) {
+			h->procs = p;
+			h->proc_capacity = capacity;
+		}
+	}
+	if (h->proc_count < h->proc_capacity) {
+		/* Never zero, never one, never reused within a VM lifetime. */
+		token = 0x40000000u | (h->next_proc++ & 0x3fffffffu);
+		h->procs[h->proc_count].token = token;
+		h->procs[h->proc_count].guest_pid = guest_pid;
+		h->procs[h->proc_count].live = true;
+		h->proc_count++;
+		proc_hash_insert(h, token);
+	}
+	dxghost_unlock(h);
+	return token;
+}
+
+void dxghost_proc_remove(struct dxghost *h, uint32_t token)
+{
+	uint32_t i, s;
+
+	dxghost_lock(h);
+	for (i = 0; i < h->proc_count; i++) {
+		if (h->procs[i].token == token) {
+			h->procs[i] = h->procs[--h->proc_count];
+			break;
+		}
+	}
+	for (i = 0, s = proc_slot(token);
+	     i < DXGHOST_PROC_HASH_SIZE && h->proc_hash[s];
+	     i++, s = (s + 1) & (DXGHOST_PROC_HASH_SIZE - 1)) {
+		if (h->proc_hash[s] == token) {
+			h->proc_hash[s] = 1;	/* tombstone */
+			break;
+		}
+	}
+	dxghost_unlock(h);
+}
+
 static bool process_live(struct dxghost *h, uint32_t token)
 {
-	uint32_t i;
+	uint32_t i, s;
 	bool live = false;
 
+	if (token < 0x40000000u)
+		return false;
 	AcquireSRWLockShared(&h->lock);
-	for (i = 0; i < h->proc_count; i++) {
-		if (h->procs[i].token == token && h->procs[i].live) {
+	for (i = 0, s = proc_slot(token);
+	     i < DXGHOST_PROC_HASH_SIZE && h->proc_hash[s];
+	     i++, s = (s + 1) & (DXGHOST_PROC_HASH_SIZE - 1)) {
+		if (h->proc_hash[s] == token) {
 			live = true;
 			break;
+		}
+	}
+	if (!live && h->proc_count >= DXGHOST_PROC_HASH_SIZE - 1) {
+		for (i = 0; i < h->proc_count; i++) {
+			if (h->procs[i].token == token && h->procs[i].live) {
+				live = true;
+				break;
+			}
 		}
 	}
 	ReleaseSRWLockShared(&h->lock);
@@ -505,8 +616,6 @@ static bool execute(struct dxghost *h, uint32_t channel,
 		resp->status = VIRTIO_DXG_ERR_INVALID;
 		return true;
 	}
-	if (m.res_cap)
-		memset(m.res, 0, m.res_cap);
 
 	/*
 	 * Both header kinds keep the channel type in the low byte at offset

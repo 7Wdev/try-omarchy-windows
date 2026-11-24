@@ -23,6 +23,7 @@
 #include "dxgsyncfile.h"
 #ifdef DXG_VIRTIO
 #include <linux/dma-buf.h>
+#include <linux/hashtable.h>
 #include "virtio_dxg.h"
 
 MODULE_IMPORT_NS("DMA_BUF");
@@ -5719,7 +5720,7 @@ dxgkio_virtio_scanout(struct dxgprocess *process, void *__user inargs)
  * and loses its dentry when the last descriptor of the dma-buf is closed.
  */
 struct dxgwinbuf {
-	struct list_head	entry;
+	struct hlist_node	node;
 	struct inode		*inode;
 	struct file		*resource;
 };
@@ -5729,12 +5730,12 @@ static bool winbuf = true;
 module_param(winbuf, bool, 0444);
 MODULE_PARM_DESC(winbuf, "Zero-copy window buffers (LX_DXVIRTIOWINBUF) are offered");
 
-static LIST_HEAD(dxgwinbuf_list);
+static DEFINE_HASHTABLE(dxgwinbuf_ht, 8);
 static DEFINE_MUTEX(dxgwinbuf_lock);
 
 static void dxgwinbuf_free(struct dxgwinbuf *w)
 {
-	list_del(&w->entry);
+	hash_del(&w->node);
 	iput(w->inode);
 	fput(w->resource);
 	kfree(w);
@@ -5750,13 +5751,15 @@ static bool dxgwinbuf_gone(struct dxgwinbuf *w)
 	return gone;
 }
 
-/* Called with the lock held: drops the pairs whose dma-buf was closed. */
+/* Called with the lock held: drops closed entries in this inode bucket. */
 static struct dxgwinbuf *dxgwinbuf_find(struct dma_buf *dmabuf)
 {
 	struct inode *inode = file_inode(dmabuf->file);
-	struct dxgwinbuf *w, *tmp, *found = NULL;
+	struct hlist_node *tmp;
+	struct dxgwinbuf *w, *found = NULL;
 
-	list_for_each_entry_safe(w, tmp, &dxgwinbuf_list, entry) {
+	hash_for_each_possible_safe(dxgwinbuf_ht, w, tmp, node,
+				    (unsigned long)inode) {
 		if (w->inode == inode)
 			found = w;
 		else if (dxgwinbuf_gone(w))
@@ -5767,10 +5770,12 @@ static struct dxgwinbuf *dxgwinbuf_find(struct dma_buf *dmabuf)
 
 void dxgwinbuf_release_process(struct dxgprocess *process)
 {
-	struct dxgwinbuf *w, *tmp;
+	struct hlist_node *tmp;
+	struct dxgwinbuf *w;
+	unsigned int bkt;
 
 	mutex_lock(&dxgwinbuf_lock);
-	list_for_each_entry_safe(w, tmp, &dxgwinbuf_list, entry)
+	hash_for_each_safe(dxgwinbuf_ht, bkt, tmp, w, node)
 		if (dxgwinbuf_gone(w))
 			dxgwinbuf_free(w);
 	mutex_unlock(&dxgwinbuf_lock);
@@ -5813,7 +5818,7 @@ dxgkio_virtio_winbuf(struct dxgprocess *process, void *__user inargs)
 		old = dxgwinbuf_find(dmabuf);
 		if (old)
 			dxgwinbuf_free(old);
-		list_add(&w->entry, &dxgwinbuf_list);
+		hash_add(dxgwinbuf_ht, &w->node, (unsigned long)w->inode);
 		mutex_unlock(&dxgwinbuf_lock);
 		break;
 	case D3DKMT_VIRTIOWINBUF_UNREGISTER:

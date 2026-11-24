@@ -1202,7 +1202,7 @@ static int run_and_wait_status(const char *prog, char *const argv[])
     return (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 0 : 11;
 }
 
-static int fast_foot(int argc, char **argv)
+static int fast_foot(int argc, char **argv, int detached)
 {
     char rt[256], spath[512];
     const char *wd = getenv("WAYLAND_DISPLAY");
@@ -1220,12 +1220,20 @@ static int fast_foot(int argc, char **argv)
     struct stat st;
     if (stat(spath, &st) != 0 || !S_ISSOCK(st.st_mode) || st.st_uid != getuid())
         return 11;
-    char **nargv = calloc((size_t)argc + 1, sizeof(char *));
+    char **nargv = calloc((size_t)argc + 2, sizeof(char *));
     if (!nargv)
         return 11;
-    nargv[0] = (char *)"/usr/bin/footclient";
+    int k = 0;
+    nargv[k++] = (char *)"/usr/bin/footclient";
+    if (detached)
+        nargv[k++] = (char *)"-N";
     for (int i = 1; i < argc; i++)
-        nargv[i] = argv[i];
+        nargv[k++] = argv[i];
+    if (detached) {
+        int rc = run_and_wait_status("/usr/bin/footclient", nargv);
+        free(nargv);
+        return rc;
+    }
     execv("/usr/bin/footclient", nargv);
     free(nargv);
     return 11;
@@ -1457,7 +1465,7 @@ static int read_default_terminal(char *out, size_t sz)
     return -1;
 }
 
-static int fast_terminal_exec(int argc, char **argv, int from_omarchy_helper)
+static int fast_terminal_exec(int argc, char **argv, int from_omarchy_helper, int detached)
 {
     const char *dir = NULL;
     if (from_omarchy_helper) {
@@ -1485,12 +1493,13 @@ static int fast_terminal_exec(int argc, char **argv, int from_omarchy_helper)
         return fast_alacritty(1, nargv);
     }
     if (!strcmp(term, "foot.desktop") || !strcmp(term, "footclient.desktop")) {
+        int foot_det = detached || from_omarchy_helper;
         if (dir) {
             char *nargv[] = { (char *)"foot", (char *)"-D", (char *)dir, NULL };
-            return fast_foot(3, nargv);
+            return fast_foot(3, nargv, foot_det);
         }
         char *nargv[] = { (char *)"foot", NULL };
-        return fast_foot(1, nargv);
+        return fast_foot(1, nargv, foot_det);
     }
     if (!strcmp(term, "com.mitchellh.ghostty.desktop") || !strcmp(term, "ghostty.desktop")) {
         if (!dir) {
@@ -1572,7 +1581,7 @@ static int dispatch_known_app(int argc, char **argv, int detached)
     if (!strcmp(app, "code"))
         return fast_code(argc, argv);
     if (!strcmp(app, "foot"))
-        return fast_foot(argc, argv);
+        return fast_foot(argc, argv, detached);
     if (!strcmp(app, "alacritty"))
         return fast_alacritty(argc, argv);
     if (!strcmp(app, "ghostty"))
@@ -1600,9 +1609,9 @@ static int dispatch_known_app(int argc, char **argv, int detached)
     if (!strcmp(app, "omarchy-launch-nautilus") && argc == 1)
         return fast_nautilus(argc, argv);
     if (!strcmp(app, "omarchy-launch-terminal"))
-        return fast_terminal_exec(argc, argv, 1);
+        return fast_terminal_exec(argc, argv, 1, detached);
     if (!strcmp(app, "xdg-terminal-exec"))
-        return fast_terminal_exec(argc, argv, 0);
+        return fast_terminal_exec(argc, argv, 0, detached);
     return 11;
 }
 
@@ -1766,22 +1775,44 @@ static int fast_uwsm_app(int argc, char **argv)
     return 11;
 }
 
+static int exec_original(const char *prog, char **app_argv)
+{
+    const char *name = base_name(prog);
+    char orig[512];
+    if (!*name || strchr(name, '/'))
+        return 127;
+    snprintf(orig, sizeof(orig), "/run/virtio-dxg/omarchy-orig/%s", name);
+    if (access(orig, X_OK) == 0) {
+        app_argv[0] = orig;
+        execv(orig, app_argv);
+    }
+    snprintf(orig, sizeof(orig), "/usr/bin/%s", name);
+    app_argv[0] = orig;
+    execv(orig, app_argv);
+    return 127;
+}
+
 int main(int argc, char **argv)
 {
-    const char *boost = getenv("VIRTIO_DXG_BOOST");
-    if (boost && !strcmp(boost, "0"))
-        return 11;
     if (argc < 2)
         return 11;
-    const char *app = argv[1];
+    const char *app = base_name(argv[1]);
     char **app_argv = argv + 1;
     int app_argc = argc - 1;
+    const char *boost = getenv("VIRTIO_DXG_BOOST");
+    int rc = 11;
 
-    if (!strcmp(app, "uwsm-app"))
-        return fast_uwsm_app(app_argc, app_argv);
-    if (!strcmp(app, "gtk-launch"))
-        return fast_gtk_launch(app_argc, app_argv, 0);
-    return dispatch_known_app(app_argc, app_argv, 0);
+    if (!boost || strcmp(boost, "0") != 0) {
+        if (!strcmp(app, "uwsm-app"))
+            rc = fast_uwsm_app(app_argc, app_argv);
+        else if (!strcmp(app, "gtk-launch"))
+            rc = fast_gtk_launch(app_argc, app_argv, 0);
+        else
+            rc = dispatch_known_app(app_argc, app_argv, 0);
+    }
+    if (rc == 11)
+        return exec_original(app, app_argv);
+    return rc;
 }
 
 #endif

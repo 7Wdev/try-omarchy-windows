@@ -14,6 +14,7 @@
 #include <linux/kernel.h>
 #include <linux/completion.h>
 #include <linux/slab.h>
+#include <linux/mm.h>
 #include <linux/eventfd.h>
 #ifndef DXG_VIRTIO
 #include <linux/hyperv.h>
@@ -56,8 +57,12 @@ struct dxgvmb_ext_header {
 	struct winluid	vgpu_luid;
 };
 
-#define VMBUSMESSAGEONSTACK	64
+#define VMBUSMESSAGEONSTACK	384
 
+/*
+ * Both structs share the exact layout through msg_on_stack so callers of
+ * init_message_res() can pass (struct dxgvmbusmsg *)&msg to free_message().
+ */
 struct dxgvmbusmsg {
 /* Points to the allocated buffer */
 	struct dxgvmb_ext_header	*hdr;
@@ -67,6 +72,8 @@ struct dxgvmbusmsg {
 	struct dxgvmbuschannel		*channel;
 /* Message size in bytes including the header and the payload */
 	u32				size;
+	u32				res_size;
+	void				*res;
 /* Buffer used for small messages */
 	char				msg_on_stack[VMBUSMESSAGEONSTACK];
 };
@@ -84,6 +91,8 @@ struct dxgvmbusmsgres {
 	u32				res_size;
 /* Points to the result within the allocated buffer */
 	void				*res;
+/* Buffer used for small command + result messages */
+	char				msg_on_stack[VMBUSMESSAGEONSTACK];
 };
 
 static int init_message(struct dxgvmbusmsg *msg, struct dxgadapter *adapter,
@@ -101,7 +110,7 @@ static int init_message(struct dxgvmbusmsg *msg, struct dxgadapter *adapter,
 		msg->hdr = (void *)msg->msg_on_stack;
 		memset(msg->hdr, 0, size);
 	} else {
-		msg->hdr = vzalloc(size);
+		msg->hdr = kvzalloc(size, GFP_KERNEL);
 		if (msg->hdr == NULL)
 			return -ENOMEM;
 	}
@@ -128,16 +137,22 @@ static int init_message_res(struct dxgvmbusmsgres *msg,
 	struct dxgglobal *dxgglobal = dxggbl();
 	bool use_ext_header = dxgglobal->vmbus_ver >=
 			      DXGK_VMBUS_INTERFACE_VERSION;
+	u32 total;
 
 	if (use_ext_header)
 		size += sizeof(struct dxgvmb_ext_header);
 	msg->size = size;
 	msg->res_size += (result_size + 7) & ~7;
-	size += msg->res_size;
-	msg->hdr = vzalloc(size);
-	if (msg->hdr == NULL) {
-		DXG_ERR("Failed to allocate VM bus message: %d", size);
-		return -ENOMEM;
+	total = size + msg->res_size;
+	if (total <= VMBUSMESSAGEONSTACK) {
+		msg->hdr = (void *)msg->msg_on_stack;
+		memset(msg->hdr, 0, total);
+	} else {
+		msg->hdr = kvzalloc(total, GFP_KERNEL);
+		if (msg->hdr == NULL) {
+			DXG_ERR("Failed to allocate VM bus message: %d", total);
+			return -ENOMEM;
+		}
 	}
 	if (use_ext_header) {
 		msg->msg = (char *)&msg->hdr[1];
@@ -158,7 +173,7 @@ static int init_message_res(struct dxgvmbusmsgres *msg,
 static void free_message(struct dxgvmbusmsg *msg)
 {
 	if (msg->hdr && (char *)msg->hdr != msg->msg_on_stack)
-		vfree(msg->hdr);
+		kvfree(msg->hdr);
 }
 
 /*

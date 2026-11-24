@@ -410,24 +410,41 @@ typedef struct DxgPowerThrottling {
 } DxgPowerThrottling;
 
 typedef UINT (WINAPI *DxgTimerPeriodFn)(UINT);
+typedef LONG (NTAPI *DxgNtTimerResFn)(ULONG, BOOLEAN, PULONG);
 static HMODULE dxg_winmm_mod;
 static bool dxg_timer_period_set;
+static bool dxg_nt_timer_set;
 
 static void dxg_timer_period(bool enable)
 {
+    HMODULE ntdll;
+    DxgNtTimerResFn nt_set;
+    ULONG current = 0;
+
     if (enable == dxg_timer_period_set) {
         return;
+    }
+    ntdll = GetModuleHandleA("ntdll.dll");
+    nt_set = ntdll ? (DxgNtTimerResFn)(void (*)(void))
+        GetProcAddress(ntdll, "NtSetTimerResolution") : NULL;
+    if (nt_set && (enable || dxg_nt_timer_set)) {
+        if (nt_set(5000, enable ? TRUE : FALSE, &current) >= 0) {
+            dxg_nt_timer_set = enable;
+        }
     }
     if (!dxg_winmm_mod) {
         dxg_winmm_mod = LoadLibraryA("winmm.dll");
     }
-    if (!dxg_winmm_mod) {
-        return;
+    if (dxg_winmm_mod) {
+        DxgTimerPeriodFn fn = (DxgTimerPeriodFn)(void (*)(void))
+            GetProcAddress(dxg_winmm_mod,
+                           enable ? "timeBeginPeriod" : "timeEndPeriod");
+        if (fn && fn(1) == 0) {
+            dxg_timer_period_set = enable;
+            return;
+        }
     }
-    DxgTimerPeriodFn fn = (DxgTimerPeriodFn)(void (*)(void))
-        GetProcAddress(dxg_winmm_mod,
-                       enable ? "timeBeginPeriod" : "timeEndPeriod");
-    if (fn && fn(1) == 0) {
+    if (dxg_nt_timer_set == enable) {
         dxg_timer_period_set = enable;
     }
 }
@@ -455,7 +472,7 @@ static void dxg_high_qos_thread(void)
     if (set) {
         set(GetCurrentThread(), 3, &s, sizeof(s));
     }
-    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
 }
 
 /*
@@ -780,10 +797,12 @@ static bool dxg_scanout_show(QemuConsole *con, uint32_t resource_id,
         }
         return false;
     }
-    dpy_gl_ctx_make_current(con, dxg_scanout.ctx);
-    dxg_scanout_collect();
-    if (!s->tex && !dxg_scanout_import(s)) {
-        return false;
+    if (dxg_scanout.garbage->len || !s->tex) {
+        dpy_gl_ctx_make_current(con, dxg_scanout.ctx);
+        dxg_scanout_collect();
+        if (!s->tex && !dxg_scanout_import(s)) {
+            return false;
+        }
     }
     /*
      * Row 0 of a D3D12 texture is the top of the image, and GL sees it as

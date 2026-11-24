@@ -21,6 +21,8 @@
 /* UNLOCK runs the work deferred under the lock (lock order: host.h). */
 #define LOCK(h) dxghost_lock(h)
 #define UNLOCK(h) dxghost_unlock(h)
+#define RLOCK(h) AcquireSRWLockShared(&(h)->lock)
+#define RUNLOCK(h) ReleaseSRWLockShared(&(h)->lock)
 
 /* Declares c, the command, or fails the request when it is truncated. */
 #define COMMAND(type)							\
@@ -53,6 +55,8 @@ static void *reply(struct dxghost_msg *m, uint32_t size)
 		m->status = VIRTIO_DXG_ERR_OVERFLOW;
 		return NULL;
 	}
+	if (size)
+		memset(m->res, 0, size);
 	m->res_len = size;
 	return m->res;
 }
@@ -91,9 +95,9 @@ static bool owns(struct dxghost *h, uint32_t handle, uint8_t type,
 {
 	bool ok;
 
-	LOCK(h);
+	RLOCK(h);
 	ok = dxghost_obj_get(h, handle, type, process) != NULL;
-	UNLOCK(h);
+	RUNLOCK(h);
 	return ok;
 }
 
@@ -110,10 +114,10 @@ static bool owns_all(struct dxghost *h, const struct d3dkmthandle *list,
 	uint32_t i;
 	bool ok = true;
 
-	LOCK(h);
+	RLOCK(h);
 	for (i = 0; i < count && ok; i++)
 		ok = dxghost_obj_get(h, list[i].v, type, process) != NULL;
-	UNLOCK(h);
+	RUNLOCK(h);
 	return ok;
 }
 
@@ -130,14 +134,14 @@ static bool va_inside(struct dxghost *h, uint32_t process, uint64_t base,
 
 	if (size == 0 || base + size < base)
 		return false;
-	LOCK(h);
-	for (i = 0; i < h->va_count && !ok; i++) {
-		const struct dxghost_va *v = &h->vas[i];
+	RLOCK(h);
+	for (i = h->va_count; i > 0 && !ok; i--) {
+		const struct dxghost_va *v = &h->vas[i - 1];
 
 		ok = v->process == process && base >= v->base &&
 		     base + size <= v->base + v->size;
 	}
-	UNLOCK(h);
+	RUNLOCK(h);
 	return ok;
 }
 
@@ -161,6 +165,12 @@ static void va_add(struct dxghost *h, uint32_t process, uint32_t allocation,
 	h->vas[h->va_count].base = base;
 	h->vas[h->va_count].size = size;
 	h->va_count++;
+	if (allocation) {
+		struct dxghost_obj *o = dxghost_obj_find(h, allocation);
+
+		if (o)
+			o->va_maps++;
+	}
 	UNLOCK(h);
 }
 
@@ -176,10 +186,18 @@ static void va_remove(struct dxghost *h, uint32_t process, uint64_t base,
 
 		if (v->process == process &&
 		    (size == UINT64_MAX ||
-		     (v->base >= base && v->base + v->size <= base + size)))
+		     (v->base >= base && v->base + v->size <= base + size))) {
+			if (v->allocation) {
+				struct dxghost_obj *o =
+					dxghost_obj_find(h, v->allocation);
+
+				if (o && o->va_maps)
+					o->va_maps--;
+			}
 			*v = h->vas[--h->va_count];
-		else
+		} else {
 			i++;
+		}
 	}
 	UNLOCK(h);
 }
@@ -249,11 +267,13 @@ static void forget(struct dxghost *h, uint32_t handle)
 		return;
 	if (o->type == OBJ_ALLOCATION) {
 		/* The driver frees the ranges its base-less maps created. */
-		for (i = 0; i < h->va_count;) {
-			if (h->vas[i].allocation == handle)
+		for (i = 0; o->va_maps && i < h->va_count;) {
+			if (h->vas[i].allocation == handle) {
 				h->vas[i] = h->vas[--h->va_count];
-			else
+				o->va_maps--;
+			} else {
 				i++;
+			}
 		}
 		if (o->lock_cached)
 			lock_release_later(h, o);
@@ -313,32 +333,11 @@ static void cmd_create_process(struct dxghost_msg *m)
 	COMMAND(dxgkvmb_command_createprocess);
 	struct dxgkvmb_command_createprocess_return *r;
 	struct dxghost *h = m->h;
-	uint32_t token = 0;
 
 	r = reply(m, sizeof(*r));
 	if (!r)
 		return;
-	LOCK(h);
-	if (h->proc_count == h->proc_capacity) {
-		uint32_t capacity = h->proc_capacity ? h->proc_capacity * 2 : 64;
-		struct dxghost_proc *p = realloc(h->procs,
-						 capacity * sizeof(*p));
-
-		if (p) {
-			h->procs = p;
-			h->proc_capacity = capacity;
-		}
-	}
-	if (h->proc_count < h->proc_capacity) {
-		/* Never zero, never reused within a VM lifetime. */
-		token = 0x40000000u | (h->next_proc++ & 0x3fffffffu);
-		h->procs[h->proc_count].token = token;
-		h->procs[h->proc_count].guest_pid = c->process_id;
-		h->procs[h->proc_count].live = true;
-		h->proc_count++;
-	}
-	UNLOCK(h);
-	r->hprocess.v = token;	/* 0 tells the guest the host is out of room */
+	r->hprocess.v = dxghost_proc_add(h, c->process_id);
 }
 
 /*
@@ -465,17 +464,9 @@ static void va_release_process(struct dxghost *h, uint32_t process)
 static void cmd_destroy_process(struct dxghost_msg *m)
 {
 	struct dxghost *h = m->h;
-	uint32_t i;
 
 	dxghost_destroy_process_objects(h, m->process);
-	LOCK(h);
-	for (i = 0; i < h->proc_count; i++) {
-		if (h->procs[i].token == m->process) {
-			h->procs[i] = h->procs[--h->proc_count];
-			break;
-		}
-	}
-	UNLOCK(h);
+	dxghost_proc_remove(h, m->process);
 	reply_ntstatus(m, DXG_STATUS_SUCCESS);
 }
 
@@ -561,12 +552,14 @@ void dxghost_exec_global(struct dxghost_msg *m, uint32_t type)
 		reply_ntstatus(m, DXG_STATUS_SUCCESS);
 		break;
 	case DXGK_VMBCOMMAND_OPENSYNCOBJECT:
-	case DXGK_VMBCOMMAND_SHAREOBJECTWITHHOST:
+	case DXGK_VMBCOMMAND_SHAREOBJECTWITHHOST: {
 		/* Every reply here begins with an NTSTATUS. */
-		reply_ntstatus(m, DXG_STATUS_NOT_SUPPORTED);
-		if (m->res_len && m->res_cap > m->res_len)
-			m->res_len = m->res_cap;
+		struct ntstatus *s = m->res_cap ? reply(m, m->res_cap) : NULL;
+
+		if (s && m->res_cap >= sizeof(*s))
+			s->v = DXG_STATUS_NOT_SUPPORTED;
 		break;
+	}
 	default:
 		m->status = VIRTIO_DXG_ERR_UNSUPPORTED;
 		break;
@@ -2506,8 +2499,8 @@ static void cmd_create_sync(struct dxghost_msg *m)
 }
 
 static struct dxghost_wait *wait_get(struct dxghost *h);
-static void wait_free(struct dxghost_wait *w);
-static void wait_arm(struct dxghost *h, struct dxghost_wait *w);
+static void wait_put(struct dxghost *h, struct dxghost_wait *w);
+static void wait_arm_or_fire(struct dxghost *h, struct dxghost_wait *w);
 
 /*
  * Signal with EnqueueCpuEvent: the guest event fires once the GPU has
@@ -2548,11 +2541,11 @@ static void signal_with_cpu_event(struct dxghost_msg *m,
 	a.cpu_event_handle = (u64)(uintptr_t)w->event;
 	status = h->kmt.SignalSynchronizationObject2(&a);
 	if (status < 0) {
-		wait_free(w);
+		wait_put(h, w);
 		reply_ntstatus(m, status);
 		return;
 	}
-	wait_arm(h, w);
+	wait_arm_or_fire(h, w);
 	reply_ntstatus(m, status);
 }
 
@@ -2642,63 +2635,37 @@ static void wait_free(struct dxghost_wait *w)
 	free(w);
 }
 
-/*
- * Moves fired waits to the pool (all: cancels and frees every wait and the
- * pool). A fired wait's callback has finished its work; waiting for it
- * only covers its last instructions.
- */
-#define WAIT_POOL_MAX 64
+static VOID CALLBACK wait_done(PTP_CALLBACK_INSTANCE instance, PVOID context,
+			       PTP_WAIT tp, TP_WAIT_RESULT result);
 
-static void wait_reap(struct dxghost *h, bool all)
+static void wait_put(struct dxghost *h, struct dxghost_wait *w)
 {
-	struct dxghost_wait **link, *w;
-	unsigned pooled = 0;
-
+	ResetEvent(w->event);
+	if (InterlockedCompareExchange(&h->closing, 0, 0))
+		return;
 	AcquireSRWLockExclusive(&h->wait_lock);
-	link = &h->waits;
-	while ((w = *link) != NULL) {
-		if (!all && !InterlockedCompareExchange(&w->fired, 0, 0)) {
-			link = &w->next;
-			continue;
-		}
-		*link = w->next;
-		ReleaseSRWLockExclusive(&h->wait_lock);
-		if (all)
-			SetThreadpoolWait(w->tp, NULL, NULL);
-		WaitForThreadpoolWaitCallbacks(w->tp, all);
-		AcquireSRWLockExclusive(&h->wait_lock);
-		if (!all && pooled < WAIT_POOL_MAX) {
-			ResetEvent(w->event);
-			InterlockedExchange(&w->fired, 0);
-			w->next = h->wait_pool;
-			h->wait_pool = w;
-			pooled++;
-		} else {
-			ReleaseSRWLockExclusive(&h->wait_lock);
-			wait_free(w);
-			AcquireSRWLockExclusive(&h->wait_lock);
-		}
-		link = &h->waits;
-	}
-	if (all) {
-		while ((w = h->wait_pool) != NULL) {
-			h->wait_pool = w->next;
-			wait_free(w);
-		}
+	if (!InterlockedCompareExchange(&h->closing, 0, 0)) {
+		w->next = h->wait_pool;
+		h->wait_pool = w;
 	}
 	ReleaseSRWLockExclusive(&h->wait_lock);
 }
 
-static VOID CALLBACK wait_done(PTP_CALLBACK_INSTANCE instance, PVOID context,
-			       PTP_WAIT tp, TP_WAIT_RESULT result);
-
-/* Starts watching a wait whose event D3DKMT now owns. */
-static void wait_arm(struct dxghost *h, struct dxghost_wait *w)
+/*
+ * Fast-path: if D3DKMT already satisfied the wait or signal synchronously,
+ * forward the guest event and recycle immediately without waking a worker.
+ */
+static void wait_arm_or_fire(struct dxghost *h, struct dxghost_wait *w)
 {
-	AcquireSRWLockExclusive(&h->wait_lock);
-	w->next = h->waits;
-	h->waits = w;
-	ReleaseSRWLockExclusive(&h->wait_lock);
+	if (WaitForSingleObject(w->event, 0) == WAIT_OBJECT_0) {
+		uint32_t proc = w->process;
+		uint64_t ge = w->guest_event;
+
+		wait_put(h, w);
+		if (!InterlockedCompareExchange(&h->closing, 0, 0))
+			dxghost_signal_guest_event(h, proc, ge);
+		return;
+	}
 	SetThreadpoolWait(w->tp, w->event, NULL);
 }
 
@@ -2724,25 +2691,45 @@ static struct dxghost_wait *wait_get(struct dxghost *h)
 		free(w);
 		return NULL;
 	}
+	AcquireSRWLockExclusive(&h->wait_lock);
+	w->all_next = h->all_waits;
+	h->all_waits = w;
+	ReleaseSRWLockExclusive(&h->wait_lock);
 	return w;
 }
 
 void dxghost_waits_close(struct dxghost *h)
 {
-	wait_reap(h, true);
+	struct dxghost_wait *w, *next;
+
+	AcquireSRWLockExclusive(&h->wait_lock);
+	w = h->all_waits;
+	h->all_waits = NULL;
+	h->wait_pool = NULL;
+	ReleaseSRWLockExclusive(&h->wait_lock);
+	while (w) {
+		next = w->all_next;
+		SetThreadpoolWait(w->tp, NULL, NULL);
+		WaitForThreadpoolWaitCallbacks(w->tp, TRUE);
+		wait_free(w);
+		w = next;
+	}
 }
 
 static VOID CALLBACK wait_done(PTP_CALLBACK_INSTANCE instance, PVOID context,
 			       PTP_WAIT tp, TP_WAIT_RESULT result)
 {
 	struct dxghost_wait *w = context;
+	struct dxghost *h = w->h;
+	uint32_t proc = w->process;
+	uint64_t ge = w->guest_event;
 
 	(void)instance;
 	(void)tp;
 	(void)result;
-	if (!InterlockedCompareExchange(&w->h->closing, 0, 0))
-		dxghost_signal_guest_event(w->h, w->process, w->guest_event);
-	InterlockedExchange(&w->fired, 1);
+	if (!InterlockedCompareExchange(&h->closing, 0, 0))
+		dxghost_signal_guest_event(h, proc, ge);
+	wait_put(h, w);
 }
 
 /* An upper bound for one CPU wait (the guest sends them in one message). */
@@ -2785,7 +2772,6 @@ static void cmd_wait_cpu(struct dxghost_msg *m)
 		return;
 	}
 
-	wait_reap(h, false);
 	w = wait_get(h);
 	if (!w) {
 		reply_ntstatus(m, DXG_STATUS_NO_MEMORY);
@@ -2797,11 +2783,11 @@ static void cmd_wait_cpu(struct dxghost_msg *m)
 	a.async_event = (u64)(uintptr_t)w->event;
 	status = h->kmt.WaitForSynchronizationObjectFromCpu(&a);
 	if (status < 0) {
-		wait_free(w);
+		wait_put(h, w);
 		reply_ntstatus(m, status);
 		return;
 	}
-	wait_arm(h, w);
+	wait_arm_or_fire(h, w);
 	reply_ntstatus(m, DXG_STATUS_SUCCESS);
 }
 
@@ -3344,10 +3330,13 @@ static void cmd_open_resource(struct dxghost_msg *m)
 
 static void not_supported(struct dxghost_msg *m)
 {
+	struct ntstatus *s;
+
 	if (!m->res_cap)
 		return;
-	reply_ntstatus(m, DXG_STATUS_NOT_SUPPORTED);
-	m->res_len = m->res_cap;
+	s = reply(m, m->res_cap);
+	if (s && m->res_cap >= sizeof(*s))
+		s->v = DXG_STATUS_NOT_SUPPORTED;
 }
 
 void dxghost_exec_vgpu(struct dxghost_msg *m, uint32_t type)

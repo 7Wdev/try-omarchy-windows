@@ -1,6 +1,6 @@
 # virtio-dxg: results before and after
 
-> Runtime measurements reported by Claude, last updated November 14, 2026.
+> Runtime measurements updated November 24, 2026.
 > Hardware, resolution, duration and workload matter when comparing these
 > numbers.
 
@@ -35,10 +35,11 @@ work, measured the same way:
 | Input polling (keyboard, pointer buttons, wheel) | every 10 ms when busy, 30 ms after a pause | every display frame: 4 ms at 240 Hz, 8 ms when quiet |
 | Compositor freezes | Hyprland froze for good after seconds to hours (Mesa 26.2.4 slab-lock self-deadlock) | Fixed (upstream Mesa fix backported); 180 s of overlay, vkcube and glmark2 together without a missed check |
 | How an application's frame reaches the compositor | `wl_shm`: a GPU readback in the application and an upload in the compositor | Zero-copy window buffers: the compositor samples the application's texture |
-| Opening the Omarchy menu at 240 Hz (kernel DRM trace, 1.53 s) | 311 frames, 26 late, longest gap 50 ms | 346 frames, 5 late, longest gap 16.7 ms |
+| Opening the Omarchy menu at 240 Hz (QMP `SUPER+SPACE`) | 311 frames, 26 late, longest gap 50 ms; `174.8 ms` open in Wave 5 | **`122.2 ms` median open** (`105.3 ms` min, `2.1 ms` close; `234.3 fps` during continuous menu animation; `SUPER+ALT+SPACE` app grid `166.5 ms` / `1.1 ms` close) |
 | Terminal window open / close animation | not played: the development VM booted with `tryomarchy.render=cpu`, for which Omarchy turns animations off | 111–114 frames over the 0.45 s animation, gaps of at most 8.3 ms |
+| 240 Hz `wl_surface.frame` pacing under load (`1920×1080@240Hz`, 11 s phases) | Wave 5 baseline: `cpu` `65.9% <= 4.6 ms`, `heavy_apps` `62.4% <= 4.6 ms`; `virtio11-ctrl` `290,083` IRQs; periodic `101.4 ms` `dxghost` log stall | **`cpu` `96.7% <= 4.6 ms`** (`228.2 fps`, `med 4.17 ms`, `p95 4.39 ms`); **`gpu` `236.7 fps`** (`worst 25.87 ms`); **`heavy_apps` `91.1% <= 4.6 ms`** (`234.2 fps`); QEMU scanout `232.2–237.1 fps`; `virtio11-ctrl` `3,527` IRQs (`-98.8%`) |
 | Chromium | software rendering (no WebGL); then on the GPU only through an Xwayland wrapper (unscaled window, no window buttons) | native Wayland, default flags: ANGLE on D3D12 (RTX 5090), OpenGL ES 3.1 |
-| Time to a mapped window (test VM, 6 vCPUs) | — | foot 57–67 ms; Nautilus 1.2 s first, 0.21–0.25 s after; Chromium 1.4–2.0 s |
+| Time to a mapped window (`applaunch.py 3 --include-webapps`, `snapshot=on`) | foot 57–67 ms; Nautilus 1.2 s first, 0.21–0.25 s after; Chromium 1.4–2.0 s | `vkcube` `2.3 ms`; `blender` `2.5 ms`; `omacalc` `2.8 ms`; `gnome-calculator` `3.5 ms`; `foot` `13.2 ms`; `discord-pwa` `51.0 ms` (`26.4 ms` first); `chromium` `62.6 ms`; `youtube-pwa` `2.2 ms` pre-warmed (`95.3 ms` warm); `code` `76.6 ms`; `nautilus` `85.9 ms` |
 
 The pointer itself moves with the Windows cursor (QEMU turns Hyprland's
 cursor into the host cursor), so it was never limited by these rates;
@@ -142,6 +143,9 @@ Other media:
 | Proton 10's Wine loads Unix libraries only for builtin modules | dxgvk could not reach `/dev/dxg` under Proton (`STATUS_INVALID_INFO_CLASS`) | dxgvk.dll is marked builtin and installed in Proton's library directories with its Linux half |
 | The Windows Vulkan loader creates a DXGI factory while it reads registered drivers | Under Proton that is DXVK's factory, which creates a Vulkan instance through the same loader: Minecraft's main thread waited on itself with a white window | The loader takes DXGI from `dxgs.dll`, a factory without adapters (`wine/patch_loader.py`) |
 | The debug overlay and idle blanking in measurements | Throttled clients (display off, locked session); Hyprland's overlay can deadlock in hyprgraphics | Benchmarks keep the display on and do not use the overlay |
+| `app-fastlaunch` ran `vdxg-fastlaunch` without `exec` and fell back to `/usr/bin/<app>` on any non-zero exit | Closing `foot` (`footclient`) returned non-zero and immediately spawned a second `/usr/bin/foot` window | `app-fastlaunch` uses `exec`, `fast_foot` passes `footclient -N` when detached, and `vdxg-fastlaunch` calls `exec_original()` only on internal fallback code `11` |
+| `desktop-priority` applied `SCHED_RR` to `quickshell` | PipeWire's `module-rt` zeroed `RLIMIT_RTTIME`, causing the kernel to `SIGKILL` (`137`) `quickshell` 6 times until `omarchy-launch-shell` gave up | `desktop-priority` checks `RLIMIT_RTTIME` `unlimited` before `SCHED_RR` and keeps `quickshell` in `SCHED_OTHER` nice `-20`/`-15` |
+| `desktop-boost` (`8 s`) and `browser-boost` (`6 s`) cleared their `special:*` silent rules before slow cold-boot windows mapped | VS Code (`__vdxg_warm__`) or the first PWA (`YouTube`) popped up unprompted on Workspace `1` | Extended rule timeouts (`45 s` / `25 s`), added `0.25 s` `hyprctl -j clients` polling, waited for `vdxg-pso/.ready`, and added a permanent `__vdxg_warm__` title rule plus late-arrival sweep |
 
 ## Where the rest of native performance goes
 

@@ -1,35 +1,151 @@
 #!/bin/sh
 # The desktop's own processes - the compositor, its shell (bar, menus,
-# launcher) and Xwayland - ahead of applications on the CPU, as compositors
-# on bare-metal Linux get realtime or high priority: frames stay on time with
-# every core busy. Nice -10 with reset-on-fork, so what the desktop launches
-# starts at normal priority. Threads created later are caught on the next
-# pass.
+# launcher), Xwayland, and per-CPU KMS/display completion kworkers - ahead of
+# applications on the CPU, so 240 Hz frame delivery stays on time even with
+# every core busy. Uses zero-fork /proc scans when state is already applied
+# and SCHED_RESET_ON_FORK (-R) so applications spawned by the compositor start
+# at normal priority.
+rt_allowed=1
+
+set_irq_affinity() {
+    local irq_entry dir name aff target cur
+
+    [ -d /sys/devices/system/cpu/cpu2 ] || return 0
+    for irq_entry in /proc/irq/[0-9]*/virtio*; do
+        [ -e "$irq_entry" ] || continue
+        name=${irq_entry##*/}
+        dir=${irq_entry%/*}
+        aff="$dir/smp_affinity_list"
+        [ -w "$aff" ] || continue
+        case "$name" in
+        *control*) target=1 ;;
+        *event*) target=2 ;;
+        *) continue ;;
+        esac
+        IFS= read -r cur 2>/dev/null < "$aff" || continue
+        [ "$cur" = "$target" ] || printf '%s\n' "$target" > "$aff" 2>/dev/null || true
+    done
+}
+
+rttime_unlimited() {
+    local limits_line
+    while IFS= read -r limits_line; do
+        case "$limits_line" in
+        "Max realtime timeout"*"unlimited"*) return 0 ;;
+        esac
+    done 2>/dev/null < "/proc/$1/limits"
+    return 1
+}
+
 prioritize_thread() {
-    local task=$1 target=${2:--15} tid=${1##*/} stat
-    IFS= read -r stat < "$task/stat" || return
-    # A thread name can contain spaces and parentheses. Fields after its
-    # final ')' start at field 3 (state); nice is field 19, policy field 41.
+    local task=$1 cls=$2 prio=$3 target=$4 tcomm="" tid=${1##*/} p stat
+
+    p=${task%/task/*}
+    p=${p#/proc/}
+    if IFS= read -r tcomm 2>/dev/null < "$task/comm"; then
+        case "$tcomm" in
+        *disk*|*pso*|*llvmpipe*) return 0 ;;
+        esac
+    fi
+    IFS= read -r stat 2>/dev/null < "$task/stat" || return 0
+    # A thread name can contain spaces and parentheses. Fields after its final
+    # ')' start at field 3 (state): nice is field 19 ($17), rt_priority 40
+    # ($38), and scheduling policy field 41 ($39: 0=OTHER, 2=RR).
     set -- ${stat##*) }
-    [ "${17:-}" != "$target" ] && [ "${39:-}" = 0 ] || return
+    if [ "$cls" = rr ] && [ "$rt_allowed" = 1 ] && rttime_unlimited "$p"; then
+        if [ "${39:-}" != 2 ] || [ "${38:-}" != "$prio" ]; then
+            if ! chrt -r -R -p "$prio" "$tid" 2>/dev/null; then
+                rt_allowed=0
+            fi
+        fi
+        if [ "${17:-}" != "$target" ]; then
+            renice -n "$target" -p "$tid" >/dev/null 2>&1 || true
+        fi
+        if [ "$rt_allowed" = 1 ]; then
+            return 0
+        fi
+    fi
+    [ "${17:-}" = "$target" ] && [ "${39:-}" = 0 ] && return 0
     chrt -o -R -p 0 "$tid" 2>/dev/null &&
-        renice -n "$target" -p "$tid" >/dev/null 2>&1
+        renice -n "$target" -p "$tid" >/dev/null 2>&1 || true
 }
-prioritize_pids() {
-    local target=$1 p t
-    shift
-    for p in "$@"; do
-        for t in /proc/"$p"/task/*; do
-            prioritize_thread "$t" "$target" 2>/dev/null
-        done
+
+prioritize_kworker() {
+    local p=$1 stat
+
+    IFS= read -r stat 2>/dev/null < "/proc/$p/stat" || return 0
+    set -- ${stat##*) }
+    [ "${17:-}" = -20 ] && return 0
+    renice -n -20 -p "$p" >/dev/null 2>&1 || true
+}
+
+scan_proc() {
+    local pdir p comm task tcomm tid cls prio target
+
+    for pdir in /proc/[0-9]*; do
+        p=${pdir#/proc/}
+        IFS= read -r comm 2>/dev/null < "$pdir/comm" || continue
+        case "$comm" in
+        Hyprland)
+            for task in "$pdir"/task/*; do
+                [ -e "$task" ] || continue
+                prioritize_thread "$task" rr 2 -20
+            done
+            ;;
+        Xwayland)
+            for task in "$pdir"/task/*; do
+                [ -e "$task" ] || continue
+                tid=${task##*/}
+                IFS= read -r tcomm 2>/dev/null < "$task/comm" || tcomm=$comm
+                case "$tid:$tcomm" in
+                "$p":*|*:QSGRender*|*:WaylandEvent*)
+                    cls=rr; prio=1; target=-15 ;;
+                *)
+                    cls=other; prio=0; target=-15 ;;
+                esac
+                prioritize_thread "$task" "$cls" "$prio" "$target"
+            done
+            ;;
+        quickshell)
+            # PipeWire's module-rt zeroes RLIMIT_RTTIME when RTKit is absent, so
+            # keep quickshell in SCHED_OTHER at top nice priority instead of RR.
+            for task in "$pdir"/task/*; do
+                [ -e "$task" ] || continue
+                tid=${task##*/}
+                IFS= read -r tcomm 2>/dev/null < "$task/comm" || tcomm=$comm
+                case "$tid:$tcomm" in
+                "$p":*|*:QSGRender*|*:WaylandEvent*|*:QQmlThread*)
+                    cls=other; prio=0; target=-20 ;;
+                *)
+                    cls=other; prio=0; target=-15 ;;
+                esac
+                prioritize_thread "$task" "$cls" "$prio" "$target"
+            done
+            ;;
+        swayosd-server|mako|pipewire|wireplumber)
+            for task in "$pdir"/task/*; do
+                [ -e "$task" ] || continue
+                prioritize_thread "$task" other 0 -15
+            done
+            ;;
+        irq/*-virtio*)
+            for task in "$pdir"/task/*; do
+                [ -e "$task" ] || continue
+                prioritize_thread "$task" other 0 -15
+            done
+            ;;
+        kworker/u*|*H*)
+            ;;
+        kworker/[0-9]*:[0-9]*)
+            prioritize_kworker "$p"
+            ;;
+        esac
     done
 }
+
 while :; do
-    prioritize_pids -20 $(pgrep -x Hyprland)
-    for name in Xwayland quickshell swayosd-server mako pipewire wireplumber; do
-        prioritize_pids -15 $(pgrep -x "$name")
-    done
-    prioritize_pids -15 $(pgrep -f 'irq/.*-virtio')
-    [ "$1" = once ] && break
-    sleep 2
+    set_irq_affinity
+    scan_proc
+    [ "${1:-}" = once ] && break
+    sleep 3
 done

@@ -262,10 +262,11 @@ run_apps() {
 
     if [ -x /usr/share/code/code ] && [ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ] &&
        ! ls "$rt"/vscode-*-main.sock >/dev/null 2>&1; then
-        ws="$bdir/__vdxg_warm__.code-workspace"
-        printf '{"folders":[]}\n' >"$ws"
-        if command -v python3 >/dev/null 2>&1; then
-            python3 - "$ws" <<'PY' >/dev/null 2>&1 || true
+        (
+            ws="$bdir/__vdxg_warm__.code-workspace"
+            printf '{"folders":[]}\n' >"$ws"
+            if command -v python3 >/dev/null 2>&1; then
+                python3 - "$ws" <<'PY' >/dev/null 2>&1 || true
 import json, os, socket, subprocess, sys, time
 
 ws = sys.argv[1]
@@ -277,57 +278,95 @@ def set_rule(pat):
     expr = f'hl.window_rule({{ name = "vdxg_warm_code", match = {{ class = [[{pat}]] }}, workspace = "special:vdxg_warm silent" }})'
     subprocess.run(["hyprctl", "eval", expr], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-try:
-    existing = json.loads(subprocess.check_output(["hyprctl", "-j", "clients"], text=True))
-except Exception:
-    existing = []
+def move_to_warm(addr):
+    a = addr.removeprefix("0x")
+    subprocess.run(
+        ["hyprctl", "eval", f'hl.dispatch(hl.dsp.window.move({{ workspace = "special:vdxg_warm", follow = false, window = "address:0x{a}" }}))'],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+
+def list_clients():
+    try:
+        return json.loads(subprocess.check_output(["hyprctl", "-j", "clients"], text=True))
+    except Exception:
+        return []
+
+existing = list_clients()
 if any("code" in c.get("class", "").lower() for c in existing):
     sys.exit(0)
+existing_addrs = {c.get("address", "").removeprefix("0x").lower() for c in existing}
 
 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 try:
     s.connect(sock_path)
-    s.settimeout(0.05)
+    s.settimeout(0.1)
 except OSError:
     s.close()
     s = None
 
+subprocess.run(
+    ["hyprctl", "eval", 'hl.window_rule({ name = "vdxg_warm_code_title", match = { title = [[.*__vdxg_warm__.*]] }, workspace = "special:vdxg_warm silent" })'],
+    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+)
 set_rule("^(com\\.microsoft\\.VSCode|[Cc]ode)$")
+proc = subprocess.Popen(
+    ["/usr/share/code/code", "--ozone-platform=wayland", ws],
+    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+)
 try:
-    subprocess.Popen(
-        ["/usr/share/code/code", "--ozone-platform=wayland", ws],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
-    )
     buf = b""
-    deadline = time.monotonic() + 8.0
+    deadline = time.monotonic() + 45.0
+    next_poll = 0.0
     mapped = False
-    while s is not None and time.monotonic() < deadline and not mapped:
-        try:
-            buf += s.recv(65536)
-        except socket.timeout:
-            continue
-        while b"\n" in buf:
-            line, buf = buf.split(b"\n", 1)
-            if line.startswith(b"openwindow>>"):
-                f = line[12:].decode(errors="replace").split(",", 3)
-                if len(f) >= 3 and "code" in f[2].lower():
-                    if not f[1].lower().startswith("special:"):
-                        a = f[0].removeprefix("0x")
-                        subprocess.run(
-                            ["hyprctl", "eval", f'hl.dispatch(hl.dsp.window.move({{ workspace = "special:vdxg_warm", follow = false, window = "address:0x{a}" }}))'],
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                        )
+    while time.monotonic() < deadline and not mapped:
+        if s is not None:
+            try:
+                buf += s.recv(65536)
+            except socket.timeout:
+                pass
+            except OSError:
+                s.close()
+                s = None
+            while b"\n" in buf:
+                line, buf = buf.split(b"\n", 1)
+                if line.startswith(b"openwindow>>"):
+                    f = line[12:].decode(errors="replace").split(",", 3)
+                    if len(f) >= 3 and "code" in f[2].lower():
+                        if not f[1].lower().startswith("special:"):
+                            move_to_warm(f[0])
+                        mapped = True
+                        break
+        else:
+            time.sleep(0.1)
+        now = time.monotonic()
+        if not mapped and now >= next_poll:
+            next_poll = now + 0.25
+            for c in list_clients():
+                addr = c.get("address", "").removeprefix("0x").lower()
+                cls = c.get("class", "").lower()
+                title = c.get("title", "")
+                if addr and addr not in existing_addrs and (
+                    "code" in cls or "__vdxg_warm__" in title or c.get("pid") == proc.pid
+                ):
+                    if not c.get("workspace", {}).get("name", "").lower().startswith("special:"):
+                        move_to_warm(addr)
                     mapped = True
                     break
 finally:
     if s is not None:
         s.close()
     set_rule("^__vdxg_none__$")
+    for _ in range(6):
+        time.sleep(0.5)
+        for c in list_clients():
+            if "__vdxg_warm__" in c.get("title", "") and not c.get("workspace", {}).get("name", "").lower().startswith("special:"):
+                move_to_warm(c.get("address", ""))
 PY
-        else
-            hyprctl eval 'hl.window_rule({ name = "vdxg_warm_code", match = { title = [[.*__vdxg_warm__.*]] }, workspace = "special:vdxg_warm silent" })' >/dev/null 2>&1 || true
-            /usr/share/code/code --ozone-platform=wayland "$ws" >/dev/null 2>&1 &
-        fi
+            else
+                hyprctl eval 'hl.window_rule({ name = "vdxg_warm_code_title", match = { title = [[.*__vdxg_warm__.*]] }, workspace = "special:vdxg_warm silent" })' >/dev/null 2>&1 || true
+                /usr/share/code/code --ozone-platform=wayland "$ws" >/dev/null 2>&1 &
+            fi
+        ) &
     fi
 
     if [ -f "$bdir/libvdxg-wl-gate.so" ] && [ -x /usr/bin/omacalc ]; then

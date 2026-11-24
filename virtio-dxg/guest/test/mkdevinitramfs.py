@@ -144,7 +144,7 @@ def main():
         for name in ('desktop_payload.py', 'chromium-wrapper', 'desktop-priority',
                      'app-prefetch', 'browser-boost', 'desktop-boost',
                      'xdg-settings-fast', 'app-fastlaunch',
-                     'vdxg_boost_helpers.c'):
+                     'omarchy_ui_boost.py', 'vdxg_boost_helpers.c'):
             mode = 0o100755 if name in ('desktop-boost', 'xdg-settings-fast',
                                         'app-prefetch', 'browser-boost',
                                         'desktop-priority', 'chromium-wrapper',

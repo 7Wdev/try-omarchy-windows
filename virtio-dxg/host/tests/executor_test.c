@@ -775,23 +775,30 @@ static void test_executor(void)
 		CHECK(r->fence_gpu_va == 0xabc000);
 	}
 
-	/* An async CPU wait signals the guest event from the thread pool. */
+	/* Repeated async CPU waits recycle the pool and fire inline when ready. */
 	{
 		uint32_t size = sizeof(struct dxgkvmb_command_waitforsyncobjectfromcpu) +
 				4 + 8;
-		struct dxgkvmb_command_waitforsyncobjectfromcpu *c = msg(size);
-		u8 *p = (u8 *)&c[1];
+		struct dxgkvmb_command_waitforsyncobjectfromcpu *c;
+		uint32_t w;
 
-		vgpu(c, DXGK_VMBCOMMAND_WAITFORSYNCOBJECTFROMCPU, p1);
-		c->device.v = d1;
-		c->object_count = 1;
-		c->guest_event_pointer = 0x1234;
-		memcpy(p, &s1, 4);
-		run(h, size, 4);
-		CHECK(status_of() == 0);
-		for (i = 0; i < 1000 && !events; i++)
-			Sleep(1);
-		CHECK(events == 1 && last_event == 0x1234);
+		for (w = 0; w < 5; w++) {
+			events = 0;
+			last_event = 0;
+			c = msg(size);
+			vgpu(c, DXGK_VMBCOMMAND_WAITFORSYNCOBJECTFROMCPU, p1);
+			c->device.v = d1;
+			c->object_count = 1;
+			c->guest_event_pointer = 0x1234 + w;
+			memcpy((u8 *)&c[1], &s1, 4);
+			run(h, size, 4);
+			CHECK(status_of() == 0);
+			for (i = 0; i < 1000 && !events; i++)
+				Sleep(1);
+			CHECK(events == 1 && last_event == 0x1234 + w);
+		}
+		CHECK(h->wait_pool != NULL);
+		CHECK(h->all_waits != NULL && h->all_waits->all_next == NULL);
 	}
 
 	/* An escape failure arrives as an NTSTATUS with the output intact. */

@@ -7,9 +7,7 @@ if [ "${VIRTIO_DXG_BOOST:-1}" != 0 ]; then
     rt=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
     fast=$rt/vdxg-boost/vdxg-fastlaunch
     if [ -x "$fast" ]; then
-        "$fast" "$prog" "$@"
-        rc=$?
-        [ "$rc" -eq 0 ] && exit 0
+        exec "$fast" "$prog" "$@"
     fi
 fi
 if [ -x "/run/virtio-dxg/omarchy-orig/$prog" ]; then

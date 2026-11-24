@@ -20,6 +20,7 @@ def module(name, path):
 
 
 payload = module('desktop_payload', HERE / 'initcpio/desktop_payload.py')
+omarchy_ui = module('omarchy_ui_boost', HERE / 'initcpio/omarchy_ui_boost.py')
 build = module('record_build', HERE.parent / 'mesa/record_build.py')
 
 
@@ -288,6 +289,150 @@ class DesktopData(unittest.TestCase):
             (self.root / 'run/virtio-dxg/applications/omacalc.desktop').read_text(),
             '[Desktop Entry]\nExec=/run/virtio-dxg/bin/omacalc\n',
         )
+
+    def _write_omarchy_fixtures(self, include_dock_group=True):
+        files = {
+            omarchy_ui.APP_LIBRARY_REL: (
+                'Item {\n'
+                '  property var iconIndex: ({})\n'
+                '  property var pendingIconIndex: ({})\n'
+                '  function refreshIcons() {\n'
+                '    if (!iconIndexScan.running) iconIndexScan.running = true\n'
+                '  }\n'
+                '  Process {\n'
+                '    onExited: root.iconIndex = root.pendingIconIndex\n'
+                '  }\n'
+                '}\n'
+            ),
+            omarchy_ui.MENU_QML_REL: (
+                'Item {\n'
+                '  function openExistingMenu(initialMenu) {\n'
+                '    root.disarmPointer()\n'
+                '    root.evaluateGuards()\n'
+                '    opened = true\n'
+                '    rebuildDisplay()\n'
+                '  }\n'
+                '  property var disabledResults: ({})   // id \u2192 true|false (dim, skip cursor)\n'
+                '  property bool guardsPending: false\n'
+                '  Process {\n'
+                '    onExited: {\n'
+                '      root.whenResults = nextWhen\n'
+                '      root.checkedResults = nextChecked\n'
+                '      root.disabledResults = nextDisabled\n'
+                '    }\n'
+                '  }\n'
+                '}\n'
+            ),
+            omarchy_ui.OVERLAY_WINDOW_REL: (
+                'PanelWindow {\n'
+                '  onContentReadyChanged: {\n'
+                '    contentRevealed = false\n'
+                '    // Resize and scale notifications arrive while Qt is still updating the\n'
+                '    // window. Reveal on the next turn, once its content layout has caught up.\n'
+                '    if (contentReady) Qt.callLater(function() {\n'
+                '      if (window.contentReady) window.contentRevealed = true\n'
+                '    })\n'
+                '  }\n'
+                '  onShownChanged: {\n'
+                '    targetScreen = shown ? focusedScreen() : null\n'
+                '    if (shown) Hyprland.refreshMonitors()\n'
+                '  }\n'
+                '  Connections {\n'
+                '    function onScreensChanged() {\n'
+                '      if (window.shown && Quickshell.screens.indexOf(window.targetScreen) < 0) {\n'
+                '        window.targetScreen = null\n'
+                '        // Let the removed output finish closing its old window before mapping\n'
+                '        // a replacement, rather than recreating it during Qt\'s teardown.\n'
+                '        Qt.callLater(function() {\n'
+                '          if (window.shown && !window.targetScreen) window.targetScreen = window.focusedScreen()\n'
+                '        })\n'
+                '      }\n'
+                '    }\n'
+                '  }\n'
+                '}\n'
+            ),
+        }
+        if include_dock_group:
+            files.update({
+                omarchy_ui.SHORTCUTS_REL: 'ipc notifications.act\nipc notifications.showHistory\n',
+                omarchy_ui.UTILITIES_LUA_REL: 'o.bind("SUPER + ALT + SPACE", "Apps", "omarchy-shell omarchy.dock apps")\n',
+                omarchy_ui.SHELL_QML_REL: (
+                    'readonly property var ipcShortcutServices: '
+                    '({ media: "omarchy.media", notifications: "omarchy.notifications" })\n'
+                ),
+                omarchy_ui.DOCK_QML_REL: '  function openApps() {\n    appGrid.open()\n  }\n',
+            })
+        for rel, content in files.items():
+            p = self.root / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(content, encoding='utf-8')
+
+    def test_omarchy_ui_boost_stages_all_overlays_and_unit(self):
+        self._write_omarchy_fixtures(include_dock_group=True)
+        staged = omarchy_ui.prepare_omarchy_ui(self.root)
+        self.assertEqual(len(staged), 7)
+        app_lib = (self.root / 'run/virtio-dxg/omarchy-ui' / omarchy_ui.APP_LIBRARY_REL).read_text(encoding='utf-8')
+        self.assertIn('property bool iconIndexReady: false', app_lib)
+        self.assertIn('if (root.iconIndexReady && !force) return', app_lib)
+        menu = (self.root / 'run/virtio-dxg/omarchy-ui' / omarchy_ui.MENU_QML_REL).read_text(encoding='utf-8')
+        self.assertIn('deferredGuardTimer.restart()', menu)
+        self.assertNotIn('    root.evaluateGuards()\n    opened = true', menu)
+        overlay = (self.root / 'run/virtio-dxg/omarchy-ui' / omarchy_ui.OVERLAY_WINDOW_REL).read_text(encoding='utf-8')
+        self.assertIn('contentRevealed = contentReady', overlay)
+        shortcuts = (self.root / 'run/virtio-dxg/omarchy-ui' / omarchy_ui.SHORTCUTS_REL).read_text(encoding='utf-8')
+        self.assertIn('ipc dock.apps\n', shortcuts)
+        unit = (self.root / 'run/systemd/system/virtio-dxg-omarchy-ui.service').read_text(encoding='utf-8')
+        self.assertIn('remount,bind,ro /usr/share/omarchy/shell/plugins/menu/Menu.qml', unit)
+        self.assertTrue((self.root / 'run/systemd/system/sysinit.target.wants/virtio-dxg-omarchy-ui.service').is_symlink())
+
+    def test_omarchy_ui_boost_skips_partial_dock_group_or_absent_files(self):
+        self.assertEqual(omarchy_ui.prepare_omarchy_ui(self.root), [])
+        self._write_omarchy_fixtures(include_dock_group=False)
+        staged = omarchy_ui.prepare_omarchy_ui(self.root)
+        self.assertEqual(staged, sorted([
+            omarchy_ui.OVERLAY_WINDOW_REL,
+            omarchy_ui.MENU_QML_REL,
+            omarchy_ui.APP_LIBRARY_REL,
+        ]))
+
+    def test_desktop_priority_avoids_rt_on_quickshell_and_silences_proc_reads(self):
+        text = (HERE / 'initcpio/desktop-priority').read_text(encoding='utf-8')
+        self.assertIn('rttime_unlimited()', text)
+        self.assertIn('Max realtime timeout"*"unlimited"', text)
+        self.assertIn('2>/dev/null < "/proc/$1/limits"', text)
+        self.assertIn('rttime_unlimited "$p"', text)
+        qs_section = text.split('quickshell)', 1)[1].split(';;\n        swayosd-server', 1)[0]
+        self.assertIn('cls=other; prio=0; target=-20', qs_section)
+        self.assertNotIn('cls=rr', qs_section)
+        self.assertIn('Xwayland)', text)
+        self.assertRegex(text, r'2>/dev/null < "\$pdir/comm"')
+        self.assertNotRegex(text, r'< "\$[^"]+" 2>/dev/null')
+
+    def test_app_fastlaunch_execs_without_post_close_relaunch(self):
+        import shutil
+        fastlaunch_sh = (HERE / 'initcpio/app-fastlaunch').read_text(encoding='utf-8')
+        self.assertIn('exec "$fast" "$prog" "$@"', fastlaunch_sh)
+        self.assertNotIn('rc=$?', fastlaunch_sh)
+        gcc = shutil.which('gcc')
+        if gcc:
+            src = HERE / 'initcpio/vdxg_boost_helpers.c'
+            targets = [
+                ('-DBUILD_GAPP_HOLD', ['-shared', '-fPIC'], 'libvdxg-gapp-hold.so', ['-ldl', '-lpthread']),
+                ('-DBUILD_WL_GATE', ['-shared', '-fPIC'], 'libvdxg-wl-gate.so', ['-ldl', '-lpthread']),
+                ('-DBUILD_FASTLAUNCH', [], 'vdxg-fastlaunch', []),
+            ]
+            for define, extra_flags, out_name, libs in targets:
+                out_path = self.root / out_name
+                cmd = [gcc, '-O2', '-Wall', '-Wextra', '-Werror', define, *extra_flags,
+                       str(src), '-o', str(out_path), *libs]
+                subprocess.run(cmd, check=True, timeout=15)
+
+    def test_browser_boost_stage_timeout_and_client_poll(self):
+        text = (HERE / 'initcpio/browser-boost').read_text(encoding='utf-8')
+        self.assertIn('vdxg-pso/.ready', text)
+        self.assertIn('deadline = time.monotonic() + 25.0', text)
+        self.assertIn('existing_addrs = ', text)
+        self.assertIn('next_poll = 0.0', text)
 
 
 if __name__ == '__main__':

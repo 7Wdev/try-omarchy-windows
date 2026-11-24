@@ -118,6 +118,7 @@ setup_desktop() {
         /virtio-dxg/desktop-priority /virtio-dxg/app-prefetch \
         /virtio-dxg/browser-boost /virtio-dxg/desktop-boost \
         /virtio-dxg/xdg-settings-fast /virtio-dxg/app-fastlaunch \
+        /virtio-dxg/omarchy_ui_boost.py \
         /virtio-dxg/vdxg_boost_helpers.c /virtio-dxg/mesa-recipe.json \
         /run/virtio-dxg/ || return 1
     chmod 0755 /run/virtio-dxg/desktop-boost /run/virtio-dxg/xdg-settings-fast \
@@ -156,6 +157,9 @@ setup_desktop() {
         umount /new_root/run
         echo ":: virtio-dxg: Mesa payload rejected; GPU environment not selected" >&2
         return 1
+    fi
+    if [ -n "$fastlaunch" ]; then
+        chroot /new_root /usr/bin/python3 /run/virtio-dxg/omarchy_ui_boost.py / || true
     fi
     [ -n "$payload_bound" ] && umount /new_root/run/virtio-dxg/payload
     umount /new_root/run || return 1

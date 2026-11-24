@@ -36,11 +36,13 @@
 
 #define DXGVIRTIO_EVENT_BUFFERS	128
 #define DXGVIRTIO_INLINE_BUF	1024
+#define DXGVIRTIO_REQ_POOL_MAX	64
 
 struct dxgvirtio_req {
 	struct kref			ref;
 	struct list_head		done_entry;
 	struct completion		done;
+	struct dxgvirtio		*dv;
 	struct virtio_dxg_req		hdr;
 	struct virtio_dxg_resp		resp;
 	void				*buf;	/* message, then result */
@@ -57,6 +59,11 @@ struct dxgvirtio {
 	struct virtqueue		*event;
 	spinlock_t			ctrl_lock;
 	wait_queue_head_t		ctrl_space;
+	atomic_t			ctrl_waiters;
+	spinlock_t			req_pool_lock;
+	struct list_head		req_pool;
+	u32				req_pool_count;
+	bool				removing;
 	/* Asynchronous messages queued without a kick yet (ctrl_lock). */
 	bool				kick_pending;
 	struct hrtimer			kick_timer;
@@ -142,14 +149,59 @@ static bool dxgvirtio_urgent(const void *command, u32 size)
 	       cmd->command_type == DXGK_VMBCOMMAND_WAITFORSYNCOBJECTFROMCPU;
 }
 
+static void dxgvirtio_req_recycle(struct dxgvirtio_req *req)
+{
+	struct dxgvirtio *dv = req->dv;
+	unsigned long flags;
+	bool pooled = false;
+
+	if (req->buf && req->buf != req->inline_buf)
+		kvfree(req->buf);
+	req->buf = NULL;
+	if (dv) {
+		spin_lock_irqsave(&dv->req_pool_lock, flags);
+		if (!dv->removing &&
+		    dv->req_pool_count < DXGVIRTIO_REQ_POOL_MAX) {
+			list_add(&req->done_entry, &dv->req_pool);
+			dv->req_pool_count++;
+			pooled = true;
+		}
+		spin_unlock_irqrestore(&dv->req_pool_lock, flags);
+	}
+	if (!pooled)
+		kfree(req);
+}
+
+static struct dxgvirtio_req *dxgvirtio_req_alloc(struct dxgvirtio *dv)
+{
+	struct dxgvirtio_req *req = NULL;
+	unsigned long flags;
+
+	spin_lock_irqsave(&dv->req_pool_lock, flags);
+	if (!list_empty(&dv->req_pool)) {
+		req = list_first_entry(&dv->req_pool, struct dxgvirtio_req,
+				       done_entry);
+		list_del_init(&req->done_entry);
+		dv->req_pool_count--;
+	}
+	spin_unlock_irqrestore(&dv->req_pool_lock, flags);
+	if (!req) {
+		req = kmalloc(sizeof(*req), GFP_KERNEL);
+		if (!req)
+			return NULL;
+		INIT_LIST_HEAD(&req->done_entry);
+	}
+	req->dv = dv;
+	req->buf = NULL;
+	return req;
+}
+
 static void dxgvirtio_req_free(struct kref *ref)
 {
 	struct dxgvirtio_req *req = container_of(ref, struct dxgvirtio_req,
 						 ref);
 
-	if (req->buf != req->inline_buf)
-		kvfree(req->buf);
-	kfree(req);
+	dxgvirtio_req_recycle(req);
 }
 
 /*
@@ -187,7 +239,14 @@ static int dxgvirtio_sg_table(struct sg_table *table, struct scatterlist *single
 	return 0;
 }
 
-/* Retires the requests the host completed; returns how many. */
+/*
+ * Retires completed requests; returns how many.
+ *
+ * Keep ctrl interrupts suppressed (VRING_AVAIL_F_NO_INTERRUPT) whenever no
+ * thread is blocked waiting on ctrl: most calls complete inline inside
+ * virtqueue_notify() or the spin poll right after, so leaving interrupts on
+ * generated hundreds of thousands of redundant MSI-X exits per session.
+ */
 static unsigned int dxgvirtio_ctrl_reap(struct dxgvirtio *dv)
 {
 	struct virtqueue *vq = dv->ctrl;
@@ -197,15 +256,18 @@ static unsigned int dxgvirtio_ctrl_reap(struct dxgvirtio *dv)
 	LIST_HEAD(done);
 
 	spin_lock_irqsave(&dv->ctrl_lock, flags);
-	do {
+	for (;;) {
 		virtqueue_disable_cb(vq);
 		while ((req = virtqueue_get_buf(vq, &len)) != NULL)
 			list_add_tail(&req->done_entry, &done);
-	} while (!virtqueue_enable_cb(vq));
+		if (atomic_read(&dv->ctrl_waiters) == 0 ||
+		    virtqueue_enable_cb(vq))
+			break;
+	}
 	spin_unlock_irqrestore(&dv->ctrl_lock, flags);
 
 	list_for_each_entry_safe(req, next, &done, done_entry) {
-		list_del(&req->done_entry);
+		list_del_init(&req->done_entry);
 		if (!req->async)
 			complete(&req->done);
 		kref_put(&req->ref, dxgvirtio_req_free);
@@ -214,6 +276,25 @@ static unsigned int dxgvirtio_ctrl_reap(struct dxgvirtio *dv)
 	if (count)
 		wake_up_all(&dv->ctrl_space);
 	return count;
+}
+
+static void dxgvirtio_ctrl_wait_begin(struct dxgvirtio *dv)
+{
+	atomic_inc(&dv->ctrl_waiters);
+	smp_mb__after_atomic();
+	dxgvirtio_ctrl_reap(dv);
+}
+
+static void dxgvirtio_ctrl_wait_end(struct dxgvirtio *dv)
+{
+	unsigned long flags;
+
+	if (atomic_dec_and_test(&dv->ctrl_waiters)) {
+		spin_lock_irqsave(&dv->ctrl_lock, flags);
+		if (atomic_read(&dv->ctrl_waiters) == 0)
+			virtqueue_disable_cb(dv->ctrl);
+		spin_unlock_irqrestore(&dv->ctrl_lock, flags);
+	}
 }
 
 static void dxgvirtio_ctrl_done(struct virtqueue *vq)
@@ -291,21 +372,27 @@ static int dxgvirtio_queue(struct dxgvirtio *dv, struct dxgvirtio_req *req)
 				      HRTIMER_MODE_REL);
 		if (ret != -ENOSPC)
 			break;
-		if (notify)
+		if (notify) {
 			virtqueue_notify(dv->ctrl);	/* let the host drain it */
+			dxgvirtio_ctrl_reap(dv);
+		}
 		notify = false;
 		/* Ring full: wait for the host to retire requests. */
+		dxgvirtio_ctrl_wait_begin(dv);
 		if (wait_event_killable_timeout(dv->ctrl_space,
 						dv->ctrl->num_free >= out + in,
 						HZ / 100) == 0)
 			dxgvirtio_ctrl_poll(dv);
+		dxgvirtio_ctrl_wait_end(dv);
 		if (fatal_signal_pending(current)) {
 			ret = -EINTR;
 			break;
 		}
 	}
-	if (notify)
+	if (notify) {
 		virtqueue_notify(dv->ctrl);
+		dxgvirtio_ctrl_reap(dv);
+	}
 
 	/* The ring holds DMA addresses; the tables themselves can go. */
 	if (res_table.sgl && res_table.sgl != &res_single)
@@ -344,7 +431,7 @@ int dxgvirtio_send(struct dxgvirtio *dv, u32 channel, const void *command,
 	    result_size > dv->max_message || (async && result_size))
 		return -EINVAL;
 
-	req = kzalloc(sizeof(*req), GFP_KERNEL);
+	req = dxgvirtio_req_alloc(dv);
 	if (!req)
 		return -ENOMEM;
 	if (total_size <= DXGVIRTIO_INLINE_BUF) {
@@ -352,13 +439,14 @@ int dxgvirtio_send(struct dxgvirtio *dv, u32 channel, const void *command,
 	} else {
 		req->buf = kvmalloc(total_size, GFP_KERNEL);
 		if (!req->buf) {
-			kfree(req);
+			dxgvirtio_req_recycle(req);
 			return -ENOMEM;
 		}
-		if (result_size)
-			memset((u8 *)req->buf + cmd_size, 0, result_size);
 	}
+	if (result_size)
+		memset((u8 *)req->buf + cmd_size, 0, result_size);
 	memcpy(req->buf, command, cmd_size);
+	memset(&req->resp, 0, sizeof(req->resp));
 	req->cmd_size = cmd_size;
 	req->result_size = result_size;
 	req->async = async;
@@ -393,15 +481,25 @@ int dxgvirtio_send(struct dxgvirtio *dv, u32 channel, const void *command,
 			cpu_relax();
 		}
 	}
-	for (;;) {
-		long left = wait_for_completion_killable_timeout(&req->done,
-								 HZ / 10);
+	ret = 0;
+	if (!completion_done(&req->done)) {
+		dxgvirtio_ctrl_wait_begin(dv);
+		for (;;) {
+			long left;
 
-		if (left != 0) {
-			ret = left < 0 ? left : 0;
-			break;
+			if (completion_done(&req->done)) {
+				ret = 0;
+				break;
+			}
+			left = wait_for_completion_killable_timeout(&req->done,
+								    HZ / 10);
+			if (left != 0) {
+				ret = left < 0 ? left : 0;
+				break;
+			}
+			dxgvirtio_ctrl_poll(dv);
 		}
-		dxgvirtio_ctrl_poll(dv);
+		dxgvirtio_ctrl_wait_end(dv);
 	}
 	if (ret) {
 		/* The device still owns the buffers; it drops its reference. */
@@ -596,6 +694,9 @@ static int dxgvirtio_probe(struct virtio_device *vdev)
 	dv->vdev = vdev;
 	vdev->priv = dv;
 	spin_lock_init(&dv->ctrl_lock);
+	atomic_set(&dv->ctrl_waiters, 0);
+	spin_lock_init(&dv->req_pool_lock);
+	INIT_LIST_HEAD(&dv->req_pool);
 	hrtimer_setup(&dv->kick_timer, dxgvirtio_kick_timer, CLOCK_MONOTONIC,
 		      HRTIMER_MODE_REL);
 	spin_lock_init(&dv->event_lock);
@@ -605,6 +706,8 @@ static int dxgvirtio_probe(struct virtio_device *vdev)
 	ret = dxgvirtio_find_vqs(dv);
 	if (ret)
 		goto free_dv;
+
+	virtqueue_disable_cb(dv->ctrl);
 
 	dv->event_bufs = kcalloc(DXGVIRTIO_EVENT_BUFFERS, dv->event_size,
 				 GFP_KERNEL);
@@ -679,6 +782,13 @@ static void dxgvirtio_remove(struct virtio_device *vdev)
 	mutex_unlock(&dxgglobal->device_mutex);
 
 	hrtimer_cancel(&dv->kick_timer);
+	{
+		unsigned long flags;
+
+		spin_lock_irqsave(&dv->req_pool_lock, flags);
+		dv->removing = true;
+		spin_unlock_irqrestore(&dv->req_pool_lock, flags);
+	}
 	virtio_reset_device(vdev);
 	/* Requests nobody waits for any more; waiters were woken above. */
 	while ((req = virtqueue_detach_unused_buf(dv->ctrl)) != NULL) {
@@ -689,6 +799,14 @@ static void dxgvirtio_remove(struct virtio_device *vdev)
 		kref_put(&req->ref, dxgvirtio_req_free);
 	}
 	vdev->config->del_vqs(vdev);
+	{
+		struct dxgvirtio_req *tmp;
+
+		list_for_each_entry_safe(req, tmp, &dv->req_pool, done_entry) {
+			list_del(&req->done_entry);
+			kfree(req);
+		}
+	}
 	if (dv->iospace_res)
 		release_mem_region(dv->iospace.addr, dv->iospace.len);
 	kfree(dv->event_bufs);

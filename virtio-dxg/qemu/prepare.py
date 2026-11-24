@@ -190,6 +190,25 @@ SDL_HEADER_PATCHES = [
      '     MAX(1000000 / qemu_edid_refresh_rate_mhz, 1) : 10)\n'
      '#define SDL2_REFRESH_INTERVAL_QUIET (2 * SDL2_REFRESH_INTERVAL_BUSY)\n'),
 ]
+SDL_GL_PATCHES = [
+    ('    SDL_GL_MakeCurrent(scon->real_window, scon->winctx);\n\n'
+     '    sdl2_set_scanout_mode(scon, true);\n',
+     '    /* virtio-dxg: fast 240Hz scanout */\n'
+     '    if (SDL_GL_GetCurrentContext() != scon->winctx) {\n'
+     '        SDL_GL_MakeCurrent(scon->real_window, scon->winctx);\n'
+     '    }\n\n'
+     '    sdl2_set_scanout_mode(scon, true);\n'),
+    ('    SDL_GL_MakeCurrent(scon->real_window, scon->winctx);\n'
+     '    SDL_GL_SetSwapInterval(0);\n',
+     '    static SDL_GLContext dxg_swap_ctx;\n\n'
+     '    if (SDL_GL_GetCurrentContext() != scon->winctx) {\n'
+     '        SDL_GL_MakeCurrent(scon->real_window, scon->winctx);\n'
+     '    }\n'
+     '    if (dxg_swap_ctx != scon->winctx) {\n'
+     '        SDL_GL_SetSwapInterval(0);\n'
+     '        dxg_swap_ctx = scon->winctx;\n'
+     '    }\n'),
+]
 
 
 def patch_file(path, patches, marker):
@@ -207,6 +226,8 @@ def patch_sdl(qemu):
     patch_file(qemu / "ui/sdl2.c", SDL_PATCHES, "SDL2_REFRESH_INTERVAL_QUIET")
     patch_file(qemu / "include/ui/sdl2.h", SDL_HEADER_PATCHES,
                "SDL2_REFRESH_INTERVAL_QUIET")
+    patch_file(qemu / "ui/sdl2-gl.c", SDL_GL_PATCHES,
+               "/* virtio-dxg: fast 240Hz scanout */")
 
 
 def patch_virtio_gpu(qemu):

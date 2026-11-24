@@ -2,6 +2,7 @@
 #ifndef DXGHOST_HOST_H
 #define DXGHOST_HOST_H
 
+#include <stdio.h>
 #include <windows.h>
 #include "wire.h"
 #include "kmt.h"
@@ -34,6 +35,7 @@ struct dxghost_obj {
 	uint32_t process;	/* guest process token */
 	uint32_t parent;	/* device; context for hwqueues; queue for fences */
 	uint32_t resource;	/* allocations created with a resource */
+	uint32_t va_maps;	/* base-less GPU VA mappings referencing this allocation */
 	/* Lock2 mapping (allocation) or mapped fence page (sync, queues). */
 	uint32_t guest_locks;	/* Lock2 calls the guest has not undone */
 	void *hva;
@@ -96,16 +98,18 @@ struct dxghost_va {
 	uint64_t size;
 };
 
-/* An armed D3DKMTWaitForSynchronizationObjectFromCpu. */
+/* An armed D3DKMTWaitForSynchronizationObjectFromCpu or Signal2 event. */
 struct dxghost_wait {
 	struct dxghost_wait *next;
+	struct dxghost_wait *all_next;
 	struct dxghost *h;
 	HANDLE event;
 	PTP_WAIT tp;
 	uint32_t process;
 	uint64_t guest_event;
-	volatile LONG fired;
 };
+
+#define DXGHOST_PROC_HASH_SIZE 1024u
 
 struct dxghost_proc {
 	uint32_t token;
@@ -155,6 +159,9 @@ struct dxghost {
 	uint32_t proc_count;
 	uint32_t proc_capacity;
 	uint32_t next_proc;
+	/* O(1) lookup table for live process tokens: 0 empty, 1 tombstone. */
+	uint32_t proc_hash[DXGHOST_PROC_HASH_SIZE];
+	uint32_t proc_hash_used;
 
 	struct dxghost_va *vas;
 	uint32_t va_count;
@@ -187,10 +194,14 @@ struct dxghost {
 	void **sysmem_free;
 	uint32_t sysmem_free_count, sysmem_free_capacity;
 	SRWLOCK wait_lock;
-	struct dxghost_wait *waits;
+	/* All wait objects allocated for this instance (freed at teardown). */
+	struct dxghost_wait *all_waits;
 	/* Completed waits kept for reuse: no event or thread-pool object is
 	 * created per CPU wait once the pool is warm. */
 	struct dxghost_wait *wait_pool;
+	SRWLOCK log_lock;
+	FILE *log_file;
+	bool log_checked;
 	volatile LONG closing;
 };
 
@@ -235,6 +246,8 @@ __attribute__((format(printf, 2, 3)))
 void dxghost_logf(struct dxghost *h, const char *format, ...);
 void dxghost_signal_guest_event(struct dxghost *h, uint32_t process,
 				uint64_t guest_event);
+uint32_t dxghost_proc_add(struct dxghost *h, uint64_t guest_pid);
+void dxghost_proc_remove(struct dxghost *h, uint32_t token);
 
 /* commands.c */
 struct dxghost_msg {
