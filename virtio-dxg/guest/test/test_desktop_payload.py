@@ -405,6 +405,10 @@ class DesktopData(unittest.TestCase):
         self.assertIn('cls=other; prio=0; target=-20', qs_section)
         self.assertNotIn('cls=rr', qs_section)
         self.assertIn('Xwayland)', text)
+        self.assertIn('deprioritize_task()', text)
+        self.assertIn('deprioritize_bg_workers()', text)
+        self.assertIn("*d3d12pso*|*dznpso*|*disk'$'*|*llvmpipe*)", text)
+        self.assertIn('chrt -i -p 0 "$tid"', text)
         self.assertRegex(text, r'2>/dev/null < "\$pdir/comm"')
         self.assertNotRegex(text, r'< "\$[^"]+" 2>/dev/null')
 
@@ -427,12 +431,20 @@ class DesktopData(unittest.TestCase):
                        str(src), '-o', str(out_path), *libs]
                 subprocess.run(cmd, check=True, timeout=15)
 
-    def test_browser_boost_stage_timeout_and_client_poll(self):
+    def test_browser_boost_generic_no_hidden_pwa_windows(self):
         text = (HERE / 'initcpio/browser-boost').read_text(encoding='utf-8')
+        helpers = (HERE / 'initcpio/vdxg_boost_helpers.c').read_text(encoding='utf-8')
+        for forbidden in ('special:vdxg_pwa', 'pwa-ready.tsv', 'reveal_prewarmed_pwa', 'stage_one'):
+            self.assertNotIn(forbidden, text)
+            self.assertNotIn(forbidden, helpers)
         self.assertIn('vdxg-pso/.ready', text)
-        self.assertIn('deadline = time.monotonic() + 25.0', text)
-        self.assertIn('existing_addrs = ', text)
-        self.assertIn('next_poll = 0.0', text)
+        self.assertIn('--ignore-gpu-blocklist', text)
+        self.assertIn('MultipleSpareRPHs:count/4', text)
+        self.assertIn('ProcessPerSiteUpToMainFrameThreshold:ProcessPerSiteMainFrameThreshold/12', text)
+        self.assertIn('chromium-flags.conf', text)
+        self.assertIn('--no-startup-window', text)
+        self.assertIn('resolve_hosts', text)
+        self.assertIn('fast_chromium', helpers)
 
 
 if __name__ == '__main__':

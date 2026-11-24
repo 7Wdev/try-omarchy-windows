@@ -347,60 +347,93 @@ is reduced at every layer of the VM stack:
   `/usr/local/bin`, `/usr/share/omarchy/bin` (with original fallbacks staged in
   `/run/virtio-dxg/omarchy-orig`), and `/usr/share/applications`.
   `app-prefetch` performs a two-tier `dlopen()`-aware `posix_fadvise` warm-up
-  that also warms Chromium `Code Cache`/`Service Worker`/`GPUCache`, Electron
-  `CachedData` directories across `~/.config/*`, and Wine/NVIDIA libraries.
+  that also warms Chromium `/usr/lib/chromium` (`chromium`, `.pak`, `.dat`,
+  `.bin`, `.so*`, `locales/en-US.pak`) and profile `Code Cache`/`Network`/
+  `Local Storage`/`Service Worker`/`GPUCache`, Electron `CachedData` directories
+  across `~/.config/*`, and Wine/NVIDIA libraries, while
+  `virtio-dxg-slirp-ipv6.service` loads `sch_fq` + `tcp_bbr`, sets
+  `tcp_slow_start_after_idle=0`, `tcp_fastopen=3`, `tcp_mtu_probing=1`, and
+  `16 MiB` socket buffers alongside `systemd-resolved` and SLIRP IPv6 disable.
   (`desktop-boost` with asynchronous background warmers, permanent
   `vdxg_warm_code_title` placement plus 45 s/`0.25 s`-polled `special:vdxg_warm`
   staging for VS Code, supervised `nautilus --gapplication-service` with
   `libvdxg-gapp-hold.so`, Alacritty/Ghostty/Foot daemons, and `flock`-serialized
   `libvdxg-wl-gate.so` workers; `browser-boost` waiting on `vdxg-pso/.ready`,
-  using `--disable-quic`, `SpareRendererForSitePerProcess`, `V8VmFuture` /
-  `--js-flags=--maglev`, GPU raster/zero-copy, `120s` IPv4 DNS refresh, and
-  25 s/`0.25 s`-polled silent `special:vdxg_pwa` background pre-rendering with
-  6 s close cooldowns; `vdxg_boost_helpers.c` / `app-fastlaunch` `exec`ing
-  `vdxg-fastlaunch` directly with `footclient -N` for detached launches and
-  `exec_original()` on fallback so closing a fast-launched window never
-  re-spawns a second instance; and `omarchy_ui_boost.py` mounting non-destructive
-  tmpfs read-only overlays for `AppLibrary.qml` (`iconIndexReady`), `Menu.qml`
-  (`deferredGuardTimer` moving guard evaluation off `openExistingMenu()`),
-  `OverlayWindow.qml` (`contentRevealed = contentReady` and skipping redundant
+  merging `/etc/chromium-flags.conf` and `~/.config/chromium-flags.conf` into a
+  single deduplicated `--enable-features=` list
+  (`TouchpadOverscrollHistoryNavigation,SpareRendererForSitePerProcess,MultipleSpareRPHs:count/4,ProcessPerSiteUpToMainFrameThreshold:ProcessPerSiteMainFrameThreshold/12,ParallelDownloading,BackForwardCache,V8VmFuture,UseDnsHttpsSvcb`),
+  adding `--ignore-gpu-blocklist`, `--enable-gpu-rasterization`,
+  `--enable-zero-copy`, `--num-raster-threads=4`, `--disable-quic`,
+  `512 MiB` `--disk-cache-size`, and `--js-flags=--maglev`, running
+  `/usr/lib/chromium/chromium --no-startup-window --keep-alive-for-test` with
+  its Zygote sandbox intact and refreshing IPv4 DNS via `45 s` `.desktop`-mtime
+  scans for all installed PWAs with zero hidden `special:vdxg_pwa` windows;
+  `vdxg_boost_helpers.c` / `app-fastlaunch` `exec`ing `vdxg-fastlaunch`
+  directly with `footclient -N` for detached launches and `exec_original()` on
+  fallback so closing a fast-launched window never re-spawns a second instance;
+  and `omarchy_ui_boost.py` mounting non-destructive tmpfs read-only overlays for
+  `AppLibrary.qml` (`iconIndexReady`), `Menu.qml` (`deferredGuardTimer` moving
+  guard evaluation off `openExistingMenu()`), `OverlayWindow.qml`
+  (`contentRevealed = contentReady` and skipping redundant
   `Hyprland.refreshMonitors()`), and an atomic 4-file `ipc dock.apps`
   `GlobalShortcut`). `desktop-priority` uses zero-fork `/proc` reads, pins
   `virtio*control*` to CPU `1` and `virtio*event*` to CPU `2`
   (`smp_affinity_list`), runs `Hyprland` at `SCHED_RR` priority `2` (`-R`, nice
-  `-20`) and `Xwayland` at `SCHED_RR` priority `1` (`-R`, nice `-15`), elevates
-  `quickshell` (`SCHED_OTHER` nice `-20`/`-15` after checking
-  `RLIMIT_RTTIME` is `unlimited`), raises per-CPU `kworker/[0-9]*:[0-9]*`
-  workers to `-20`, and keeps `virtio_dxg` defaults (`QML_DISK_CACHE=aot,bytecode`,
-  `madvise` THP, `swappiness=10`, `dirty_background_ratio=5`, `dirty_ratio=15`).
+  `-20`) and `Xwayland` at `SCHED_RR` priority `1` (`-R`, nice `-15`) while
+  demoting background Mesa worker threads (`*d3d12pso*`, `*dznpso*`,
+  `*disk$*`, `*llvmpipe*`, including inside `Hyprland`, `Xwayland`, and
+  `quickshell`) to `SCHED_IDLE` (`nice 19`), elevates `quickshell`
+  (`SCHED_OTHER` nice `-20`/`-15` after checking `RLIMIT_RTTIME` is
+  `unlimited`), raises per-CPU `kworker/[0-9]*:[0-9]*` workers to `-20`, and
+  keeps `virtio_dxg` defaults (`QML_DISK_CACHE=aot,bytecode`, `madvise` THP,
+  `swappiness=10`, `dirty_background_ratio=5`, `dirty_ratio=15`).
   On clean boot (`snapshot=on`), `applaunch.py 3 --include-webapps` measured
-  **`1.9–121.0 ms`** warm median across all 14 targets (`vkcube` `2.3 ms`,
-  `blender` `2.5 ms`, `omacalc` `2.8 ms`, `gnome-calculator` `3.5 ms`, `foot`
-  `13.2 ms`, `discord-pwa` `51.0 ms`, `alacritty` `61.4 ms`, `chromium`
-  `62.6 ms`, `chromium-pwa` `66.9 ms`, `ghostty` `74.8 ms`, `code` `76.6 ms`,
-  `nautilus` `85.9 ms`, `youtube-pwa` `95.3 ms` warm / `2.2 ms` first reveal,
-  `wine-vulkan` `121.0 ms`), `7/7` Gate 2 apps (`foot`, `uwsm-app -- foot`,
-  `nautilus`, `uwsm-app -- omacalc`, `chromium`, `youtube`, `discord`) closed on
-  the first attempt with `0` reopens and `0` stray boot windows, `SUPER+SPACE`
-  menu opened in **`122.2 ms`** median (`105.3 ms` min, `2.1 ms` close) and
-  `SUPER+ALT+SPACE` app grid opened in **`166.5 ms`** (`1.1 ms` close), and
-  native `wl_surface.frame` pacing at `1920x1080@240Hz` held `230.2 fps` idle,
-  `228.2 fps` (`96.7% <= 4.6 ms`, `p95 4.39 ms`) under 12-thread CPU
-  saturation, `236.7 fps` under GPU load, `234.3 fps` during repeated menu
-  open/close animations, and `234.2 fps` (`91.1% <= 4.6 ms`) launching heavy
-  apps under 12-thread CPU load; `virtio_dxg.boost=0` disables all boost paths.
+  **`2–110 ms`** warm median across all 14 targets (`vkcube` `2 ms`, `blender`
+  `3 ms`, `omacalc` `3 ms`, `gnome-calculator` `3 ms`, `foot` `15 ms`,
+  `discord-pwa` `38 ms` first & warm median, `alacritty` `48 ms`, `ghostty`
+  `68 ms`, `chromium` `71 ms`, `code` `74 ms`, `chromium-pwa` `75 ms`,
+  `nautilus` `81 ms`, `youtube-pwa` `95 ms` warm / `99 ms` first,
+  `wine-vulkan` `110 ms`), concurrent multi-instance and generic PWAs (`3/3`
+  YouTube PWAs, `3/3` Discord PWAs, Basecamp `284 ms` map / `621 ms` title,
+  Contacts `221 ms` map / `852 ms` title, X `190 ms` map / `559 ms` title)
+  mapped and hydrated as independent windows with `0` post-close reopens,
+  DevTools `webapp.py` warm YouTube loads measured `946–1071 ms` (`FCP`
+  `1017–1142 ms`), `SUPER+SPACE` menu opened in **`122.2 ms`** median
+  (`105.3 ms` min, `2.1 ms` close) and `SUPER+ALT+SPACE` app grid opened in
+  **`166.5 ms`** (`1.1 ms` close), and native `wp_presentation_feedback` at
+  `1920x1080@240Hz` held **`237.0 fps`** idle (**`99.7% <= 4.6 ms`**) and
+  **`231.2 fps`** (**`med 4.17 ms`**, `p95 4.17 ms`, `p99 8.33 ms`,
+  **`97.9% <= 4.6 ms`**, **`99.4% <= 8.5 ms`**) during a `100 ms`-spaced
+  17-window burst (`4x foot`, `3x omacalc`, `2x nautilus`, `2x youtube-pwa`,
+  `2x discord-pwa`, `ghostty`, `code`, `gnome-calculator`, `blender`) while
+  host QEMU `dpy_gl_update` (`present`) worst-case latency stayed at
+  **`4.51 ms`** (`0.047 ms` average; `0.32–0.83 ms` worst during normal app
+  launches); `virtio_dxg.boost=0` disables all boost paths.
 - **Host/guest `/dev/dxg` & 240 Hz scanout fast paths:** `dxgvirtio.c` keeps a
   NAPI-style `ctrl_waiters` interrupt-suppression loop with inline
   `dxgvirtio_ctrl_reap()` and a 64-entry `req_pool` (cutting `virtio11-ctrl`
   interrupts across the 55 s stress suite by `98.8%` vs Wave 5, down to `3,527`
   IRQs), `dxgvmbus.c` raises `VMBUSMESSAGEONSTACK` to `384` bytes with
   `kvzalloc`/`kvfree`, and `ioctl.c` indexes `dxgwinbuf` imports via a
-  256-bucket `dxgwinbuf_ht` hash table. `virtio-dxg.c` requests `0.5 ms` timer
-  resolution (`NtSetTimerResolution`), skips redundant `dpy_gl_ctx_make_current()`,
-  and `ui/sdl2-gl.c` skips redundant `SDL_GL_MakeCurrent` and sets swap
-  interval once per GL context. `dxghost` uses a persistent `SRWLOCK`-guarded
-  log file (eliminating periodic `101 ms` log stalls), shared `RLOCK`/`RUNLOCK`
-  for read-only validators, 1024-slot `proc_hash` + `va_maps` refcounts for
+  256-bucket `dxgwinbuf_ht` hash table. `virtio-dxg.c` expands to `32` DXG
+  lanes (`DXG_LANES=32`), isolating the scanout compositor process onto
+  `lanes[0]` (`THREAD_PRIORITY_HIGHEST`) while worker lanes `lanes[1..31]` run
+  on unthrottled P-cores (`ThreadPowerThrottling` disabled) at
+  `THREAD_PRIORITY_NORMAL`, bounds control-queue processing per kick via
+  `DXG_CTRL_BUDGET=24` and continuation `ctrl_bh`, requests `0.5 ms` timer
+  resolution (`NtSetTimerResolution`), skips redundant
+  `dpy_gl_ctx_make_current()`, brackets `dpy_gl_update` with
+  `dxghost_begin_present`/`dxghost_end_present`, and disables scanout cleanly
+  before `dxg_scanout_collect()`. `prepare.py` adds an 8-entry per-texture FBO
+  cache (`dxg_fb_cache`) in `ui/sdl2-gl.c` alongside single-setup swap interval
+  and `ui/egl-helpers.c` skips for redundant `egl_fb_setup_for_tex` rebinds and
+  full-viewport `glClear` inside `egl_fb_blit`. `dxghost` uses a persistent
+  `SRWLOCK`-guarded log file (`existing_sysmem` logs guarded behind `h->trace`),
+  coalesces adjacent deferred `WHvUnmapGpaRange` spans in `dxghost_unlock()`,
+  gates non-inline heavy KMT/mapping calls via `dxghost_heavy_enter`/`leave`
+  (`heavy_max = 2` via `DXGHOST_HEAVY_MAX`, scanout-compositor immune, yielding
+  up to `8 ms` while `present_active > 0`), uses shared `RLOCK`/`RUNLOCK` for
+  read-only validators, `1024`-slot `proc_hash` + `va_maps` refcounts for
   `O(1)` `forget`, exact-size reply zeroing, and lock-free/pooled CPU wait
   objects with an inline `WAIT_OBJECT_0` fast path alongside `qai_cache`
   (128 slots — opt out with `DXGHOST_NO_QAI_CACHE=1`) and `dxghost_try_inline`.

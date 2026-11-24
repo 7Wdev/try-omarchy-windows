@@ -138,6 +138,13 @@ int dxghost_create(const struct dxghost_config *config,
 	InitializeSRWLock(&h->wait_lock);
 	InitializeSRWLock(&h->qai_lock);
 	InitializeSRWLock(&h->log_lock);
+	InitializeSRWLock(&h->heavy_lock);
+	InitializeConditionVariable(&h->heavy_cv);
+	{
+		const char *hm = getenv("DXGHOST_HEAVY_MAX");
+
+		h->heavy_max = hm ? (uint32_t)strtoul(hm, NULL, 10) : 2;
+	}
 	h->next_proc = 1;
 	if (config->kmt)
 		h->kmt = *config->kmt;
@@ -222,6 +229,96 @@ void dxghost_close_nt(void *nt_handle)
 		CloseHandle(nt_handle);
 }
 
+uint32_t dxghost_resource_process(struct dxghost *h, uint32_t resource)
+{
+	struct dxghost_obj *o;
+	uint32_t process = 0;
+
+	if (!h || !resource)
+		return 0;
+	AcquireSRWLockShared(&h->lock);
+	o = dxghost_obj_find(h, resource);
+	if (o && o->type == OBJ_RESOURCE)
+		process = o->process;
+	ReleaseSRWLockShared(&h->lock);
+	return process;
+}
+
+void dxghost_set_scanout_process(struct dxghost *h, uint32_t process)
+{
+	if (!h)
+		return;
+	InterlockedExchange(&h->scanout_proc, (LONG)process);
+	AcquireSRWLockExclusive(&h->heavy_lock);
+	WakeAllConditionVariable(&h->heavy_cv);
+	ReleaseSRWLockExclusive(&h->heavy_lock);
+}
+
+void dxghost_begin_present(struct dxghost *h)
+{
+	if (h)
+		InterlockedIncrement(&h->present_active);
+}
+
+void dxghost_end_present(struct dxghost *h)
+{
+	if (!h)
+		return;
+	if (InterlockedDecrement(&h->present_active) == 0) {
+		AcquireSRWLockExclusive(&h->heavy_lock);
+		WakeAllConditionVariable(&h->heavy_cv);
+		ReleaseSRWLockExclusive(&h->heavy_lock);
+	}
+}
+
+bool dxghost_heavy_enter(struct dxghost *h, uint32_t process)
+{
+	uint32_t comp;
+
+	if (!h || !h->heavy_max ||
+	    InterlockedCompareExchange(&h->closing, 0, 0))
+		return false;
+	comp = (uint32_t)InterlockedCompareExchange(&h->scanout_proc, 0, 0);
+	if (process && process == comp)
+		return false;
+
+	AcquireSRWLockExclusive(&h->heavy_lock);
+	for (;;) {
+		if (InterlockedCompareExchange(&h->closing, 0, 0)) {
+			ReleaseSRWLockExclusive(&h->heavy_lock);
+			return false;
+		}
+		comp = (uint32_t)InterlockedCompareExchange(&h->scanout_proc,
+							    0, 0);
+		if (process && process == comp) {
+			ReleaseSRWLockExclusive(&h->heavy_lock);
+			return false;
+		}
+		if (h->heavy_active < h->heavy_max &&
+		    InterlockedCompareExchange(&h->present_active, 0, 0) <= 0)
+			break;
+		if (!SleepConditionVariableSRW(&h->heavy_cv, &h->heavy_lock, 8,
+					       0) &&
+		    GetLastError() == ERROR_TIMEOUT &&
+		    h->heavy_active < h->heavy_max)
+			break;
+	}
+	h->heavy_active++;
+	ReleaseSRWLockExclusive(&h->heavy_lock);
+	return true;
+}
+
+void dxghost_heavy_leave(struct dxghost *h, bool entered)
+{
+	if (!h || !entered)
+		return;
+	AcquireSRWLockExclusive(&h->heavy_lock);
+	if (h->heavy_active)
+		h->heavy_active--;
+	WakeAllConditionVariable(&h->heavy_cv);
+	ReleaseSRWLockExclusive(&h->heavy_lock);
+}
+
 void dxghost_reset(struct dxghost *h)
 {
 	uint32_t i;
@@ -254,6 +351,7 @@ void dxghost_reset(struct dxghost *h)
 	}
 	dxghost_objtab_free(&h->objects);
 	dxghost_io_reset(h, 0, 0);
+	InterlockedExchange(&h->scanout_proc, 0);
 	dxghost_unlock(h);
 	dxghost_qai_cache_clear(h);
 }
@@ -263,6 +361,9 @@ void dxghost_destroy(struct dxghost *h)
 	if (!h)
 		return;
 	InterlockedExchange(&h->closing, 1);
+	AcquireSRWLockExclusive(&h->heavy_lock);
+	WakeAllConditionVariable(&h->heavy_cv);
+	ReleaseSRWLockExclusive(&h->heavy_lock);
 	dxghost_waits_close(h);
 	dxghost_reset(h);
 	AcquireSRWLockExclusive(&h->log_lock);

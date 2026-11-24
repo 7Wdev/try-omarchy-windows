@@ -1133,24 +1133,28 @@ static void cmd_create_device(struct dxghost_msg *m)
 	struct dxgkvmb_command_createdevice_return *r = reply(m, sizeof(*r));
 	struct d3dkmt_createdevice d = {0};
 	struct dxghost *h = m->h;
+	bool heavy;
 
 	if (!r || !m->process || !h->adapter)
 		return;
+	heavy = !m->inline_call && dxghost_heavy_enter(h, m->process);
 	d.adapter.v = h->adapter;
 	d.flags = c->flags;
-	if (h->kmt.CreateDevice(&d) < 0)
-		return;	/* device 0 reports the failure */
-	LOCK(h);
-	if (dxghost_obj_add(h, d.device.v, OBJ_DEVICE, m->process, 0)) {
-		struct d3dkmt_destroydevice destroy = {0};
+	if (h->kmt.CreateDevice(&d) >= 0) {
+		LOCK(h);
+		if (dxghost_obj_add(h, d.device.v, OBJ_DEVICE, m->process, 0) ==
+		    0) {
+			UNLOCK(h);
+			r->device = d.device;
+		} else {
+			struct d3dkmt_destroydevice destroy = {0};
 
-		UNLOCK(h);
-		destroy.device = d.device;
-		h->kmt.DestroyDevice(&destroy);
-		return;
+			UNLOCK(h);
+			destroy.device = d.device;
+			h->kmt.DestroyDevice(&destroy);
+		}
 	}
-	UNLOCK(h);
-	r->device = d.device;
+	dxghost_heavy_leave(h, heavy);
 }
 
 static void cmd_destroy_device(struct dxghost_msg *m)
@@ -1179,6 +1183,7 @@ static void cmd_create_context(struct dxghost_msg *m)
 	struct dxgkvmb_command_createcontextvirtual *r;
 	struct d3dkmt_createcontextvirtual a = {0};
 	struct dxghost *h = m->h;
+	bool heavy;
 
 	if (!tail(m, 0, total)) {
 		dxghost_logf(h, "CreateContextVirtual: message of %u bytes, "
@@ -1217,6 +1222,7 @@ static void cmd_create_context(struct dxghost_msg *m)
 			     (unsigned)c->client_hint, size);
 		trace_hex(h, "ctx", r->priv_drv_data, size);
 	}
+	heavy = !m->inline_call && dxghost_heavy_enter(h, m->process);
 	{
 		int32_t status = h->kmt.CreateContextVirtual(&a);
 
@@ -1226,6 +1232,7 @@ static void cmd_create_context(struct dxghost_msg *m)
 				     c->node_ordinal, c->engine_affinity,
 				     *(const uint32_t *)&c->flags, size,
 				     (unsigned)status);
+			dxghost_heavy_leave(h, heavy);
 			return;
 		}
 	}
@@ -1248,6 +1255,7 @@ static void cmd_create_context(struct dxghost_msg *m)
 		d.context = a.context;
 		h->kmt.DestroyContext(&d);
 	}
+	dxghost_heavy_leave(h, heavy);
 }
 
 static void cmd_destroy_context(struct dxghost_msg *m)
@@ -1274,12 +1282,16 @@ static void cmd_create_paging_queue(struct dxghost_msg *m)
 	struct dxghost *h = m->h;
 	struct dxghost_obj *o;
 	uint64_t gpa;
+	bool heavy;
 
 	if (!r || !owns(h, a.device.v, OBJ_DEVICE, m->process))
 		return;
+	heavy = !m->inline_call && dxghost_heavy_enter(h, m->process);
 	a.fence_cpu_virtual_address = 0;
-	if (h->kmt.CreatePagingQueue(&a) < 0)
+	if (h->kmt.CreatePagingQueue(&a) < 0) {
+		dxghost_heavy_leave(h, heavy);
 		return;
+	}
 	gpa = dxghost_fence_map(h, (void *)(uintptr_t)a.fence_cpu_virtual_address);
 	LOCK(h);
 	if (gpa && !dxghost_obj_add(h, a.paging_queue.v, OBJ_PAGING_QUEUE,
@@ -1302,6 +1314,7 @@ static void cmd_create_paging_queue(struct dxghost_msg *m)
 
 		h->kmt.DestroyPagingQueue(&d);
 	}
+	dxghost_heavy_leave(h, heavy);
 }
 
 static void cmd_destroy_paging_queue(struct dxghost_msg *m)
@@ -1431,8 +1444,10 @@ static int32_t create_nv_plain_sysmem(struct dxghost *h,
 	n.flags.existing_sysmem = 0;
 	a2[0].sysmem = (u64)(uintptr_t)regions[0];
 	status = h->kmt.CreateAllocation2(&n);
-	dxghost_logf(h, "existing sysmem as plain system memory of %llu "
-		     "bytes: 0x%08x", (unsigned long long)size, (unsigned)status);
+	if (h->trace)
+		dxghost_logf(h, "existing sysmem as plain system memory of %llu "
+			     "bytes: 0x%08x", (unsigned long long)size,
+			     (unsigned)status);
 	if (status < 0) {
 		VirtualFree(regions[0], 0, MEM_RELEASE);
 		regions[0] = NULL;
@@ -1498,8 +1513,9 @@ static int32_t create_nv_native_sysmem(struct dxghost *h,
 	n.priv_drv_data_size = 0;
 	a2[0].sysmem = (u64)(uintptr_t)regions[0];
 	status = h->kmt.CreateAllocation2(&n);
-	dxghost_logf(h, "existing sysmem as a native heap of %llu bytes: "
-		     "0x%08x", (unsigned long long)size, (unsigned)status);
+	if (h->trace)
+		dxghost_logf(h, "existing sysmem as a native heap of %llu bytes: "
+			     "0x%08x", (unsigned long long)size, (unsigned)status);
 	if (status < 0) {
 		VirtualFree(regions[0], 0, MEM_RELEASE);
 		regions[0] = NULL;
@@ -1565,8 +1581,9 @@ static int32_t create_with_sysmem(struct dxghost *h,
 		sizes[i] = 0;
 	}
 	status = h->kmt.CreateAllocation2(a);
-	dxghost_logf(h, "existing sysmem as driver-allocated memory: 0x%08x",
-		     (unsigned)status);
+	if (h->trace)
+		dxghost_logf(h, "existing sysmem as driver-allocated memory: 0x%08x",
+			     (unsigned)status);
 	if (status >= 0)
 		return status;
 	a->flags.existing_sysmem = 1;
@@ -1591,18 +1608,23 @@ static int32_t create_with_sysmem(struct dxghost *h,
 					VirtualFree((u8 *)regions[i] + sizes[i],
 						    tries[t] - sizes[i],
 						    MEM_DECOMMIT);
-				dxghost_logf(h, "existing sysmem allocation: "
-					     "%llu bytes (region %llu)",
-					     (unsigned long long)sizes[i],
-					     (unsigned long long)tries[t]);
+				if (h->trace)
+					dxghost_logf(h, "existing sysmem allocation: "
+						     "%llu bytes (region %llu)",
+						     (unsigned long long)sizes[i],
+						     (unsigned long long)tries[t]);
 			}
 			return status;
 		}
 		while (i--)
 			VirtualFree(regions[i], 0, MEM_RELEASE);
-		dxghost_logf(h, "existing sysmem with %llu-byte regions: 0x%08x",
-			     (unsigned long long)tries[t], (unsigned)status);
+		if (h->trace)
+			dxghost_logf(h, "existing sysmem with %llu-byte regions: 0x%08x",
+				     (unsigned long long)tries[t], (unsigned)status);
 	}
+	if (status < 0)
+		dxghost_logf(h, "existing sysmem allocation failed: 0x%08x",
+			     (unsigned)status);
 	return status;
 }
 
@@ -1622,6 +1644,7 @@ static void cmd_create_allocation(struct dxghost_msg *m)
 
 	void *regions[D3DKMT_CREATEALLOCATION_MAX];
 	uint64_t sizes[D3DKMT_CREATEALLOCATION_MAX];
+	bool heavy;
 
 	if (!count || count > D3DKMT_CREATEALLOCATION_MAX ||
 	    c->flags.standard_allocation || c->flags.existing_section) {
@@ -1700,10 +1723,12 @@ static void cmd_create_allocation(struct dxghost_msg *m)
 		a.flags.nt_security_sharing = 1;
 	a.private_runtime_resource_handle = c->private_runtime_resource_handle;
 
+	heavy = !m->inline_call && dxghost_heavy_enter(h, m->process);
 	m->ntstatus = c->flags.existing_sysmem ?
 		create_with_sysmem(h, &a, a2, count, regions, sizes) :
 		h->kmt.CreateAllocation2(&a);
 	if (m->ntstatus < 0) {
+		dxghost_heavy_leave(h, heavy);
 		free(a2);
 		fail_ntstatus(m, m->ntstatus);
 		return;
@@ -1736,6 +1761,7 @@ static void cmd_create_allocation(struct dxghost_msg *m)
 		 */
 	}
 	UNLOCK(h);
+	dxghost_heavy_leave(h, heavy);
 	r->flags = c->flags;
 	r->resource = a.resource;
 	r->global_share = a.global_share;
@@ -1752,6 +1778,7 @@ static void cmd_destroy_allocation(struct dxghost_msg *m)
 	struct d3dkmt_destroyallocation2 d = {0};
 	struct dxghost *h = m->h;
 	uint32_t i;
+	bool heavy;
 
 	if (c->alloc_count &&
 	    !tail(m, offsetof(struct dxgkvmb_command_destroyallocation,
@@ -1764,6 +1791,7 @@ static void cmd_destroy_allocation(struct dxghost_msg *m)
 		reply_ntstatus(m, DXG_STATUS_INVALID_HANDLE);
 		return;
 	}
+	heavy = !m->inline_call && dxghost_heavy_enter(h, m->process);
 	LOCK(h);
 	for (i = 0; i < c->alloc_count; i++)
 		forget(h, list[i].v);
@@ -1777,6 +1805,7 @@ static void cmd_destroy_allocation(struct dxghost_msg *m)
 	d.flags = c->flags;
 	reply_ntstatus(m, h->kmt.DestroyAllocation2(&d));
 	dxghost_sysmem_release(h);
+	dxghost_heavy_leave(h, heavy);
 }
 
 /*
@@ -1803,6 +1832,70 @@ static void lock2_reply(struct dxgkvmb_command_lock2_return_virtio *r,
 	r->flags = cached ? DXGK_VIRTIO_LOCK2_CACHED : 0;
 }
 
+static bool lock2_map_slow(struct dxghost_msg *m,
+			   struct dxgkvmb_command_lock2_return_virtio *r,
+			   const struct d3dkmt_lock2 *a)
+{
+	struct dxghost *h = m->h;
+	struct dxghost_obj *o;
+	MEMORY_BASIC_INFORMATION mbi;
+	uint64_t gpa = 0, size;
+	bool cached;
+
+	if (!VirtualQuery((void *)(uintptr_t)a->data, &mbi, sizeof(mbi)) ||
+	    mbi.State != MEM_COMMIT)
+		return false;
+	size = (uint64_t)((uintptr_t)mbi.BaseAddress + mbi.RegionSize -
+			  (uintptr_t)a->data);
+	size = (size + PAGE_4K - 1) & ~(PAGE_4K - 1);
+	cached = !(mbi.Protect & (PAGE_WRITECOMBINE | PAGE_NOCACHE));
+
+	AcquireSRWLockExclusive(&h->map_lock);
+	LOCK(h);
+	o = dxghost_obj_find(h, a->allocation.v);
+	if (o && o->gpa && o->hva == (void *)(uintptr_t)a->data) {
+		/* Another thread mapped it meanwhile. */
+		o->guest_locks++;
+		lock2_reply(r, o->gpa, o->size, o->cached);
+		UNLOCK(h);
+		ReleaseSRWLockExclusive(&h->map_lock);
+		return true;
+	}
+	gpa = o && !o->gpa ? dxghost_io_alloc(h, size) : 0;
+	UNLOCK(h);
+	/* Lock2 has no read-only flag: guest views are always writable. */
+	if (gpa && h->vmm.map(h->vmm.opaque, gpa, (void *)(uintptr_t)a->data,
+			      size, true)) {
+		LOCK(h);
+		dxghost_io_free(h, gpa, size);
+		UNLOCK(h);
+		gpa = 0;
+	}
+	if (gpa) {
+		LOCK(h);
+		o = dxghost_obj_find(h, a->allocation.v);
+		if (o && !o->gpa) {
+			o->hva = (void *)(uintptr_t)a->data;
+			o->gpa = gpa;
+			o->size = size;
+			o->cached = cached;
+			o->guest_locks = 1;
+		} else {
+			dxghost_defer_unmap(h, gpa, size);	/* destroyed meanwhile */
+			gpa = 0;
+		}
+		UNLOCK(h);
+	}
+	ReleaseSRWLockExclusive(&h->map_lock);
+	if (!gpa) {
+		dxghost_logf(h, "Lock2: no view for %llu bytes",
+			     (unsigned long long)size);
+		return false;
+	}
+	lock2_reply(r, gpa, size, cached);
+	return true;
+}
+
 static void cmd_lock2(struct dxghost_msg *m)
 {
 	COMMAND(dxgkvmb_command_lock2);
@@ -1811,9 +1904,7 @@ static void cmd_lock2(struct dxghost_msg *m)
 	struct d3dkmt_unlock2 u = {a.device, a.allocation};
 	struct dxghost *h = m->h;
 	struct dxghost_obj *o;
-	MEMORY_BASIC_INFORMATION mbi;
-	uint64_t gpa = 0, size;
-	bool cached;
+	bool heavy, ok;
 
 	r = reply(m, m->res_cap >= sizeof(*r) ? sizeof(*r) : sizeof(r->base));
 	if (!r)
@@ -1840,7 +1931,10 @@ static void cmd_lock2(struct dxghost_msg *m)
 	if (o && o->gpa) {
 		dxghost_logf(h, "Lock2: view of 0x%x moved while locked",
 			     a.allocation.v);
-		goto fail_locked;
+		UNLOCK(h);
+		h->kmt.Unlock2(&u);
+		r->base.status.v = DXG_STATUS_NO_MEMORY;
+		return;
 	}
 	UNLOCK(h);
 	if (m->inline_call) {
@@ -1851,64 +1945,13 @@ static void cmd_lock2(struct dxghost_msg *m)
 		return;
 	}
 
-	if (!VirtualQuery((void *)(uintptr_t)a.data, &mbi, sizeof(mbi)) ||
-	    mbi.State != MEM_COMMIT)
-		goto fail;
-	size = (uint64_t)((uintptr_t)mbi.BaseAddress + mbi.RegionSize -
-			  (uintptr_t)a.data);
-	size = (size + PAGE_4K - 1) & ~(PAGE_4K - 1);
-	cached = !(mbi.Protect & (PAGE_WRITECOMBINE | PAGE_NOCACHE));
-
-	AcquireSRWLockExclusive(&h->map_lock);
-	LOCK(h);
-	o = dxghost_obj_find(h, a.allocation.v);
-	if (o && o->gpa && o->hva == (void *)(uintptr_t)a.data) {
-		/* Another thread mapped it meanwhile. */
-		o->guest_locks++;
-		lock2_reply(r, o->gpa, o->size, o->cached);
-		UNLOCK(h);
-		ReleaseSRWLockExclusive(&h->map_lock);
-		return;
+	heavy = dxghost_heavy_enter(h, m->process);
+	ok = lock2_map_slow(m, r, &a);
+	dxghost_heavy_leave(h, heavy);
+	if (!ok) {
+		h->kmt.Unlock2(&u);
+		r->base.status.v = DXG_STATUS_NO_MEMORY;
 	}
-	gpa = o && !o->gpa ? dxghost_io_alloc(h, size) : 0;
-	UNLOCK(h);
-	/* Lock2 has no read-only flag: guest views are always writable. */
-	if (gpa && h->vmm.map(h->vmm.opaque, gpa, (void *)(uintptr_t)a.data,
-			      size, true)) {
-		LOCK(h);
-		dxghost_io_free(h, gpa, size);
-		UNLOCK(h);
-		gpa = 0;
-	}
-	if (gpa) {
-		LOCK(h);
-		o = dxghost_obj_find(h, a.allocation.v);
-		if (o && !o->gpa) {
-			o->hva = (void *)(uintptr_t)a.data;
-			o->gpa = gpa;
-			o->size = size;
-			o->cached = cached;
-			o->guest_locks = 1;
-		} else {
-			dxghost_defer_unmap(h, gpa, size);	/* destroyed meanwhile */
-			gpa = 0;
-		}
-		UNLOCK(h);
-	}
-	ReleaseSRWLockExclusive(&h->map_lock);
-	if (!gpa) {
-		dxghost_logf(h, "Lock2: no view for %llu bytes",
-			     (unsigned long long)size);
-		goto fail;
-	}
-	lock2_reply(r, gpa, size, cached);
-	return;
-
-fail_locked:
-	UNLOCK(h);
-fail:
-	h->kmt.Unlock2(&u);
-	r->base.status.v = DXG_STATUS_NO_MEMORY;
 }
 
 /* Drops the cached driver lock and view of an allocation. Lock held. */
@@ -2267,6 +2310,7 @@ static void cmd_create_hwqueue(struct dxghost_msg *m)
 	struct d3dkmt_createhwqueue a = {0};
 	struct dxghost *h = m->h;
 	uint64_t gpa = 0;
+	bool heavy;
 
 	if (!tail(m, 0, total))
 		return;
@@ -2281,6 +2325,7 @@ static void cmd_create_hwqueue(struct dxghost_msg *m)
 		r->status.v = DXG_STATUS_INVALID_HANDLE;
 		return;
 	}
+	heavy = !m->inline_call && dxghost_heavy_enter(h, m->process);
 	a.context = c->context;
 	a.flags = c->flags;
 	a.priv_drv_data_size = size;
@@ -2293,6 +2338,7 @@ static void cmd_create_hwqueue(struct dxghost_msg *m)
 	r->status.v = h->kmt.CreateHwQueue(&a);
 	if (r->status.v < 0) {
 		dxghost_logf(h, "CreateHwQueue: 0x%08x", (unsigned)r->status.v);
+		dxghost_heavy_leave(h, heavy);
 		return;
 	}
 	gpa = dxghost_fence_map(h, (void *)(uintptr_t)a.queue_progress_fence_cpu_va);
@@ -2313,12 +2359,14 @@ static void cmd_create_hwqueue(struct dxghost_msg *m)
 
 		h->kmt.DestroyHwQueue(&d);
 		r->status.v = DXG_STATUS_NO_MEMORY;
+		dxghost_heavy_leave(h, heavy);
 		return;
 	}
 	r->hwqueue = a.queue;
 	r->hwqueue_progress_fence = a.queue_progress_fence;
 	r->hwqueue_progress_fence_cpuva = (void *)(uintptr_t)gpa;
 	r->hwqueue_progress_fence_gpuva = a.queue_progress_fence_gpu_va;
+	dxghost_heavy_leave(h, heavy);
 }
 
 static void cmd_destroy_hwqueue(struct dxghost_msg *m)
@@ -2326,13 +2374,16 @@ static void cmd_destroy_hwqueue(struct dxghost_msg *m)
 	COMMAND(dxgkvmb_command_destroyhwqueue);
 	struct d3dkmt_destroyhwqueue d = {c->hwqueue};
 	struct dxghost *h = m->h;
+	bool heavy;
 
 	if (!owns(h, c->hwqueue.v, OBJ_HWQUEUE, m->process)) {
 		reply_ntstatus(m, DXG_STATUS_INVALID_HANDLE);
 		return;
 	}
+	heavy = !m->inline_call && dxghost_heavy_enter(h, m->process);
 	forget_locked(h, c->hwqueue.v);
 	reply_ntstatus(m, h->kmt.DestroyHwQueue(&d));
+	dxghost_heavy_leave(h, heavy);
 }
 
 /* --- Synchronization -------------------------------------------------- */
@@ -3244,6 +3295,7 @@ static void cmd_open_resource(struct dxghost_msg *m)
 	uint32_t count = c->allocation_count, i;
 	void *nt = NULL;
 	int32_t status;
+	bool heavy;
 
 	if (!count || count > D3DKMT_CREATEALLOCATION_MAX) {
 		m->status = VIRTIO_DXG_ERR_INVALID;
@@ -3268,8 +3320,10 @@ static void cmd_open_resource(struct dxghost_msg *m)
 		r->status.v = DXG_STATUS_INVALID_HANDLE;
 		return;
 	}
+	heavy = !m->inline_call && dxghost_heavy_enter(h, m->process);
 	status = dxghost_share_resource(h, c->global_share.v, &nt);
 	if (status < 0) {
+		dxghost_heavy_leave(h, heavy);
 		r->status.v = status;
 		return;
 	}
@@ -3321,6 +3375,7 @@ static void cmd_open_resource(struct dxghost_msg *m)
 			     "0x%08x", c->global_share.v, c->device.v,
 			     (uint32_t)status);
 	}
+	dxghost_heavy_leave(h, heavy);
 	r->status.v = status;
 	free(info);
 	free(runtime);

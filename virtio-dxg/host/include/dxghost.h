@@ -125,6 +125,15 @@ void dxghost_reset(struct dxghost *host);
 int32_t dxghost_share_resource(struct dxghost *host, uint32_t resource,
 			       void **nt_handle);
 
+/* Guest process token that created a host resource (0 if unknown). */
+uint32_t dxghost_resource_process(struct dxghost *host, uint32_t resource);
+/* Marks the guest compositor process so its calls never wait on app init. */
+void dxghost_set_scanout_process(struct dxghost *host, uint32_t process);
+/* Brackets a host display present (dpy_gl_update / SwapBuffers) so app
+ * lanes pause heavy WDDM creation calls until the swap completes. */
+void dxghost_begin_present(struct dxghost *host);
+void dxghost_end_present(struct dxghost *host);
+
 #ifdef __cplusplus
 }
 #endif

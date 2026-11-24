@@ -1,8 +1,9 @@
 #!/bin/bash
-# browser-boost: keep the default browser (when Chromium) warm in the background
-# without a visible window, wait until its SingletonSocket is accepting connections,
-# and warm its first tab/compositor path once so even the first browser or PWA
-# click opens in well under 100 ms.
+# browser-boost: keep the default Chromium browser service warm in the background
+# without opening any visible or hidden browser/PWA windows, unify user/system flags
+# with hardware GPU, V8 Maglev, spare-renderer pooling, and same-site reuse, and
+# continuously warm local DNS for all installed .desktop webapps so any PWA and any
+# number of concurrent windows start and hydrate rapidly.
 set -u
 
 case $(xdg-settings get default-web-browser 2>/dev/null) in
@@ -10,7 +11,6 @@ chromium.desktop|"") ;;
 *) exit 0 ;;
 esac
 [ -x /usr/bin/chromium ] || exit 0
-# Already running (opened by the user before this ran): nothing to do.
 pgrep -u "$(id -u)" -x chromium >/dev/null && exit 0
 
 rt="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
@@ -29,11 +29,6 @@ for _ in $(seq 1 150); do
     sleep 0.2
 done
 
-if [ -z "${HYPRLAND_INSTANCE_SIGNATURE:-}" ] && [ -d "$rt/hypr" ]; then
-    his=$(ls -1 "$rt/hypr" 2>/dev/null | head -1 || true)
-    [ -n "$his" ] && export HYPRLAND_INSTANCE_SIGNATURE="$his"
-fi
-
 sleep "${BOOST_DELAY:-1}"
 for _ in $(seq 1 15); do
     [ -f "$rt/vdxg-pso/.ready" ] && break
@@ -41,13 +36,108 @@ for _ in $(seq 1 15); do
 done
 pgrep -u "$(id -u)" -x chromium >/dev/null && exit 0
 
-/usr/bin/chromium \
-    --disable-quic \
-    --enable-features=TouchpadOverscrollHistoryNavigation,SpareRendererForSitePerProcess,ParallelDownloading,BackForwardCache,V8VmFuture \
-    --js-flags=--maglev \
-    --enable-gpu-rasterization --enable-zero-copy --num-raster-threads=4 \
-    --disk-cache-size=536870912 --no-startup-window --keep-alive-for-test &
-cpid=$!
+# Build a single deduplicated argv list by merging /etc/chromium-flags.conf and
+# $XDG_CONFIG_HOME/chromium-flags.conf so --enable-features is never duplicated.
+if command -v python3 >/dev/null 2>&1 && [ -x /usr/lib/chromium/chromium ]; then
+    mapfile -d '' -t chrome_args < <(python3 - <<'PY'
+import os, shlex, sys
+
+cfg = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+conf_files = ["/etc/chromium-flags.conf", os.path.join(cfg, "chromium-flags.conf")]
+
+default_features = [
+    "TouchpadOverscrollHistoryNavigation",
+    "SpareRendererForSitePerProcess",
+    "MultipleSpareRPHs:count/4",
+    "ProcessPerSiteUpToMainFrameThreshold:ProcessPerSiteMainFrameThreshold/12",
+    "ParallelDownloading",
+    "BackForwardCache",
+    "V8VmFuture",
+    "UseDnsHttpsSvcb",
+]
+base_flags = [
+    "--ignore-gpu-blocklist",
+    "--enable-gpu-rasterization",
+    "--enable-zero-copy",
+    "--num-raster-threads=4",
+    "--disable-accelerated-video-encode",
+    "--disable-quic",
+    "--disk-cache-size=536870912",
+    "--js-flags=--maglev",
+]
+
+enable_map = {}   # feature_base -> full token
+disable_set = []
+other = []
+
+def add_features(raw, target_dict=None, target_list=None):
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        if target_dict is not None:
+            base = item.split(":", 1)[0].split("/", 1)[0]
+            if base not in target_dict or ":" in item:
+                target_dict[base] = item
+        elif item not in target_list:
+            target_list.append(item)
+
+for path in conf_files:
+    if not os.path.isfile(path):
+        continue
+    try:
+        lines = open(path, encoding="utf-8", errors="ignore").read().splitlines()
+    except OSError:
+        continue
+    for line in lines:
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        try:
+            toks = shlex.split(s)
+        except ValueError:
+            toks = s.split()
+        for t in toks:
+            if t.startswith("--enable-features="):
+                add_features(t[18:], target_dict=enable_map)
+            elif t.startswith("--disable-features="):
+                add_features(t[19:], target_list=disable_set)
+            elif t in ("--no-startup-window", "--keep-alive-for-test"):
+                continue
+            elif t not in other:
+                other.append(t)
+
+for f in default_features:
+    base = f.split(":", 1)[0].split("/", 1)[0]
+    if base not in enable_map or ":" in f:
+        enable_map[base] = f
+
+for bf in base_flags:
+    if bf not in other:
+        other.append(bf)
+
+out = other + ["--enable-features=" + ",".join(enable_map.values())]
+if disable_set:
+    out.append("--disable-features=" + ",".join(disable_set))
+out.extend(["--no-startup-window", "--keep-alive-for-test"])
+sys.stdout.buffer.write(b"\0".join(a.encode() for a in out) + b"\0")
+PY
+    )
+    export CHROME_WRAPPER="${CHROME_WRAPPER:-/usr/bin/chromium}"
+    export CHROME_VERSION_EXTRA="${CHROME_VERSION_EXTRA:-Arch Linux}"
+    /usr/lib/chromium/chromium "${chrome_args[@]}" &
+    cpid=$!
+else
+    /usr/bin/chromium \
+        --ignore-gpu-blocklist \
+        --disable-quic \
+        --enable-features=TouchpadOverscrollHistoryNavigation,SpareRendererForSitePerProcess,MultipleSpareRPHs:count/4,ProcessPerSiteUpToMainFrameThreshold:ProcessPerSiteMainFrameThreshold/12,ParallelDownloading,BackForwardCache,V8VmFuture,UseDnsHttpsSvcb \
+        --js-flags=--maglev \
+        --enable-gpu-rasterization --enable-zero-copy --num-raster-threads=4 \
+        --disable-accelerated-video-encode \
+        --disk-cache-size=536870912 --no-startup-window --keep-alive-for-test &
+    cpid=$!
+fi
 
 sock="${XDG_CONFIG_HOME:-$HOME/.config}/chromium/SingletonSocket"
 for _ in $(seq 1 100); do
@@ -56,24 +146,14 @@ for _ in $(seq 1 100); do
     sleep 0.1
 done
 
-# Dynamically discover installed PWA/webapp URLs from .desktop entries, pre-resolve DNS,
-# pre-render standby PWA windows silently into special:vdxg_pwa (with V8 Maglev + no QUIC),
-# and replenish after closewindow>> + 6s cooldown so subsequent user closes never re-open.
-if [ -S "$sock" ] && [ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ] && command -v python3 >/dev/null 2>&1; then
+# Dynamically discover all installed .desktop webapps/origins (with zero visible or
+# hidden browser windows) and keep systemd-resolved + host DNS warm for instant navigation.
+if [ -S "$sock" ] && command -v python3 >/dev/null 2>&1; then
     (
         python3 - "$cpid" <<'PY' >/dev/null 2>&1 || true
-import fcntl, glob, json, os, re, shlex, signal, socket, subprocess, sys, time, urllib.parse
+import concurrent.futures, glob, os, re, signal, socket, sys, time, urllib.parse
 
 cpid = int(sys.argv[1])
-rt = os.environ["XDG_RUNTIME_DIR"]
-his = os.environ["HYPRLAND_INSTANCE_SIGNATURE"]
-ctl_sock = os.path.join(rt, "hypr", his, ".socket.sock")
-evt_sock = os.path.join(rt, "hypr", his, ".socket2.sock")
-bdir = os.path.join(rt, "vdxg-boost")
-os.makedirs(bdir, mode=0o700, exist_ok=True)
-tsv_path = os.path.join(bdir, "pwa-ready.tsv")
-lock_path = os.path.join(bdir, "pwa-ready.lock")
-
 stop = False
 def handle_sig(sig, frame):
     global stop
@@ -81,407 +161,85 @@ def handle_sig(sig, frame):
 signal.signal(signal.SIGTERM, handle_sig)
 signal.signal(signal.SIGINT, handle_sig)
 
-SEED_ORIGINS = {
-    "https://youtube.com",
-    "https://www.youtube.com",
-    "https://i.ytimg.com",
-    "https://yt3.ggpht.com",
-    "https://fonts.gstatic.com",
-    "https://fonts.googleapis.com",
-    "https://discord.com",
-    "https://cdn.discordapp.com",
-    "https://gateway.discord.gg",
-    "https://assets.discord.com",
+SEED_HOSTS = {
+    "youtube.com",
+    "www.youtube.com",
+    "i.ytimg.com",
+    "yt3.ggpht.com",
+    "fonts.gstatic.com",
+    "fonts.googleapis.com",
+    "discord.com",
+    "cdn.discordapp.com",
+    "gateway.discord.gg",
+    "assets.discord.com",
 }
 
-def norm_url(raw):
-    if not raw:
-        return None
-    p = urllib.parse.urlsplit(raw.strip())
-    scheme = p.scheme.lower()
-    if scheme not in ("http", "https") or not p.netloc:
-        return None
-    path = p.path or "/"
-    out = f"{scheme}://{p.netloc.lower()}{path}"
-    if p.query:
-        out += f"?{p.query}"
-    return out
-
-def scan_desktop():
-    origins = set(SEED_ORIGINS)
-    webapps = []
-    seen_urls = set()
-    data_dirs = [
-        os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share"),
-        "/usr/local/share",
-        "/usr/share",
+def desktop_dirs():
+    return [
+        os.path.join(os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share"), "applications"),
+        "/usr/local/share/applications",
+        "/usr/share/applications",
     ]
-    for d in data_dirs:
-        for df in sorted(glob.glob(os.path.join(d, "applications", "*.desktop"))):
+
+def scan_hosts():
+    hosts = set(SEED_HOSTS)
+    mtimes = {}
+    for d in desktop_dirs():
+        try:
+            mtimes[d] = os.stat(d).st_mtime_ns
+        except OSError:
+            continue
+        for df in glob.glob(os.path.join(d, "*.desktop")):
             try:
                 txt = open(df, encoding="utf-8", errors="ignore").read()
             except OSError:
                 continue
             for m in re.finditer(r"https?://[^\s\"']+", txt):
-                p = urllib.parse.urlsplit(m.group(0))
-                if p.netloc and p.scheme in ("http", "https"):
-                    origins.add(f"{p.scheme.lower()}://{p.netloc.lower()}")
-            in_entry = False
-            for line in txt.splitlines():
-                if line.startswith("["):
-                    if in_entry:
-                        break
-                    in_entry = (line.strip() == "[Desktop Entry]")
-                    continue
-                if not in_entry or not line.startswith("Exec="):
-                    continue
-                try:
-                    toks = shlex.split(line[5:])
-                except ValueError:
-                    continue
-                if not toks:
-                    continue
-                exe = os.path.basename(toks[0])
-                u = None
-                if exe == "omarchy-launch-webapp" and len(toks) >= 2:
-                    u = norm_url(toks[1])
-                else:
-                    for t in toks[1:]:
-                        if t.startswith("--app="):
-                            u = norm_url(t[6:])
-                            break
-                if u and u not in seen_urls:
-                    seen_urls.add(u)
-                    webapps.append(u)
-                break
-    def prio(u):
-        h = (urllib.parse.urlsplit(u).hostname or "").lower()
-        if "youtube" in h:
-            return (0, u)
-        if "discord" in h:
-            return (1, u)
-        return (2, u)
-    webapps.sort(key=prio)
-    hosts = sorted({urllib.parse.urlsplit(o).hostname for o in origins if urllib.parse.urlsplit(o).hostname})
-    return hosts, webapps
+                h = urllib.parse.urlsplit(m.group(0)).hostname
+                if h:
+                    hosts.add(h.lower())
+    return sorted(hosts), mtimes
 
-def resolve_hosts(hosts):
-    for h in hosts:
+def dir_mtimes():
+    out = {}
+    for d in desktop_dirs():
         try:
-            socket.getaddrinfo(h, 443, socket.AF_INET)
+            out[d] = os.stat(d).st_mtime_ns
         except OSError:
             pass
+    return out
 
-def hypr_req(cmd):
-    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.settimeout(2.0)
+def resolve_one(h):
     try:
-        s.connect(ctl_sock)
-        s.sendall(cmd.encode())
-        chunks = []
-        while True:
-            d = s.recv(65536)
-            if not d:
-                break
-            chunks.append(d)
-        return b"".join(chunks).decode(errors="replace")
+        socket.getaddrinfo(h, 443, socket.AF_INET)
     except OSError:
-        return ""
-    finally:
-        s.close()
-
-def get_clients():
-    raw = hypr_req("j/clients")
-    try:
-        return json.loads(raw) if raw else []
-    except ValueError:
-        return []
-
-def set_stage_rule(pat):
-    res = hypr_req(f'eval hl.window_rule({{ name = "vdxg_pwa_stage", match = {{ class = [[{pat}]] }}, workspace = "special:vdxg_pwa silent" }})')
-    return res.strip().startswith("ok")
-
-def clear_stage_rule():
-    hypr_req('eval hl.window_rule({ name = "vdxg_pwa_stage", match = { class = [[^__vdxg_none__$]] } })')
-
-def move_silent(addr, ws="special:vdxg_pwa"):
-    hypr_req(f'eval hl.dispatch(hl.dsp.window.move({{ workspace = "{ws}", follow = false, window = "address:0x{addr}" }}))')
-
-def mem_avail_kb():
-    try:
-        for line in open("/proc/meminfo", encoding="utf-8"):
-            if line.startswith("MemAvailable:"):
-                return int(line.split()[1])
-    except Exception:
         pass
-    return 4 * 1024 * 1024
 
-def with_tsv_lock(fn):
-    with open(lock_path, "a+", encoding="utf-8") as lf:
-        fcntl.flock(lf, fcntl.LOCK_EX)
-        try:
-            entries = []
-            if os.path.exists(tsv_path):
-                with open(tsv_path, "r", encoding="utf-8", errors="ignore") as f:
-                    for line in f:
-                        parts = line.rstrip("\n").split("\t")
-                        if len(parts) == 2 and parts[0] and parts[1]:
-                            entries.append((parts[0], parts[1].removeprefix("0x").lower()))
-            new_entries, res = fn(entries)
-            if new_entries is not None:
-                tmp = f"{tsv_path}.tmp.{os.getpid()}"
-                with open(tmp, "w", encoding="utf-8") as wf:
-                    for u, a in new_entries:
-                        wf.write(f"{u}\t{a}\n")
-                os.replace(tmp, tsv_path)
-            return res
-        finally:
-            fcntl.flock(lf, fcntl.LOCK_UN)
+def resolve_hosts(hosts):
+    if not hosts:
+        return
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+        list(pool.map(resolve_one, hosts))
 
-staged = {}          # url -> addr
-staged_addr = {}     # addr -> url
-consumed = {}        # addr -> url
-cooldown_until = {}  # url -> monotonic deadline
-
-def record_close(addr):
-    a = addr.removeprefix("0x").lower()
-    if a in consumed:
-        u = consumed.pop(a)
-        cooldown_until[u] = time.monotonic() + 6.0
-    elif a in staged_addr:
-        u = staged_addr.pop(a)
-        staged.pop(u, None)
-        with_tsv_lock(lambda es: ([e for e in es if e[1] != a], None))
-        cooldown_until[u] = time.monotonic() + 6.0
-
-def record_move(addr, wsname):
-    a = addr.removeprefix("0x").lower()
-    if not wsname.lower().startswith("special") and a in staged_addr:
-        u = staged_addr.pop(a)
-        staged.pop(u, None)
-        with_tsv_lock(lambda es: ([e for e in es if e[1] != a], None))
-        consumed[a] = u
-
-def drain_events(ev_sock, buf, timeout):
-    ev_sock.settimeout(timeout)
-    try:
-        chunk = ev_sock.recv(65536)
-        if not chunk:
-            return None, []
-        buf += chunk
-    except socket.timeout:
-        pass
-    events = []
-    while b"\n" in buf:
-        line, buf = buf.split(b"\n", 1)
-        events.append(line.decode(errors="replace"))
-    return buf, events
-
-def process_event(ev):
-    if ev.startswith("closewindow>>"):
-        record_close(ev[13:].strip())
-    elif ev.startswith("movewindow>>"):
-        f = ev[12:].split(",", 1)
-        if len(f) == 2:
-            record_move(f[0].strip(), f[1].strip())
-
-def reconcile():
-    clients = get_clients()
-    by_addr = {c.get("address", "").removeprefix("0x").lower(): c for c in clients}
-    # Detect closes missed while offline
-    for a in list(consumed):
-        if a not in by_addr:
-            u = consumed.pop(a)
-            cooldown_until[u] = time.monotonic() + 6.0
-    # Detect reveals via TSV removal or client movement/destruction
-    def check_tsv(es):
-        in_tsv = {a for _, a in es}
-        for u, a in list(staged.items()):
-            c = by_addr.get(a)
-            if c is None:
-                staged.pop(u, None)
-                staged_addr.pop(a, None)
-                es = [e for e in es if e[1] != a]
-                cooldown_until[u] = time.monotonic() + 6.0
-            elif not c.get("workspace", {}).get("name", "").lower().startswith("special") or a not in in_tsv:
-                staged.pop(u, None)
-                staged_addr.pop(a, None)
-                es = [e for e in es if e[1] != a]
-                consumed[a] = u
-        desired = [(u, a) for u, a in staged.items()]
-        return (desired if desired != es else None), None
-    with_tsv_lock(check_tsv)
-
-def stage_one(url, ev_sock, buf):
-    host = (urllib.parse.urlsplit(url).hostname or "").lower()
-    if not host:
-        return buf, False
-    pat = f"^chrome-{re.escape(host)}.*"
-    if not set_stage_rule(pat):
-        clear_stage_rule()
-        return buf, False
-    existing_addrs = {c.get("address", "").removeprefix("0x").lower() for c in get_clients()}
-    mapped_addr = None
-    mapped_ws = ""
-    try:
-        subprocess.Popen(
-            ["/usr/bin/chromium", f"--app={url}"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
-        )
-        deadline = time.monotonic() + 25.0
-        next_poll = 0.0
-        while time.monotonic() < deadline and mapped_addr is None and not stop:
-            nbuf, evs = drain_events(ev_sock, buf, 0.05)
-            if nbuf is None:
-                buf = b""
-                break
-            buf = nbuf
-            for ev in evs:
-                if ev.startswith("openwindow>>"):
-                    f = ev[12:].split(",", 3)
-                    if len(f) >= 3 and f[2].lower().startswith(f"chrome-{host}"):
-                        mapped_addr = f[0].removeprefix("0x").lower()
-                        mapped_ws = f[1]
-                        continue
-                process_event(ev)
-            now = time.monotonic()
-            if mapped_addr is None and now >= next_poll:
-                next_poll = now + 0.25
-                for c in get_clients():
-                    a = c.get("address", "").removeprefix("0x").lower()
-                    cls = c.get("class", "").lower()
-                    icls = c.get("initialClass", "").lower()
-                    if a and a not in existing_addrs and (
-                        cls.startswith(f"chrome-{host}") or icls.startswith(f"chrome-{host}")
-                    ):
-                        mapped_addr = a
-                        mapped_ws = c.get("workspace", {}).get("name", "")
-                        break
-    finally:
-        clear_stage_rule()
-        if mapped_addr is None and not stop:
-            for _ in range(8):
-                time.sleep(0.25)
-                for c in get_clients():
-                    a = c.get("address", "").removeprefix("0x").lower()
-                    cls = c.get("class", "").lower()
-                    icls = c.get("initialClass", "").lower()
-                    if a and a not in existing_addrs and (
-                        cls.startswith(f"chrome-{host}") or icls.startswith(f"chrome-{host}")
-                    ):
-                        ws_name = c.get("workspace", {}).get("name", "")
-                        if not ws_name.lower().startswith("special:"):
-                            move_silent(a)
-                        mapped_addr = a
-                        mapped_ws = "special:vdxg_pwa"
-                        break
-                if mapped_addr is not None:
-                    break
-
-    if not mapped_addr or stop:
-        return buf, False
-    if not mapped_ws.lower().startswith("special:vdxg_pwa"):
-        move_silent(mapped_addr)
-
-    # Wait briefly for actual page DOM/title paint before advertising as ready
-    t_settle_min = time.monotonic() + 0.4
-    t_settle_max = time.monotonic() + 1.8
-    title_updated = False
-    while time.monotonic() < t_settle_max and not stop:
-        if title_updated and time.monotonic() >= t_settle_min:
-            break
-        nbuf, evs = drain_events(ev_sock, buf, 0.05)
-        if nbuf is None:
-            buf = b""
-            break
-        buf = nbuf
-        for ev in evs:
-            if ev.startswith("closewindow>>") and ev[13:].strip().removeprefix("0x").lower() == mapped_addr:
-                cooldown_until[url] = time.monotonic() + 6.0
-                return buf, False
-            if ev.startswith("movewindow>>"):
-                f = ev[12:].split(",", 1)
-                if len(f) == 2 and f[0].strip().removeprefix("0x").lower() == mapped_addr and not f[1].strip().lower().startswith("special"):
-                    consumed[mapped_addr] = url
-                    return buf, True
-            if ev.startswith("windowtitlev2>>"):
-                f = ev[15:].split(",", 1)
-                if len(f) == 2 and f[0].strip().removeprefix("0x").lower() == mapped_addr:
-                    title_updated = True
-                    continue
-            process_event(ev)
-
-    # Confirm still alive in special:vdxg_pwa before publishing to pwa-ready.tsv
-    clients = get_clients()
-    cur = next((c for c in clients if c.get("address", "").removeprefix("0x").lower() == mapped_addr), None)
-    if cur is None:
-        return buf, False
-    if not cur.get("workspace", {}).get("name", "").lower().startswith("special"):
-        consumed[mapped_addr] = url
-        return buf, True
-
-    staged[url] = mapped_addr
-    staged_addr[mapped_addr] = url
-    def add_entry(es):
-        es = [e for e in es if e[0] != url and e[1] != mapped_addr]
-        es.append((url, mapped_addr))
-        return es, None
-    with_tsv_lock(add_entry)
-    return buf, True
-
-hosts, webapps = scan_desktop()
+hosts, last_mtimes = scan_hosts()
 resolve_hosts(hosts)
-pool_max = max(1, int(os.environ.get("VDXG_PWA_POOL_MAX", "4")))
-ev_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-ev_sock.connect(evt_sock)
-buf = b""
-last_scan = time.monotonic()
 last_dns = time.monotonic()
 
-try:
-    while not stop:
-        try:
-            os.kill(cpid, 0)
-        except OSError:
-            break
-        nbuf, evs = drain_events(ev_sock, buf, 1.0)
-        if nbuf is None:
-            break
-        buf = nbuf
-        for ev in evs:
-            process_event(ev)
-        now = time.monotonic()
-        if now - last_scan >= 10.0:
-            hosts, webapps = scan_desktop()
-            last_scan = now
-        if now - last_dns >= 120.0:
-            resolve_hosts(hosts)
-            last_dns = now
-        reconcile()
-        clients = get_clients()
-        active_urls = set(staged) | set(consumed.values())
-        for idx, u in enumerate(webapps[:pool_max]):
-            if stop:
-                break
-            if u in active_urls or now < cooldown_until.get(u, 0.0):
-                continue
-            if idx >= 2 and mem_avail_kb() < 1500 * 1024:
-                continue
-            host = (urllib.parse.urlsplit(u).hostname or "").lower()
-            if any(c.get("class", "").lower().startswith(f"chrome-{host}") for c in clients):
-                continue
-            buf, _ = stage_one(u, ev_sock, buf)
-            clients = get_clients()
-finally:
-    clear_stage_rule()
+while not stop:
     try:
-        ev_sock.close()
+        os.kill(cpid, 0)
     except OSError:
-        pass
-    try:
-        with_tsv_lock(lambda es: ([], None))
-    except Exception:
-        pass
+        break
+    time.sleep(5)
+    now = time.monotonic()
+    cur_mtimes = dir_mtimes()
+    if cur_mtimes != last_mtimes:
+        hosts, last_mtimes = scan_hosts()
+        resolve_hosts(hosts)
+        last_dns = now
+    elif now - last_dns >= 45.0:
+        resolve_hosts(hosts)
+        last_dns = now
 PY
     ) &
 fi

@@ -214,6 +214,7 @@ static int32_t __stdcall f_escape(void *p)
 
 static uint32_t maps, unmaps;
 static uint64_t last_map_gpa, last_map_size;
+static uint64_t last_unmap_gpa, last_unmap_size, total_unmap_bytes;
 static volatile LONG events;
 static uint64_t last_event;
 
@@ -252,8 +253,11 @@ static int vmm_map(void *o, uint64_t gpa, void *hva, uint64_t size, bool w)
 
 static void vmm_unmap(void *o, uint64_t gpa, uint64_t size)
 {
-	(void)o; (void)gpa; (void)size;
+	(void)o;
 	check_unlocked();
+	last_unmap_gpa = gpa;
+	last_unmap_size = size;
+	total_unmap_bytes += size;
 	unmaps++;
 }
 
@@ -617,11 +621,16 @@ static void test_executor(void)
 		vgpu(c, DXGK_VMBCOMMAND_CREATEALLOCATION, p1);
 		c->device.v = d1;
 		c->alloc_count = 2;
+		c->flags.create_resource = 1;
+		c->flags.create_shared = 1;
 		info[0].priv_drv_data_size = 4;
 		info[1].priv_drv_data_size = 4;
 		memset(priv, 0x11, 8);
 		resp = run(h, size, res);
 		CHECK(resp.status == VIRTIO_DXG_OK && resp.size == res);
+		CHECK(r->resource.v &&
+		      dxghost_resource_process(h, r->resource.v) == p1);
+		CHECK(dxghost_resource_process(h, 0xdeadbeefu) == 0);
 		alloc1 = r->allocation_info[0].allocation.v;
 		alloc2 = r->allocation_info[1].allocation.v;
 		CHECK(alloc1 && alloc2 && alloc1 != alloc2);
@@ -864,6 +873,7 @@ static void test_executor(void)
 	{
 		struct dxgkvmb_command_destroyprocess *c = msg(sizeof(*c));
 		uint32_t before = calls_destroy_device, unmaps_before = unmaps;
+		uint64_t unmap_bytes_before = total_unmap_bytes;
 		uint32_t frees_before = calls_free_va;
 		uint32_t unlocks_before = calls_unlock2;
 
@@ -871,9 +881,12 @@ static void test_executor(void)
 		run(h, sizeof(*c), 4);
 		CHECK(status_of() == 0);
 		CHECK(calls_destroy_device == before + 1);
-		/* The shared fence page and alloc1's cached view, whose driver
-		 * lock is released before the device goes. */
-		CHECK(unmaps == unmaps_before + 2);
+		/* Adjacent alloc1 cached view (12 KiB) and shared fence page
+		 * (4 KiB) coalesce into one 16 KiB unmap call. */
+		CHECK(unmaps == unmaps_before + 1);
+		CHECK(total_unmap_bytes == unmap_bytes_before + 4 * 4096);
+		CHECK(last_unmap_gpa == 0x800000000ull &&
+		      last_unmap_size == 4 * 4096);
 		CHECK(calls_unlock2 == unlocks_before + 1 &&
 		      calls_lock2 == calls_unlock2);
 		CHECK(calls_free_va == frees_before + 1 &&
@@ -926,6 +939,34 @@ static void test_executor(void)
 		printf("teardown of 20000 allocations: %lld ms\n",
 		       (long long)((end.QuadPart - start.QuadPart) * 1000 /
 				   freq.QuadPart));
+	}
+
+	/* Non-adjacent deferred unmaps stay separate while adjacent ones merge;
+	 * compositor process bypasses heavy KMT gating during present. */
+	{
+		uint32_t before = unmaps;
+		uint64_t bytes_before = total_unmap_bytes;
+		uint64_t g1, g2, g3;
+		bool c_enter;
+
+		dxghost_lock(h);
+		g1 = dxghost_io_alloc(h, 4096);
+		g2 = dxghost_io_alloc(h, 4096);
+		g3 = dxghost_io_alloc(h, 4096);
+		dxghost_defer_unmap(h, g3, 4096);
+		dxghost_defer_unmap(h, g1, 4096);
+		dxghost_unlock(h);
+		CHECK(unmaps == before + 2);
+		CHECK(total_unmap_bytes == bytes_before + 2 * 4096);
+		dxghost_lock(h);
+		dxghost_io_free(h, g2, 4096);
+		dxghost_unlock(h);
+
+		dxghost_set_scanout_process(h, p2);
+		dxghost_begin_present(h);
+		c_enter = dxghost_heavy_enter(h, p2);
+		CHECK(!c_enter);	/* compositor never blocked */
+		dxghost_end_present(h);
 	}
 
 	/* Reset clears the startup query cache; teardown unmaps cleanly. */

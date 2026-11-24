@@ -272,10 +272,26 @@ void dxghost_defer_call(struct dxghost *h, void (*fn)(void *), void *arg)
 	d->gpa = d->size = 0;
 }
 
+static int cmp_deferred_gpa(const void *a, const void *b)
+{
+	const struct dxghost_range *ra = a;
+	const struct dxghost_range *rb = b;
+
+	if (ra->start < rb->start)
+		return -1;
+	if (ra->start > rb->start)
+		return 1;
+	return 0;
+}
+
 void dxghost_unlock(struct dxghost *h)
 {
 	struct dxghost_deferred *work = h->deferred;
 	uint32_t count = h->deferred_count, i;
+	struct dxghost_range local_spans[64];
+	struct dxghost_range *spans = NULL;
+	uint32_t nunmap = 0, merged = 0;
+	bool spans_heap = false;
 	bool unmapped = false;
 
 	if (!count) {
@@ -285,17 +301,64 @@ void dxghost_unlock(struct dxghost *h)
 	h->deferred = NULL;
 	h->deferred_count = h->deferred_capacity = 0;
 	ReleaseSRWLockExclusive(&h->lock);
-	/* Unmaps first, as one batch where the VMM supports it. */
+
 	for (i = 0; i < count; i++) {
-		if (work[i].fn)
-			continue;
-		if (!unmapped && h->vmm.batch)
-			h->vmm.batch(h->vmm.opaque, true);
-		h->vmm.unmap(h->vmm.opaque, work[i].gpa, work[i].size);
-		unmapped = true;
+		if (!work[i].fn && work[i].size)
+			nunmap++;
 	}
-	if (unmapped && h->vmm.batch)
-		h->vmm.batch(h->vmm.opaque, false);
+	if (nunmap > 0) {
+		if (nunmap <= ARRAYSIZE(local_spans)) {
+			spans = local_spans;
+		} else {
+			spans = malloc((size_t)nunmap * sizeof(*spans));
+			spans_heap = spans != NULL;
+		}
+		if (spans) {
+			uint32_t k = 0;
+
+			for (i = 0; i < count; i++) {
+				if (!work[i].fn && work[i].size) {
+					spans[k].start = work[i].gpa;
+					spans[k].size = work[i].size;
+					k++;
+				}
+			}
+			if (nunmap > 1)
+				qsort(spans, nunmap, sizeof(*spans),
+				      cmp_deferred_gpa);
+			for (k = 0; k < nunmap; k++) {
+				if (merged > 0 &&
+				    spans[k].start >= spans[merged - 1].start &&
+				    spans[k].start - spans[merged - 1].start ==
+				    spans[merged - 1].size) {
+					spans[merged - 1].size += spans[k].size;
+				} else {
+					spans[merged++] = spans[k];
+				}
+			}
+			if (h->vmm.batch)
+				h->vmm.batch(h->vmm.opaque, true);
+			for (i = 0; i < merged; i++)
+				h->vmm.unmap(h->vmm.opaque, spans[i].start,
+					     spans[i].size);
+			if (h->vmm.batch)
+				h->vmm.batch(h->vmm.opaque, false);
+			unmapped = merged > 0;
+		} else {
+			/* OOM fallback: unmap without coalescing. */
+			for (i = 0; i < count; i++) {
+				if (work[i].fn || !work[i].size)
+					continue;
+				if (!unmapped && h->vmm.batch)
+					h->vmm.batch(h->vmm.opaque, true);
+				h->vmm.unmap(h->vmm.opaque, work[i].gpa,
+					     work[i].size);
+				unmapped = true;
+			}
+			if (unmapped && h->vmm.batch)
+				h->vmm.batch(h->vmm.opaque, false);
+		}
+	}
 	/* Closes wait for callbacks that enter the VMM: outside the batch. */
 	for (i = 0; i < count; i++)
 		if (work[i].fn)
@@ -303,11 +366,20 @@ void dxghost_unlock(struct dxghost *h)
 	/* Only now may the IO space hold another view. */
 	if (unmapped) {
 		AcquireSRWLockExclusive(&h->lock);
-		for (i = 0; i < count; i++)
-			if (!work[i].fn)
-				dxghost_io_free(h, work[i].gpa, work[i].size);
+		if (spans) {
+			for (i = 0; i < merged; i++)
+				dxghost_io_free(h, spans[i].start,
+						spans[i].size);
+		} else {
+			for (i = 0; i < count; i++)
+				if (!work[i].fn && work[i].size)
+					dxghost_io_free(h, work[i].gpa,
+							work[i].size);
+		}
 		ReleaseSRWLockExclusive(&h->lock);
 	}
+	if (spans_heap)
+		free(spans);
 	free(work);
 }
 

@@ -38,7 +38,8 @@
 #include "system/whpx-internal.h"
 #include "trace.h"
 
-#define DXG_LANES 8
+#define DXG_LANES 32
+#define DXG_CTRL_BUDGET 24
 #define DXG_QUEUE_SIZE 256
 
 typedef struct DxgRequest {
@@ -53,6 +54,7 @@ typedef struct DxgRequest {
 
 typedef struct DxgLane {
     VirtIODxg *dev;
+    int index;
     QemuThread thread;
     QemuMutex lock;
     QemuCond cond;
@@ -101,6 +103,8 @@ struct VirtIODxgState {
     GHashTable *fallback;   /* gpa of views that went the memory API way */
     QemuMutex event_lock;
     QSIMPLEQ_HEAD(, DxgEvent) events;
+    uint32_t scanout_proc;      /* compositor process isolated onto lanes[0] */
+    QEMUBH *ctrl_bh;            /* continues ctrl_vq drain across BQL slices */
     /* Request and reply buffers of inline requests; they run under the BQL. */
     uint8_t *inline_req;
     uint8_t *inline_result;
@@ -213,16 +217,30 @@ static void dxg_unmap(void *opaque, uint64_t gpa, uint64_t size)
 {
     VirtIODxg *d = opaque;
     uint64_t offset;
-    DxgMapping *m;
+    DxgMapping *m, *next_m;
     bool locked;
 
     if (d->state->direct) {
-        bool fallback;
+        bool has_fallback = false;
+        uint64_t end = gpa + size;
 
         qemu_mutex_lock(&d->state->direct_lock);
-        fallback = g_hash_table_remove(d->state->fallback, &gpa);
+        if (g_hash_table_size(d->state->fallback) > 0) {
+            GHashTableIter iter;
+            gpointer k;
+
+            g_hash_table_iter_init(&iter, d->state->fallback);
+            while (g_hash_table_iter_next(&iter, &k, NULL)) {
+                uint64_t fgpa = *(const uint64_t *)k;
+
+                if (fgpa >= gpa && fgpa < end) {
+                    has_fallback = true;
+                    g_hash_table_iter_remove(&iter);
+                }
+            }
+        }
         qemu_mutex_unlock(&d->state->direct_lock);
-        if (!fallback) {
+        if (!has_fallback) {
             HRESULT hr = whp_dispatch.WHvUnmapGpaRange(whpx_global.partition,
                                                        gpa, size);
 
@@ -234,18 +252,19 @@ static void dxg_unmap(void *opaque, uint64_t gpa, uint64_t size)
             }
             return;
         }
+        /* Mixed fallback + direct span: also remove direct subranges if any. */
+        whp_dispatch.WHvUnmapGpaRange(whpx_global.partition, gpa, size);
     }
     locked = bql_locked();
     if (!locked) {
         bql_lock();
     }
     offset = gpa - dxg_iospace_gpa(d);
-    QTAILQ_FOREACH(m, &d->state->mappings, next) {
-        if (m->offset == offset && m->size == size) {
+    QTAILQ_FOREACH_SAFE(m, &d->state->mappings, next, next_m) {
+        if (m->offset >= offset && m->offset + m->size <= offset + size) {
             QTAILQ_REMOVE(&d->state->mappings, m, next);
             memory_region_del_subregion(&d->iospace, &m->mr);
             object_unparent(OBJECT(m));   /* freed after the last flatview */
-            break;
         }
     }
     if (!locked) {
@@ -463,7 +482,7 @@ static void dxg_high_qos_process(void)
     dxg_timer_period(true);
 }
 
-static void dxg_high_qos_thread(void)
+static void dxg_high_qos_thread(bool high_prio)
 {
     DxgSetInfo set = (DxgSetInfo)(void (*)(void))
         GetProcAddress(GetModuleHandleA("kernel32.dll"), "SetThreadInformation");
@@ -472,7 +491,9 @@ static void dxg_high_qos_thread(void)
     if (set) {
         set(GetCurrentThread(), 3, &s, sizeof(s));
     }
-    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+    SetThreadPriority(GetCurrentThread(),
+                      high_prio ? THREAD_PRIORITY_HIGHEST :
+                                  THREAD_PRIORITY_NORMAL);
 }
 
 /*
@@ -492,7 +513,9 @@ static void *dxg_lane_main(void *opaque)
     VirtIODxg *d = lane->dev;
     g_autofree uint8_t *result = g_malloc(VIRTIO_DXG_MAX_MESSAGE);
 
-    dxg_high_qos_thread();
+    /* Only the dedicated scanout-compositor lane runs at HIGHEST priority so
+     * bursting app-init lanes stay on P-cores without preempting presents. */
+    dxg_high_qos_thread(lane->index == 0);
 
     qemu_mutex_lock(&lane->lock);
     for (;;) {
@@ -587,6 +610,7 @@ static struct {
     int64_t worst_ns;
     int64_t present_ns;         /* dpy_gl_update: blit and swap */
     int64_t present_worst_ns;
+    VirtIODxg *dev;
 } dxg_scanout;
 
 static void dxg_scanout_free(gpointer data)
@@ -719,6 +743,14 @@ static bool dxg_scanout_link(VirtIODxg *d,
                          "0x%08x", (uint32_t)host, (uint32_t)status);
         return false;
     }
+    {
+        uint32_t proc = dxghost_resource_process(d->host, (uint32_t)host);
+
+        if (proc) {
+            qatomic_set(&d->state->scanout_proc, proc);
+            dxghost_set_scanout_process(d->host, proc);
+        }
+    }
     s = g_new0(DxgScanout, 1);
     s->resource_id = id;
     s->width = le32_to_cpu(c->width);
@@ -798,8 +830,13 @@ static bool dxg_scanout_show(QemuConsole *con, uint32_t resource_id,
         return false;
     }
     if (dxg_scanout.garbage->len || !s->tex) {
+        if (dxg_scanout.garbage->len) {
+            dpy_gl_scanout_disable(con);
+        }
         dpy_gl_ctx_make_current(con, dxg_scanout.ctx);
-        dxg_scanout_collect();
+        if (dxg_scanout.garbage->len) {
+            dxg_scanout_collect();
+        }
         if (!s->tex && !dxg_scanout_import(s)) {
             return false;
         }
@@ -868,8 +905,15 @@ static void dxg_scanout_flush(QemuConsole *con, uint32_t resource_id,
     }
     {
         int64_t t0 = qemu_clock_get_ns(QEMU_CLOCK_REALTIME), t;
+        struct dxghost *host = dxg_scanout.dev ? dxg_scanout.dev->host : NULL;
 
+        if (host) {
+            dxghost_begin_present(host);
+        }
         dpy_gl_update(con, 0, 0, width, height);
+        if (host) {
+            dxghost_end_present(host);
+        }
         t = qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - t0;
         dxg_scanout.present_ns += t;
         dxg_scanout.present_worst_ns = MAX(dxg_scanout.present_worst_ns, t);
@@ -891,6 +935,7 @@ static const VirtIOGPUScanoutHooks dxg_scanout_hooks = {
 
 static void dxg_scanout_init(VirtIODxg *d)
 {
+    dxg_scanout.dev = d;
     dxg_scanout.links = g_hash_table_new_full(g_direct_hash, g_direct_equal,
                                               NULL, dxg_scanout_free);
     dxg_scanout.garbage = g_array_new(false, false, sizeof(GLuint));
@@ -910,6 +955,7 @@ static void dxg_scanout_reset(void)
 
 static void dxg_scanout_fini(void)
 {
+    dxg_scanout.dev = NULL;
     virtio_gpu_scanout_hooks = NULL;
     if (dxg_scanout.probe) {
         timer_free(dxg_scanout.probe);
@@ -1059,14 +1105,27 @@ static void dxg_fail(VirtIODxg *d, VirtQueueElement *elem, uint32_t status)
     g_free(elem);
 }
 
+static DxgLane *dxg_pick_lane(VirtIODxg *d, const uint8_t *msg, uint32_t size)
+{
+    uint32_t key = dxghost_lane(msg, size);
+    uint32_t comp = qatomic_read(&d->state->scanout_proc);
+
+    if (comp && key == comp) {
+        return &d->state->lanes[0];
+    }
+    return &d->state->lanes[1 + (key % (DXG_LANES - 1))];
+}
+
 /* Guest kicked the control queue. vCPU thread or main loop, BQL held. */
 static void dxg_handle_ctrl(VirtIODevice *vdev, VirtQueue *vq)
 {
     VirtIODxg *d = VIRTIO_DXG(vdev);
     VirtQueueElement *elem;
+    unsigned processed = 0;
     bool notify = false;
 
-    while ((elem = virtqueue_pop(vq, sizeof(VirtQueueElement)))) {
+    while (processed < DXG_CTRL_BUDGET &&
+           (elem = virtqueue_pop(vq, sizeof(VirtQueueElement)))) {
         struct virtio_dxg_req hdr;
         DxgRequest *r;
         DxgLane *lane;
@@ -1075,6 +1134,7 @@ static void dxg_handle_ctrl(VirtIODevice *vdev, VirtQueue *vq)
         uint32_t channel, size, result_size;
         bool async;
 
+        processed++;
         if (iov_to_buf(elem->out_sg, elem->out_num, 0, &hdr, sizeof(hdr)) !=
             sizeof(hdr)) {
             dxg_fail(d, elem, VIRTIO_DXG_ERR_INVALID);
@@ -1121,8 +1181,7 @@ static void dxg_handle_ctrl(VirtIODevice *vdev, VirtQueue *vq)
             notify = true;
             continue;
         }
-        lane = &d->state->lanes[dxghost_lane(d->state->inline_req, size) %
-                                DXG_LANES];
+        lane = dxg_pick_lane(d, d->state->inline_req, size);
         qemu_mutex_lock(&lane->lock);
         /* The lane lock keeps this lane's next requests behind it. */
         if (!lane->busy && QSIMPLEQ_EMPTY(&lane->queue) &&
@@ -1149,6 +1208,19 @@ static void dxg_handle_ctrl(VirtIODevice *vdev, VirtQueue *vq)
     }
     if (notify) {
         virtio_notify(vdev, vq);
+    }
+    if (processed >= DXG_CTRL_BUDGET && d->state->ctrl_bh) {
+        qemu_bh_schedule(d->state->ctrl_bh);
+    }
+}
+
+static void dxg_ctrl_bh(void *opaque)
+{
+    VirtIODxg *d = opaque;
+    VirtIODevice *vdev = VIRTIO_DEVICE(d);
+
+    if (d->ctrl_vq && (vdev->status & VIRTIO_CONFIG_S_DRIVER_OK)) {
+        dxg_handle_ctrl(vdev, d->ctrl_vq);
     }
 }
 
@@ -1220,6 +1292,10 @@ static void dxg_reset(VirtIODevice *vdev)
     dxghost_reset(d->host);
     bql_lock();
     dxg_scanout_reset();
+    qatomic_set(&d->state->scanout_proc, 0);
+    if (d->state->ctrl_bh) {
+        qemu_bh_cancel(d->state->ctrl_bh);
+    }
     qemu_mutex_lock(&d->state->event_lock);
     while ((e = QSIMPLEQ_FIRST(&d->state->events))) {
         QSIMPLEQ_REMOVE_HEAD(&d->state->events, next);
@@ -1250,7 +1326,7 @@ static void dxg_realize(DeviceState *dev, Error **errp)
     d->stats = getenv("DXGHOST_STATS") != NULL;
     if (!getenv("VIRTIO_DXG_DEFAULT_QOS")) {
         dxg_high_qos_process();
-        dxg_high_qos_thread();
+        dxg_high_qos_thread(true);
         SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
     }
     if (getenv("DXG_LANE_SPIN_US")) {
@@ -1285,6 +1361,7 @@ static void dxg_realize(DeviceState *dev, Error **errp)
                        d->iospace_size);
 
     virtio_init(vdev, VIRTIO_ID_DXG, sizeof(struct virtio_dxg_config));
+    d->state->ctrl_bh = qemu_bh_new(dxg_ctrl_bh, d);
     d->ctrl_vq = virtio_add_queue(vdev, DXG_QUEUE_SIZE, dxg_handle_ctrl);
     d->event_vq = virtio_add_queue(vdev, DXG_QUEUE_SIZE, dxg_handle_event);
 
@@ -1292,6 +1369,7 @@ static void dxg_realize(DeviceState *dev, Error **errp)
         DxgLane *lane = &d->state->lanes[i];
 
         lane->dev = d;
+        lane->index = i;
         qemu_mutex_init(&lane->lock);
         qemu_cond_init(&lane->cond);
         QSIMPLEQ_INIT(&lane->queue);
@@ -1311,6 +1389,10 @@ static void dxg_unrealize(DeviceState *dev)
     int i;
 
     dxg_drain(d);
+    if (d->state->ctrl_bh) {
+        qemu_bh_delete(d->state->ctrl_bh);
+        d->state->ctrl_bh = NULL;
+    }
     dxg_scanout_fini();
     if (dxg_refresh_timer) {
         timer_free(dxg_refresh_timer);

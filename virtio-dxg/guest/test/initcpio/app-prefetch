@@ -125,11 +125,22 @@ collect_tier1() {
     done
     local cache_home="${XDG_CACHE_HOME:-$HOME/.cache}"
     local config_home="${XDG_CONFIG_HOME:-$HOME/.config}"
+    # Warm Chromium's core shared mmap packs/V8 snapshot in Tier 1 so rapid multi-PWA
+    # and multi-window renderer spawns read from memory even immediately after login.
+    if [ -d /usr/lib/chromium ]; then
+        for f in /usr/lib/chromium/chromium /usr/lib/chromium/*.pak \
+                 /usr/lib/chromium/*.dat /usr/lib/chromium/*.bin \
+                 /usr/lib/chromium/*.so* /usr/lib/chromium/locales/en-US.pak; do
+            add "$f"
+        done
+    fi
     for d in "$cache_home/vdxg-pso" "${MESA_SHADER_CACHE_DIR:-$cache_home/mesa_shader_cache}" \
              "$cache_home/mesa_shader_cache_db" \
              "$cache_home/chromium/Default/Code Cache" \
              "$cache_home/google-chrome/Default/Code Cache" \
              "$cache_home/BraveSoftware/Brave-Browser/Default/Code Cache" \
+             "$config_home/chromium/Default/Network" \
+             "$config_home/chromium/Default/Local Storage/leveldb" \
              "$config_home/chromium/Default/Service Worker" \
              "$config_home/chromium/Default/GPUCache" \
              "$config_home/chromium/Default/DawnGraphiteCache" \
@@ -142,9 +153,10 @@ collect_tier1() {
              "$config_home/BraveSoftware/Brave-Browser/Default/GPUCache"; do
         add_dir "$d"
     done
-    # Dynamically prefetch V8 bytecode + GPU caches for all Electron/Chromium apps
+    # Dynamically prefetch V8 bytecode + GPU + SW caches for all Electron/Chromium apps
     # (VS Code, Discord, Vesktop, Obsidian, Spotify, Slack, Signal, Cursor, etc.).
     for d in "$config_home"/*/CachedData "$config_home"/*/"Code Cache" "$config_home"/*/GPUCache \
+             "$config_home"/*/"Service Worker" \
              "$HOME/vdxg-test/prefix/drive_c/users/Public/AppData/Local/NVIDIA/DXCache" \
              "$HOME/vdxg-test/prefix/drive_c/users/Public/AppData/Local/NVIDIA/GLCache" \
              "$HOME/.nv/ComputeCache"; do

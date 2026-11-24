@@ -202,6 +202,14 @@ struct dxghost {
 	SRWLOCK log_lock;
 	FILE *log_file;
 	bool log_checked;
+	/* Bounds concurrent non-compositor KMT creation/mapping calls and yields
+	 * them briefly while the display compositor is presenting. */
+	SRWLOCK heavy_lock;
+	CONDITION_VARIABLE heavy_cv;
+	uint32_t heavy_active;
+	uint32_t heavy_max;
+	volatile LONG present_active;
+	volatile LONG scanout_proc;
 	volatile LONG closing;
 };
 
@@ -248,6 +256,8 @@ void dxghost_signal_guest_event(struct dxghost *h, uint32_t process,
 				uint64_t guest_event);
 uint32_t dxghost_proc_add(struct dxghost *h, uint64_t guest_pid);
 void dxghost_proc_remove(struct dxghost *h, uint32_t token);
+bool dxghost_heavy_enter(struct dxghost *h, uint32_t process);
+void dxghost_heavy_leave(struct dxghost *h, bool entered);
 
 /* commands.c */
 struct dxghost_msg {

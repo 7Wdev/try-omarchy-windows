@@ -79,6 +79,34 @@ prioritize_kworker() {
     renice -n -20 -p "$p" >/dev/null 2>&1 || true
 }
 
+deprioritize_task() {
+    local task=$1 tid tstat
+
+    tid=${task##*/}
+    IFS= read -r tstat 2>/dev/null < "$task/stat" || return 0
+    set -- ${tstat##*) }
+    [ "${39:-}" = 5 ] && return 0
+    chrt -i -p 0 "$tid" 2>/dev/null || true
+    renice -n 19 -p "$tid" >/dev/null 2>&1 || true
+}
+
+deprioritize_bg_workers() {
+    local pdir=$1 stat task tcomm
+
+    IFS= read -r stat 2>/dev/null < "$pdir/stat" || return 0
+    set -- ${stat##*) }
+    [ "${18:-1}" -ge 6 ] 2>/dev/null || return 0
+    for task in "$pdir"/task/*; do
+        [ -e "$task" ] || continue
+        IFS= read -r tcomm 2>/dev/null < "$task/comm" || continue
+        case "$tcomm" in
+        *d3d12pso*|*dznpso*|*disk'$'*|*llvmpipe*)
+            deprioritize_task "$task"
+            ;;
+        esac
+    done
+}
+
 scan_proc() {
     local pdir p comm task tcomm tid cls prio target
 
@@ -89,7 +117,13 @@ scan_proc() {
         Hyprland)
             for task in "$pdir"/task/*; do
                 [ -e "$task" ] || continue
-                prioritize_thread "$task" rr 2 -20
+                IFS= read -r tcomm 2>/dev/null < "$task/comm" || tcomm=$comm
+                case "$tcomm" in
+                *d3d12pso*|*dznpso*|*disk'$'*|*llvmpipe*)
+                    deprioritize_task "$task" ;;
+                *)
+                    prioritize_thread "$task" rr 2 -20 ;;
+                esac
             done
             ;;
         Xwayland)
@@ -98,6 +132,8 @@ scan_proc() {
                 tid=${task##*/}
                 IFS= read -r tcomm 2>/dev/null < "$task/comm" || tcomm=$comm
                 case "$tid:$tcomm" in
+                *:*d3d12pso*|*:*dznpso*|*:*disk'$'*|*:*llvmpipe*)
+                    deprioritize_task "$task"; continue ;;
                 "$p":*|*:QSGRender*|*:WaylandEvent*)
                     cls=rr; prio=1; target=-15 ;;
                 *)
@@ -114,6 +150,8 @@ scan_proc() {
                 tid=${task##*/}
                 IFS= read -r tcomm 2>/dev/null < "$task/comm" || tcomm=$comm
                 case "$tid:$tcomm" in
+                *:*d3d12pso*|*:*dznpso*|*:*disk'$'*|*:*llvmpipe*)
+                    deprioritize_task "$task"; continue ;;
                 "$p":*|*:QSGRender*|*:WaylandEvent*|*:QQmlThread*)
                     cls=other; prio=0; target=-20 ;;
                 *)
@@ -138,6 +176,9 @@ scan_proc() {
             ;;
         kworker/[0-9]*:[0-9]*)
             prioritize_kworker "$p"
+            ;;
+        *)
+            deprioritize_bg_workers "$pdir"
             ;;
         esac
     done
