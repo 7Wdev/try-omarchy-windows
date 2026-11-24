@@ -1,0 +1,47 @@
+{
+  "schema": 1,
+  "gtkVersion": "4.24.1",
+  "libraryFilename": "libgtk-4.so.1.2400.1",
+  "sourceArchiveSha256": "e98abe720e16129c8c0f50761dee0a2e9ae2478055e31018f6cf977fcf6513e9",
+  "profiles": {
+    "gtk4": {
+      "patchFile": "gtk.patch",
+      "patchSha256": "3ac6e2bc8241d2b9cdbb9eb271a5ba6410ada0299f96d510b484c814da43030a",
+      "files": {
+        "gtk/gtkcssnode.c": {
+          "originalSha256": "d232ef28bd6fbf44208acf5311903e16598bd35a891cc44fbda3803ca35bce78",
+          "patchedSha256": "a8b050f2455092e3f2fb8e35a5bc9a814d83ef004f655791ac5c226eaf6b4910"
+        },
+        "gtk/gtkcssnodeprivate.h": {
+          "originalSha256": "3bd90aa2a251f541e02582f5bd83dd3038b16fd3ef39b5e75bca58d9325da379",
+          "patchedSha256": "2955ca8494599361cbf2a42dfcf8cfa0d859443d6a1e3a4efda629160de4ab4d"
+        },
+        "gtk/gtkcsswidgetnode.c": {
+          "originalSha256": "ccd9bb954e09e0ffba99c481bc2ffb7195cca24266a557b72ad24314e72ae089",
+          "patchedSha256": "e61a36f2a7034839c33eb947cb47377363f5bbbd2b4b9620a1d460eb26df9576"
+        },
+        "gtk/gtkgridview.c": {
+          "originalSha256": "afe45a2e916221509bfcd64db9daee3cae081a835be1a8952b8dd86f9456fb55",
+          "patchedSha256": "6d60bc206821ee035598c1189a2403b04b7357216f17093a1dab2c8e671add3b"
+        },
+        "gtk/gtklistbase.c": {
+          "originalSha256": "26807083db20812588c6debba171d238bba8921938792c5d9e3ef2c48d708ccd",
+          "patchedSha256": "c128889f5b48f531a8a0a9679d5cfa3a7e6a6d3f0ee0b370e6db412bc457e25c"
+        },
+        "gtk/gtklistitemmanager.c": {
+          "originalSha256": "41eac58b79c6c03031aa22281dc63edf2e02a0bec2d9664b4e752df6697eced0",
+          "patchedSha256": "3bd7d586f6c76f0a5d6f8b8526bbf5c534be08683e6eadee09b98fd6121a6d5a"
+        }
+      }
+    }
+  },
+  "runtimeRequiredPaths": [
+    "lib/libgtk-4.so",
+    "lib/libgtk-4.so.1",
+    "lib/libgtk-4.so.1.2400.1"
+  ],
+  "runtimeAliases": {
+    "lib/libgtk-4.so": "libgtk-4.so.1",
+    "lib/libgtk-4.so.1": "libgtk-4.so.1.2400.1"
+  }
+}

@@ -191,6 +191,40 @@ static int32_t __stdcall f_create_sync(void *p)
 
 static int32_t __stdcall f_destroy_sync(void *p) { (void)p; return 0; }
 
+static uint32_t last_shared_sync;
+static void *last_shared_nt;
+
+static int32_t __stdcall f_share_objects(uint32_t count,
+					 const uint32_t *objects, void *oa,
+					 uint32_t access, void **nt)
+{
+	HANDLE ev;
+
+	(void)oa; (void)access;
+	if (count != 1 || !objects || !nt)
+		return (int32_t)0xC000000D;
+	ev = CreateEventA(NULL, FALSE, FALSE, NULL);
+	if (!ev)
+		return (int32_t)0xC0000017;
+	last_shared_sync = objects[0];
+	last_shared_nt = ev;
+	*nt = ev;
+	return 0;
+}
+
+static int32_t __stdcall f_open_sync(void *p)
+{
+	struct d3dkmt_opensyncobjectfromnthandle2 *a = p;
+
+	if (!last_shared_nt || a->nt_handle != (u64)(uintptr_t)last_shared_nt)
+		return (int32_t)0xC0000008;
+	a->sync_object.v = new_handle();
+	a->monitored_fence.fence_value_cpu_va =
+		(u64)(uintptr_t)(fence_page + 0x10);
+	a->monitored_fence.fence_value_gpu_va = 0xdef000;
+	return 0;
+}
+
 static int32_t __stdcall f_wait_cpu(void *p)
 {
 	struct d3dkmt_waitforsynchronizationobjectfromcpu *w = p;
@@ -365,6 +399,8 @@ static void test_executor(void)
 	kmt.Unlock2 = f_unlock2;
 	kmt.CreateSynchronizationObject2 = f_create_sync;
 	kmt.DestroySynchronizationObject = f_destroy_sync;
+	kmt.OpenSyncObjectFromNtHandle2 = f_open_sync;
+	kmt.ShareObjects = f_share_objects;
 	kmt.WaitForSynchronizationObjectFromCpu = f_wait_cpu;
 	kmt.Escape = f_escape;
 	vmm.map = vmm_map;
@@ -782,6 +818,60 @@ static void test_executor(void)
 		CHECK((fence1 & ~4095ull) == (fence2 & ~4095ull));
 		CHECK((fence1 & 4095) == 0x10 && (fence2 & 4095) == 0x18);
 		CHECK(r->fence_gpu_va == 0xabc000);
+	}
+
+	/* Cross-process shared monitored fence: CREATENTSHAREDOBJECT + OPENSYNCOBJECT. */
+	{
+		struct dxgkvmb_command_createntsharedobject *cs;
+		struct dxgkvmb_command_opensyncobject *o;
+		struct dxgkvmb_command_opensyncobject_return *or_ =
+			(void *)res_buf;
+		struct dxgkvmb_command_destroysyncobject *ds;
+		uint32_t before = maps, s_open;
+
+		cs = msg(sizeof(*cs));
+		global(cs, DXGK_VMBCOMMAND_CREATENTSHAREDOBJECT, p1);
+		cs->object.v = s1;
+		CHECK(run(h, sizeof(*cs), 4).status == VIRTIO_DXG_OK);
+		CHECK(((struct d3dkmthandle *)res_buf)->v == s1);
+
+		o = msg(sizeof(*o));
+		global(o, DXGK_VMBCOMMAND_OPENSYNCOBJECT, p2);
+		o->device.v = d2;
+		o->global_sync_object.v = s1;
+		o->flags.shared = 1;
+		o->flags.nt_security_sharing = 1;
+		o->flags.no_signal = 1;
+		CHECK(!dxghost_try_inline(h, VIRTIO_DXG_CHANNEL_GLOBAL,
+					  msg_buf,
+					  sizeof(struct dxgvmb_ext_header) +
+					  sizeof(*o), res_buf, sizeof(*or_),
+					  &resp));
+		CHECK(run(h, sizeof(*o), sizeof(*or_)).status == VIRTIO_DXG_OK);
+		CHECK(or_->status.v == 0 && or_->sync_object.v != 0 &&
+		      or_->sync_object.v != s1);
+		CHECK(or_->gpu_virtual_address == 0xdef000);
+		CHECK(or_->guest_cpu_physical_address == fence1);
+		CHECK(maps == before);	/* shared fence page refcounted */
+		s_open = or_->sync_object.v;
+
+		/* Bogus global sync object is rejected. */
+		o = msg(sizeof(*o));
+		global(o, DXGK_VMBCOMMAND_OPENSYNCOBJECT, p2);
+		o->device.v = d2;
+		o->global_sync_object.v = 0x7777;
+		o->flags.shared = 1;
+		o->flags.nt_security_sharing = 1;
+		run(h, sizeof(*o), sizeof(*or_));
+		CHECK(or_->status.v == DXG_STATUS_INVALID_HANDLE &&
+		      or_->sync_object.v == 0);
+
+		/* Destroy p2's opened handle so p1's teardown drops refs to 0. */
+		ds = msg(sizeof(*ds));
+		global(ds, DXGK_VMBCOMMAND_DESTROYSYNCOBJECT, p2);
+		ds->sync_object.v = s_open;
+		run(h, sizeof(*ds), 4);
+		CHECK(status_of() == 0);
 	}
 
 	/* Repeated async CPU waits recycle the pool and fire inline when ready. */

@@ -155,6 +155,10 @@ def main():
               (hook.parents[2] / 'mesa/versions' /
                (hook.parents[2] / 'mesa/CURRENT').read_text().strip() /
                'recipe.json').read_bytes())
+        entry(out, 'virtio-dxg/gtk-recipe.json', 0o100644,
+              (hook.parents[2] / 'gtk/versions' /
+               (hook.parents[2] / 'gtk/CURRENT').read_text().strip() /
+               'recipe.json').read_bytes())
         entry(out, 'TRAILER!!!', 0)
         out.write(b'\0' * ((512 - out.tell() % 512) % 512))
     print('%s: LATEHOOKS now %s' % (output, re.search(

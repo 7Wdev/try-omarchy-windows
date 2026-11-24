@@ -424,6 +424,7 @@ class DesktopData(unittest.TestCase):
                 ('-DBUILD_GAPP_HOLD', ['-shared', '-fPIC'], 'libvdxg-gapp-hold.so', ['-ldl', '-lpthread']),
                 ('-DBUILD_WL_GATE', ['-shared', '-fPIC'], 'libvdxg-wl-gate.so', ['-ldl', '-lpthread']),
                 ('-DBUILD_FASTLAUNCH', [], 'vdxg-fastlaunch', []),
+                ('-DBUILD_GSK_WARM', [], 'vdxg-gsk-warm', ['-ldl']),
             ]
             for define, extra_flags, out_name, libs in targets:
                 out_path = self.root / out_name
@@ -445,6 +446,61 @@ class DesktopData(unittest.TestCase):
         self.assertIn('--no-startup-window', text)
         self.assertIn('resolve_hosts', text)
         self.assertIn('fast_chromium', helpers)
+
+    def test_gtk_cohort_extract_and_rejection(self):
+        gtk_build = module('gtk_record_build', HERE.parent / 'gtk/record_build.py')
+        gtk_version = (HERE.parent / 'gtk/CURRENT').read_text(encoding='utf-8').strip()
+        gtk_recipe = json.loads((HERE.parent / 'gtk/versions' / gtk_version / 'recipe.json').read_text())
+        source = self.root / 'gtk-src'
+        source.mkdir()
+        (source / 'meson.build').write_text(f"project('gtk', 'c', version: '{gtk_version}')\n", encoding='utf-8')
+        recipe_dir = self.root / 'gtk-recipe'
+        recipe_dir.mkdir()
+        (recipe_dir / 'recipe.json').write_text(json.dumps(gtk_recipe), encoding='utf-8')
+        stage = self.root / 'gtk-stage'
+        (stage / 'lib').mkdir(parents=True)
+        lib = stage / gtk_recipe['runtimeRequiredPaths'][-1]
+        lib.write_bytes(b'CPU GTK fixture\n')
+        for alias, target in gtk_recipe['runtimeAliases'].items():
+            (stage / alias).symlink_to(target)
+        gtk_build.record(source, stage, recipe_dir)
+
+        tar_path = self.root / 'gtk4-virtio-dxg.tar'
+        with tarfile.open(tar_path, 'w', dereference=False) as tar:
+            tar.add(stage / 'lib', arcname='lib')
+        dest = self.root / 'gtk-installed'
+        self.assertEqual(payload.extract_gtk(tar_path, dest, recipe_dir / 'recipe.json'), gtk_version)
+        self.assertTrue((dest / 'lib/libgtk-4.so.1').is_symlink())
+
+        lib.write_bytes(b'tampered gtk4')
+        with tarfile.open(tar_path, 'w', dereference=False) as tar:
+            tar.add(stage / 'lib', arcname='lib')
+        with self.assertRaisesRegex(ValueError, 'Changed component'):
+            payload.extract_gtk(tar_path, self.root / 'gtk-bad', recipe_dir / 'recipe.json')
+
+    def test_desktop_boost_gtkcss_and_gsk_warm_wiring(self):
+        cfg = self.root / 'cfg'
+        css_file = cfg / 'gtk-4.0/gtk.css'
+        css_file.parent.mkdir(parents=True)
+        css_file.write_text('@import "omarchy.css";\n', encoding='utf-8')
+        cmdline = self.root / 'cmdline'
+        cmdline.write_text('quiet virtio_dxg.desktop=1\n', encoding='utf-8')
+        env = dict(os.environ, XDG_CONFIG_HOME=str(cfg), VDXG_PROC_CMDLINE=str(cmdline))
+        script = str(HERE / 'initcpio/desktop-boost')
+        subprocess.run(['bash', script, 'gtkcss'], env=env, check=True, timeout=10)
+        text = css_file.read_text(encoding='utf-8')
+        self.assertTrue(text.startswith('@import "omarchy.css";\n'))
+        self.assertIn('.nautilus-image { filter: none; }', text)
+        subprocess.run(['bash', script, 'gtkcss'], env=env, check=True, timeout=10)
+        self.assertEqual(css_file.read_text(encoding='utf-8').count('virtio-dxg icon shadows: begin'), 1)
+        cmdline.write_text('quiet virtio_dxg.gtkcss=0\n', encoding='utf-8')
+        subprocess.run(['bash', script, 'gtkcss'], env=env, check=True, timeout=10)
+        self.assertEqual(css_file.read_text(encoding='utf-8'), '@import "omarchy.css";\n')
+
+        hook = (HERE / 'initcpio/virtio_dxg').read_text(encoding='utf-8')
+        self.assertIn('virtio-dxg-gtk-css.service', hook)
+        self.assertIn('gtk4-virtio-dxg.tar', hook)
+        self.assertIn('/run/virtio-dxg-gtk4/lib', hook)
 
 
 if __name__ == '__main__':

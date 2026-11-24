@@ -224,6 +224,8 @@ void dxghost_objtab_free(struct dxghost_objtab *t);
 
 /* CloseHandle() of an NT handle from dxghost_share_resource(); NULL is ok. */
 void dxghost_close_nt(void *nt_handle);
+int32_t dxghost_share_sync(struct dxghost *h, uint32_t sync, void **nt_handle,
+			   bool *monitored);
 
 /* h->lock: dxghost_lock(); dxghost_unlock() runs the deferred work. */
 void dxghost_lock(struct dxghost *h);

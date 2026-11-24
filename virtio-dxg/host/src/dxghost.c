@@ -188,8 +188,8 @@ fail:
 	return -1;
 }
 
-int32_t dxghost_share_resource(struct dxghost *h, uint32_t resource,
-			       void **nt_handle)
+static int32_t share_object(struct dxghost *h, uint32_t handle, uint8_t type,
+			    void **nt_handle, bool *monitored)
 {
 	struct dxghost_obj *o;
 	int32_t status;
@@ -204,23 +204,38 @@ int32_t dxghost_share_resource(struct dxghost *h, uint32_t resource,
 	} oa = { sizeof(oa) };
 
 	*nt_handle = NULL;
+	if (monitored)
+		*monitored = false;
 	if (!h->kmt.ShareObjects)
 		return (int32_t)0xC00000BBL;	/* STATUS_NOT_SUPPORTED */
 	dxghost_lock(h);
-	o = dxghost_obj_find(h, resource);
-	if (!o || o->type != OBJ_RESOURCE) {
+	o = dxghost_obj_find(h, handle);
+	if (!o || o->type != type) {
 		dxghost_unlock(h);
 		return (int32_t)0xC0000008L;	/* STATUS_INVALID_HANDLE */
 	}
+	if (monitored)
+		*monitored = o->gpa != 0;
 	/*
-	 * Under the lock, so the guest cannot destroy the resource meanwhile;
+	 * Under the lock, so the guest cannot destroy the object meanwhile;
 	 * the NT handle keeps it alive afterwards. GENERIC_ALL, as
 	 * ID3D12Device::CreateSharedHandle asks.
 	 */
-	status = h->kmt.ShareObjects(1, &resource, &oa, 0x10000000u,
-				     nt_handle);
+	status = h->kmt.ShareObjects(1, &handle, &oa, 0x10000000u, nt_handle);
 	dxghost_unlock(h);
 	return status;
+}
+
+int32_t dxghost_share_resource(struct dxghost *h, uint32_t resource,
+			       void **nt_handle)
+{
+	return share_object(h, resource, OBJ_RESOURCE, nt_handle, NULL);
+}
+
+int32_t dxghost_share_sync(struct dxghost *h, uint32_t sync, void **nt_handle,
+			   bool *monitored)
+{
+	return share_object(h, sync, OBJ_SYNC, nt_handle, monitored);
 }
 
 void dxghost_close_nt(void *nt_handle)

@@ -5,6 +5,7 @@
  *   -DBUILD_WL_GATE     -> libvdxg-wl-gate.so    (pauses pre-warmed app on 1st toplevel commit)
  *   -DBUILD_FASTLAUNCH  -> vdxg-fastlaunch       (< 1 ms C IPC client for Chromium, VS Code,
  *                                                 terminals, and gated apps)
+ *   -DBUILD_GSK_WARM    -> vdxg-gsk-warm         (prewarms GSK GL/d3d12 shader & PSO caches)
  */
 #define _GNU_SOURCE
 #include <errno.h>
@@ -1636,6 +1637,157 @@ int main(int argc, char **argv)
     if (rc == 11)
         return exec_original(app, app_argv);
     return rc;
+}
+
+#endif
+
+#ifdef BUILD_GSK_WARM
+/*
+ * Warms GSK's GL/d3d12 shader & PSO caches before Nautilus starts so menus,
+ * popovers, rounded clips, shadows, blurs, and opacity transitions render at
+ * full frame rate from the very first frame.
+ */
+typedef struct { float x, y; } gsk_pt_t;
+typedef struct { float x, y, w, h; } gsk_rect_t;
+typedef struct { gsk_rect_t bounds; gsk_pt_t corner[4]; } gsk_rrect_t;
+typedef struct { float r, g, b, a; } gsk_rgba_t;
+typedef struct { float offset; gsk_rgba_t color; } gsk_stop_t;
+
+#define GSK_LOAD(sym) ({ void *_p = dlsym(gtk, #sym); memcpy(&(fn_##sym), &_p, sizeof(_p)); _p != NULL; })
+
+int main(void)
+{
+    void *gtk = dlopen("libgtk-4.so.1", RTLD_LAZY | RTLD_LOCAL);
+    if (!gtk)
+        return 1;
+
+    void (*fn_gtk_init)(void);
+    void *(*fn_gdk_display_get_default)(void);
+    void *(*fn_gsk_gl_renderer_new)(void);
+    int (*fn_gsk_renderer_realize_for_display)(void *, void *, void **);
+    void (*fn_gsk_renderer_unrealize)(void *);
+    void *(*fn_gsk_renderer_render_texture)(void *, void *, const gsk_rect_t *);
+    void (*fn_gsk_render_node_unref)(void *);
+    void *(*fn_gsk_container_node_new)(void **, unsigned);
+    void *(*fn_gsk_color_node_new)(const gsk_rgba_t *, const gsk_rect_t *);
+    void *(*fn_gsk_texture_node_new)(void *, const gsk_rect_t *);
+    void *(*fn_gsk_rounded_clip_node_new)(void *, const gsk_rrect_t *);
+    void *(*fn_gsk_outset_shadow_node_new)(const gsk_rrect_t *, const gsk_rgba_t *, float, float, float, float);
+    void *(*fn_gsk_inset_shadow_node_new)(const gsk_rrect_t *, const gsk_rgba_t *, float, float, float, float);
+    void *(*fn_gsk_blur_node_new)(void *, float);
+    void *(*fn_gsk_opacity_node_new)(void *, float);
+    void *(*fn_gsk_cross_fade_node_new)(void *, void *, float);
+    void *(*fn_gsk_linear_gradient_node_new)(const gsk_rect_t *, const gsk_pt_t *, const gsk_pt_t *, const gsk_stop_t *, size_t);
+    void *(*fn_gsk_color_matrix_node_new)(void *, const float *, const float *);
+    void *(*fn_gsk_border_node_new)(const gsk_rrect_t *, const float[4], const gsk_rgba_t[4]);
+    void *(*fn_gdk_memory_texture_new)(int, int, int, void *, size_t);
+    void *(*fn_g_bytes_new_static)(const void *, size_t);
+    void (*fn_g_bytes_unref)(void *);
+    void (*fn_g_object_unref)(void *);
+
+    if (!GSK_LOAD(gtk_init) ||
+        !GSK_LOAD(gdk_display_get_default) ||
+        !GSK_LOAD(gsk_gl_renderer_new) ||
+        !GSK_LOAD(gsk_renderer_realize_for_display) ||
+        !GSK_LOAD(gsk_renderer_unrealize) ||
+        !GSK_LOAD(gsk_renderer_render_texture) ||
+        !GSK_LOAD(gsk_render_node_unref) ||
+        !GSK_LOAD(gsk_container_node_new) ||
+        !GSK_LOAD(gsk_color_node_new) ||
+        !GSK_LOAD(gsk_texture_node_new) ||
+        !GSK_LOAD(gsk_rounded_clip_node_new) ||
+        !GSK_LOAD(gsk_outset_shadow_node_new) ||
+        !GSK_LOAD(gsk_inset_shadow_node_new) ||
+        !GSK_LOAD(gsk_blur_node_new) ||
+        !GSK_LOAD(gsk_opacity_node_new) ||
+        !GSK_LOAD(gsk_cross_fade_node_new) ||
+        !GSK_LOAD(gsk_linear_gradient_node_new) ||
+        !GSK_LOAD(gsk_color_matrix_node_new) ||
+        !GSK_LOAD(gsk_border_node_new) ||
+        !GSK_LOAD(gdk_memory_texture_new) ||
+        !GSK_LOAD(g_bytes_new_static) ||
+        !GSK_LOAD(g_bytes_unref) ||
+        !GSK_LOAD(g_object_unref)) {
+        dlclose(gtk);
+        return 1;
+    }
+
+    fn_gtk_init();
+    void *dpy = fn_gdk_display_get_default();
+    if (!dpy) {
+        dlclose(gtk);
+        return 1;
+    }
+    void *renderer = fn_gsk_gl_renderer_new();
+    if (!renderer || !fn_gsk_renderer_realize_for_display(renderer, dpy, NULL)) {
+        if (renderer)
+            fn_g_object_unref(renderer);
+        dlclose(gtk);
+        return 1;
+    }
+
+    static const uint32_t pixels[16 * 16] = {
+        0xffffffffu, 0x804080ffu, 0xff2060a0u, 0x40102030u,
+    };
+    void *bytes = fn_g_bytes_new_static(pixels, sizeof(pixels));
+    void *memtex = fn_gdk_memory_texture_new(16, 16, 0, bytes, 16 * 4);
+    fn_g_bytes_unref(bytes);
+
+    gsk_rect_t vp = { 0.0f, 0.0f, 64.0f, 64.0f };
+    gsk_rect_t box = { 4.0f, 4.0f, 48.0f, 48.0f };
+    gsk_rrect_t rbox = {
+        box,
+        { { 8.0f, 8.0f }, { 8.0f, 8.0f }, { 8.0f, 8.0f }, { 8.0f, 8.0f } }
+    };
+    gsk_rgba_t c1 = { 0.2f, 0.4f, 0.8f, 0.9f };
+    gsk_rgba_t c2 = { 0.9f, 0.2f, 0.3f, 0.75f };
+    gsk_rgba_t sh = { 0.0f, 0.0f, 0.0f, 0.45f };
+    gsk_stop_t stops[2] = { { 0.0f, c1 }, { 1.0f, c2 } };
+    gsk_pt_t p0 = { 4.0f, 4.0f }, p1 = { 52.0f, 52.0f };
+    float bw[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+    gsk_rgba_t bc[4] = { c1, c1, c1, c1 };
+    float mat[16] = {
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        0.0f, 0.0f, 0.0f, 0.85f
+    };
+    float off[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+
+    void *n_col = fn_gsk_color_node_new(&c1, &box);
+    void *n_col2 = fn_gsk_color_node_new(&c2, &box);
+    void *n_tex = fn_gsk_texture_node_new(memtex, &box);
+    void *n_grad = fn_gsk_linear_gradient_node_new(&box, &p0, &p1, stops, 2);
+    void *n_rclip = fn_gsk_rounded_clip_node_new(n_tex, &rbox);
+    void *n_outset = fn_gsk_outset_shadow_node_new(&rbox, &sh, 0.0f, 2.0f, 0.0f, 6.0f);
+    void *n_inset = fn_gsk_inset_shadow_node_new(&rbox, &sh, 0.0f, 1.0f, 0.0f, 3.0f);
+    void *n_blur = fn_gsk_blur_node_new(n_col, 4.0f);
+    void *n_opac = fn_gsk_opacity_node_new(n_grad, 0.7f);
+    void *n_xfade = fn_gsk_cross_fade_node_new(n_col, n_col2, 0.5f);
+    void *n_cmat = fn_gsk_color_matrix_node_new(n_tex, mat, off);
+    void *n_border = fn_gsk_border_node_new(&rbox, bw, bc);
+
+    void *children[] = {
+        n_outset, n_rclip, n_inset, n_blur, n_opac, n_xfade, n_cmat, n_border
+    };
+    void *root = fn_gsk_container_node_new(children, sizeof(children) / sizeof(children[0]));
+    void *out_tex = fn_gsk_renderer_render_texture(renderer, root, &vp);
+    if (out_tex)
+        fn_g_object_unref(out_tex);
+
+    for (size_t i = 0; i < sizeof(children) / sizeof(children[0]); i++)
+        fn_gsk_render_node_unref(children[i]);
+    fn_gsk_render_node_unref(root);
+    fn_gsk_render_node_unref(n_grad);
+    fn_gsk_render_node_unref(n_tex);
+    fn_gsk_render_node_unref(n_col2);
+    fn_gsk_render_node_unref(n_col);
+    fn_g_object_unref(memtex);
+
+    fn_gsk_renderer_unrealize(renderer);
+    fn_g_object_unref(renderer);
+    dlclose(gtk);
+    return 0;
 }
 
 #endif

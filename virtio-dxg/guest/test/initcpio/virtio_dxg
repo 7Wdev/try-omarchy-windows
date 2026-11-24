@@ -120,13 +120,14 @@ setup_desktop() {
         /virtio-dxg/xdg-settings-fast /virtio-dxg/app-fastlaunch \
         /virtio-dxg/omarchy_ui_boost.py \
         /virtio-dxg/vdxg_boost_helpers.c /virtio-dxg/mesa-recipe.json \
-        /run/virtio-dxg/ || return 1
+        /virtio-dxg/gtk-recipe.json /run/virtio-dxg/ || return 1
     chmod 0755 /run/virtio-dxg/desktop-boost /run/virtio-dxg/xdg-settings-fast \
         /run/virtio-dxg/app-prefetch /run/virtio-dxg/browser-boost \
         /run/virtio-dxg/app-fastlaunch 2>/dev/null || true
     mount -o bind /run /new_root/run || return 1
     payload_bound=
-    if [ -f /run/virtio-dxg/payload/mesa-virtio-dxg.tar ]; then
+    if [ -f /run/virtio-dxg/payload/mesa-virtio-dxg.tar ] || \
+       [ -f /run/virtio-dxg/payload/gtk4-virtio-dxg.tar ]; then
         mount -o bind /run/virtio-dxg/payload /new_root/run/virtio-dxg/payload && payload_bound=1
     fi
     # Window buffers (the guest module offers them unless
@@ -161,6 +162,27 @@ setup_desktop() {
     if [ -n "$fastlaunch" ]; then
         chroot /new_root /usr/bin/python3 /run/virtio-dxg/omarchy_ui_boost.py / || true
     fi
+    gtk_lib=
+    gtk_tarball=
+    case " $(cat /proc/cmdline) " in
+    *" virtio_dxg.gtk=0 "*) ;;
+    *)
+        for f in /run/virtio-dxg/payload/gtk4-virtio-dxg.tar \
+                 /mnt/vdxgshare/out/gtk4-virtio-dxg.tar; do
+            case $f in /run/*) src=$f ;; *) src=/new_root$f ;; esac
+            [ -f "$src" ] && { gtk_tarball=$f; break; }
+        done
+        if [ -n "$gtk_tarball" ] && [ -f /run/virtio-dxg/gtk-recipe.json ]; then
+            if chroot /new_root /usr/bin/python3 /run/virtio-dxg/desktop_payload.py \
+                    --gtk-only "$gtk_tarball" /run/virtio-dxg-gtk4 \
+                    --recipe /run/virtio-dxg/gtk-recipe.json; then
+                gtk_lib=/run/virtio-dxg-gtk4/lib
+            else
+                echo ":: virtio-dxg: GTK payload rejected; keeping system GTK" >&2
+            fi
+        fi
+        ;;
+    esac
     [ -n "$payload_bound" ] && umount /new_root/run/virtio-dxg/payload
     umount /new_root/run || return 1
     stage_wsl_tmpfs || true
@@ -195,7 +217,7 @@ setup_desktop() {
     fi
     printf '%s\n' GALLIUM_DRIVER=d3d12 "$clients" "$xwayland" \
         MESA_D3D12_DEFAULT_ADAPTER_NAME=NVIDIA LIBVA_DRIVER_NAME=d3d12 \
-        "LD_LIBRARY_PATH=$m/lib:/usr/lib/wsl/lib:/usr/lib/wsl/core" \
+        "LD_LIBRARY_PATH=${gtk_lib:+$gtk_lib:}$m/lib:/usr/lib/wsl/lib:/usr/lib/wsl/core" \
         "LIBGL_DRIVERS_PATH=$m/lib/dri" "GBM_BACKENDS_PATH=$m/lib/gbm" \
         "LIBVA_DRIVERS_PATH=$m/lib/dri" \
         "VK_ADD_DRIVER_FILES=$m/share/vulkan/icd.d/dzn_icd.x86_64.json" \
@@ -226,6 +248,18 @@ Nice=10
 UNIT
     ln -sf ../virtio-dxg-desktop-priority.service \
         /run/systemd/system/graphical.target.wants/ || return 1
+    mkdir -p /run/systemd/user/graphical-session.target.wants || return 1
+    cat >/run/systemd/user/virtio-dxg-gtk-css.service <<'UNIT'
+[Unit]
+Description=virtio-dxg: GTK 4 user CSS without per-frame icon shadows
+Before=graphical-session.target virtio-dxg-files-boost.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /run/virtio-dxg/desktop-boost gtkcss
+UNIT
+    ln -sf ../virtio-dxg-gtk-css.service \
+        /run/systemd/user/graphical-session.target.wants/ || return 1
     # Applications start faster (virtio_dxg.boost=0 turns this off). Once
     # the desktop is up, what the launcher's applications load is read into
     # the page cache at idle priority (app-prefetch: a first launch reads
@@ -235,7 +269,6 @@ UNIT
     case " $(cat /proc/cmdline) " in
     *" virtio_dxg.boost=0 "*) ;;
     *)
-        mkdir -p /run/systemd/user/graphical-session.target.wants || return 1
         cat >/run/systemd/user/virtio-dxg-app-prefetch.service <<'UNIT'
 [Unit]
 Description=virtio-dxg: launcher applications read ahead into memory
@@ -276,7 +309,7 @@ UNIT
         cat >/run/systemd/user/virtio-dxg-files-boost.service <<'UNIT'
 [Unit]
 Description=virtio-dxg: Files kept ready for instant windows
-After=graphical-session.target
+After=graphical-session.target virtio-dxg-gtk-css.service
 PartOf=graphical-session.target
 
 [Service]
@@ -340,7 +373,7 @@ UNIT
             /run/systemd/system/multi-user.target.wants/ || return 1
         ;;
     esac
-    echo ":: virtio-dxg: desktop selects d3d12 (Mesa $(cat "$m/lib/virtio-dxg-mesa-version")${winbuf:+, zero-copy windows})"
+    echo ":: virtio-dxg: desktop selects d3d12 (Mesa $(cat "$m/lib/virtio-dxg-mesa-version")${winbuf:+, zero-copy windows}${gtk_lib:+, GTK 4 $(cat /run/virtio-dxg-gtk4/lib/virtio-dxg-gtk-version)})"
 }
 
 # System tools (lspci, fastfetch, desktop info) name PCI devices from the

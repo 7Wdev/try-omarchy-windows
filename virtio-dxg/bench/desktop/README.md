@@ -42,31 +42,46 @@ clipped grid items), each a CreateAllocation, MapGpuVirtualAddress and
 DestroyAllocation on the host (~20 ms per frame), lane threads woken from
 sleep for each (a CreateAllocation blocked 6.5 ms), and destroys waited for.
 
-Then, in a larger window (second VM, Files 1896x1013, notches every 8 ms,
-kernel 7.3.5, Mesa 26.3.1):
+Then, in a larger window (Files `1896x1013`, 3,000 entries `/tmp/navtest`,
+`1920x1080@240Hz`, kernel `7.3.5-arch1-1`, Mesa `26.3.1`, RTX 5090 Laptop GPU):
 
-| Files, 3,000 entries, 1896x1013 | Frame rate | Corrupted icons |
-| --- | --- | --- |
-| Texture recycling, no threaded context | 41–42 fps | |
-| Constant-buffer views staged in a CPU heap | 54–65 fps | 0 of 879 |
-| Plus texture-cache buckets, budget read every 50 ms | 61–69 fps | 0 of 614 |
+| Files, 3,000 entries, `1896x1013` | Wheel 25 ms | Wheel 8 ms | Hi-res 15 (4 ms / 2 ms) | Corrupted icons |
+| --- | --- | --- | --- | --- |
+| Texture recycling, no threaded context | – | 41–42 fps | – | – |
+| Constant-buffer views staged in a CPU heap | – | 54–65 fps | – | 0 of 879 |
+| Plus texture-cache buckets, budget read every 50 ms | – | 61–69 fps | – | 0 of 614 |
+| Baseline `c13c540` | 59 fps (17.2 ms med) | 81 fps (12.4 ms med) | 145 fps (5.7 ms med) / – | – |
+| Plus `LX_DXVIRTIOWINBUFSYNC`, GTK 4.24.1 cohort, CSS/Files boost | 63 fps (21.3 ms med) | 166 fps (5.0 ms med) | 172 fps (5.0 ms med) / 213 fps (4.2 ms med) | 0 of 1628 |
 
-17% of Files' main thread was NVIDIA's `CreateConstantBufferView` reading
-back each descriptor it had just written into the shader-visible heap,
-GPU memory the guest maps write-combined: microseconds per read.
-A `perf record` while `navscroll.py` ran found it; a breakpoint on the hot instruction showed the 32-byte steps through
-the 256 KB heap. Mesa now builds those views in a CPU-only heap and copies
-them, as it already did for textures. `QMP_PORT` (default 4444) points
-`navscroll.py` at another VM's QMP, `NAVSCROLL_SECS` sets the scroll
-length, and `iconcheck.py` finds the icon columns itself.
+With deadline-paced 240 Hz input (`3.8 ms` interval, `NAVSCROLL_HIRES=15`,
+QMP `TCP_NODELAY`), scrolling measures **`226.2 fps` overall** (`1276` frames
+in `5.64 s`; median gap `4.14 ms`, p95 `7.80 ms`; client `done -> commit`
+`1.6 ms` p50 / `2.1 ms` mean; compositor `2.4 ms` p50 / `2.3 ms` mean),
+symmetrical across downward (`224.7 fps`, `4.17 ms` median) and upward
+(`227.7 fps`, `4.07 ms` median) scrolling. In the same configuration: context
+menu opens in `29–49 ms` (`6.3–9.5 ms` warm worst gap across `menuanim.py`),
+list-view hi-res scroll runs at `207 fps` (`4.2 ms` median), header menu (`F10`)
+runs at `202 fps`, rubberband drag selection runs at `197 fps` (`4.2 ms`
+median), grid/list switches run at `162–170 fps`, and `iconcheck.py` reports
+`0` corrupted of `1,628` icons (`32` captures across 4 runs).
 
-What is left per frame (off-CPU profile of Files' main thread): GTK's own
-work (layout, text shaping of items scrolling in, about 60% of its CPU),
-waits for the GPU at each window-buffer flush, CreateAllocation replies
-that sometimes arrive milliseconds late, and short GObject lock waits
-against Files' worker threads. From the Wayland trace, a frame is about
-8.8 ms in Files (frame callback to commit) and 3.1 ms in the compositor
-(commit to the next callback), medians.
+17% of Files' main thread before the CPU-heap CBV fix was NVIDIA's
+`CreateConstantBufferView` reading back each descriptor it had just written
+into the shader-visible heap, GPU memory the guest maps write-combined:
+microseconds per read. A `perf record` while `navscroll.py` ran found it; a
+breakpoint on the hot instruction showed the 32-byte steps through the 256 KB
+heap. Mesa now builds those views in a CPU-only heap and copies them, as it
+already did for textures. Adding `LX_DXVIRTIOWINBUFSYNC` host/kernel GPU fence
+sync, Mesa flush coalescing, `virtio-dxg-gtk-css.service` (disabling per-icon
+drop-shadow offscreens via `gtk-4.0/gtk.css`), `virtio-dxg-files-boost.service`,
+and the GTK `4.24.1` cohort (CSS subtree pruning, `cache_change`-aware style
+cache preservation, cached grid border spacing, visible-range sliding window
+in `gtklistbase.c`, and unchanged-range fast path in `gtklistitemmanager.c`)
+eliminated upward-scroll sawtooth widget thrashing and cut client frame time
+from `7.6 ms` (`c13c540`) to `2.1 ms` mean (`1.6 ms` p50).
+`QMP_PORT` (default 4444) points `navscroll.py` at another VM's QMP,
+`NAVSCROLL_SECS` sets the scroll length, and `iconcheck.py` finds the icon
+columns itself.
 
 Tried and dropped, each measured with alternating runs: batching
 asynchronous kicks (`kick_delay_us`, slower), keeping vCPUs from halting

@@ -22,6 +22,7 @@
 #include "dxgvmbus.h"
 #include "dxgsyncfile.h"
 #ifdef DXG_VIRTIO
+#include <linux/atomic.h>
 #include <linux/dma-buf.h>
 #include <linux/hashtable.h>
 #include "virtio_dxg.h"
@@ -5723,6 +5724,9 @@ struct dxgwinbuf {
 	struct hlist_node	node;
 	struct inode		*inode;
 	struct file		*resource;
+	struct file		*sync;
+	u64			fence_value;
+	u64			sync_id;
 };
 
 /* Read-only marker: user space selects window buffers when it exists. */
@@ -5732,12 +5736,15 @@ MODULE_PARM_DESC(winbuf, "Zero-copy window buffers (LX_DXVIRTIOWINBUF) are offer
 
 static DEFINE_HASHTABLE(dxgwinbuf_ht, 8);
 static DEFINE_MUTEX(dxgwinbuf_lock);
+static atomic64_t dxgwinbuf_sync_seq = ATOMIC64_INIT(0);
 
 static void dxgwinbuf_free(struct dxgwinbuf *w)
 {
 	hash_del(&w->node);
 	iput(w->inode);
 	fput(w->resource);
+	if (w->sync)
+		fput(w->sync);
 	kfree(w);
 }
 
@@ -5859,6 +5866,112 @@ dxgkio_virtio_winbuf(struct dxgprocess *process, void *__user inargs)
 	dma_buf_put(dmabuf);
 	return ret;
 }
+
+static int
+dxgkio_virtio_winbuf_sync(struct dxgprocess *process, void *__user inargs)
+{
+	struct d3dkmt_virtiowinbuf_sync args;
+	struct d3dkmt_virtiowinbuf_sync __user *user = inargs;
+	struct dxgwinbuf *w;
+	struct dma_buf *dmabuf;
+	struct file *sync, *drop = NULL;
+	u64 sid;
+	int ret = 0, fd;
+
+	if (copy_from_user(&args, inargs, sizeof(args)))
+		return -EFAULT;
+	dmabuf = dma_buf_get(args.dmabuf_fd);
+	if (IS_ERR(dmabuf))
+		return PTR_ERR(dmabuf);
+
+	switch (args.op) {
+	case D3DKMT_VIRTIOWINBUFSYNC_PUBLISH:
+		sync = fget(args.sync_fd);
+		if (!sync) {
+			ret = -EBADF;
+			break;
+		}
+		if (sync->f_op != &dxg_syncobj_fops) {
+			fput(sync);
+			ret = -EINVAL;
+			break;
+		}
+		mutex_lock(&dxgwinbuf_lock);
+		w = dxgwinbuf_find(dmabuf);
+		if (!w) {
+			mutex_unlock(&dxgwinbuf_lock);
+			fput(sync);
+			ret = -ENOENT;
+			break;
+		}
+		if (w->sync == sync) {
+			sid = w->sync_id;
+			w->fence_value = args.fence_value;
+			drop = sync;
+		} else {
+			drop = w->sync;
+			w->sync = sync;
+			sid = (u64)atomic64_inc_return(&dxgwinbuf_sync_seq);
+			w->sync_id = sid;
+			w->fence_value = args.fence_value;
+		}
+		mutex_unlock(&dxgwinbuf_lock);
+		if (drop)
+			fput(drop);
+		if (copy_to_user(&user->sync_id, &sid, sizeof(sid)))
+			ret = -EFAULT;
+		break;
+	case D3DKMT_VIRTIOWINBUFSYNC_QUERY:
+		mutex_lock(&dxgwinbuf_lock);
+		w = dxgwinbuf_find(dmabuf);
+		if (!w) {
+			mutex_unlock(&dxgwinbuf_lock);
+			ret = -ENOENT;
+			break;
+		}
+		if (!w->sync) {
+			args.sync_fd = -1;
+			args.fence_value = 0;
+			args.sync_id = 0;
+			mutex_unlock(&dxgwinbuf_lock);
+			if (copy_to_user(inargs, &args, sizeof(args)))
+				ret = -EFAULT;
+			break;
+		}
+		if (args.sync_id && args.sync_id == w->sync_id) {
+			args.sync_fd = -1;
+			args.fence_value = w->fence_value;
+			args.sync_id = w->sync_id;
+			mutex_unlock(&dxgwinbuf_lock);
+			if (copy_to_user(inargs, &args, sizeof(args)))
+				ret = -EFAULT;
+			break;
+		}
+		sync = get_file(w->sync);
+		args.fence_value = w->fence_value;
+		args.sync_id = w->sync_id;
+		mutex_unlock(&dxgwinbuf_lock);
+		fd = get_unused_fd_flags(O_CLOEXEC);
+		if (fd < 0) {
+			fput(sync);
+			ret = fd;
+			break;
+		}
+		args.sync_fd = fd;
+		if (copy_to_user(inargs, &args, sizeof(args))) {
+			put_unused_fd(fd);
+			fput(sync);
+			ret = -EFAULT;
+			break;
+		}
+		fd_install(fd, sync);
+		break;
+	default:
+		ret = -EINVAL;
+	}
+	dma_buf_put(dmabuf);
+	return ret;
+}
 #endif
 
 static struct ioctl_desc ioctls[] = {
@@ -5954,6 +6067,7 @@ static struct ioctl_desc ioctls[] = {
 	/* virtio-dxg's own, away from upstream's numbers */
 	[0x80] = {dxgkio_virtio_scanout, LX_DXVIRTIOSCANOUT},
 	[0x81] = {dxgkio_virtio_winbuf, LX_DXVIRTIOWINBUF},
+	[0x82] = {dxgkio_virtio_winbuf_sync, LX_DXVIRTIOWINBUFSYNC},
 #endif
 };
 

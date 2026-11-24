@@ -1,0 +1,754 @@
+--- a/gtk/gtkcssnode.c
++++ b/gtk/gtkcssnode.c
+@@ -126,10 +126,32 @@
+ static guint invalidated_nodes_counter;
+ static guint created_styles_counter;
+ 
++static inline void
++gtk_css_node_invalidate_subtree_change (GtkCssNode *node)
++{
++  if (node == NULL)
++    return;
++
++  node->subtree_valid = FALSE;
++  for (node = node->parent; node && node->subtree_valid; node = node->parent)
++    node->subtree_valid = FALSE;
++}
++
++static inline GtkCssChange
++_gtk_css_change_from_child (GtkCssChange child_mask)
++{
++  const GtkCssChange base = GTK_CSS_CHANGE_ANY_SELF | GTK_CSS_CHANGE_ANY_SIBLING;
++  const GtkCssChange keep = ~(base | GTK_CSS_CHANGE_SOURCE | GTK_CSS_CHANGE_PARENT_STYLE);
++  return (child_mask & keep) | ((child_mask >> GTK_CSS_CHANGE_PARENT_SHIFT) & base);
++}
++
+ static void
+ gtk_css_node_set_invalid (GtkCssNode *node,
+                           gboolean    invalid)
+ {
++  if (invalid)
++    gtk_css_node_invalidate_subtree_change (node);
++
+   if (node->invalid == invalid)
+     return;
+ 
+@@ -238,6 +260,7 @@
+   gtk_css_node_set_invalid (cssnode, FALSE);
+ 
+   g_clear_pointer (&cssnode->cache, gtk_css_node_style_cache_unref);
++  cssnode->cache_change = 0;
+ 
+  if (cssnode->children_observer)
+    gtk_list_list_model_clear (cssnode->children_observer);
+@@ -327,6 +350,7 @@
+   if (node->cache == NULL)
+     return NULL;
+ 
++  node->cache_change = GTK_CSS_CHANGE_ANY;
+   return gtk_css_node_style_cache_get_style (node->cache);
+ }
+ 
+@@ -353,6 +377,20 @@
+                                                  gtk_css_node_is_first_child (node),
+                                                  gtk_css_node_is_last_child (node),
+                                                  style);
++  if (node->cache != NULL)
++    {
++      GtkCssChange dep = _gtk_css_change_from_child (
++          gtk_css_static_style_get_change (GTK_CSS_STATIC_STYLE (style)));
++      GtkCssNode *p;
++
++      for (p = parent; p != NULL; p = p->parent)
++        {
++          if ((dep & ~p->cache_change) == 0)
++            break;
++          p->cache_change |= dep;
++          dep = _gtk_css_change_from_child (dep);
++        }
++    }
+ }
+ 
+ static GtkCssStyle *
+@@ -442,6 +480,7 @@
+       /* Clear the cache again, the static style we looked up above
+        * may have populated it. */
+       g_clear_pointer (&cssnode->cache, gtk_css_node_style_cache_unref);
++      cssnode->cache_change = 0;
+     }
+   else if (static_style != style && (change & GTK_CSS_CHANGE_TIMESTAMP))
+     {
+@@ -497,6 +536,8 @@
+                                 GtkCssNode *node,
+                                 GtkCssNode *previous)
+ {
++  gtk_css_node_invalidate_subtree_change (parent);
++
+   if (node->previous_sibling)
+     node->previous_sibling->next_sibling = node->next_sibling;
+   else
+@@ -517,6 +558,8 @@
+                               GtkCssNode *node,
+                               GtkCssNode *new_previous)
+ {
++  gtk_css_node_invalidate_subtree_change (parent);
++
+   if (new_previous)
+     {
+       node->previous_sibling = new_previous;
+@@ -672,17 +715,16 @@
+ static void
+ gtk_css_node_invalidate_style (GtkCssNode *cssnode)
+ {
++  GtkCssNode *child;
++
+   if (cssnode->style_is_invalid)
+     return;
+ 
+   cssnode->style_is_invalid = TRUE;
+   gtk_css_node_set_invalid (cssnode, TRUE);
+ 
+-  if (cssnode->first_child)
+-    gtk_css_node_invalidate_style (cssnode->first_child);
+-
+-  if (cssnode->next_sibling)
+-    gtk_css_node_invalidate_style (cssnode->next_sibling);
++  for (child = cssnode->first_child; child; child = child->next_sibling)
++    gtk_css_node_invalidate_style (child);
+ }
+ 
+ static void
+@@ -761,21 +803,12 @@
+   if (node->visible)
+     {
+       if (node->next_sibling)
+-        {
+-          if (node->previous_sibling == NULL)
+-            gtk_css_node_invalidate (node->next_sibling, GTK_CSS_CHANGE_FIRST_CHILD);
+-          else
+-            gtk_css_node_invalidate_style (node->next_sibling);
+-        }
++        gtk_css_node_invalidate (node->next_sibling,
++                                 GTK_CSS_CHANGE_ANY_SIBLING
++                                 | GTK_CSS_CHANGE_NTH_CHILD
++                                 | (node->previous_sibling ? 0 : GTK_CSS_CHANGE_FIRST_CHILD));
+       else if (node->previous_sibling)
+-        {
+-          gtk_css_node_invalidate (node->previous_sibling, GTK_CSS_CHANGE_LAST_CHILD);
+-        }
+-    }
+-  else
+-    {
+-      if (node->next_sibling)
+-        gtk_css_node_invalidate_style (node->next_sibling);
++        gtk_css_node_invalidate (node->previous_sibling, GTK_CSS_CHANGE_LAST_CHILD);
+     }
+ 
+   gtk_css_node_invalidate (node, (old_parent != new_parent ? GTK_CSS_CHANGE_ANY_PARENT : 0)
+@@ -881,6 +914,8 @@
+   if (cssnode->style == style)
+     return FALSE;
+ 
++  gtk_css_node_invalidate_subtree_change (cssnode);
++
+   gtk_css_style_change_init (&change, cssnode->style, style);
+ 
+   style_changed = gtk_css_style_change_has_change (&change);
+@@ -906,6 +941,70 @@
+ }
+ 
+ static void
++gtk_css_node_invalidate_children (GtkCssNode   *parent,
++                                  GtkCssChange  change);
++
++static gboolean
++gtk_css_node_try_prune_invalidate (GtkCssNode   *cssnode,
++                                   GtkCssChange  change)
++{
++  if ((change & (GTK_CSS_RADICAL_CHANGE | GTK_CSS_CHANGE_ANIMATIONS)) != 0 ||
++      cssnode->style_is_invalid ||
++      cssnode->needs_propagation)
++    return FALSE;
++
++  if (!cssnode->invalid &&
++      cssnode->subtree_valid &&
++      (change & cssnode->subtree_change) == 0)
++    return TRUE;
++
++  if (GTK_CSS_NODE_GET_CLASS (cssnode)->update_style == gtk_css_node_real_update_style &&
++      GTK_IS_CSS_STATIC_STYLE (cssnode->style) &&
++      (gtk_css_static_style_get_change (GTK_CSS_STATIC_STYLE (cssnode->style)) & change) == 0)
++    {
++      if ((change & cssnode->cache_change) != 0)
++        {
++          g_clear_pointer (&cssnode->cache, gtk_css_node_style_cache_unref);
++          cssnode->cache_change = 0;
++        }
++      gtk_css_node_invalidate_children (cssnode, change);
++      return TRUE;
++    }
++
++  return FALSE;
++}
++
++static void
++gtk_css_node_invalidate_children (GtkCssNode   *parent,
++                                  GtkCssChange  change)
++{
++  GtkCssNode *child;
++  GtkCssChange child_change;
++
++  child_change = _gtk_css_change_for_child (change);
++  if (child_change == 0)
++    return;
++
++  for (child = parent->first_child; child; child = child->next_sibling)
++    {
++      GtkCssChange c = child_change;
++
++      if (!child->invalid)
++        c &= ~GTK_CSS_CHANGE_TIMESTAMP;
++      if (c == 0)
++        continue;
++
++      if (gtk_css_node_try_prune_invalidate (child, c))
++        continue;
++
++      child->pending_changes |= c;
++      parent->needs_propagation = TRUE;
++      if (!child->style_is_invalid)
++        gtk_css_node_invalidate_style (child);
++    }
++}
++
++static void
+ gtk_css_node_propagate_pending_changes (GtkCssNode *cssnode,
+                                         gboolean    style_changed)
+ {
+@@ -924,9 +1023,31 @@
+        child = gtk_css_node_get_next_sibling (child))
+     {
+       child_change = child->pending_changes;
+-      gtk_css_node_invalidate (child, change);
++      if (change != 0 &&
++          ((change & (GTK_CSS_RADICAL_CHANGE | GTK_CSS_CHANGE_ANIMATIONS)) != 0 ||
++           child->invalid ||
++           child->style_is_invalid ||
++           child->needs_propagation ||
++           !child->subtree_valid ||
++           (change & child->subtree_change) != 0))
++        {
++          GtkCssChange c = change;
++
++          if (!child->invalid)
++            c &= ~GTK_CSS_CHANGE_TIMESTAMP;
++          if (c != 0 && !gtk_css_node_try_prune_invalidate (child, c))
++            {
++              child->pending_changes |= c;
++              cssnode->needs_propagation = TRUE;
++              gtk_css_node_invalidate_style (child);
++            }
++        }
+       if (child->visible)
+-        change |= _gtk_css_change_for_sibling (child_change);
++        change |= _gtk_css_change_for_sibling (child_change) &
++                  ~(GTK_CSS_CHANGE_ANY_PARENT |
++                    GTK_CSS_CHANGE_ANY_PARENT_SIBLING |
++                    GTK_CSS_CHANGE_TIMESTAMP |
++                    GTK_CSS_CHANGE_ANIMATIONS);
+     }
+ 
+   cssnode->needs_propagation = FALSE;
+@@ -947,18 +1068,34 @@
+ 
+   if (cssnode->style_is_invalid)
+     {
+-      GtkCssStyle *new_style;
++      if (GTK_CSS_NODE_GET_CLASS (cssnode)->update_style == gtk_css_node_real_update_style &&
++          GTK_IS_CSS_STATIC_STYLE (cssnode->style) &&
++          (cssnode->pending_changes & (GTK_CSS_RADICAL_CHANGE | GTK_CSS_CHANGE_ANIMATIONS)) == 0 &&
++          (gtk_css_static_style_get_change (GTK_CSS_STATIC_STYLE (cssnode->style)) & cssnode->pending_changes) == 0)
++        {
++          if ((cssnode->pending_changes & cssnode->cache_change) != 0)
++            {
++              g_clear_pointer (&cssnode->cache, gtk_css_node_style_cache_unref);
++              cssnode->cache_change = 0;
++            }
++          style_changed = FALSE;
++        }
++      else
++        {
++          GtkCssStyle *new_style;
+ 
+-      g_clear_pointer (&cssnode->cache, gtk_css_node_style_cache_unref);
++          g_clear_pointer (&cssnode->cache, gtk_css_node_style_cache_unref);
++          cssnode->cache_change = 0;
+ 
+-      new_style = GTK_CSS_NODE_GET_CLASS (cssnode)->update_style (cssnode,
+-                                                                  filter,
+-                                                                  cssnode->pending_changes,
+-                                                                  current_time,
+-                                                                  cssnode->style);
++          new_style = GTK_CSS_NODE_GET_CLASS (cssnode)->update_style (cssnode,
++                                                                      filter,
++                                                                      cssnode->pending_changes,
++                                                                      current_time,
++                                                                      cssnode->style);
+ 
+-      style_changed = gtk_css_node_set_style (cssnode, new_style);
+-      g_object_unref (new_style);
++          style_changed = gtk_css_node_set_style (cssnode, new_style);
++          g_object_unref (new_style);
++        }
+     }
+   else
+     {
+@@ -1023,6 +1160,8 @@
+   if (cssnode->visible == visible)
+     return;
+ 
++  gtk_css_node_invalidate_subtree_change (cssnode);
++
+   cssnode->visible = visible;
+   g_object_notify_by_pspec (G_OBJECT (cssnode), cssnode_properties[PROP_VISIBLE]);
+ 
+@@ -1280,6 +1419,8 @@
+ 
+   for (child = cssnode->first_child; child; child = child->next_sibling)
+     {
++      if (!child->visible || !child->invalid)
++        continue;
+       gtk_css_node_invalidate_timestamp (child);
+     }
+ }
+@@ -1302,17 +1443,42 @@
+ gtk_css_node_invalidate (GtkCssNode   *cssnode,
+                          GtkCssChange  change)
+ {
+-  if (!cssnode->invalid)
+-    change &= ~GTK_CSS_CHANGE_TIMESTAMP;
++  gboolean first = TRUE;
+ 
+   if (change == 0)
+     return;
+ 
+-  cssnode->pending_changes |= change;
++  while (cssnode != NULL)
++    {
++      GtkCssChange c = cssnode->invalid ? change : (change & ~GTK_CSS_CHANGE_TIMESTAMP);
+ 
+-  if (cssnode->parent)
+-    cssnode->parent->needs_propagation = TRUE;
+-  gtk_css_node_invalidate_style (cssnode);
++      if (c != 0 && !gtk_css_node_try_prune_invalidate (cssnode, c))
++        {
++          cssnode->pending_changes |= c;
++          if (cssnode->parent)
++            cssnode->parent->needs_propagation = TRUE;
++          gtk_css_node_invalidate_style (cssnode);
++        }
++
++      if (cssnode->parent == NULL)
++        return;
++
++      if (!cssnode->visible &&
++          first &&
++          (change & (GTK_CSS_CHANGE_POSITION | GTK_CSS_CHANGE_ANY_SIBLING)) == 0)
++        return;
++
++      first = FALSE;
++      change = _gtk_css_change_for_sibling (change) &
++               ~(GTK_CSS_CHANGE_ANY_PARENT |
++                 GTK_CSS_CHANGE_ANY_PARENT_SIBLING |
++                 GTK_CSS_CHANGE_TIMESTAMP |
++                 GTK_CSS_CHANGE_ANIMATIONS);
++      if (change == 0)
++        return;
++
++      cssnode = cssnode->next_sibling;
++    }
+ }
+ 
+ static void
+@@ -1339,7 +1505,8 @@
+        child;
+        child = gtk_css_node_get_next_sibling (child))
+     {
+-      if (!child->visible)
++      /* A valid child would return immediately from validation. */
++      if (!child->visible || !child->invalid)
+         continue;
+ 
+       if (!bloomed)
+@@ -1353,6 +1520,35 @@
+ 
+   if (bloomed)
+     gtk_css_node_declaration_remove_bloom_hashes (cssnode->decl, filter);
++
++  if (!cssnode->invalid &&
++      !cssnode->style_is_invalid &&
++      !cssnode->needs_propagation &&
++      GTK_CSS_NODE_GET_CLASS (cssnode)->update_style == gtk_css_node_real_update_style &&
++      GTK_IS_CSS_STATIC_STYLE (cssnode->style))
++    {
++      GtkCssChange sub = gtk_css_static_style_get_change (GTK_CSS_STATIC_STYLE (cssnode->style));
++      gboolean complete = TRUE;
++
++      for (child = gtk_css_node_get_first_child (cssnode);
++           child;
++           child = gtk_css_node_get_next_sibling (child))
++        {
++          if (!child->visible)
++            continue;
++          if (child->invalid || !child->subtree_valid)
++            {
++              complete = FALSE;
++              break;
++            }
++          sub |= _gtk_css_change_from_child (child->subtree_change);
++        }
++      if (complete)
++        {
++          cssnode->subtree_change = sub;
++          cssnode->subtree_valid = TRUE;
++        }
++    }
+ }
+ 
+ void
+--- a/gtk/gtkcssnodeprivate.h
++++ b/gtk/gtkcssnodeprivate.h
+@@ -53,6 +53,8 @@
+   GtkCssNodeStyleCache  *cache;                 /* cache for children to look up styles */
+ 
+   GtkCssChange           pending_changes;       /* changes that accumulated since the style was last computed */
++  GtkCssChange           subtree_change;        /* OR of static-style change deps in this subtree, shifted up */
++  GtkCssChange           cache_change;          /* OR of static-style change deps cached under node->cache, shifted up */
+ 
+   guint                  visible :1;            /* node will be skipped when validating or computing styles */
+   guint                  invalid :1;            /* node or a child needs to be validated (even if just for animation) */
+@@ -63,6 +65,7 @@
+    * So if a valid style is computed, one has to previously ensure that the parent's and the previous sibling's style
+    * are valid. This allows both validation and invalidation to run in O(nodes-in-tree) */
+   guint                  style_is_invalid :1;   /* the style needs to be recomputed */
++  guint                  subtree_valid :1;      /* subtree_change reflects all visible descendants */
+ };
+ 
+ struct _GtkCssNodeClass
+--- a/gtk/gtkcsswidgetnode.c
++++ b/gtk/gtkcsswidgetnode.c
+@@ -94,6 +94,8 @@
+       gtk_widget_css_changed (widget_node->widget, &change);
+       g_set_object (&widget_node->last_updated_style, style);
+     }
++  else
++    g_set_object (&widget_node->last_updated_style, style);
+   gtk_css_style_change_finish (&change);
+ }
+ 
+--- a/gtk/gtkgridview.c
++++ b/gtk/gtkgridview.c
+@@ -100,6 +100,9 @@
+   /* set in size_allocate */
+   guint n_columns;
+   double column_width;
++  int allocated_xspacing;
++  int allocated_yspacing;
++  gboolean has_allocated_spacing;
+ };
+ 
+ struct _GtkGridViewClass
+@@ -194,7 +197,15 @@
+   guint col, row_height;
+   int xspacing, yspacing;
+ 
+-  gtk_list_base_get_border_spacing (base, &xspacing, &yspacing);
++  /* Split the existing tile using the same spacing as its column geometry.
++   * Before the first non-empty allocation there is no geometry snapshot. */
++  if (self->has_allocated_spacing)
++    {
++      xspacing = self->allocated_xspacing;
++      yspacing = self->allocated_yspacing;
++    }
++  else
++    gtk_list_base_get_border_spacing (base, &xspacing, &yspacing);
+ 
+   row_height = (tile->area.height + yspacing) / MAX (tile->n_items / self->n_columns, 1) - yspacing;
+ 
+@@ -786,6 +797,7 @@
+   tile = gtk_list_item_manager_get_first (self->item_manager);
+   if (tile == NULL)
+     {
++      self->has_allocated_spacing = FALSE;
+       gtk_list_base_allocate (GTK_LIST_BASE (self));
+       return;
+     }
+@@ -798,6 +810,9 @@
+                                                      col_min, col_nat);
+   self->column_width = ((orientation == GTK_ORIENTATION_VERTICAL ? width : height) + xspacing) / self->n_columns - xspacing;
+   self->column_width = MAX (self->column_width, col_min);
++  self->allocated_xspacing = xspacing;
++  self->allocated_yspacing = yspacing;
++  self->has_allocated_spacing = TRUE;
+ 
+   /* step 2: determine height of known rows */
+   heights = g_array_new (FALSE, FALSE, sizeof (int));
+--- a/gtk/gtklistbase.c
++++ b/gtk/gtklistbase.c
+@@ -90,6 +90,16 @@
+   guint autoscroll_id;
+   double autoscroll_delta_x;
+   double autoscroll_delta_y;
++
++  double scroll_top_along;
++  guint vis_first;
++  guint vis_last;
++  guint win_start;
++  guint win_end;
++  guint win_n_items;
++  guint win_anchor_pos;
++  guint has_vis_range : 1;
++  guint has_win : 1;
+ };
+ 
+ enum
+@@ -185,12 +195,13 @@
+ {
+   GtkListBasePrivate *priv = gtk_list_base_get_instance_private (self);
+   cairo_rectangle_int_t area, cell_area;
+-  int along, across, total_size;
++  int along, across, total_size, total_across;
+   double align_across, align_along;
+   GtkPackType side_across, side_along;
+   guint pos;
+ 
+   gtk_list_base_get_adjustment_values (self, OPPOSITE_ORIENTATION (priv->orientation), &area.x, &total_size, &area.width);
++  total_across = total_size;
+   if (total_size == area.width)
+     align_across = 0.5;
+   else if (adjustment != priv->adjustment[priv->orientation])
+@@ -258,10 +269,47 @@
+   else
+     align_along = (double) (cell_area.y + cell_area.height - area.y) / area.height;
+ 
++  {
++    guint vis_min = pos, vis_max = pos, corner_pos;
++    int max_x = MAX (total_across - 1, 0);
++    int max_y = MAX (total_size - 1, 0);
++    int x0 = CLAMP (area.x, 0, max_x);
++    int x1 = CLAMP (area.x + MAX (area.width - 1, 0), 0, max_x);
++    int y0 = CLAMP (area.y, 0, max_y);
++    int y1 = CLAMP (area.y + MAX (area.height - 1, 0), 0, max_y);
++
++    if (gtk_list_base_get_position_from_allocation (self, x0, y0, &corner_pos, NULL))
++      {
++        vis_min = MIN (vis_min, corner_pos);
++        vis_max = MAX (vis_max, corner_pos);
++      }
++    if (gtk_list_base_get_position_from_allocation (self, x1, y0, &corner_pos, NULL))
++      {
++        vis_min = MIN (vis_min, corner_pos);
++        vis_max = MAX (vis_max, corner_pos);
++      }
++    if (gtk_list_base_get_position_from_allocation (self, x0, y1, &corner_pos, NULL))
++      {
++        vis_min = MIN (vis_min, corner_pos);
++        vis_max = MAX (vis_max, corner_pos);
++      }
++    if (gtk_list_base_get_position_from_allocation (self, x1, y1, &corner_pos, NULL))
++      {
++        vis_min = MIN (vis_min, corner_pos);
++        vis_max = MAX (vis_max, corner_pos);
++      }
++
++    priv->vis_first = vis_min;
++    priv->vis_last = vis_max;
++    priv->scroll_top_along = area.height > 0 ? CLAMP ((double) (cell_area.y - area.y) / area.height, 0.0, 1.0) : 0.0;
++    priv->has_vis_range = TRUE;
++  }
++
+   gtk_list_base_set_anchor (self,
+                             pos,
+                             align_across, side_across,
+                             align_along, side_along);
++  priv->has_vis_range = FALSE;
+ 
+   gtk_widget_queue_allocate (GTK_WIDGET (self));
+ }
+@@ -2294,17 +2342,117 @@
+                           GtkPackType  anchor_side_along)
+ {
+   GtkListBasePrivate *priv = gtk_list_base_get_instance_private (self);
+-  guint items_before;
++  gboolean use_vis_range = priv->has_vis_range;
++  guint items_before, n_before, n_after, n_items;
++
++  priv->has_vis_range = FALSE;
+ 
+   g_return_if_fail (isfinite (anchor_align_across));
+   g_return_if_fail (isfinite (anchor_align_along));
+ 
+-  items_before = round (priv->center_widgets * CLAMP (anchor_align_along, 0, 1));
++  n_items = gtk_list_base_get_n_items (self);
++  items_before = round (priv->center_widgets * (use_vis_range
++                                                ? priv->scroll_top_along
++                                                : CLAMP (anchor_align_along, 0, 1)));
++  n_before = items_before + priv->above_below_widgets;
++  n_after = priv->center_widgets - items_before + priv->above_below_widgets;
++
++  if (n_items > 0 && anchor_pos < n_items)
++    {
++      guint64 budget64 = (guint64) priv->center_widgets + 2ULL * priv->above_below_widgets + 1ULL;
++      guint budget = budget64 > n_items ? n_items : (guint) budget64;
++      guint ws, we;
++      gboolean valid_win = priv->has_win &&
++                           priv->win_n_items == n_items &&
++                           priv->win_end <= n_items &&
++                           (priv->win_end - priv->win_start) == budget &&
++                           gtk_list_item_tracker_get_position (priv->item_manager, priv->anchor) == priv->win_anchor_pos;
++
++      if (n_items <= budget)
++        {
++          ws = 0;
++          we = n_items;
++        }
++      else if (use_vis_range)
++        {
++          guint vf = MIN (priv->vis_first, anchor_pos);
++          guint vl = MAX (priv->vis_last, anchor_pos);
++          guint req_start = vf > priv->above_below_widgets ? vf - priv->above_below_widgets : 0;
++          guint64 re64 = (guint64) vl + priv->above_below_widgets + 1ULL;
++          guint req_end = re64 > n_items ? n_items : (guint) re64;
++
++          if (valid_win && (req_end - req_start) <= budget)
++            {
++              if (req_start >= priv->win_start && req_end <= priv->win_end)
++                {
++                  ws = priv->win_start;
++                  we = priv->win_end;
++                }
++              else if (req_start < priv->win_start)
++                {
++                  ws = req_start;
++                  we = ws + budget;
++                  if (we > n_items)
++                    {
++                      we = n_items;
++                      ws = we - budget;
++                    }
++                }
++              else
++                {
++                  we = req_end;
++                  ws = we > budget ? we - budget : 0;
++                  we = ws + budget;
++                }
++            }
++          else
++            {
++              ws = anchor_pos > n_before ? anchor_pos - n_before : 0;
++              if (ws + budget > n_items)
++                ws = n_items - budget;
++              we = ws + budget;
++              if ((req_end - req_start) <= budget)
++                {
++                  if (req_start < ws)
++                    {
++                      ws = req_start;
++                      we = ws + budget;
++                    }
++                  else if (req_end > we)
++                    {
++                      we = req_end;
++                      ws = we - budget;
++                    }
++                }
++            }
++        }
++      else
++        {
++          ws = anchor_pos > n_before ? anchor_pos - n_before : 0;
++          if (ws + budget > n_items)
++            ws = n_items - budget;
++          we = ws + budget;
++        }
++
++      priv->win_start = ws;
++      priv->win_end = we;
++      priv->win_n_items = n_items;
++      priv->win_anchor_pos = anchor_pos;
++      priv->has_win = TRUE;
++
++      n_before = anchor_pos - ws;
++      n_after = (we - 1) - anchor_pos;
++    }
++  else
++    {
++      priv->has_win = FALSE;
++    }
++
+   gtk_list_item_tracker_set_position (priv->item_manager,
+                                       priv->anchor,
+                                       anchor_pos,
+-                                      items_before + priv->above_below_widgets,
+-                                      priv->center_widgets - items_before + priv->above_below_widgets);
++                                      n_before,
++                                      n_after);
+ 
+   priv->anchor_align_across = anchor_align_across;
+   priv->anchor_side_across = anchor_side_across;
+@@ -2345,6 +2493,7 @@
+ 
+   priv->center_widgets = n_center;
+   priv->above_below_widgets = n_above_below;
++  priv->has_win = FALSE;
+ 
+   gtk_list_base_set_anchor (self,
+                             gtk_list_item_tracker_get_position (priv->item_manager, priv->anchor),
+@@ -2372,6 +2521,7 @@
+     return FALSE;
+ 
+   g_clear_object (&priv->model);
++  priv->has_win = FALSE;
+ 
+   if (model)
+     {
+--- a/gtk/gtklistitemmanager.c
++++ b/gtk/gtklistitemmanager.c
+@@ -1958,6 +1958,36 @@
+   GtkListTile *tile;
+   guint n_items;
+ 
++  if (self->model != NULL && tracker->widget != NULL)
++    {
++      guint old_start, old_count;
++
++      n_items = g_list_model_get_n_items (G_LIST_MODEL (self->model));
++      if (n_items > 0 &&
++          gtk_list_item_tracker_query_range (self, tracker, n_items, &old_start, &old_count))
++        {
++          guint new_pos = position >= n_items ? n_items - 1 : position;
++          guint64 new_count64 = (guint64) n_before + (guint64) n_after + 1ULL;
++          guint new_count = new_count64 > n_items ? n_items : (guint) new_count64;
++          guint new_start = MAX (new_pos, n_before) - n_before;
++          guint offset = 0;
++
++          new_start = MIN (new_start, n_items - new_count);
++          if (old_start == new_start && old_count == new_count)
++            {
++              tile = gtk_list_item_manager_get_nth (self, new_pos, &offset);
++              if (tile != NULL && offset == 0 && tile->widget != NULL)
++                {
++                  tracker->position = new_pos;
++                  tracker->n_before = n_before;
++                  tracker->n_after = n_after;
++                  tracker->widget = GTK_LIST_ITEM_BASE (tile->widget);
++                  return;
++                }
++            }
++        }
++    }
++
+   gtk_list_item_tracker_unset_position (self, tracker);
+ 
+   if (self->model == NULL)

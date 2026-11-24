@@ -516,6 +516,87 @@ static void cmd_feature_global(struct dxghost_msg *m)
 		r->status.v = DXG_STATUS_NOT_SUPPORTED;
 }
 
+static void cmd_open_sync_object(struct dxghost_msg *m)
+{
+	COMMAND(dxgkvmb_command_opensyncobject);
+	struct dxgkvmb_command_opensyncobject_return *r;
+	struct dxghost *h = m->h;
+	struct d3dkmt_opensyncobjectfromnthandle2 a = {0};
+	void *nt = NULL;
+	uint64_t cpu_va = 0, gpu_va = 0, gpa = 0;
+	int32_t status;
+	bool monitored = false;
+
+	if (m->inline_call) {
+		m->to_lane = true;
+		return;
+	}
+	r = reply(m, sizeof(*r));
+	if (!r)
+		return;
+	memset(r, 0, sizeof(*r));
+	if (!h->kmt.OpenSyncObjectFromNtHandle2) {
+		r->status.v = DXG_STATUS_NOT_SUPPORTED;
+		return;
+	}
+	if (!owns(h, c->device.v, OBJ_DEVICE, m->process)) {
+		r->status.v = DXG_STATUS_INVALID_HANDLE;
+		return;
+	}
+	status = dxghost_share_sync(h, c->global_sync_object.v, &nt,
+				    &monitored);
+	if (status < 0) {
+		r->status.v = status;
+		return;
+	}
+	a.nt_handle = (u64)(uintptr_t)nt;
+	a.device = c->device;
+	a.flags = c->flags;
+	a.monitored_fence.engine_affinity = c->engine_affinity;
+	status = h->kmt.OpenSyncObjectFromNtHandle2(&a);
+	if (status == DXG_STATUS_INVALID_PARAMETER && a.flags.no_signal) {
+		memset(&a, 0, sizeof(a));
+		a.nt_handle = (u64)(uintptr_t)nt;
+		a.device = c->device;
+		a.flags.shared = 1;
+		a.flags.nt_security_sharing = 1;
+		a.monitored_fence.engine_affinity = c->engine_affinity;
+		status = h->kmt.OpenSyncObjectFromNtHandle2(&a);
+	}
+	dxghost_close_nt(nt);
+	if (status < 0) {
+		r->status.v = status;
+		return;
+	}
+	if (monitored) {
+		cpu_va = a.monitored_fence.fence_value_cpu_va;
+		gpu_va = a.monitored_fence.fence_value_gpu_va;
+		gpa = dxghost_fence_map(h, (void *)(uintptr_t)cpu_va);
+	}
+	LOCK(h);
+	if ((!monitored || gpa) &&
+	    !dxghost_obj_add(h, a.sync_object.v, OBJ_SYNC, m->process,
+			     c->device.v)) {
+		struct dxghost_obj *o = dxghost_obj_find(h, a.sync_object.v);
+
+		o->gpa = gpa;
+		r->sync_object = a.sync_object;
+		r->status.v = 0;
+		r->gpu_virtual_address = gpu_va;
+		r->guest_cpu_physical_address = gpa;
+	} else if (gpa) {
+		dxghost_fence_unmap(h, gpa);
+	}
+	UNLOCK(h);
+	if (!r->sync_object.v) {
+		struct d3dkmt_destroysynchronizationobject d = {a.sync_object};
+
+		if (h->kmt.DestroySynchronizationObject)
+			h->kmt.DestroySynchronizationObject(&d);
+		r->status.v = DXG_STATUS_NO_MEMORY;
+	}
+}
+
 void dxghost_exec_global(struct dxghost_msg *m, uint32_t type)
 {
 	switch (type) {
@@ -552,6 +633,8 @@ void dxghost_exec_global(struct dxghost_msg *m, uint32_t type)
 		reply_ntstatus(m, DXG_STATUS_SUCCESS);
 		break;
 	case DXGK_VMBCOMMAND_OPENSYNCOBJECT:
+		cmd_open_sync_object(m);
+		break;
 	case DXGK_VMBCOMMAND_SHAREOBJECTWITHHOST: {
 		/* Every reply here begins with an NTSTATUS. */
 		struct ntstatus *s = m->res_cap ? reply(m, m->res_cap) : NULL;

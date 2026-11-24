@@ -45,10 +45,52 @@ index 79bae2f..f927d44 100644
        close(fd);
  
 diff --git a/src/gallium/drivers/d3d12/d3d12_batch.cpp b/src/gallium/drivers/d3d12/d3d12_batch.cpp
-index 7f8ff5d..80e51a2 100644
 --- a/src/gallium/drivers/d3d12/d3d12_batch.cpp
 +++ b/src/gallium/drivers/d3d12/d3d12_batch.cpp
-@@ -322,13 +322,16 @@ d3d12_end_batch(struct d3d12_context *ctx, struct d3d12_batch *batch)
+@@ -62,6 +62,7 @@
+    batch->local_bos = UTIL_DYNARRAY_INIT;
+    batch->local_bo_pending = UTIL_DYNARRAY_INIT;
+    batch->bos_pending = UTIL_DYNARRAY_INIT;
++   batch->winbuf_imports = UTIL_DYNARRAY_INIT;
+ 
+ #ifdef HAVE_GALLIUM_D3D12_GRAPHICS
+    batch->surfaces = _mesa_set_create(NULL, _mesa_hash_pointer,
+@@ -181,6 +182,10 @@
+       FREE(*entry);
+    util_dynarray_clear(&batch->bos_pending);
+ 
++   util_dynarray_foreach(&batch->winbuf_imports, struct pipe_resource *, pres)
++      pipe_resource_reference(pres, NULL);
++   util_dynarray_clear(&batch->winbuf_imports);
++
+ #ifdef HAVE_GALLIUM_D3D12_GRAPHICS
+    set_foreach_remove(batch->surfaces, entry) {
+       struct pipe_surface *surf = (struct pipe_surface *)entry->key;
+@@ -246,12 +251,15 @@
+    util_dynarray_fini(&batch->local_bos);
+    util_dynarray_fini(&batch->local_bo_pending);
+    util_dynarray_fini(&batch->bos_pending);
++   util_dynarray_fini(&batch->winbuf_imports);
+ }
+ 
+ void
+ d3d12_start_batch(struct d3d12_context *ctx, struct d3d12_batch *batch)
+ {
+    struct d3d12_screen *screen = d3d12_screen(ctx->base.screen);
++   d3d12_foreach_submitted_batch(ctx, old)
++      d3d12_reset_batch(ctx, old, 0);
+    d3d12_reset_batch(ctx, batch, OS_TIMEOUT_INFINITE);
+ 
+    /* Create or reset global command list */
+@@ -286,6 +294,7 @@
+       ctx->cmdlist_dirty = ~0;
+       for (int i = 0; i < MESA_SHADER_STAGES; ++i)
+          ctx->shader_dirty[i] = ~0;
++      d3d12_forget_gfx_bindings(ctx);
+    
+       if (!ctx->queries_disabled)
+          d3d12_resume_queries(ctx);
+@@ -322,20 +331,28 @@
  
     bool has_state_fixup = d3d12_context_state_resolve_submission(ctx, batch);
  
@@ -70,10 +112,14 @@ index 7f8ff5d..80e51a2 100644
 +      to_execute[count_to_execute++] = ctx->state_fixup_cmdlist;
 +   to_execute[count_to_execute++] = ctx->cmdlist;
     /* Submitting work against resources we failed to make resident would just fault */
-    if (residency_ok)
+-   if (residency_ok)
++   if (residency_ok) {
++      d3d12_winbuf_await_imports(screen, batch);
        screen->cmdqueue->ExecuteCommandLists(count_to_execute, to_execute);
-@@ -336,6 +339,9 @@ d3d12_end_batch(struct d3d12_context *ctx, struct d3d12_batch *batch)
+-   else
++   } else {
        batch->has_errors = true;
++   }
  
     batch->fence = d3d12_create_fence(screen, true);
 +   if (pool_init)
@@ -82,10 +128,16 @@ index 7f8ff5d..80e51a2 100644
  
     if (batch->fence) {
        uint64_t fv = batch->fence->value;
-@@ -489,6 +495,9 @@ d3d12_batch_reference_resource(struct d3d12_batch *batch,
+@@ -489,6 +506,15 @@
     uint8_t new_data = write ? batch_bo_reference_written : batch_bo_reference_read;
     uint8_t old_data = (uint8_t)*state;
     *state = (old_data | new_data);
++
++   if (!old_data && res->dxg_window && res->mirror_has_fd) {
++      struct pipe_resource *pres = NULL;
++      pipe_resource_reference(&pres, &res->base.b);
++      util_dynarray_append(&batch->winbuf_imports, pres);
++   }
 +
 +   if (write && (res->dt_mirror || res->dxg_window) && batch->ctx)
 +      d3d12_mirror_reference(batch->ctx, res);
@@ -93,10 +145,17 @@ index 7f8ff5d..80e51a2 100644
  
  void
 diff --git a/src/gallium/drivers/d3d12/d3d12_batch.h b/src/gallium/drivers/d3d12/d3d12_batch.h
-index c058565..4dfded1 100644
 --- a/src/gallium/drivers/d3d12/d3d12_batch.h
 +++ b/src/gallium/drivers/d3d12/d3d12_batch.h
-@@ -67,6 +67,7 @@ struct d3d12_batch {
+@@ -49,6 +49,7 @@
+    struct util_dynarray local_bos;
+    struct util_dynarray local_bo_pending;
+    struct util_dynarray bos_pending;
++   struct util_dynarray winbuf_imports;
+    struct hash_table *sampler_tables;
+    struct set *sampler_views;
+ #ifdef HAVE_GALLIUM_D3D12_GRAPHICS
+@@ -67,6 +68,7 @@
  
     uint64_t submit_id;
     uint32_t ctx_id, ctx_index;
@@ -654,18 +713,37 @@ index 38b8165..9222065 100644
  d3d12_bo_map(struct d3d12_bo *bo, D3D12_RANGE *range);
  
 diff --git a/src/gallium/drivers/d3d12/d3d12_context.h b/src/gallium/drivers/d3d12/d3d12_context.h
-index 929e69b..56e91e9 100644
 --- a/src/gallium/drivers/d3d12/d3d12_context.h
 +++ b/src/gallium/drivers/d3d12/d3d12_context.h
-@@ -168,6 +168,7 @@ struct d3d12_context {
+@@ -163,11 +163,14 @@
+ #endif
+ 
+ #define D3D12_CONTEXT_NO_ID 0xffffffff
++#define D3D12_GFX_BOUND_TABLES 64
+ 
+ struct d3d12_context {
     struct pipe_context base;
  
     unsigned id;
 +   struct util_dynarray mirror_dirty; /* d3d12_resource mirrors to publish */
++   bool winbuf_async_flushed;
     struct slab_child_pool transfer_pool;
     struct slab_child_pool transfer_pool_unsync;
     struct list_head context_list_entry;
-@@ -272,6 +273,10 @@ struct d3d12_context {
+@@ -215,6 +218,12 @@
+    struct pipe_vertex_buffer vbs[PIPE_MAX_ATTRIBS];
+    D3D12_VERTEX_BUFFER_VIEW vbvs[PIPE_MAX_ATTRIBS];
+    unsigned num_vbs;
++   /* What the command list has bound (d3d12_draw.cpp): descriptor table
++    * per graphics root parameter (0 = unknown) and vertex buffer views
++    * (bound_num_vbs ~0u = unknown). */
++   D3D12_GPU_DESCRIPTOR_HANDLE bound_gfx_tables[D3D12_GFX_BOUND_TABLES];
++   D3D12_VERTEX_BUFFER_VIEW bound_vbvs[PIPE_MAX_ATTRIBS];
++   unsigned bound_num_vbs;
+    float flip_y;
+    bool need_zero_one_depth_range;
+    enum mesa_prim initial_api_prim;
+@@ -272,6 +281,10 @@
  
     struct d3d12_descriptor_pool *sampler_pool;
     struct d3d12_descriptor_handle null_sampler;
@@ -676,8 +754,30 @@ index 929e69b..56e91e9 100644
  
     PFN_D3D12_SERIALIZE_VERSIONED_ROOT_SIGNATURE D3D12SerializeVersionedRootSignature;
  #ifndef _GAMING_XBOX
+@@ -304,6 +317,22 @@
+    return (struct d3d12_context *)context;
+ }
+ 
++#ifdef HAVE_GALLIUM_D3D12_GRAPHICS
++/* The command list's root arguments and vertex buffers are unknown. */
++static inline void
++d3d12_forget_gfx_tables(struct d3d12_context *ctx)
++{
++   memset(ctx->bound_gfx_tables, 0, sizeof(ctx->bound_gfx_tables));
++}
++
++static inline void
++d3d12_forget_gfx_bindings(struct d3d12_context *ctx)
++{
++   d3d12_forget_gfx_tables(ctx);
++   ctx->bound_num_vbs = ~0u;
++}
++#endif // HAVE_GALLIUM_D3D12_GRAPHICS
++
+ static inline struct d3d12_batch *
+ d3d12_current_batch(struct d3d12_context *ctx)
+ {
 diff --git a/src/gallium/drivers/d3d12/d3d12_context_common.cpp b/src/gallium/drivers/d3d12/d3d12_context_common.cpp
-index 72f56b3..f1e625d 100644
 --- a/src/gallium/drivers/d3d12/d3d12_context_common.cpp
 +++ b/src/gallium/drivers/d3d12/d3d12_context_common.cpp
 @@ -55,6 +55,7 @@
@@ -688,7 +788,7 @@ index 72f56b3..f1e625d 100644
  #include "util/u_upload_mgr.h"
  #include "util/u_sample_positions.h"
  #include "util/u_dl.h"
-@@ -138,6 +139,8 @@ d3d12_context_destroy(struct pipe_context *pctx)
+@@ -138,6 +139,8 @@
        d3d12_cmd_signature_cache_destroy(ctx);
        d3d12_compute_transform_cache_destroy(ctx);
        d3d12_descriptor_pool_free(ctx->sampler_pool);
@@ -697,7 +797,7 @@ index 72f56b3..f1e625d 100644
        d3d12_gs_variant_cache_destroy(ctx);
        d3d12_tcs_variant_cache_destroy(ctx);
        d3d12_gfx_pipeline_state_cache_destroy(ctx);
-@@ -153,6 +156,10 @@ d3d12_context_destroy(struct pipe_context *pctx)
+@@ -153,6 +156,10 @@
     }
  #endif // HAVE_GALLIUM_D3D12_GRAPHICS
  
@@ -708,16 +808,42 @@ index 72f56b3..f1e625d 100644
     slab_destroy_child(&ctx->transfer_pool);
     slab_destroy_child(&ctx->transfer_pool_unsync);
     d3d12_context_state_table_destroy(ctx);
-@@ -196,6 +203,8 @@ d3d12_flush(struct pipe_context *pipe,
+@@ -196,6 +203,9 @@
     struct d3d12_context *ctx = d3d12_context(pipe);
     struct d3d12_batch *batch = d3d12_current_batch(ctx);
  
++   ctx->winbuf_async_flushed = false;
 +   d3d12_mirror_sync(ctx);
 +
     bool flushed = d3d12_flush_cmdlist(ctx);
  
     if (fence) {
-@@ -602,6 +611,9 @@ d3d12_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
+@@ -203,6 +213,8 @@
+          d3d12_fence_reference((struct d3d12_fence **)fence, batch->fence);
+       else
+          *fence = (pipe_fence_handle *)d3d12_create_fence(d3d12_screen(ctx->base.screen), false);
++      if (*fence && ctx->winbuf_async_flushed && !flushed)
++         d3d12_fence(*fence)->winbuf_published = true;
+    }
+ }
+ 
+@@ -216,9 +228,13 @@
+    d3d12_transition_resource_state(ctx, res,
+                                    D3D12_RESOURCE_STATE_COMMON,
+                                    D3D12_TRANSITION_FLAG_INVALIDATE_BINDINGS);
++   /* A recorded barrier marks the batch; with none (a simultaneous-access
++    * texture decays to COMMON by itself) there is nothing to submit. */
+    d3d12_apply_resource_states(ctx, false);
+-   d3d12_batch_reference_resource(d3d12_current_batch(ctx), res, true);
+-   ctx->has_commands = true;
++   if (ctx->has_commands)
++      d3d12_batch_reference_resource(d3d12_current_batch(ctx), res, true);
++   else if (res->dt_mirror || res->dxg_window)
++      d3d12_mirror_reference(ctx, res);
+ }
+ 
+ static void
+@@ -602,6 +618,9 @@
     ctx->base.flush_resource = d3d12_flush_resource;
     ctx->base.fence_server_signal = d3d12_signal;
     ctx->base.fence_server_sync = d3d12_wait;
@@ -727,7 +853,7 @@ index 72f56b3..f1e625d 100644
     ctx->base.memory_barrier = d3d12_memory_barrier;
     ctx->base.texture_barrier = d3d12_texture_barrier;
  
-@@ -687,6 +699,15 @@ d3d12_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
+@@ -687,6 +706,15 @@
        }
        d3d12_init_null_sampler(ctx);
  
@@ -743,7 +869,7 @@ index 72f56b3..f1e625d 100644
        ctx->blitter = util_blitter_create(&ctx->base);
        if (!ctx->blitter)
           return NULL;
-@@ -717,12 +738,19 @@ d3d12_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
+@@ -717,12 +745,19 @@
        ctx->id = D3D12_CONTEXT_NO_ID;
     mtx_unlock(&screen->submit_mutex);
  
@@ -800,10 +926,9 @@ index 158709d..091e6a3 100644
 +
  #endif
 diff --git a/src/gallium/drivers/d3d12/d3d12_draw.cpp b/src/gallium/drivers/d3d12/d3d12_draw.cpp
-index 03453fb..9701970 100644
 --- a/src/gallium/drivers/d3d12/d3d12_draw.cpp
 +++ b/src/gallium/drivers/d3d12/d3d12_draw.cpp
-@@ -58,6 +58,8 @@ fill_cbv_descriptors(struct d3d12_context *ctx,
+@@ -58,6 +58,8 @@
  {
     struct d3d12_batch *batch = d3d12_current_batch(ctx);
     struct d3d12_descriptor_handle table_start;
@@ -812,7 +937,7 @@ index 03453fb..9701970 100644
     d2d12_descriptor_heap_get_next_handle(batch->view_heap, &table_start);
  
     for (unsigned i = shader->begin_ubo_binding; i < shader->end_ubo_binding; i++) {
-@@ -73,10 +75,12 @@ fill_cbv_descriptors(struct d3d12_context *ctx,
+@@ -73,10 +75,12 @@
           d3d12_batch_reference_resource(batch, res, false);
        }
  
@@ -828,7 +953,7 @@ index 03453fb..9701970 100644
  
     return table_start.gpu_handle;
  }
-@@ -143,6 +147,8 @@ fill_ssbo_descriptors(struct d3d12_context *ctx,
+@@ -143,6 +147,8 @@
     struct d3d12_batch *batch = d3d12_current_batch(ctx);
     struct d3d12_descriptor_handle table_start;
  
@@ -837,7 +962,7 @@ index 03453fb..9701970 100644
     d2d12_descriptor_heap_get_next_handle(batch->view_heap, &table_start);
  
     for (unsigned i = 0; i < shader->nir->info.num_ssbos; i++)
-@@ -168,10 +174,12 @@ fill_ssbo_descriptors(struct d3d12_context *ctx,
+@@ -168,10 +174,12 @@
           d3d12_batch_reference_resource(batch, res, true);
        }
  
@@ -853,7 +978,7 @@ index 03453fb..9701970 100644
  
     return table_start.gpu_handle;
  }
-@@ -249,6 +257,8 @@ fill_image_descriptors(struct d3d12_context *ctx,
+@@ -249,6 +257,8 @@
     struct d3d12_batch *batch = d3d12_current_batch(ctx);
     struct d3d12_descriptor_handle table_start;
  
@@ -862,7 +987,7 @@ index 03453fb..9701970 100644
     d2d12_descriptor_heap_get_next_handle(batch->view_heap, &table_start);
  
     for (unsigned i = 0; i < shader->nir->info.num_images; i++)
-@@ -333,13 +343,15 @@ fill_image_descriptors(struct d3d12_context *ctx,
+@@ -333,13 +343,15 @@
           }
           d3d12_batch_reference_resource(batch, res, true);
  
@@ -882,8 +1007,48 @@ index 03453fb..9701970 100644
  
     return table_start.gpu_handle;
  }
+@@ -1037,6 +1049,8 @@
+    if (ctx->cmdlist_dirty & D3D12_DIRTY_ROOT_SIGNATURE) {
+       d3d12_batch_reference_object(batch, ctx->gfx_pipeline_state.root_signature);
+       ctx->cmdlist->SetGraphicsRootSignature(ctx->gfx_pipeline_state.root_signature);
++      /* Setting a root signature leaves every root argument undefined. */
++      d3d12_forget_gfx_tables(ctx);
+    }
+ 
+    if (ctx->cmdlist_dirty & D3D12_DIRTY_GFX_PSO) {
+@@ -1121,7 +1135,12 @@
+          for (unsigned i = 0; i < ctx->num_vbs; i++)
+             ctx->vbvs[i].StrideInBytes = 0;
+       }
+-      ctx->cmdlist->IASetVertexBuffers(0, ctx->num_vbs, ctx->vbvs);
++      if (ctx->bound_num_vbs != ctx->num_vbs ||
++          memcmp(ctx->bound_vbvs, ctx->vbvs, ctx->num_vbs * sizeof(ctx->vbvs[0]))) {
++         ctx->cmdlist->IASetVertexBuffers(0, ctx->num_vbs, ctx->vbvs);
++         memcpy(ctx->bound_vbvs, ctx->vbvs, ctx->num_vbs * sizeof(ctx->vbvs[0]));
++         ctx->bound_num_vbs = ctx->num_vbs;
++      }
+    }
+ 
+    if (index_buffer) {
+@@ -1230,8 +1249,15 @@
+ 
+    d3d12_apply_resource_states(ctx, false);
+ 
+-   for (unsigned i = 0; i < num_root_descriptors; ++i)
+-      ctx->cmdlist->SetGraphicsRootDescriptorTable(root_desc_indices[i], root_desc_tables[i]);
++   for (unsigned i = 0; i < num_root_descriptors; ++i) {
++      unsigned index = root_desc_indices[i];
++      if (index < D3D12_GFX_BOUND_TABLES) {
++         if (ctx->bound_gfx_tables[index].ptr == root_desc_tables[i].ptr)
++            continue;
++         ctx->bound_gfx_tables[index] = root_desc_tables[i];
++      }
++      ctx->cmdlist->SetGraphicsRootDescriptorTable(index, root_desc_tables[i]);
++   }
+ 
+    if (indirect) {
+       unsigned draw_count = draw_auto ? 1 : indirect->draw_count;
 diff --git a/src/gallium/drivers/d3d12/d3d12_fence.cpp b/src/gallium/drivers/d3d12/d3d12_fence.cpp
-index b860ae0..d37fbe5 100644
 --- a/src/gallium/drivers/d3d12/d3d12_fence.cpp
 +++ b/src/gallium/drivers/d3d12/d3d12_fence.cpp
 @@ -27,12 +27,29 @@
@@ -916,7 +1081,7 @@ index b860ae0..d37fbe5 100644
     if (fence->type == PIPE_FD_TYPE_NATIVE_SYNC)
        d3d12_fence_close_event(fence->event, fence->event_fd);
     else
-@@ -95,6 +112,7 @@ d3d12_create_fence_raw(ID3D12Fence *fence, uint64_t value)
+@@ -95,6 +112,7 @@
     ret->event = NULL;
     ret->event_fd = -1;
     ret->signaled = false;
@@ -924,7 +1089,7 @@ index b860ae0..d37fbe5 100644
  
     pipe_reference_init(&ret->reference, 1);
     return ret;
-@@ -123,6 +141,7 @@ d3d12_open_fence(struct d3d12_screen *screen, HANDLE handle, const void *name, p
+@@ -123,6 +141,7 @@
     }
  
     ret->type = type;
@@ -932,7 +1097,7 @@ index b860ae0..d37fbe5 100644
     pipe_reference_init(&ret->reference, 1);
     return ret;
  }
-@@ -153,11 +172,21 @@ fence_reference(struct pipe_screen *pscreen,
+@@ -153,11 +172,21 @@
  bool
  d3d12_fence_finish(struct d3d12_fence *fence, uint64_t timeout_ns)
  {
@@ -955,7 +1120,7 @@ index b860ae0..d37fbe5 100644
     if (!complete && timeout_ns) {
        if (timeout_ns == OS_TIMEOUT_INFINITE || timeout_ns > MaxTimeoutInNs) {
           complete = SUCCEEDED(fence->cmdqueue_fence->SetEventOnCompletion(fence->value, NULL));
-@@ -168,6 +197,10 @@ d3d12_fence_finish(struct d3d12_fence *fence, uint64_t timeout_ns)
+@@ -168,6 +197,10 @@
        }
     }
  
@@ -966,7 +1131,7 @@ index b860ae0..d37fbe5 100644
     fence->signaled = complete;
     return complete;
  }
-@@ -189,6 +222,8 @@ fence_finish(struct pipe_screen *pscreen, struct pipe_context *pctx,
+@@ -189,6 +222,8 @@
  void
  d3d12_fence_signal_impl(struct d3d12_fence *fence, ID3D12CommandQueue *queue, uint64_t value)
  {
@@ -975,7 +1140,7 @@ index b860ae0..d37fbe5 100644
     if (fence->type == PIPE_FD_TYPE_NATIVE_SYNC)
        value = fence->value;
     queue->Signal(fence->cmdqueue_fence, value);
-@@ -197,14 +232,107 @@ d3d12_fence_signal_impl(struct d3d12_fence *fence, ID3D12CommandQueue *queue, ui
+@@ -197,14 +232,110 @@
  void
  d3d12_fence_wait_impl(struct d3d12_fence *fence, ID3D12CommandQueue *queue, uint64_t value)
  {
@@ -1048,8 +1213,11 @@ index b860ae0..d37fbe5 100644
 +   if (fence->sync_fd >= 0)
 +      return os_dupfd_cloexec(fence->sync_fd);
 +   int completed_fd = d3d12_screen(pscreen)->completed_sync_fd;
-+   if (completed_fd < 0 || fence->type != PIPE_FD_TYPE_NATIVE_SYNC ||
-+       !d3d12_fence_finish(fence, OS_TIMEOUT_INFINITE))
++   if (completed_fd < 0 || fence->type != PIPE_FD_TYPE_NATIVE_SYNC)
++      return -1;
++   if (fence->winbuf_published)
++      return os_dupfd_cloexec(completed_fd);
++   if (!d3d12_fence_finish(fence, OS_TIMEOUT_INFINITE))
 +      return -1;
 +   return os_dupfd_cloexec(completed_fd);
 +}
@@ -1084,20 +1252,21 @@ index b860ae0..d37fbe5 100644
 +#endif
  }
 diff --git a/src/gallium/drivers/d3d12/d3d12_fence.h b/src/gallium/drivers/d3d12/d3d12_fence.h
-index d6200cd..ba51db7 100644
 --- a/src/gallium/drivers/d3d12/d3d12_fence.h
 +++ b/src/gallium/drivers/d3d12/d3d12_fence.h
-@@ -93,6 +93,9 @@ struct d3d12_fence {
+@@ -93,6 +93,11 @@
     int event_fd;
     uint64_t value;
     bool signaled;
 +
 +   /* An imported sync file (not a GPU fence) when not negative. */
 +   int sync_fd;
++   /* Published for GPU-to-GPU winbuf sync; fence_get_fd avoids CPU stall. */
++   bool winbuf_published;
  };
  
  static inline struct d3d12_fence *
-@@ -122,6 +125,14 @@ d3d12_fence_finish(struct d3d12_fence *fence, uint64_t timeout_ns);
+@@ -122,6 +127,14 @@
  void
  d3d12_screen_fence_init(struct pipe_screen *pscreen);
  
@@ -1188,10 +1357,9 @@ index 7dab6a2..f0b0c4e 100644
     }
 diff --git a/src/gallium/drivers/d3d12/d3d12_pso_prewarm.cpp b/src/gallium/drivers/d3d12/d3d12_pso_prewarm.cpp
 new file mode 100644
-index 0000000..5ee0fff
 --- /dev/null
 +++ b/src/gallium/drivers/d3d12/d3d12_pso_prewarm.cpp
-@@ -0,0 +1,823 @@
+@@ -0,0 +1,845 @@
 +/*
 + * Copyright © Microsoft Corporation
 + * SPDX-License-Identifier: MIT
@@ -1252,6 +1420,7 @@ index 0000000..5ee0fff
 +   std::vector<uint8_t> rec;
 +   std::atomic<int> state{PSO_PENDING};
 +   ID3D12PipelineState *pso = nullptr;
++   ID3D12RootSignature *rs = nullptr;
 +   struct util_queue_fence fence;
 +};
 +
@@ -1574,8 +1743,10 @@ index 0000000..5ee0fff
 +}
 +
 +ID3D12PipelineState *
-+create_from_record(struct d3d12_screen *screen, const std::vector<uint8_t> &rec, bool debug)
++create_from_record(struct d3d12_screen *screen, const std::vector<uint8_t> &rec,
++                   bool debug, ID3D12RootSignature **out_rs)
 +{
++   *out_rs = nullptr;
 +   reader r(rec.data(), rec.size());
 +   if (r.u32() != RECORD_VERSION)
 +      return nullptr;
@@ -1593,7 +1764,10 @@ index 0000000..5ee0fff
 +   ID3D12PipelineState *pso = (kind == KIND_COMPUTE) ?
 +      create_compute_from_reader(screen, r, rs, debug) :
 +      create_gfx_from_reader(screen, r, rs, debug);
-+   rs->Release();
++   if (pso)
++      *out_rs = rs;
++   else
++      rs->Release();
 +   return pso;
 +}
 +
@@ -1656,13 +1830,15 @@ index 0000000..5ee0fff
 +   if (!e->state.compare_exchange_strong(expected, PSO_BUSY))
 +      return;
 +   int64_t t0 = os_time_get_nano();
-+   ID3D12PipelineState *pso = create_from_record(pw->screen, e->rec, pw->debug);
++   ID3D12RootSignature *rs = nullptr;
++   ID3D12PipelineState *pso = create_from_record(pw->screen, e->rec, pw->debug, &rs);
 +   if (pw->debug)
 +      fprintf(stderr, "d3d12_pso_prewarm: +%.1f ms: worker %d built one (%.2f ms)\n",
 +              (t0 - pw->start_ns) / 1e6, thread_index, (os_time_get_nano() - t0) / 1e6);
 +   {
 +      std::lock_guard<std::mutex> g(pw->lock);
 +      e->pso = pso;
++      e->rs = rs;
 +      e->state.store(PSO_READY);
 +   }
 +   pw->done.notify_all();
@@ -1711,7 +1887,8 @@ index 0000000..5ee0fff
 +   _mesa_blake3_final(&h, id);
 +
 +   std::string name;
-+   const char *proc = util_get_process_name();
++   const char *prog = getenv("D3D12_PSO_PROGRAM_NAME");
++   const char *proc = (prog && *prog) ? prog : util_get_process_name();
 +   for (const char *c = proc ? proc : "unknown"; *c && name.size() < 64; c++)
 +      name += (isalnum((unsigned char)*c) || *c == '.' || *c == '_' || *c == '-') ? *c : '_';
 +   char hex[17];
@@ -1846,6 +2023,8 @@ index 0000000..5ee0fff
 +      util_queue_fence_destroy(&kv.second->fence);
 +      if (kv.second->pso)
 +         kv.second->pso->Release();
++      if (kv.second->rs)
++         kv.second->rs->Release();
 +      delete kv.second;
 +   }
 +   if (pw->fd >= 0)
@@ -1881,7 +2060,8 @@ index 0000000..5ee0fff
 +
 +template <typename CreateFn>
 +static ID3D12PipelineState *
-+prewarm_lookup_or_create(d3d12_pso_prewarm *pw, writer &w, CreateFn create_fn)
++prewarm_lookup_or_create(d3d12_pso_prewarm *pw, writer &w,
++                         ID3D12RootSignature *live_rs, CreateFn create_fn)
 +{
 +   uint8_t hash[BLAKE3_OUT_LEN];
 +   hash_record(w.b, hash);
@@ -1904,6 +2084,10 @@ index 0000000..5ee0fff
 +         {
 +            std::lock_guard<std::mutex> g(pw->lock);
 +            e->pso = pso;
++            if (pso && live_rs) {
++               live_rs->AddRef();
++               e->rs = live_rs;
++            }
 +            e->state.store(PSO_READY);
 +         }
 +         pw->done.notify_all();
@@ -1940,6 +2124,10 @@ index 0000000..5ee0fff
 +   e->rec = std::move(w.b);
 +   e->pso = pso;
 +   pso->AddRef();
++   if (live_rs) {
++      live_rs->AddRef();
++      e->rs = live_rs;
++   }
 +   e->state.store(PSO_READY);
 +   util_queue_fence_init(&e->fence);
 +   {
@@ -1947,6 +2135,8 @@ index 0000000..5ee0fff
 +      auto res = pw->entries.emplace(key, e);
 +      if (!res.second) {
 +         e->pso->Release();
++         if (e->rs)
++            e->rs->Release();
 +         delete e;
 +         return pso;
 +      }
@@ -1964,7 +2154,7 @@ index 0000000..5ee0fff
 +   writer w;
 +   if (!pw || !serialize_gfx(desc, stream, w))
 +      return create_gfx_direct(screen, desc, stream);
-+   return prewarm_lookup_or_create(pw, w, [&] {
++   return prewarm_lookup_or_create(pw, w, desc.pRootSignature, [&] {
 +      return create_gfx_direct(screen, desc, stream);
 +   });
 +}
@@ -1977,7 +2167,7 @@ index 0000000..5ee0fff
 +   writer w;
 +   if (!pw || !serialize_compute(desc, w))
 +      return create_compute_direct(screen, desc);
-+   return prewarm_lookup_or_create(pw, w, [&] {
++   return prewarm_lookup_or_create(pw, w, desc.pRootSignature, [&] {
 +      return create_compute_direct(screen, desc);
 +   });
 +}
@@ -2079,13 +2269,13 @@ index 7180aa7..ef5699c 100644
     uint64_t completed_fence_value = screen->fence->GetCompletedValue();
     uint64_t pending_fence_value = screen->fence_value + 1;
 diff --git a/src/gallium/drivers/d3d12/d3d12_resource.cpp b/src/gallium/drivers/d3d12/d3d12_resource.cpp
-index 458f5cf..27c0a1f 100644
 --- a/src/gallium/drivers/d3d12/d3d12_resource.cpp
 +++ b/src/gallium/drivers/d3d12/d3d12_resource.cpp
-@@ -37,6 +37,29 @@
+@@ -37,6 +37,30 @@
  #include "util/format/u_format_zs.h"
  
  #include "frontend/sw_winsys.h"
++#include "d3d12_fence.h"
 +#include "util/os_file.h"
 +#include "util/os_time.h"
 +
@@ -2112,7 +2302,7 @@ index 458f5cf..27c0a1f 100644
  
  #include <dxguids/dxguids.h>
  #include <memory>
-@@ -80,6 +103,25 @@ d3d12_resource_destroy(struct pipe_screen *pscreen,
+@@ -80,6 +104,25 @@
     // and only destroy it on the last plane being destroyed
     if (resource->dt_refcount > 0)
        resource->dt_refcount--;
@@ -2138,7 +2328,7 @@ index 458f5cf..27c0a1f 100644
     if ((resource->dt_refcount == 0) && resource->dt)
     {
        struct d3d12_screen *screen = d3d12_screen(pscreen);
-@@ -95,6 +137,8 @@ d3d12_resource_destroy(struct pipe_screen *pscreen,
+@@ -95,6 +138,8 @@
        d3d12_bo_unreference(resource->bo);
     if (resource->logicop_texture)
        pipe_resource_reference(&resource->logicop_texture, NULL);
@@ -2147,7 +2337,7 @@ index 458f5cf..27c0a1f 100644
     FREE(resource);
  }
  
-@@ -324,7 +368,36 @@ init_texture(struct d3d12_screen *screen,
+@@ -324,7 +369,36 @@
  
     HRESULT hres = E_FAIL;
     enum d3d12_residency_status init_residency;
@@ -2185,7 +2375,7 @@ index 458f5cf..27c0a1f 100644
  #ifndef _GAMING_XBOX
  
     if (heap && screen->max_feature_level == D3D_FEATURE_LEVEL_1_0_GENERIC) {
-@@ -414,6 +487,13 @@ init_texture(struct d3d12_screen *screen,
+@@ -414,6 +488,13 @@
     }
     } while (hres == E_OUTOFMEMORY && d3d12_screen_reclaim_one(screen));
  
@@ -2199,7 +2389,7 @@ index 458f5cf..27c0a1f 100644
     if (FAILED(hres))
        return false;
  
-@@ -440,6 +520,25 @@ init_texture(struct d3d12_screen *screen,
+@@ -440,6 +521,25 @@
     }
  
     res->bo = d3d12_bo_wrap_res(screen, d3d12_res, init_residency);
@@ -2225,7 +2415,7 @@ index 458f5cf..27c0a1f 100644
  
     return true;
  }
-@@ -540,10 +639,726 @@ d3d12_resource_create_or_place(struct d3d12_screen *screen,
+@@ -540,10 +640,737 @@
     return &res->base.b;
  }
  
@@ -2587,6 +2777,17 @@ index 458f5cf..27c0a1f 100644
 +   uint32_t reserved;
 +};
 +#define D3D12_LX_DXVIRTIOWINBUF _IOWR(0x47, 0x81, struct d3d12_virtio_winbuf)
++
++struct d3d12_virtio_winbuf_sync {
++   uint32_t op;         /* 1 publish, 2 query */
++   int32_t dmabuf_fd;
++   int32_t sync_fd;
++   uint32_t reserved;
++   uint64_t fence_value;
++   uint64_t sync_id;
++};
++#define D3D12_LX_DXVIRTIOWINBUFSYNC \
++   _IOWR(0x47, 0x82, struct d3d12_virtio_winbuf_sync)
 +
 +static int
 +d3d12_dxg_fd(void)
@@ -2952,7 +3153,7 @@ index 458f5cf..27c0a1f 100644
     struct d3d12_resource *res = CALLOC_STRUCT(d3d12_resource);
     if (!res)
        return NULL;
-@@ -581,6 +1396,13 @@ d3d12_resource_from_handle(struct pipe_screen *pscreen,
+@@ -581,6 +1408,13 @@
                            struct winsys_handle *handle, unsigned usage)
  {
     struct d3d12_screen *screen = d3d12_screen(pscreen);
@@ -2966,7 +3167,7 @@ index 458f5cf..27c0a1f 100644
     if (handle->type != WINSYS_HANDLE_TYPE_D3D12_RES &&
         handle->type != WINSYS_HANDLE_TYPE_FD &&
         handle->type != WINSYS_HANDLE_TYPE_WIN32_NAME)
-@@ -871,6 +1693,36 @@ d3d12_resource_get_handle(struct pipe_screen *pscreen,
+@@ -871,6 +1705,36 @@
     struct d3d12_resource *res = d3d12_resource(pres);
     struct d3d12_screen *screen = d3d12_screen(pscreen);
  
@@ -3003,7 +3204,7 @@ index 458f5cf..27c0a1f 100644
     switch (handle->type) {
     case WINSYS_HANDLE_TYPE_D3D12_RES:
        handle->com_obj = d3d12_resource_resource(res);
-@@ -1010,6 +1862,13 @@ void d3d12_resource_get_planes_info(pipe_resource *pres,
+@@ -1010,6 +1874,13 @@
  
  static constexpr unsigned d3d12_max_planes = 3;
  
@@ -3017,7 +3218,7 @@ index 458f5cf..27c0a1f 100644
  /**
   * Get stride and offset for the given pipe resource without the need to get
   * a winsys_handle.
-@@ -1028,6 +1887,41 @@ d3d12_resource_get_param(struct pipe_screen *pscreen,
+@@ -1028,6 +1899,41 @@
     struct d3d12_resource* res = d3d12_resource(pres);
     unsigned num_planes = util_format_get_num_planes(res->overall_format);
  
@@ -3059,7 +3260,7 @@ index 458f5cf..27c0a1f 100644
     pipe_resource *planes[d3d12_max_planes];
     unsigned int strides[d3d12_max_planes];
     unsigned int layer_strides[d3d12_max_planes];
-@@ -1298,6 +2192,142 @@ copy_texture_region(struct d3d12_context *ctx,
+@@ -1298,6 +2204,323 @@
     ctx->has_commands = true;
  }
  
@@ -3157,6 +3358,8 @@ index 458f5cf..27c0a1f 100644
 +   struct mirror_entry {
 +      struct pipe_resource *resource;
 +      bool copy;
++      bool async_cand;
++      bool sync_gpu;
 +   } local[16];
 +   struct mirror_entry *list = local;
 +   if (count > ARRAY_SIZE(local)) {
@@ -3168,28 +3371,102 @@ index 458f5cf..27c0a1f 100644
 +   for (unsigned i = 0; i < count; i++) {
 +      list[i].resource = queued[i];
 +      list[i].copy = false;
++      list[i].async_cand = false;
++      list[i].sync_gpu = false;
 +   }
 +   util_dynarray_clear(&ctx->mirror_dirty);
 +
-+   bool recorded = false;
++   struct d3d12_screen *screen = d3d12_screen(ctx->base.screen);
++   bool has_async_cand = false;
++   bool has_sync_gpu = false;
++   bool has_copy = false;
 +   for (unsigned i = 0; i < count; i++) {
 +      struct d3d12_resource *res = d3d12_resource(list[i].resource);
 +      if (res->dxg_shared || res->dxg_window || d3d12_scanout_active(res)) {
-+         /* The host shows the texture: finish GPU work before KMS commits. */
-+         recorded = true;
++#ifndef _WIN32
++         if (!d3d12_scanout_active(res) && (res->dxg_shared || res->dxg_window) &&
++             res->mirror_has_fd && res->mirror_fd >= 0 && screen->winbuf_sync_fd >= 0) {
++            list[i].async_cand = true;
++            has_async_cand = true;
++            continue;
++         }
++#endif
++         /* Scanout or async-unavailable: finish GPU work before KMS/compositor reads. */
++         list[i].sync_gpu = true;
++         has_sync_gpu = true;
 +      } else if (d3d12_mirror_record(ctx, res)) {
 +         list[i].copy = true;
-+         recorded = true;
++         has_copy = true;
 +      }
 +   }
-+   bool completed = false;
-+   if (recorded) {
-+      struct d3d12_batch *batch = d3d12_current_batch(ctx);
-+      /* Close/Signal/allocation can fail before a fence exists. A reset
-+       * without a submitted fence is not evidence of GPU completion. */
-+      if (d3d12_flush_cmdlist(ctx) && !batch->has_errors && batch->fence)
-+         completed = d3d12_reset_batch(ctx, batch, OS_TIMEOUT_INFINITE);
++
++   struct d3d12_batch *batch = d3d12_current_batch(ctx);
++   bool flushed = d3d12_flush_cmdlist(ctx);
++   bool need_cpu_wait = false;
++
++#ifndef _WIN32
++   if (has_async_cand) {
++      uint64_t fv = 0;
++      if (flushed) {
++         if (!batch->has_errors && batch->fence)
++            fv = batch->fence->value;
++         else
++            need_cpu_wait = true;
++      } else {
++         d3d12_foreach_submitted_batch(ctx, old) {
++            if (!old->has_errors && old->fence && old->fence->value > fv)
++               fv = old->fence->value;
++         }
++         if (!fv && !batch->has_errors) {
++            mtx_lock(&screen->submit_mutex);
++            fv = screen->fence_value;
++            mtx_unlock(&screen->submit_mutex);
++         }
++      }
++      int dxg = d3d12_dxg_fd();
++      for (unsigned i = 0; i < count && !need_cpu_wait; i++) {
++         if (!list[i].async_cand || !fv)
++            continue;
++         struct d3d12_resource *res = d3d12_resource(list[i].resource);
++         if (res->winbuf_published_fv >= fv)
++            continue;
++         if (dxg < 0) {
++            need_cpu_wait = true;
++            break;
++         }
++         struct d3d12_virtio_winbuf_sync sync = {};
++         sync.op = 1; /* PUBLISH */
++         sync.dmabuf_fd = res->mirror_fd;
++         sync.sync_fd = screen->winbuf_sync_fd;
++         sync.fence_value = fv;
++         if (ioctl(dxg, D3D12_LX_DXVIRTIOWINBUFSYNC, &sync) == 0) {
++            res->winbuf_published_fv = fv;
++            if (sync.sync_id)
++               screen->winbuf_sync_id = sync.sync_id;
++         } else {
++            need_cpu_wait = true;
++         }
++      }
 +   }
++#endif
++
++   bool completed = !has_copy;
++   if (need_cpu_wait || has_sync_gpu || has_copy) {
++      if (flushed) {
++         completed = !batch->has_errors && batch->fence &&
++                     d3d12_reset_batch(ctx, batch, OS_TIMEOUT_INFINITE);
++      } else {
++         /* Nothing recorded since the last submission: the drawing is in
++          * submitted batches (a fence flush before the swap). */
++         completed = true;
++         d3d12_foreach_submitted_batch(ctx, old) {
++            if (old->has_errors || !d3d12_reset_batch(ctx, old, OS_TIMEOUT_INFINITE))
++               completed = false;
++         }
++      }
++   }
++   ctx->winbuf_async_flushed = has_async_cand && !need_cpu_wait && !has_sync_gpu && !has_copy;
++
 +   for (unsigned i = 0; i < count; i++) {
 +      if (completed && list[i].copy)
 +         d3d12_mirror_publish(ctx, d3d12_resource(list[i].resource));
@@ -3199,14 +3476,118 @@ index 458f5cf..27c0a1f 100644
 +      free(list);
 +}
 +
++void
++d3d12_winbuf_await_imports(struct d3d12_screen *screen, struct d3d12_batch *batch)
++{
++#ifndef _WIN32
++   unsigned n = util_dynarray_num_elements(&batch->winbuf_imports, struct pipe_resource *);
++   if (!n)
++      return;
++   int dxg = d3d12_dxg_fd();
++   if (dxg < 0)
++      return;
++   struct pipe_resource **items = (struct pipe_resource **)batch->winbuf_imports.data;
++   for (unsigned i = 0; i < n; i++) {
++      struct d3d12_resource *res = d3d12_resource(items[i]);
++      if (!res->dxg_window || !res->mirror_has_fd || res->mirror_fd < 0)
++         continue;
++      struct d3d12_virtio_winbuf_sync q = {};
++      q.op = 2; /* QUERY */
++      q.dmabuf_fd = res->mirror_fd;
++      q.sync_fd = -1;
++      q.sync_id = res->winbuf_sync_id;
++      if (ioctl(dxg, D3D12_LX_DXVIRTIOWINBUFSYNC, &q) != 0) {
++         if (q.sync_fd >= 0)
++            close(q.sync_fd);
++         continue;
++      }
++      if (!q.sync_id || !q.fence_value || q.sync_id == screen->winbuf_sync_id) {
++         if (q.sync_fd >= 0)
++            close(q.sync_fd);
++         continue;
++      }
++
++      mtx_lock(&screen->winbuf_sync_lock);
++      int found = -1;
++      for (unsigned s = 0; s < ARRAY_SIZE(screen->winbuf_sync_cache); s++) {
++         if (screen->winbuf_sync_cache[s].sync_id == q.sync_id &&
++             screen->winbuf_sync_cache[s].fence) {
++            found = (int)s;
++            break;
++         }
++      }
++      if (found < 0 && q.sync_fd < 0) {
++         mtx_unlock(&screen->winbuf_sync_lock);
++         q.sync_id = 0;
++         q.sync_fd = -1;
++         if (ioctl(dxg, D3D12_LX_DXVIRTIOWINBUFSYNC, &q) != 0 ||
++             !q.sync_id || !q.fence_value || q.sync_id == screen->winbuf_sync_id) {
++            if (q.sync_fd >= 0)
++               close(q.sync_fd);
++            continue;
++         }
++         mtx_lock(&screen->winbuf_sync_lock);
++         for (unsigned s = 0; s < ARRAY_SIZE(screen->winbuf_sync_cache); s++) {
++            if (screen->winbuf_sync_cache[s].sync_id == q.sync_id &&
++                screen->winbuf_sync_cache[s].fence) {
++               found = (int)s;
++               break;
++            }
++         }
++      }
++      if (found < 0 && q.sync_fd >= 0) {
++         ID3D12Fence *imp = nullptr;
++         HRESULT hr = screen->dev->OpenSharedHandle((HANDLE)(intptr_t)q.sync_fd,
++                                                    IID_PPV_ARGS(&imp));
++         close(q.sync_fd);
++         q.sync_fd = -1;
++         if (SUCCEEDED(hr) && imp) {
++            unsigned slot = screen->winbuf_sync_next;
++            screen->winbuf_sync_next =
++               (screen->winbuf_sync_next + 1) % ARRAY_SIZE(screen->winbuf_sync_cache);
++            if (screen->winbuf_sync_cache[slot].fence)
++               screen->winbuf_sync_cache[slot].fence->Release();
++            screen->winbuf_sync_cache[slot].sync_id = q.sync_id;
++            screen->winbuf_sync_cache[slot].fence = imp;
++            screen->winbuf_sync_cache[slot].waited_value = 0;
++            found = (int)slot;
++         }
++      }
++      if (q.sync_fd >= 0) {
++         close(q.sync_fd);
++         q.sync_fd = -1;
++      }
++      ID3D12Fence *imp = nullptr;
++      bool need_wait = false;
++      if (found >= 0) {
++         res->winbuf_sync_id = q.sync_id;
++         auto &entry = screen->winbuf_sync_cache[found];
++         if (entry.fence && entry.waited_value < q.fence_value) {
++            uint64_t done = entry.fence->GetCompletedValue();
++            if (done != UINT64_MAX && done < q.fence_value) {
++               imp = entry.fence;
++               imp->AddRef();
++               need_wait = true;
++            }
++            entry.waited_value = q.fence_value;
++         }
++      }
++      mtx_unlock(&screen->winbuf_sync_lock);
++      if (need_wait && imp)
++         screen->cmdqueue->Wait(imp, q.fence_value);
++      if (imp)
++         imp->Release();
++   }
++#endif
++}
++
  static void
  transfer_buf_to_image_part(struct d3d12_context *ctx,
                             struct d3d12_resource *res,
 diff --git a/src/gallium/drivers/d3d12/d3d12_resource.h b/src/gallium/drivers/d3d12/d3d12_resource.h
-index fc679ff..d641952 100644
 --- a/src/gallium/drivers/d3d12/d3d12_resource.h
 +++ b/src/gallium/drivers/d3d12/d3d12_resource.h
-@@ -54,6 +54,41 @@ struct d3d12_resource {
+@@ -54,6 +54,43 @@
     unsigned dt_stride;
     struct pipe_resource *dt_proxy;
  
@@ -3244,15 +3625,19 @@ index fc679ff..d641952 100644
 +    * its owner holds the link. */
 +   bool mirror_link_borrowed;
 +   struct pipe_resource *mirror_link_owner; /* retained through wrapper cleanup */
++   uint64_t winbuf_published_fv;
++   uint64_t winbuf_sync_id;
 +
     struct util_range valid_buffer_range;
     uint32_t bind_counts[MESA_SHADER_STAGES][D3D12_RESOURCE_BINDING_TYPES];
     unsigned generation_id;
-@@ -62,6 +97,17 @@ struct d3d12_resource {
+@@ -62,6 +99,22 @@
     struct pipe_resource *logicop_texture;
  };
  
++struct d3d12_batch;
 +struct d3d12_context;
++struct d3d12_screen;
 +
 +/* Track each writing context independently: another context's pending flush
 + * must not suppress this context's write. */
@@ -3263,9 +3648,32 @@ index fc679ff..d641952 100644
 +void
 +d3d12_mirror_sync(struct d3d12_context *ctx);
 +
++void
++d3d12_winbuf_await_imports(struct d3d12_screen *screen, struct d3d12_batch *batch);
++
  struct d3d12_memory_object {
     struct pipe_memory_object base;
     ID3D12Resource *res;
+diff --git a/src/gallium/drivers/d3d12/d3d12_resource_state.cpp b/src/gallium/drivers/d3d12/d3d12_resource_state.cpp
+--- a/src/gallium/drivers/d3d12/d3d12_resource_state.cpp
++++ b/src/gallium/drivers/d3d12/d3d12_resource_state.cpp
+@@ -475,12 +475,14 @@
+          assert(transition_desc.Transition.StateBefore != transition_desc.Transition.StateAfter);
+          util_dynarray_append(&ctx->barrier_scratch, transition_desc);
+ 
+-         may_decay = current_state->supports_simultaneous_access && !d3d12_is_write_state(after);
++         /* Simultaneous-access textures decay to COMMON at the end of an
++          * ExecuteCommandLists from any state, writes included. */
++         may_decay = current_state->supports_simultaneous_access;
+          is_promotion = false;
+       }
+    } else {
+       after = state_if_promoted;
+-      may_decay = !d3d12_is_write_state(after);
++      may_decay = current_state->supports_simultaneous_access || !d3d12_is_write_state(after);
+       is_promotion = true;
+    }
+ 
 diff --git a/src/gallium/drivers/d3d12/d3d12_root_signature.cpp b/src/gallium/drivers/d3d12/d3d12_root_signature.cpp
 index bfa4459..535484b 100644
 --- a/src/gallium/drivers/d3d12/d3d12_root_signature.cpp
@@ -3289,7 +3697,6 @@ index bfa4459..535484b 100644
  }
  
 diff --git a/src/gallium/drivers/d3d12/d3d12_screen.cpp b/src/gallium/drivers/d3d12/d3d12_screen.cpp
-index 90b70e4..392a18c 100644
 --- a/src/gallium/drivers/d3d12/d3d12_screen.cpp
 +++ b/src/gallium/drivers/d3d12/d3d12_screen.cpp
 @@ -47,6 +47,17 @@
@@ -3310,7 +3717,7 @@ index 90b70e4..392a18c 100644
  
  #include "frontend/sw_winsys.h"
  
-@@ -384,6 +395,9 @@ d3d12_init_screen_caps(struct d3d12_screen *screen)
+@@ -384,6 +395,9 @@
     caps->robust_buffer_access_behavior = true;
     caps->memobj = true;
     caps->fence_signal = true;
@@ -3320,7 +3727,7 @@ index 90b70e4..392a18c 100644
     caps->timeline_semaphore_import = true;
     caps->clip_halfz = true;
     caps->vs_layer_viewport = true;
-@@ -420,6 +434,12 @@ d3d12_init_screen_caps(struct d3d12_screen *screen)
+@@ -420,6 +434,12 @@
     caps->query_memory_info = true;
  #endif
  
@@ -3333,7 +3740,7 @@ index 90b70e4..392a18c 100644
     caps->min_line_width =
     caps->min_line_width_aa =
     caps->min_point_size =
-@@ -443,12 +463,12 @@ d3d12_init_screen_caps(struct d3d12_screen *screen)
+@@ -443,12 +463,12 @@
  }
  
  static bool
@@ -3352,7 +3759,7 @@ index 90b70e4..392a18c 100644
  {
     struct d3d12_screen *screen = d3d12_screen(pscreen);
  
-@@ -598,9 +618,299 @@ d3d12_is_format_supported(struct pipe_screen *pscreen,
+@@ -598,9 +618,299 @@
     return true;
  }
  
@@ -3652,23 +4059,51 @@ index 90b70e4..392a18c 100644
     while (d3d12_screen_reclaim_one(screen))
        ;
  
-@@ -670,6 +980,10 @@ d3d12_deinit_screen(struct d3d12_screen *screen)
+@@ -645,6 +955,19 @@
+       screen->bufmgr = nullptr;
+    }
+    d3d12_deinit_residency(screen);
++#ifndef _WIN32
++   mtx_lock(&screen->winbuf_sync_lock);
++   for (unsigned i = 0; i < ARRAY_SIZE(screen->winbuf_sync_cache); i++) {
++      if (screen->winbuf_sync_cache[i].fence)
++         screen->winbuf_sync_cache[i].fence->Release();
++      screen->winbuf_sync_cache[i] = {};
++   }
++   mtx_unlock(&screen->winbuf_sync_lock);
++   if (screen->winbuf_sync_fd >= 0) {
++      close(screen->winbuf_sync_fd);
++      screen->winbuf_sync_fd = -1;
++   }
++#endif
+    if (screen->fence) {
+       screen->fence->Release();
+       screen->fence = nullptr;
+@@ -670,6 +993,13 @@
  void
  d3d12_destroy_screen(struct d3d12_screen *screen)
  {
 +#ifndef _WIN32
++   if (screen->winbuf_sync_fd >= 0)
++      close(screen->winbuf_sync_fd);
++   mtx_destroy(&screen->winbuf_sync_lock);
 +   if (screen->completed_sync_fd >= 0)
 +      close(screen->completed_sync_fd);
 +#endif
     slab_destroy_parent(&screen->transfer_pool);
     mtx_destroy(&screen->submit_mutex);
     mtx_destroy(&screen->pending_free_lock);
-@@ -1377,10 +1691,18 @@ d3d12_init_screen_base(struct d3d12_screen *screen, struct sw_winsys *winsys, LU
+@@ -1377,10 +1707,23 @@
     d3d12_debug = static_cast<uint32_t>(debug_get_option_d3d12_debug());
  
     screen->winsys = winsys;
 +#ifndef _WIN32
 +   screen->completed_sync_fd = -1;
++   screen->winbuf_sync_fd = -1;
++   screen->winbuf_sync_id = 0;
++   mtx_init(&screen->winbuf_sync_lock, mtx_plain);
++   memset(screen->winbuf_sync_cache, 0, sizeof(screen->winbuf_sync_cache));
++   screen->winbuf_sync_next = 0;
 +#endif
     if (adapter_luid)
        screen->adapter_luid = *adapter_luid;
@@ -3682,7 +4117,7 @@ index 90b70e4..392a18c 100644
     mtx_init(&screen->pending_free_lock, mtx_plain);
     list_inithead(&screen->pending_free_list);
  
-@@ -1736,6 +2058,16 @@ d3d12_init_screen(struct d3d12_screen *screen, IUnknown *adapter)
+@@ -1736,6 +2079,16 @@
     }
  #endif // HAVE_GALLIUM_D3D12_GRAPHICS
  
@@ -3699,7 +4134,7 @@ index 90b70e4..392a18c 100644
     if (d3d12_init_screen_command_queue(screen, D3D12_COMMAND_QUEUE_FLAG_ALLOW_DYNAMIC_PRIORITY)) {
        screen->supports_dynamic_queue_priority = true;
     } else
-@@ -1746,6 +2078,14 @@ d3d12_init_screen(struct d3d12_screen *screen, IUnknown *adapter)
+@@ -1746,9 +2099,25 @@
           return false;
        }
     }
@@ -3714,7 +4149,18 @@ index 90b70e4..392a18c 100644
  
     if (FAILED(screen->dev->CreateFence(0, D3D12_FENCE_FLAG_SHARED, IID_PPV_ARGS(&screen->fence))))
        return false;
-@@ -1821,7 +2161,18 @@ d3d12_init_screen(struct d3d12_screen *screen, IUnknown *adapter)
++#ifndef _WIN32
++   if (debug_get_bool_option("D3D12_ASYNC_WINBUF", true)) {
++      HANDLE shared = nullptr;
++      if (SUCCEEDED(screen->dev->CreateSharedHandle(screen->fence, nullptr, GENERIC_ALL,
++                                                    nullptr, &shared)) && shared)
++         screen->winbuf_sync_fd = (int)(intptr_t)shared;
++   }
++#endif
+ 
+    screen->dev->QueryInterface(&screen->dev15);
+ 
+@@ -1821,7 +2190,18 @@
        d3d12_init_null_rtv(screen);
  
        screen->have_load_at_vertex = can_attribute_at_vertex(screen);
@@ -3733,7 +4179,7 @@ index 90b70e4..392a18c 100644
        static constexpr uint64_t known_good_warp_version_build = 22000ull;
        bool warp_with_broken_int64 =
           (screen->vendor_id == HW_VENDOR_MICROSOFT &&
-@@ -1871,5 +2222,10 @@ d3d12_init_screen(struct d3d12_screen *screen, IUnknown *adapter)
+@@ -1871,5 +2251,10 @@
     d3d12_init_compute_caps(screen);
     d3d12_init_screen_caps(screen);
  
@@ -3745,10 +4191,9 @@ index 90b70e4..392a18c 100644
     return true;
  }
 diff --git a/src/gallium/drivers/d3d12/d3d12_screen.h b/src/gallium/drivers/d3d12/d3d12_screen.h
-index d5d8e90..3672328 100644
 --- a/src/gallium/drivers/d3d12/d3d12_screen.h
 +++ b/src/gallium/drivers/d3d12/d3d12_screen.h
-@@ -67,9 +67,14 @@ struct d3d12_memory_info {
+@@ -67,9 +67,24 @@
     uint64_t budget;   // local + nonlocal
  };
  
@@ -3759,11 +4204,21 @@ index d5d8e90..3672328 100644
     struct sw_winsys *winsys;
 +#ifndef _WIN32
 +   int completed_sync_fd;
++   /* Async GPU-to-GPU window buffer synchronization (LX_DXVIRTIOWINBUFSYNC). */
++   int winbuf_sync_fd;
++   uint64_t winbuf_sync_id;
++   mtx_t winbuf_sync_lock;
++   struct {
++      uint64_t sync_id;
++      ID3D12Fence *fence;
++      uint64_t waited_value;
++   } winbuf_sync_cache[64];
++   unsigned winbuf_sync_next;
 +#endif
     LUID adapter_luid;
     char driver_uuid[PIPE_UUID_SIZE];
     char device_uuid[PIPE_UUID_SIZE];
-@@ -91,6 +96,48 @@ struct d3d12_screen {
+@@ -91,6 +106,48 @@
     struct list_head pending_free_list;
  
     struct list_head residency_list;
@@ -3812,7 +4267,7 @@ index d5d8e90..3672328 100644
     ID3D12Fence *residency_fence;
     uint64_t residency_fence_value;
     unsigned num_evictions;
-@@ -153,6 +200,9 @@ struct d3d12_screen {
+@@ -153,6 +210,9 @@
     uint32_t subsys_id;
     uint32_t revision;
     uint64_t driver_version;
@@ -3822,7 +4277,7 @@ index d5d8e90..3672328 100644
     uint64_t memory_device_size_megabytes;
     uint64_t memory_system_size_megabytes;
     float timestamp_multiplier;
-@@ -160,6 +210,12 @@ struct d3d12_screen {
+@@ -160,6 +220,12 @@
     bool support_shader_images;
     bool support_create_not_resident;
     bool supports_dynamic_queue_priority;
@@ -3835,7 +4290,7 @@ index d5d8e90..3672328 100644
  
  #ifdef _GAMING_XBOX
     UINT64 frame_token;
-@@ -213,6 +269,10 @@ d3d12_init_screen(struct d3d12_screen *screen, IUnknown *adapter);
+@@ -213,6 +279,10 @@
  void
  d3d12_deinit_screen(struct d3d12_screen *screen);
  

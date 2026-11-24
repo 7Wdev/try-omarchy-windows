@@ -2,6 +2,7 @@
 # desktop-boost: runtime session warmers for virtio-dxg (controlled by
 # virtio_dxg.boost=0). Subcommands:
 #   psocache  sync d3d12/dzn PSO + caps caches to tmpfs and compile C helpers
+#   gtkcss    manage ~/.config/gtk-4.0/gtk.css icon shadow override
 #   files     keep Nautilus GApplication service resident
 #   terminal  keep foot/alacritty/ghostty servers warm and seed ghostty-gl.env
 #   apps      keep VS Code warm and flock-queued Wayland gate workers for
@@ -23,6 +24,7 @@ ensure_boost_helpers() {
     mkdir -p -m 0700 "$bdir" || return 1
     if [ -f "$bdir/.compiled" ] &&
        [ -x "$bdir/vdxg-fastlaunch" ] &&
+       [ -x "$bdir/vdxg-gsk-warm" ] &&
        [ -f "$bdir/libvdxg-gapp-hold.so" ] &&
        [ -f "$bdir/libvdxg-wl-gate.so" ]; then
         return 0
@@ -34,6 +36,7 @@ ensure_boost_helpers() {
         flock -x 9 || exit 1
         if [ -f "$bdir/.compiled" ] &&
            [ -x "$bdir/vdxg-fastlaunch" ] &&
+           [ -x "$bdir/vdxg-gsk-warm" ] &&
            [ -f "$bdir/libvdxg-gapp-hold.so" ] &&
            [ -f "$bdir/libvdxg-wl-gate.so" ]; then
             exit 0
@@ -50,6 +53,10 @@ ensure_boost_helpers() {
             -o "$tmpd/vdxg-fastlaunch" >/dev/null 2>&1 &&
             chmod 0755 "$tmpd/vdxg-fastlaunch" &&
             mv -f "$tmpd/vdxg-fastlaunch" "$bdir/vdxg-fastlaunch" || true
+        gcc -O2 -Wall -DBUILD_GSK_WARM "$src" \
+            -o "$tmpd/vdxg-gsk-warm" -ldl >/dev/null 2>&1 &&
+            chmod 0755 "$tmpd/vdxg-gsk-warm" &&
+            mv -f "$tmpd/vdxg-gsk-warm" "$bdir/vdxg-gsk-warm" || true
         rm -rf "$tmpd"
         if [ -x "$bdir/vdxg-fastlaunch" ]; then
             : >"$bdir/.compiled"
@@ -141,14 +148,69 @@ run_psocache() {
     done
 }
 
+ensure_gtk_css() {
+    local cfg css cmdline disable=0
+    cfg="${XDG_CONFIG_HOME:-$HOME/.config}/gtk-4.0"
+    css="$cfg/gtk.css"
+    cmdline="${VDXG_PROC_CMDLINE:-/proc/cmdline}"
+    case " $(cat "$cmdline" 2>/dev/null) " in
+    *" virtio_dxg.gtkcss=0 "*) disable=1 ;;
+    esac
+    if [ "$disable" -eq 1 ]; then
+        if [ -f "$css" ] && grep -qF 'virtio-dxg icon shadows: begin' "$css" 2>/dev/null; then
+            python3 - "$css" <<'PY' 2>/dev/null || true
+import pathlib, re, sys
+p = pathlib.Path(sys.argv[1])
+s = p.read_text(encoding='utf-8')
+s = re.sub(r'\n?/\* virtio-dxg icon shadows: begin.*?\n/\* virtio-dxg icon shadows: end \*/\n?', '\n', s, flags=re.S)
+p.write_text(s.lstrip('\n'), encoding='utf-8')
+PY
+        fi
+        return 0
+    fi
+    if [ -f "$css" ] && grep -qF 'virtio-dxg icon shadows: begin' "$css" 2>/dev/null; then
+        return 0
+    fi
+    mkdir -p "$cfg" || return 0
+    if [ -f "$css" ] && [ -s "$css" ]; then
+        case "$(tail -c 1 "$css" | wc -l)" in
+        0) printf '\n' >>"$css" ;;
+        esac
+    fi
+    cat >>"$css" <<'CSS'
+/* virtio-dxg icon shadows: begin. Each icon's drop shadow costs GTK an
+ * offscreen pass per frame; on dark themes it does not show. */
+.nautilus-image { filter: none; }
+filechooser gridview > child filethumbnail image { filter: none; }
+/* virtio-dxg icon shadows: end */
+CSS
+}
+
+warm_gsk_shaders() {
+    local rt bdir i=0
+    rt="$(rt_base)/vdxg-pso"
+    bdir=$(boost_dir)
+    [ -x "$bdir/vdxg-gsk-warm" ] || return 0
+    [ -f "$bdir/gsk.warmed" ] && return 0
+    while [ ! -f "$rt/.ready" ] && [ $i -lt 15 ]; do
+        sleep 0.2
+        i=$((i + 1))
+    done
+    D3D12_PSO_PROGRAM_NAME=nautilus GSK_RENDERER=gl \
+        "$bdir/vdxg-gsk-warm" >/dev/null 2>&1 &&
+        : >"$bdir/gsk.warmed" 2>/dev/null || true
+}
+
 run_files() {
     local bdir
+    ensure_gtk_css || true
     wait_hyprland || exit 0
     ensure_boost_helpers || true
     bdir=$(boost_dir)
     # systemd user env sets GDK_BACKEND=wayland,x11,* which Nautilus's libgxdp rejects.
     unset GDK_BACKEND
     sleep "${FILES_BOOST_DELAY:-1}"
+    warm_gsk_shaders || true
 
     if [ -x /usr/bin/nautilus ]; then
         (
@@ -484,9 +546,10 @@ run_wine() {
 
 case "${1:-}" in
 psocache) run_psocache ;;
+gtkcss)   ensure_gtk_css ;;
 files)    run_files ;;
 terminal) run_terminal ;;
 apps)     run_apps ;;
 wine)     run_wine ;;
-*)        echo "usage: $0 {psocache|files|terminal|apps|wine}" >&2; exit 2 ;;
+*)        echo "usage: $0 {psocache|gtkcss|files|terminal|apps|wine}" >&2; exit 2 ;;
 esac

@@ -52,10 +52,14 @@ shared image on the render node is a **window buffer**:
   dma-buf it holds (lookup) and opens it: the compositor samples what the
   application rendered. Possession of the dma-buf is what grants the lookup.
 
-Flushes that wrote a window buffer finish the GPU work, as scanout mirrors
-do, so a committed frame is complete. Without the registry (an older module)
-no window buffer is made, and the boot hook keeps sessions on `wl_shm`.
-`guest/test/clientbuftest.c` runs both ends in one process.
+Flushes that wrote a window buffer synchronize the GPU fence in the host/kernel
+module via `LX_DXVIRTIOWINBUFSYNC` when available (coalescing batch flushes in
+`d3d12_resource.cpp`) instead of polling `D3DKMTWaitForSynchronizationObjectFromCpu`
+from guest userspace on every commit, falling back to userspace waits when the
+kernel or host does not advertise the sync ioctl. Without the window-buffer
+registry (`LX_DXVIRTIOWINBUF`, an older module), no window buffer is made and
+the boot hook keeps sessions on `wl_shm`. `guest/test/clientbuftest.c` runs
+both ends in one process.
 
 Measured at 1280x720 on the RTX 5090: glmark2 windowed 1579-1757 FPS (254
 with `wl_shm`); opening the Omarchy menu, 346 of 367 possible frames with 5

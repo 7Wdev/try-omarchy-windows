@@ -1841,4 +1841,19 @@ struct d3dkmt_virtiowinbuf {
 #define LX_DXVIRTIOWINBUF	\
 	_IOWR(0x47, 0x81, struct d3dkmt_virtiowinbuf)
 
+#define D3DKMT_VIRTIOWINBUFSYNC_PUBLISH	1	/* dmabuf_fd, sync_fd, fence_value in; sync_id out */
+#define D3DKMT_VIRTIOWINBUFSYNC_QUERY	2	/* dmabuf_fd, sync_id in; sync_fd, fence_value, sync_id out */
+
+struct d3dkmt_virtiowinbuf_sync {
+	__u32			op;
+	__s32			dmabuf_fd;
+	__s32			sync_fd;
+	__u32			reserved;
+	__u64			fence_value;
+	__u64			sync_id;
+};
+
+#define LX_DXVIRTIOWINBUFSYNC	\
+	_IOWR(0x47, 0x82, struct d3dkmt_virtiowinbuf_sync)
+
 #endif /* _D3DKMTHK_H */

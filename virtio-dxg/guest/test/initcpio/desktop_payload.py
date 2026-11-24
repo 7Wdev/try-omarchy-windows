@@ -44,7 +44,7 @@ def canonical(name):
     return path.as_posix()
 
 
-def extract(archive, destination, recipe):
+def _extract_cohort(archive, destination, recipe, config, post_extract=None):
     """Reject a partial/mixed cohort before it can select session libraries."""
     expected = json.loads(recipe.read_text(encoding='utf-8'))
     if destination.exists() or archive.stat().st_size > LIMIT:
@@ -57,24 +57,29 @@ def extract(archive, destination, recipe):
         members = {}
         for member in entries:
             name = canonical(member.name)
+            top = name.split('/', 1)[0]
+            if top not in config['allowed_roots']:
+                raise ValueError('Unsupported payload path: ' + name)
             if name in members or not (member.isdir() or member.isfile() or member.issym()):
                 raise ValueError('Duplicate or unsupported member: ' + name)
             if member.size < 0 or member.size > 256 * 1024 ** 2:
                 raise ValueError('Member exceeds limit: ' + name)
             members[name] = member
-        receipt_member = members.get('lib/virtio-dxg-build.json')
+        receipt_member = members.get(config['receipt_path'])
         if not receipt_member or not receipt_member.isfile() or receipt_member.size > 4 * 1024 ** 2:
             raise ValueError('Missing bounded build receipt')
         receipt = json.load(tar.extractfile(receipt_member))
-        if (receipt.get('schema') != 1 or receipt.get('profile') != 'virtio-dxg' or
-                receipt.get('mesaVersion') != expected['mesaVersion'] or
-                receipt.get('recipeSha256') != hashlib.sha256(recipe.read_bytes()).hexdigest() or
-                receipt.get('sourceArchiveSha256') != expected['sourceArchiveSha256'] or
-                receipt.get('directXHeadersCommit') != expected['directXHeadersCommit']):
+        version_key = config['version_key']
+        if (receipt.get('schema') != 1 or receipt.get('profile') != config['profile'] or
+                receipt.get(version_key) != expected[version_key] or
+                receipt.get('recipeSha256') != hashlib.sha256(recipe.read_bytes()).hexdigest()):
             raise ValueError('Payload and initramfs recipes differ; rebuild the matched pair')
+        for key in config['match_keys']:
+            if receipt.get(key) != expected[key]:
+                raise ValueError('Payload and initramfs recipes differ; rebuild the matched pair')
         inventory = receipt['files']
         names = {n for n, m in members.items() if not m.isdir()}
-        expected_names = set(inventory) | {'lib/virtio-dxg-build.json', 'lib/virtio-dxg-mesa-version'}
+        expected_names = set(inventory) | {config['receipt_path'], config['version_path']}
         if names != expected_names:
             raise ValueError('Payload inventory differs: missing=' +
                              repr(sorted(expected_names - names)[:12]) +
@@ -87,13 +92,14 @@ def extract(archive, destination, recipe):
                     raise ValueError('Changed library alias: ' + name)
             elif not member.isfile() or member.size != record['bytes']:
                 raise ValueError('Changed component: ' + name)
-        version_member = members['lib/virtio-dxg-mesa-version']
+        version_member = members[config['version_path']]
         if not version_member.isfile() or version_member.size > 64:
             raise ValueError('Invalid payload version label')
         version = tar.extractfile(version_member).read().decode().strip()
-        if version != expected['mesaVersion']:
+        if version != expected[version_key]:
             raise ValueError('Payload version label differs')
-        with tempfile.TemporaryDirectory(prefix='.virtio-dxg-mesa-', dir=destination.parent) as temporary:
+        with tempfile.TemporaryDirectory(prefix=config['stage_prefix'],
+                                         dir=destination.parent) as temporary:
             stage = Path(temporary)
             tar.extractall(stage, members=entries, filter='data')
             for name, record in inventory.items():
@@ -109,21 +115,53 @@ def extract(archive, destination, recipe):
             for name in expected['runtimeRequiredPaths']:
                 canonical(name)
                 if not (stage / name).is_file():
-                    raise ValueError('Incomplete graphics cohort: ' + name)
+                    raise ValueError(config['incomplete_error'] + ': ' + name)
             for name, target in expected['runtimeAliases'].items():
                 path = stage / name
                 if not path.is_symlink() or os.readlink(path) != target:
                     raise ValueError('Incorrect runtime alias: ' + name)
-            icd = stage / 'share/vulkan/icd.d/dzn_icd.x86_64.json'
-            data = json.loads(icd.read_text(encoding='utf-8'))
-            data['ICD']['library_path'] = str(destination / 'lib/libvulkan_dzn.so')
-            icd.write_text(json.dumps(data, indent=2) + '\n', encoding='utf-8')
+            if post_extract:
+                post_extract(stage)
             # mkdtemp makes the stage 0700: the session's (unprivileged)
             # processes must be able to enter it to load these libraries.
             os.chmod(stage, 0o755)
             os.rename(stage, destination)
             # TemporaryDirectory tolerates its renamed source disappearing.
     return version
+
+
+def extract(archive, destination, recipe):
+    """Extract a hash-verified Mesa cohort into destination."""
+    def patch_icd(stage):
+        icd = stage / 'share/vulkan/icd.d/dzn_icd.x86_64.json'
+        data = json.loads(icd.read_text(encoding='utf-8'))
+        data['ICD']['library_path'] = str(destination / 'lib/libvulkan_dzn.so')
+        icd.write_text(json.dumps(data, indent=2) + '\n', encoding='utf-8')
+
+    return _extract_cohort(archive, destination, recipe, {
+        'allowed_roots': ('lib', 'share'),
+        'receipt_path': 'lib/virtio-dxg-build.json',
+        'version_path': 'lib/virtio-dxg-mesa-version',
+        'version_key': 'mesaVersion',
+        'profile': 'virtio-dxg',
+        'match_keys': ('sourceArchiveSha256', 'directXHeadersCommit'),
+        'stage_prefix': '.virtio-dxg-mesa-',
+        'incomplete_error': 'Incomplete graphics cohort',
+    }, post_extract=patch_icd)
+
+
+def extract_gtk(archive, destination, recipe):
+    """Extract a hash-verified GTK 4 library cohort into destination."""
+    return _extract_cohort(archive, destination, recipe, {
+        'allowed_roots': ('lib',),
+        'receipt_path': 'lib/virtio-dxg-gtk-build.json',
+        'version_path': 'lib/virtio-dxg-gtk-version',
+        'version_key': 'gtkVersion',
+        'profile': 'virtio-dxg-gtk',
+        'match_keys': ('sourceArchiveSha256',),
+        'stage_prefix': '.virtio-dxg-gtk4-',
+        'incomplete_error': 'Incomplete GTK cohort',
+    })
 
 
 def desktop_entry(text, cmd='chromium'):
@@ -270,16 +308,21 @@ if __name__ == '__main__':
     parser.add_argument('archive', type=Path)
     parser.add_argument('destination', type=Path)
     parser.add_argument('--recipe', required=True, type=Path)
+    parser.add_argument('--gtk-only', action='store_true')
     parser.add_argument('--browser-wrapper', type=Path)
     parser.add_argument('--xdg-settings-fast', type=Path)
     parser.add_argument('--app-fastlaunch', type=Path)
     args = parser.parse_args()
-    version = extract(args.archive, args.destination, args.recipe)
-    if args.browser_wrapper or args.xdg_settings_fast or args.app_fastlaunch:
-        try:
-            prepare_launch_paths(
-                Path('/'), args.browser_wrapper, args.xdg_settings_fast, args.app_fastlaunch
-            )
-        except (ValueError, OSError) as error:
-            print('virtio-dxg: launch path overlay unavailable: ' + str(error))
-    print('virtio-dxg: staged matched Mesa ' + version + '; hardware acceptance pending')
+    if args.gtk_only:
+        version = extract_gtk(args.archive, args.destination, args.recipe)
+        print('virtio-dxg: staged matched GTK ' + version)
+    else:
+        version = extract(args.archive, args.destination, args.recipe)
+        if args.browser_wrapper or args.xdg_settings_fast or args.app_fastlaunch:
+            try:
+                prepare_launch_paths(
+                    Path('/'), args.browser_wrapper, args.xdg_settings_fast, args.app_fastlaunch
+                )
+            except (ValueError, OSError) as error:
+                print('virtio-dxg: launch path overlay unavailable: ' + str(error))
+        print('virtio-dxg: staged matched Mesa ' + version + '; hardware acceptance pending')
